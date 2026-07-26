@@ -1,0 +1,86 @@
+# White knights sample — exact set + collector (preferred for specific arts)
+1 Abandoned Air Temple (tla) 263
+1 Acclaimed Contender (eld) 1
+1 Adeline, Resplendent Cathar (tdc) 108
+1 Akroma's Will (lcc) 125
+1 Andúril, Narsil Reforged (hoc) 40
+1 Angelic Destiny (soc) 134
+1 Arrest (pidw) 5
+1 Auriok Steelshaper (mrd) 4
+1 Balan, Wandering Knight (cmm) 16
+1 Basri's Lieutenant (m21) 288
+1 Battle Angels of Tyr (clb) 370
+1 Battle Menu (fin) 9
+1 Benalish Marshal (dom) 6
+1 Cavalier of Dawn (m20) 10
+1 Cavern of Souls (lci) 269
+1 Chocobo Knights (fic) 12
+1 Danitha Capashen, Paragon (j25) 59
+1 Danitha, Benalia's Hope (dmu) 287
+1 Desert of the True (hou) 174
+1 Dion, Bahamut's Dominant // Bahamut, Warden of Light (fin) 376
+1 Eldrazi Conscription (sld) 1218
+1 Emeria, the Sky Ruin (zen) 213
+1 Enlightened Tutor (dmr) 6
+1 Erode (sos) 15
+1 Ethereal Armor (q06) 2
+1 Evolving Wilds (msc) 240
+1 Fabled Passage (msc) 242
+1 Fiendslayer Paladin (e01) 8
+1 Flawless Maneuver (cmm) 24
+1 Flowering of the White Tree (ltr) 15
+1 Gleam of Authority (dtk) 19
+1 Guardian of Faith (soc) 148
+1 Herald's Horn (fic) 228
+1 History of Benalia (pdom) 21p
+1 Idolized (pip) 17
+1 Ishgard, the Holy See // Faith & Grief (fin) 310
+1 Karn's Bastion (rvr) 464
+1 Kinsbaile Cavalier (spg) 130
+1 Knight Exemplar (plst) DDG-14
+1 Knight of the White Orchid (mic) 88
+1 Militant Angel (gnt) 1
+1 Minas Tirith (ltr) 341
+1 Mirran Crusader (mm2) 25
+1 Nykthos, Shrine to Nyx (ppro) 2022-3
+1 Ondu Inversion // Ondu Skyruins (znr) 30
+1 Opal Palace (m3c) 361
+1 Ossification (plst) ONE-26
+1 Overwhelming Splendor (hou) 19
+1 Pariah (otp) 5
+1 Pearl Medallion (mh3) 347
+20 Plains (mh2) 482
+1 Plaza of Heroes (msc) 255
+1 Puresteel Paladin (fic) 250
+1 Rashel, Fist of Torm (slx) 24
+1 Reliquary Tower (sld) 1536
+1 Restoration Magic (fin) 30
+1 Sheltered by Ghosts (sld) 2653
+1 Shining Armor (j22) 243
+1 Silverwing Squadron (moc) 207
+1 Skyhunter Strike Force (onc) 31
+1 Smothering Tithe (cmm) 57
+1 Spirit Mantle (soc) 175
+1 Stroke of Midnight (tdc) 132
+1 Summon: Knights of Round (fin) 359
+1 Super State (sld) 2081
+1 Swords to Plowshares (msc) 143
+1 Teferi's Protection (2x2) 32
+1 Terramorphic Expanse (msc) 828
+1 Thalia's Lancers (emn) 47
+1 The Circle of Loyalty (eld) 336
+1 The Fair Basilica (one) 252
+1 The Immortal Sun (cmm) 393
+1 The Wind Crystal (fin) 330
+1 Three Tree City (blb) 338
+1 Unbreakable Formation (rvr) 32
+1 Valiant Knight (m19) 42
+1 Vanquisher's Banner (ltc) 289
+1 Virtue of Loyalty // Ardenvale Fealty (woe) 277
+1 War Room (who) 330
+1 Worthy Knight (moc) 217
+1 Zhalfirin Lancer (mom) 45
+
+# Name-only examples (Scryfall picks a default printing)
+1 Sol Ring
+4 Lightning Bolt

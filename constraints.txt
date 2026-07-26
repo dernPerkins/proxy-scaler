@@ -1,0 +1,2 @@
+# Pin setuptools for RealESRGAN's setup.py (pkg_resources) during install
+setuptools<81

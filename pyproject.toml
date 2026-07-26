@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proxy-scaler"
+version = "0.1.0"
+description = "Fetch Scryfall MTG card images and upscale them for home proxy printing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Pillow>=10",
+  "requests>=2.31",
+  "torch>=2.1,<3",
+  "torchvision>=0.16",
+  "spandrel>=0.4",
+  "streamlit>=1.28",
+]
+
+[project.scripts]
+proxy-scaler = "proxy_scaler.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["proxy_scaler*"]
