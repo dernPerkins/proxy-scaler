@@ -33,7 +33,6 @@ _DECKLIST_WIDGET_KEYS = (
     "model",
     "dpi",
     "all_dpis",
-    "dpi_row_mode",
     "page_size",
     "skip_existing",
     "output_dir",
@@ -77,13 +76,13 @@ def ensure_session_defaults() -> None:
         ),
         "gallery": [],
         "regen_key": None,
+        "regen_target_dpi": None,
         "gallery_page": 0,
         "project_id": None,
         "project_name": "",
         "model": UpscaleModel.SWINIR.value,
         "dpi": DEFAULT_DPI,
         "all_dpis": False,
-        "dpi_row_mode": False,
         "page_size": DEFAULT_PAGE_SIZE,
         "skip_existing": True,
         "output_dir": DEFAULT_OUTPUT,
@@ -146,7 +145,6 @@ def settings_from_session() -> ProjectSettings:
         model=_session_setting("model", UpscaleModel.SWINIR.value),
         dpi=int(_session_setting("dpi", DEFAULT_DPI)),
         all_dpis=bool(_session_setting("all_dpis", False)),
-        dpi_row_mode=bool(_session_setting("dpi_row_mode", False)),
         page_size=int(_session_setting("page_size", DEFAULT_PAGE_SIZE)),
         skip_existing=bool(_session_setting("skip_existing", True)),
         output_dir=str(_session_setting("output_dir", DEFAULT_OUTPUT)),
@@ -162,11 +160,11 @@ def apply_loaded_project(loaded) -> None:
     st.session_state.gallery = loaded.gallery
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
+    st.session_state.regen_target_dpi = None
     s = loaded.settings
     st.session_state.model = s.model
     st.session_state.dpi = s.dpi
     st.session_state.all_dpis = s.all_dpis
-    st.session_state.dpi_row_mode = s.dpi_row_mode
     st.session_state.page_size = s.page_size
     st.session_state.skip_existing = s.skip_existing
     if s.output_dir:
@@ -185,10 +183,10 @@ def reset_to_new_project() -> None:
     st.session_state.gallery = []
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
+    st.session_state.regen_target_dpi = None
     st.session_state.model = UpscaleModel.SWINIR.value
     st.session_state.dpi = DEFAULT_DPI
     st.session_state.all_dpis = False
-    st.session_state.dpi_row_mode = False
     st.session_state.page_size = DEFAULT_PAGE_SIZE
     st.session_state.skip_existing = True
     st.session_state.output_dir = DEFAULT_OUTPUT

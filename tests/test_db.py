@@ -31,7 +31,6 @@ def test_save_load_round_trip(db_path: Path) -> None:
         model="realesrnet",
         dpi=1200,
         all_dpis=True,
-        dpi_row_mode=True,
         page_size=4,
         skip_existing=False,
         output_dir="/tmp/out",
@@ -76,7 +75,6 @@ def test_save_load_round_trip(db_path: Path) -> None:
     assert loaded.settings.model == "realesrnet"
     assert loaded.settings.dpi == 1200
     assert loaded.settings.all_dpis is True
-    assert loaded.settings.dpi_row_mode is True
     assert loaded.settings.page_size == 4
     assert loaded.settings.skip_existing is False
     assert loaded.settings.output_dir == "/tmp/out"

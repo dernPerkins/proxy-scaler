@@ -109,7 +109,6 @@ class ProjectSettings:
     model: str = UpscaleModel.SWINIR.value
     dpi: int = DEFAULT_DPI
     all_dpis: bool = False
-    dpi_row_mode: bool = False
     page_size: int = 6
     skip_existing: bool = True
     output_dir: str = ""
@@ -121,7 +120,6 @@ class ProjectSettings:
             "model": self.model,
             "dpi": int(self.dpi),
             "all_dpis": 1 if self.all_dpis else 0,
-            "dpi_row_mode": 1 if self.dpi_row_mode else 0,
             "page_size": int(self.page_size),
             "skip_existing": 1 if self.skip_existing else 0,
             "output_dir": self.output_dir,
@@ -136,7 +134,6 @@ class ProjectSettings:
             model=str(get("model") or UpscaleModel.SWINIR.value),
             dpi=int(get("dpi") or DEFAULT_DPI),
             all_dpis=bool(get("all_dpis")),
-            dpi_row_mode=bool(get("dpi_row_mode")),
             page_size=int(get("page_size") or 6),
             skip_existing=bool(get("skip_existing")),
             output_dir=str(get("output_dir") or ""),
@@ -419,10 +416,10 @@ def save_project(
             cur = conn.execute(
                 """
                 INSERT INTO projects (
-                    name, import_decklist_text, model, dpi, all_dpis, dpi_row_mode,
+                    name, import_decklist_text, model, dpi, all_dpis,
                     page_size, skip_existing, output_dir, cache_dir, weights_dir,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -430,7 +427,6 @@ def save_project(
                     s["model"],
                     s["dpi"],
                     s["all_dpis"],
-                    s["dpi_row_mode"],
                     s["page_size"],
                     s["skip_existing"],
                     s["output_dir"],
@@ -454,7 +450,7 @@ def save_project(
                 UPDATE projects SET
                     name = ?,
                     import_decklist_text = ?,
-                    model = ?, dpi = ?, all_dpis = ?, dpi_row_mode = ?,
+                    model = ?, dpi = ?, all_dpis = ?,
                     page_size = ?, skip_existing = ?,
                     output_dir = ?, cache_dir = ?, weights_dir = ?,
                     updated_at = ?
@@ -466,7 +462,6 @@ def save_project(
                     s["model"],
                     s["dpi"],
                     s["all_dpis"],
-                    s["dpi_row_mode"],
                     s["page_size"],
                     s["skip_existing"],
                     s["output_dir"],
