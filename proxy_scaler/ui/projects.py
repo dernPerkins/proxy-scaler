@@ -9,10 +9,12 @@ import streamlit as st
 from proxy_scaler.db import (
     ProjectSettings,
     delete_project,
+    get_last_project_id,
     init_db,
     list_projects,
     load_project,
     save_project,
+    set_last_project_id,
 )
 from proxy_scaler.dpi import DEFAULT_DPI
 from proxy_scaler.upscale import UpscaleModel
@@ -102,12 +104,31 @@ def ensure_session_defaults() -> None:
     persist_decklist_widgets()
 
 
+def maybe_load_last_project() -> None:
+    """On a fresh session, auto-load the last-used project (else most recent)."""
+    if st.session_state.get("_initial_project_load_done"):
+        return
+    st.session_state._initial_project_load_done = True
+    if st.session_state.get("project_id"):
+        return
+
+    projects = list_projects()
+    if not projects:
+        return
+
+    valid_ids = {p.id for p in projects}
+    last_id = get_last_project_id()
+    target_id = last_id if last_id in valid_ids else projects[0].id
+    st.session_state._pending_load_id = target_id
+
+
 def apply_pending_project_actions() -> None:
     """Apply load/new before any keyed widgets render (Streamlit constraint)."""
     pending_id = st.session_state.get("_pending_load_id")
     if pending_id is not None:
         loaded = load_project(int(pending_id))
         apply_loaded_project(loaded)
+        set_last_project_id(int(pending_id))
         st.session_state._pending_load_id = None
 
     if st.session_state.get("_pending_new"):
@@ -186,6 +207,7 @@ def _do_save(*, name: str, project_id: int | None) -> None:
         project_id=project_id,
     )
     st.session_state.project_id = pid
+    set_last_project_id(pid)
 
 
 def render_project_bar() -> None:

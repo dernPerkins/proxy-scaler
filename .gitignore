@@ -1,0 +1,13 @@
+imgcache/
+output/
+output_smoke/
+weights/
+data/*.db
+*.pyc
+__pycache__/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/

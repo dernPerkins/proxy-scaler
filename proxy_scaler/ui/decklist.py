@@ -185,25 +185,41 @@ def _draw_gallery(
         # Live redraws during Generate call this many times in one run — only the
         # final pass (show_regen=True) may create keyed widgets, or Streamlit errors.
         if show_regen:
-            nav_l, nav_m, nav_r = st.columns([1, 2, 1])
+            nav_l, nav_label, nav_group = st.columns([1, 3, 2], gap="small")
             with nav_l:
                 if st.button("← Prev", disabled=page <= 0, key="gallery_prev"):
                     st.session_state.gallery_page = page - 1
                     st.rerun()
-            with nav_m:
+            with nav_label:
                 st.markdown(
-                    f"<div style='text-align:center'>Page <b>{page + 1}</b> / {total_pages} "
+                    f"<div style='text-align:right'>Page <b>{page + 1}</b> / {total_pages} "
                     f"· showing {page_size} {unit} per page</div>",
                     unsafe_allow_html=True,
                 )
-            with nav_r:
-                if st.button(
-                    "Next →",
-                    disabled=page >= total_pages - 1,
-                    key="gallery_next",
-                ):
-                    st.session_state.gallery_page = page + 1
-                    st.rerun()
+            with nav_group:
+                nav_select, nav_r = st.columns([1, 1], gap="small")
+                with nav_select:
+                    page_options = list(range(total_pages))
+                    selected_page = st.selectbox(
+                        "Jump to page",
+                        options=page_options,
+                        format_func=lambda p: str(p + 1),
+                        index=page,
+                        key="gallery_page_select",
+                        label_visibility="collapsed",
+                    )
+                    if selected_page != page:
+                        st.session_state.gallery_page = selected_page
+                        st.rerun()
+                with nav_r:
+                    if st.button(
+                        "Next →",
+                        disabled=page >= total_pages - 1,
+                        key="gallery_next",
+                        use_container_width=True,
+                    ):
+                        st.session_state.gallery_page = page + 1
+                        st.rerun()
         else:
             st.caption(f"Page {page + 1} / {total_pages} · generating…")
 
@@ -217,22 +233,19 @@ def _draw_gallery(
                     regen_cols = st.columns(len(face_items))
                     for col, item in zip(regen_cols, face_items):
                         with col:
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                if st.button(
-                                    "Compare",
-                                    key=f"cmp-{_item_key(item)}",
-                                    use_container_width=True,
-                                ):
-                                    open_comparison_dialog(item)
-                            with c2:
-                                if st.button(
-                                    f"Regen {item.dpi}",
-                                    key=f"regen-{_item_key(item)}",
-                                    use_container_width=True,
-                                ):
-                                    st.session_state.regen_key = _item_key(item)
-                                    st.rerun()
+                            if st.button(
+                                "Compare",
+                                key=f"cmp-{_item_key(item)}",
+                                use_container_width=True,
+                            ):
+                                open_comparison_dialog(item)
+                            if st.button(
+                                f"Regen {item.dpi}",
+                                key=f"regen-{_item_key(item)}",
+                                use_container_width=True,
+                            ):
+                                st.session_state.regen_key = _item_key(item)
+                                st.rerun()
             return
 
         for item in page_entries:
@@ -396,6 +409,19 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                     on_progress=on_progress,
                 )
                 _upsert_gallery(updated)
+                name = (st.session_state.get("project_name") or "").strip()
+                if name and st.session_state.gallery:
+                    try:
+                        pid = save_project(
+                            name,
+                            import_decklist_text=st.session_state.decklist_text or "",
+                            settings=settings_from_session(),
+                            gallery=list(st.session_state.gallery),
+                            project_id=st.session_state.get("project_id"),
+                        )
+                        st.session_state.project_id = pid
+                    except ValueError:
+                        pass
                 status.success(
                     f"Regenerated {updated.face_name} "
                     f"({updated.model} {updated.dpi} DPI)"

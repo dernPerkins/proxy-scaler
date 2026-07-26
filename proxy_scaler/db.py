@@ -83,7 +83,14 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
 
 CREATE INDEX IF NOT EXISTS idx_gallery_card
     ON project_gallery_items(card_id);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+_LAST_PROJECT_KEY = "last_project_id"
 
 
 def _utc_now() -> str:
@@ -195,6 +202,29 @@ def delete_project(project_id: int, db_path: Path | str | None = None) -> None:
     with connect(db_path) as conn:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         conn.commit()
+
+
+def set_last_project_id(project_id: int, db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_LAST_PROJECT_KEY, str(project_id)),
+        )
+        conn.commit()
+
+
+def get_last_project_id(db_path: Path | str | None = None) -> int | None:
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (_LAST_PROJECT_KEY,)
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_output_filename(name: str) -> dict[str, Any] | None:
