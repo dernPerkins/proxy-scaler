@@ -9,10 +9,12 @@ import streamlit as st
 from proxy_scaler.db import (
     ProjectSettings,
     delete_project,
+    get_last_project_id,
     init_db,
     list_projects,
     load_project,
     save_project,
+    set_last_project_id,
 )
 from proxy_scaler.dpi import DEFAULT_DPI
 from proxy_scaler.upscale import UpscaleModel
@@ -31,7 +33,6 @@ _DECKLIST_WIDGET_KEYS = (
     "model",
     "dpi",
     "all_dpis",
-    "dpi_row_mode",
     "page_size",
     "skip_existing",
     "output_dir",
@@ -75,13 +76,13 @@ def ensure_session_defaults() -> None:
         ),
         "gallery": [],
         "regen_key": None,
+        "regen_target_dpi": None,
         "gallery_page": 0,
         "project_id": None,
         "project_name": "",
         "model": UpscaleModel.SWINIR.value,
         "dpi": DEFAULT_DPI,
         "all_dpis": False,
-        "dpi_row_mode": False,
         "page_size": DEFAULT_PAGE_SIZE,
         "skip_existing": True,
         "output_dir": DEFAULT_OUTPUT,
@@ -102,12 +103,31 @@ def ensure_session_defaults() -> None:
     persist_decklist_widgets()
 
 
+def maybe_load_last_project() -> None:
+    """On a fresh session, auto-load the last-used project (else most recent)."""
+    if st.session_state.get("_initial_project_load_done"):
+        return
+    st.session_state._initial_project_load_done = True
+    if st.session_state.get("project_id"):
+        return
+
+    projects = list_projects()
+    if not projects:
+        return
+
+    valid_ids = {p.id for p in projects}
+    last_id = get_last_project_id()
+    target_id = last_id if last_id in valid_ids else projects[0].id
+    st.session_state._pending_load_id = target_id
+
+
 def apply_pending_project_actions() -> None:
     """Apply load/new before any keyed widgets render (Streamlit constraint)."""
     pending_id = st.session_state.get("_pending_load_id")
     if pending_id is not None:
         loaded = load_project(int(pending_id))
         apply_loaded_project(loaded)
+        set_last_project_id(int(pending_id))
         st.session_state._pending_load_id = None
 
     if st.session_state.get("_pending_new"):
@@ -125,7 +145,6 @@ def settings_from_session() -> ProjectSettings:
         model=_session_setting("model", UpscaleModel.SWINIR.value),
         dpi=int(_session_setting("dpi", DEFAULT_DPI)),
         all_dpis=bool(_session_setting("all_dpis", False)),
-        dpi_row_mode=bool(_session_setting("dpi_row_mode", False)),
         page_size=int(_session_setting("page_size", DEFAULT_PAGE_SIZE)),
         skip_existing=bool(_session_setting("skip_existing", True)),
         output_dir=str(_session_setting("output_dir", DEFAULT_OUTPUT)),
@@ -141,11 +160,11 @@ def apply_loaded_project(loaded) -> None:
     st.session_state.gallery = loaded.gallery
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
+    st.session_state.regen_target_dpi = None
     s = loaded.settings
     st.session_state.model = s.model
     st.session_state.dpi = s.dpi
     st.session_state.all_dpis = s.all_dpis
-    st.session_state.dpi_row_mode = s.dpi_row_mode
     st.session_state.page_size = s.page_size
     st.session_state.skip_existing = s.skip_existing
     if s.output_dir:
@@ -164,10 +183,10 @@ def reset_to_new_project() -> None:
     st.session_state.gallery = []
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
+    st.session_state.regen_target_dpi = None
     st.session_state.model = UpscaleModel.SWINIR.value
     st.session_state.dpi = DEFAULT_DPI
     st.session_state.all_dpis = False
-    st.session_state.dpi_row_mode = False
     st.session_state.page_size = DEFAULT_PAGE_SIZE
     st.session_state.skip_existing = True
     st.session_state.output_dir = DEFAULT_OUTPUT
@@ -186,6 +205,7 @@ def _do_save(*, name: str, project_id: int | None) -> None:
         project_id=project_id,
     )
     st.session_state.project_id = pid
+    set_last_project_id(pid)
 
 
 def render_project_bar() -> None:

@@ -83,7 +83,14 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
 
 CREATE INDEX IF NOT EXISTS idx_gallery_card
     ON project_gallery_items(card_id);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+_LAST_PROJECT_KEY = "last_project_id"
 
 
 def _utc_now() -> str:
@@ -102,7 +109,6 @@ class ProjectSettings:
     model: str = UpscaleModel.SWINIR.value
     dpi: int = DEFAULT_DPI
     all_dpis: bool = False
-    dpi_row_mode: bool = False
     page_size: int = 6
     skip_existing: bool = True
     output_dir: str = ""
@@ -114,7 +120,6 @@ class ProjectSettings:
             "model": self.model,
             "dpi": int(self.dpi),
             "all_dpis": 1 if self.all_dpis else 0,
-            "dpi_row_mode": 1 if self.dpi_row_mode else 0,
             "page_size": int(self.page_size),
             "skip_existing": 1 if self.skip_existing else 0,
             "output_dir": self.output_dir,
@@ -129,7 +134,6 @@ class ProjectSettings:
             model=str(get("model") or UpscaleModel.SWINIR.value),
             dpi=int(get("dpi") or DEFAULT_DPI),
             all_dpis=bool(get("all_dpis")),
-            dpi_row_mode=bool(get("dpi_row_mode")),
             page_size=int(get("page_size") or 6),
             skip_existing=bool(get("skip_existing")),
             output_dir=str(get("output_dir") or ""),
@@ -195,6 +199,29 @@ def delete_project(project_id: int, db_path: Path | str | None = None) -> None:
     with connect(db_path) as conn:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         conn.commit()
+
+
+def set_last_project_id(project_id: int, db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_LAST_PROJECT_KEY, str(project_id)),
+        )
+        conn.commit()
+
+
+def get_last_project_id(db_path: Path | str | None = None) -> int | None:
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (_LAST_PROJECT_KEY,)
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_output_filename(name: str) -> dict[str, Any] | None:
@@ -389,10 +416,10 @@ def save_project(
             cur = conn.execute(
                 """
                 INSERT INTO projects (
-                    name, import_decklist_text, model, dpi, all_dpis, dpi_row_mode,
+                    name, import_decklist_text, model, dpi, all_dpis,
                     page_size, skip_existing, output_dir, cache_dir, weights_dir,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -400,7 +427,6 @@ def save_project(
                     s["model"],
                     s["dpi"],
                     s["all_dpis"],
-                    s["dpi_row_mode"],
                     s["page_size"],
                     s["skip_existing"],
                     s["output_dir"],
@@ -424,7 +450,7 @@ def save_project(
                 UPDATE projects SET
                     name = ?,
                     import_decklist_text = ?,
-                    model = ?, dpi = ?, all_dpis = ?, dpi_row_mode = ?,
+                    model = ?, dpi = ?, all_dpis = ?,
                     page_size = ?, skip_existing = ?,
                     output_dir = ?, cache_dir = ?, weights_dir = ?,
                     updated_at = ?
@@ -436,7 +462,6 @@ def save_project(
                     s["model"],
                     s["dpi"],
                     s["all_dpis"],
-                    s["dpi_row_mode"],
                     s["page_size"],
                     s["skip_existing"],
                     s["output_dir"],

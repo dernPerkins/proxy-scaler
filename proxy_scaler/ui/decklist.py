@@ -26,7 +26,7 @@ from proxy_scaler.upscale import UpscaleModel
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_PATH = ROOT / "cards.example.txt"
 
-_PREVIEW_MAX_EDGE = 900
+_PREVIEW_MAX_EDGE = 600
 
 
 def _gallery_items() -> list[FaceResult]:
@@ -71,13 +71,6 @@ def _group_by_face(items: list[FaceResult]) -> list[tuple[str, list[FaceResult]]
     return result
 
 
-def _provenance_label(item: FaceResult) -> str:
-    """Compact model / DPI / device line for gallery headers."""
-    device = (item.device or "unknown").lower()
-    device_bit = {"gpu": "GPU", "cpu": "CPU"}.get(device, "device?")
-    return f"**{item.model}** · **{item.dpi} DPI** · **{device_bit}**"
-
-
 def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
     """Render a browser-lazy-loaded preview (downscaled for UI speed)."""
     if not path.is_file():
@@ -104,26 +97,59 @@ def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
         st.warning(f"Could not load {path.name}: {exc}")
 
 
-def _render_single_comparison(item: FaceResult) -> None:
-    label = item.face_name
-    if item.face_label:
-        label = f"{label} ({item.face_label})"
-    st.markdown(
-        f"**{label}** — `{item.set_code.upper()}/{item.collector_number}` "
-        f"· {_provenance_label(item)}"
+def _download_button(path: Path, *, label: str, key: str) -> None:
+    """Download-as-is button for a PNG already on disk."""
+    if not path.is_file():
+        return
+    st.download_button(
+        label,
+        data=path.read_bytes(),
+        file_name=path.name,
+        mime="image/png",
+        key=key,
+        use_container_width=True,
     )
-    left, right = st.columns(2)
-    with left:
-        st.caption("Original (Scryfall ~300 DPI)")
-        _lazy_image(item.original_path)
-    with right:
-        st.caption(f"Upscaled ({item.dpi} DPI) · `{item.out_path.name}`")
-        _lazy_image(item.out_path)
 
 
-def _render_dpi_row(items: list[FaceResult]) -> None:
-    """Original + each DPI variant in one row."""
-    first = items[0]
+def _dpi_action_buttons(item: FaceResult, target_dpi: int) -> None:
+    """Download / Compare X / Regen X stacked under an existing image's column."""
+    _download_button(
+        item.out_path,
+        label=f"Download {target_dpi}",
+        key=f"dl-{_item_key(item)}",
+    )
+    if st.button(
+        f"Compare {target_dpi}",
+        key=f"cmp-{_item_key(item)}",
+        use_container_width=True,
+    ):
+        open_comparison_dialog(item)
+    if st.button(
+        f"Regen {target_dpi}",
+        key=f"regen-{_item_key(item)}",
+        use_container_width=True,
+    ):
+        st.session_state.regen_key = _item_key(item)
+        st.session_state.regen_target_dpi = target_dpi
+        st.rerun()
+
+
+def _generate_button(template: FaceResult, target_dpi: int) -> None:
+    """Generate X for a DPI that hasn't been produced yet."""
+    if st.button(
+        f"Generate {target_dpi}",
+        key=f"gen-{_item_key(template)}-{target_dpi}",
+        use_container_width=True,
+    ):
+        st.session_state.regen_key = _item_key(template)
+        st.session_state.regen_target_dpi = target_dpi
+        st.rerun()
+
+
+def _render_dpi_row(face_items: list[FaceResult], *, show_regen: bool) -> None:
+    """Original + one column per DPI target; buttons stack under each image."""
+    first = face_items[0]
+    by_dpi = {item.dpi: item for item in face_items}
     label = first.face_name
     if first.face_label:
         label = f"{label} ({first.face_label})"
@@ -131,16 +157,30 @@ def _render_dpi_row(items: list[FaceResult]) -> None:
         f"**{label}** — `{first.set_code.upper()}/{first.collector_number}` "
         f"· **{first.model}**"
     )
-    cols = st.columns(1 + len(items))
+    cols = st.columns(1 + len(DPI_OPTIONS))
     with cols[0]:
         st.caption("Original ~300 DPI")
         _lazy_image(first.original_path)
-    for col, item in zip(cols[1:], items):
+        if show_regen:
+            _download_button(
+                first.original_path,
+                label="Download original",
+                key=f"dl-orig-{_item_key(first)}",
+            )
+    for col, target_dpi in zip(cols[1:], DPI_OPTIONS):
         with col:
-            device = (item.device or "unknown").lower()
-            device_bit = {"gpu": "GPU", "cpu": "CPU"}.get(device, "?")
-            st.caption(f"{item.dpi} DPI · {device_bit}")
-            _lazy_image(item.out_path)
+            item = by_dpi.get(target_dpi)
+            if item is not None:
+                device = (item.device or "unknown").lower()
+                device_bit = {"gpu": "GPU", "cpu": "CPU"}.get(device, "?")
+                st.caption(f"{target_dpi} DPI · {device_bit}")
+                _lazy_image(item.out_path)
+                if show_regen:
+                    _dpi_action_buttons(item, target_dpi)
+            else:
+                st.caption(f"{target_dpi} DPI · not generated")
+                if show_regen:
+                    _generate_button(first, target_dpi)
 
 
 def _paginate(entries: list, page: int, page_size: int) -> tuple[list, int]:
@@ -157,7 +197,6 @@ def _draw_gallery(
     slot,
     *,
     show_regen: bool,
-    dpi_row_mode: bool,
     page_size: int,
     jump_to_last: bool = False,
 ) -> None:
@@ -168,12 +207,8 @@ def _draw_gallery(
             st.write("No images yet. Paste a list and click Generate.")
             return
 
-        if dpi_row_mode:
-            entries: list = _group_by_face(items)
-            unit = "card face(s)"
-        else:
-            entries = items
-            unit = "comparison(s)"
+        entries = _group_by_face(items)
+        unit = "card face(s)"
 
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
         if jump_to_last:
@@ -185,76 +220,49 @@ def _draw_gallery(
         # Live redraws during Generate call this many times in one run — only the
         # final pass (show_regen=True) may create keyed widgets, or Streamlit errors.
         if show_regen:
-            nav_l, nav_m, nav_r = st.columns([1, 2, 1])
+            nav_l, nav_label, nav_group = st.columns([1, 3, 2], gap="small")
             with nav_l:
                 if st.button("← Prev", disabled=page <= 0, key="gallery_prev"):
                     st.session_state.gallery_page = page - 1
                     st.rerun()
-            with nav_m:
+            with nav_label:
                 st.markdown(
-                    f"<div style='text-align:center'>Page <b>{page + 1}</b> / {total_pages} "
+                    f"<div style='text-align:right'>Page <b>{page + 1}</b> / {total_pages} "
                     f"· showing {page_size} {unit} per page</div>",
                     unsafe_allow_html=True,
                 )
-            with nav_r:
-                if st.button(
-                    "Next →",
-                    disabled=page >= total_pages - 1,
-                    key="gallery_next",
-                ):
-                    st.session_state.gallery_page = page + 1
-                    st.rerun()
+            with nav_group:
+                nav_select, nav_r = st.columns([1, 1], gap="small")
+                with nav_select:
+                    page_options = list(range(total_pages))
+                    selected_page = st.selectbox(
+                        "Jump to page",
+                        options=page_options,
+                        format_func=lambda p: str(p + 1),
+                        index=page,
+                        key="gallery_page_select",
+                        label_visibility="collapsed",
+                    )
+                    if selected_page != page:
+                        st.session_state.gallery_page = selected_page
+                        st.rerun()
+                with nav_r:
+                    if st.button(
+                        "Next →",
+                        disabled=page >= total_pages - 1,
+                        key="gallery_next",
+                        use_container_width=True,
+                    ):
+                        st.session_state.gallery_page = page + 1
+                        st.rerun()
         else:
             st.caption(f"Page {page + 1} / {total_pages} · generating…")
 
         page_entries, _ = _paginate(entries, page, page_size)
 
-        if dpi_row_mode:
-            for _group_key, face_items in page_entries:
-                st.divider()
-                _render_dpi_row(face_items)
-                if show_regen:
-                    regen_cols = st.columns(len(face_items))
-                    for col, item in zip(regen_cols, face_items):
-                        with col:
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                if st.button(
-                                    "Compare",
-                                    key=f"cmp-{_item_key(item)}",
-                                    use_container_width=True,
-                                ):
-                                    open_comparison_dialog(item)
-                            with c2:
-                                if st.button(
-                                    f"Regen {item.dpi}",
-                                    key=f"regen-{_item_key(item)}",
-                                    use_container_width=True,
-                                ):
-                                    st.session_state.regen_key = _item_key(item)
-                                    st.rerun()
-            return
-
-        for item in page_entries:
+        for _group_key, face_items in page_entries:
             st.divider()
-            _render_single_comparison(item)
-            if show_regen:
-                c1, c2, _ = st.columns([1, 1, 4])
-                with c1:
-                    if st.button(
-                        "Compare",
-                        key=f"cmp-{_item_key(item)}",
-                        use_container_width=True,
-                    ):
-                        open_comparison_dialog(item)
-                with c2:
-                    if st.button(
-                        "Regenerate",
-                        key=f"regen-{_item_key(item)}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.regen_key = _item_key(item)
-                        st.rerun()
+            _render_dpi_row(face_items, show_regen=show_regen)
 
 
 def render_decklist_tab(*, draw_gallery: bool = True) -> None:
@@ -289,11 +297,6 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             horizontal=True,
             key="dpi",
             disabled=bool(st.session_state.all_dpis),
-        )
-        st.toggle(
-            "Show all DPIs in one row",
-            key="dpi_row_mode",
-            help="Group variants of the same card face for side-by-side DPI comparison.",
         )
         st.slider(
             "Cards / comparisons per page",
@@ -337,7 +340,6 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     model = st.session_state.model
     all_dpis = bool(st.session_state.all_dpis)
     dpi = int(st.session_state.dpi)
-    dpi_row_mode = bool(st.session_state.dpi_row_mode)
     page_size = int(st.session_state.page_size)
     skip_existing = bool(st.session_state.skip_existing)
     output_dir = Path(st.session_state.output_dir)
@@ -375,9 +377,11 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     if regen_key is not None:
         items = _gallery_items()
         match = next((i for i in items if _item_key(i) == regen_key), None)
+        target_dpi = st.session_state.get("regen_target_dpi")
         if match is not None:
+            target_dpi = target_dpi if target_dpi is not None else match.dpi
             status.info(
-                f"Regenerating {match.face_name} with {model} @ {dpi} DPI…"
+                f"Regenerating {match.face_name} with {model} @ {target_dpi} DPI…"
             )
             lines: list[str] = []
 
@@ -391,11 +395,24 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                     output_dir=output_dir,
                     cache_dir=cache_dir,
                     weights_dir=weights_dir,
-                    dpi=dpi if not all_dpis else match.dpi,
+                    dpi=target_dpi,
                     model=model,
                     on_progress=on_progress,
                 )
                 _upsert_gallery(updated)
+                name = (st.session_state.get("project_name") or "").strip()
+                if name and st.session_state.gallery:
+                    try:
+                        pid = save_project(
+                            name,
+                            import_decklist_text=st.session_state.decklist_text or "",
+                            settings=settings_from_session(),
+                            gallery=list(st.session_state.gallery),
+                            project_id=st.session_state.get("project_id"),
+                        )
+                        st.session_state.project_id = pid
+                    except ValueError:
+                        pass
                 status.success(
                     f"Regenerated {updated.face_name} "
                     f"({updated.model} {updated.dpi} DPI)"
@@ -403,6 +420,7 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             except Exception as exc:  # noqa: BLE001
                 status.error(f"Regenerate failed: {exc}")
         st.session_state.regen_key = None
+        st.session_state.regen_target_dpi = None
 
     if run:
         entries = parse_decklist_text(st.session_state.decklist_text)
@@ -424,7 +442,6 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             _draw_gallery(
                 gallery_slot,
                 show_regen=False,
-                dpi_row_mode=dpi_row_mode,
                 page_size=page_size,
                 jump_to_last=True,
             )
@@ -438,7 +455,6 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                 _draw_gallery(
                     gallery_slot,
                     show_regen=False,
-                    dpi_row_mode=dpi_row_mode,
                     page_size=page_size,
                     jump_to_last=True,
                 )
@@ -491,7 +507,6 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     _draw_gallery(
         gallery_slot,
         show_regen=True,
-        dpi_row_mode=dpi_row_mode,
         page_size=page_size,
     )
     persist_decklist_widgets()

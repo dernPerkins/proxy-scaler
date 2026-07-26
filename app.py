@@ -10,6 +10,7 @@ from proxy_scaler.ui.pdf import render_pdf_tab
 from proxy_scaler.ui.projects import (
     apply_pending_project_actions,
     ensure_session_defaults,
+    maybe_load_last_project,
     render_project_bar,
 )
 
@@ -46,6 +47,7 @@ def main() -> None:
     st.set_page_config(page_title="proxy-scaler", layout="wide")
     init_db()
     ensure_session_defaults()
+    maybe_load_last_project()
     apply_pending_project_actions()
 
     st.title("MTG Proxy Upscaler")
