@@ -183,6 +183,15 @@ class Upscaler:
         self._device = device
         weights = ensure_weights(self.model_id, self.scale, self.weights_dir)
         print(f"Loading {self.model_id.value} x{self.scale} on {device} ({weights.name})...")
+        if device.type != "cpu":
+            print(
+                "note: PyTorch may print its own "
+                "'[W...] memory allocation failed with OOM' lines below while "
+                "upscaling — those come from CUDA's allocator retrying "
+                "internally and usually resolve on their own. This app only "
+                "reports a real failure with its own 'Upscale OOM on ...; "
+                "clearing cache and retrying on CPU…' message."
+            )
         descriptor = ModelLoader().load_from_file(str(weights))
         if not isinstance(descriptor, ImageModelDescriptor):
             raise TypeError(f"Unexpected model type for {weights}")
@@ -225,6 +234,12 @@ class Upscaler:
     def upscale(self, image: Image.Image) -> UpscaleResult:
         descriptor = self._ensure_model()
         assert self._device is not None
+        # Scryfall PNGs carry real per-card alpha (transparent rounded
+        # corners). The models are RGB-only, so the alpha channel is split
+        # off here and reattached to the model's output below, resized to
+        # match — preserving the card's actual corner shape instead of
+        # letting it get silently discarded.
+        alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
         rgb = image.convert("RGB")
         tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
 
@@ -250,8 +265,12 @@ class Upscaler:
 
             out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).cpu()
             del out_gpu
+            out_image = to_pil_image(out_cpu)
+            if alpha is not None:
+                resized_alpha = alpha.resize(out_image.size, Image.Resampling.LANCZOS)
+                out_image.putalpha(resized_alpha)
             return UpscaleResult(
-                image=to_pil_image(out_cpu),
+                image=out_image,
                 device=device_kind(self._device),
             )
         finally:
@@ -363,8 +382,14 @@ def load_or_upscale(
         upscaler.model_id,
     )
     if path.exists() and not force:
+        cached = Image.open(path)
+        cached_image = (
+            cached.convert("RGBA")
+            if cached.mode in ("RGBA", "LA")
+            else cached.convert("RGB")
+        )
         return UpscaleResult(
-            image=Image.open(path).convert("RGB"),
+            image=cached_image,
             device=read_cache_device(path),
         )
 

@@ -8,6 +8,7 @@ import streamlit as st
 
 from proxy_scaler.db import (
     ProjectSettings,
+    delete_all_projects,
     delete_project,
     get_last_project_id,
     init_db,
@@ -16,7 +17,8 @@ from proxy_scaler.db import (
     save_project,
     set_last_project_id,
 )
-from proxy_scaler.dpi import DEFAULT_DPI
+from proxy_scaler.dpi import DEFAULT_DPI, DPI_OPTIONS
+from proxy_scaler.pipeline import clear_generated_data
 from proxy_scaler.upscale import UpscaleModel
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,8 +33,9 @@ DEFAULT_PAGE_SIZE = 6
 _DECKLIST_WIDGET_KEYS = (
     "decklist_text",
     "model",
-    "dpi",
-    "all_dpis",
+    "dpi_600",
+    "dpi_800",
+    "dpi_1200",
     "page_size",
     "skip_existing",
     "output_dir",
@@ -81,8 +84,9 @@ def ensure_session_defaults() -> None:
         "project_id": None,
         "project_name": "",
         "model": UpscaleModel.SWINIR.value,
-        "dpi": DEFAULT_DPI,
-        "all_dpis": False,
+        "dpi_600": False,
+        "dpi_800": True,
+        "dpi_1200": False,
         "page_size": DEFAULT_PAGE_SIZE,
         "skip_existing": True,
         "output_dir": DEFAULT_OUTPUT,
@@ -93,6 +97,9 @@ def ensure_session_defaults() -> None:
         "_pending_load_id": None,
         "_pending_new": False,
         "_pending_project_name": None,
+        "_pending_clear_all": False,
+        "_clear_all_notes": None,
+        "_delete_generated_notes": None,
     }
     # Restore widget keys Streamlit cleared on the previous (PDF) run before
     # applying first-time defaults — otherwise defaults would mask the mirror.
@@ -134,17 +141,27 @@ def apply_pending_project_actions() -> None:
         reset_to_new_project()
         st.session_state._pending_new = False
 
+    if st.session_state.get("_pending_clear_all"):
+        st.session_state._clear_all_notes = clear_all_projects()
+        st.session_state._pending_clear_all = False
+
     pending_name = st.session_state.get("_pending_project_name")
     if pending_name is not None:
         st.session_state.project_name = pending_name
         st.session_state._pending_project_name = None
 
 
+def selected_dpi_targets() -> list[int]:
+    """DPI checkboxes currently checked in the sidebar (may be empty)."""
+    return [
+        d for d in DPI_OPTIONS if bool(_session_setting(f"dpi_{d}", d == DEFAULT_DPI))
+    ]
+
+
 def settings_from_session() -> ProjectSettings:
     return ProjectSettings(
         model=_session_setting("model", UpscaleModel.SWINIR.value),
-        dpi=int(_session_setting("dpi", DEFAULT_DPI)),
-        all_dpis=bool(_session_setting("all_dpis", False)),
+        dpi_targets=selected_dpi_targets() or [DEFAULT_DPI],
         page_size=int(_session_setting("page_size", DEFAULT_PAGE_SIZE)),
         skip_existing=bool(_session_setting("skip_existing", True)),
         output_dir=str(_session_setting("output_dir", DEFAULT_OUTPUT)),
@@ -163,8 +180,8 @@ def apply_loaded_project(loaded) -> None:
     st.session_state.regen_target_dpi = None
     s = loaded.settings
     st.session_state.model = s.model
-    st.session_state.dpi = s.dpi
-    st.session_state.all_dpis = s.all_dpis
+    for d in DPI_OPTIONS:
+        st.session_state[f"dpi_{d}"] = d in s.dpi_targets
     st.session_state.page_size = s.page_size
     st.session_state.skip_existing = s.skip_existing
     if s.output_dir:
@@ -185,14 +202,37 @@ def reset_to_new_project() -> None:
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
     st.session_state.model = UpscaleModel.SWINIR.value
-    st.session_state.dpi = DEFAULT_DPI
-    st.session_state.all_dpis = False
+    for d in DPI_OPTIONS:
+        st.session_state[f"dpi_{d}"] = d == DEFAULT_DPI
     st.session_state.page_size = DEFAULT_PAGE_SIZE
     st.session_state.skip_existing = True
     st.session_state.output_dir = DEFAULT_OUTPUT
     st.session_state.cache_dir = DEFAULT_CACHE
     st.session_state.weights_dir = DEFAULT_WEIGHTS
     persist_decklist_widgets()
+
+
+def clear_all_projects() -> list[str]:
+    """Delete every saved project and wipe generated files.
+
+    Unlike reset_to_new_project(), this leaves the sidebar Settings values
+    (model/target DPIs/page_size/skip_existing/output_dir/cache_dir/
+    weights_dir) untouched — only project identity + generated data reset.
+    """
+    delete_all_projects()
+    notes = clear_generated_data(
+        Path(_session_setting("output_dir", DEFAULT_OUTPUT)),
+        Path(_session_setting("cache_dir", DEFAULT_CACHE)),
+    )
+    st.session_state.project_id = None
+    st.session_state.project_name = ""
+    st.session_state.decklist_text = ""
+    st.session_state.gallery = []
+    st.session_state.gallery_page = 0
+    st.session_state.regen_key = None
+    st.session_state.regen_target_dpi = None
+    persist_decklist_widgets()
+    return notes
 
 
 def _do_save(*, name: str, project_id: int | None) -> None:

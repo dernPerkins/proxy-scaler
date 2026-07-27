@@ -77,6 +77,58 @@ def test_upscale_falls_back_to_cpu_after_oom(tmp_path) -> None:
     assert attempts["n"] == 2
 
 
+def test_upscale_preserves_alpha_corner(tmp_path) -> None:
+    """Original alpha (rounded-corner transparency) should survive the RGB-only model."""
+    up = Upscaler(model=UpscaleModel.SWINIR, scale=4, weights_dir=tmp_path, tile=0)
+    up._descriptor = MagicMock()
+    up._device = torch.device("cpu")
+
+    # 16x16 RGBA source: opaque background with an 8x8 transparent corner block.
+    src = Image.new("RGBA", (16, 16), color=(10, 20, 30, 255))
+    for x in range(8):
+        for y in range(8):
+            src.putpixel((x, y), (0, 0, 0, 0))
+
+    def fake_inference(descriptor, tensor):
+        _, _, h, w = tensor.shape
+        return torch.zeros(1, 3, h * 4, w * 4)
+
+    with (
+        patch.object(up, "_ensure_model", return_value=up._descriptor),
+        patch.object(up, "_run_inference", side_effect=fake_inference),
+    ):
+        result = up.upscale(src)
+
+    assert result.image.mode == "RGBA"
+    assert result.image.size == (64, 64)
+    # Deep inside the (now 32x32) transparent corner region.
+    assert result.image.getpixel((10, 10))[3] < 10
+    # Deep inside the opaque region on the far side.
+    assert result.image.getpixel((50, 50))[3] > 245
+
+
+def test_upscale_no_alpha_source_stays_rgb(tmp_path) -> None:
+    """Plain RGB sources (no alpha channel) are returned unchanged, no crash."""
+    up = Upscaler(model=UpscaleModel.SWINIR, scale=4, weights_dir=tmp_path, tile=0)
+    up._descriptor = MagicMock()
+    up._device = torch.device("cpu")
+
+    src = Image.new("RGB", (16, 16), color=(10, 20, 30))
+
+    def fake_inference(descriptor, tensor):
+        _, _, h, w = tensor.shape
+        return torch.zeros(1, 3, h * 4, w * 4)
+
+    with (
+        patch.object(up, "_ensure_model", return_value=up._descriptor),
+        patch.object(up, "_run_inference", side_effect=fake_inference),
+    ):
+        result = up.upscale(src)
+
+    assert result.image.mode == "RGB"
+    assert result.image.size == (64, 64)
+
+
 def test_cache_device_sidecar(tmp_path) -> None:
     png = tmp_path / "x.png"
     png.write_bytes(b"fake")

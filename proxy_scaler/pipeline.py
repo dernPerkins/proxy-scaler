@@ -294,6 +294,7 @@ def process_entries(
     output_dir: Path,
     dpi: int = DEFAULT_DPI,
     all_dpis: bool = False,
+    dpi_targets: list[int] | None = None,
     model: UpscaleModel | str = UpscaleModel.SWINIR,
     cache_dir: Path = Path("imgcache"),
     weights_dir: Path = Path("weights"),
@@ -302,13 +303,18 @@ def process_entries(
     on_progress: ProgressCallback | None = None,
     on_face_done: FaceDoneCallback | None = None,
 ) -> PipelineResult:
-    """Resolve, download, upscale, and write PNGs for each deck entry."""
+    """Resolve, download, upscale, and write PNGs for each deck entry.
+
+    `dpi_targets`, when given, selects an arbitrary DPI subset directly
+    (used by the UI's independent checkboxes) and takes priority over the
+    single-`dpi`/`all_dpis` combo (used by the CLI's --dpi/--all-dpis flags).
+    """
     result = PipelineResult()
     if not entries:
         return result
 
     model_id = parse_model(model)
-    dpi_targets = resolve_dpi_targets(dpi=dpi, all_dpis=all_dpis)
+    dpi_targets = resolve_dpi_targets(dpi=dpi, all_dpis=all_dpis, dpi_targets=dpi_targets)
     upscalers = _upscalers_for_targets(model_id, dpi_targets, Path(weights_dir))
 
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -17,11 +17,14 @@ _COMPARE_MAX_W = 900
 _COMPARE_MAX_H = 1260  # ~5:7 at 900 wide
 
 
-def _load_rgb(path: Path) -> Image.Image | None:
+def _load_image(path: Path) -> Image.Image | None:
+    """Load preserving real alpha (transparent corners) instead of flattening."""
     if not path.is_file():
         return None
     try:
         with Image.open(path) as im:
+            if im.mode in ("RGBA", "LA"):
+                return im.convert("RGBA")
             return im.convert("RGB")
     except OSError:
         return None
@@ -35,11 +38,16 @@ def _fit_size(size: tuple[int, int], max_w: int, max_h: int) -> tuple[int, int]:
     return max(1, int(round(w * scale))), max(1, int(round(h * scale)))
 
 
-def _to_jpeg_uri(image: Image.Image) -> str:
+def _to_data_uri(image: Image.Image) -> str:
     buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=90, optimize=True)
+    if image.mode == "RGBA":
+        image.save(buf, format="PNG", optimize=True)
+        mime = "image/png"
+    else:
+        image.save(buf, format="JPEG", quality=90, optimize=True)
+        mime = "image/jpeg"
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{b64}"
+    return f"data:{mime};base64,{b64}"
 
 
 def _comparison_pair(
@@ -55,8 +63,8 @@ def _comparison_pair(
     (e.g. 2000×2800). Displaying those at width:100% causes a ~1px vertical
     drift; resizing both to the same box removes that.
     """
-    original = _load_rgb(original_path)
-    upscaled = _load_rgb(upscaled_path)
+    original = _load_image(original_path)
+    upscaled = _load_image(upscaled_path)
     if original is None or upscaled is None:
         return None
 
@@ -64,7 +72,7 @@ def _comparison_pair(
     target = _fit_size(upscaled.size, max_w, max_h)
     before = original.resize(target, Image.Resampling.LANCZOS)
     after = upscaled.resize(target, Image.Resampling.LANCZOS)
-    return _to_jpeg_uri(before), _to_jpeg_uri(after), target
+    return _to_data_uri(before), _to_data_uri(after), target
 
 
 def render_comparison_slider(

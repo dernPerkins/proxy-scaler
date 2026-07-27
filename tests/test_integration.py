@@ -142,3 +142,68 @@ def test_cli_writes_outputs_with_mocks(tmp_path, monkeypatch):
     assert "Dion_Bahamuts_Dominant-FIN-376-front-swinir-800dpi.png" in names
     assert "Bahamut_Warden_of_Light-FIN-376-back-swinir-800dpi.png" in names
     assert len(names) == 3
+
+
+def test_cli_preserves_alpha_through_resize_and_save(tmp_path, monkeypatch):
+    """An RGBA upscale result should survive _resize_to_dpi/_write_dpi_variant intact."""
+    deck = tmp_path / "deck.txt"
+    deck.write_text("1 Sol Ring (c21) 263\n", encoding="utf-8")
+    out = tmp_path / "out"
+    cache = tmp_path / "cache"
+
+    from PIL import Image
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(10, 20, 30)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    monkeypatch.setattr(ScryfallClient, "resolve", lambda self, e: (SOL_RING, []))
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+    )
+
+    # 16x16 RGBA "upscale result": opaque except an 8x8 transparent corner.
+    fake_upscaled = Image.new("RGBA", (16, 16), color=(40, 50, 60, 255))
+    for x in range(8):
+        for y in range(8):
+            fake_upscaled.putpixel((x, y), (0, 0, 0, 0))
+
+    class FakeUpscaler:
+        def __init__(self, model="swinir", scale=4, weights_dir="weights", **_kw):
+            from proxy_scaler.upscale import UpscaleModel
+
+            self.model_id = UpscaleModel(model) if isinstance(model, str) else model
+            self.scale = scale
+
+        def upscale(self, image):
+            from proxy_scaler.upscale import UpscaleResult
+
+            return UpscaleResult(image=fake_upscaled, device="gpu")
+
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", FakeUpscaler)
+
+    rc = main(
+        [
+            str(deck),
+            "-o",
+            str(out),
+            "--cache-dir",
+            str(cache),
+            "--dpi",
+            "800",
+            "--model",
+            "swinir",
+        ]
+    )
+    assert rc == 0
+
+    names = list(out.glob("*.png"))
+    assert len(names) == 1
+    with Image.open(names[0]) as im:
+        assert im.mode == "RGBA"
+        assert im.size == (2000, 2800)
+        # Deep inside the scaled-up transparent corner.
+        assert im.getpixel((100, 100))[3] < 10
+        # Deep inside the opaque region on the far side.
+        assert im.getpixel((1900, 2700))[3] > 245

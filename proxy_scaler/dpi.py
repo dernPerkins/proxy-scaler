@@ -35,7 +35,16 @@ def resolve_dpi_targets(
     *,
     dpi: int = DEFAULT_DPI,
     all_dpis: bool = False,
+    dpi_targets: list[int] | None = None,
 ) -> list[int]:
+    if dpi_targets is not None:
+        selected = sorted(set(dpi_targets))
+        invalid = [d for d in selected if d not in DPI_OPTIONS]
+        if invalid:
+            raise ValueError(f"DPI must be one of {DPI_OPTIONS}, got {invalid}")
+        if not selected:
+            raise ValueError("At least one target DPI must be selected.")
+        return selected
     if all_dpis:
         return list(DPI_OPTIONS)
     if dpi not in DPI_OPTIONS:

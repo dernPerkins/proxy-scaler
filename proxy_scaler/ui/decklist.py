@@ -20,7 +20,11 @@ from proxy_scaler.pipeline import (
     regenerate_face,
 )
 from proxy_scaler.ui.compare import open_comparison_dialog
-from proxy_scaler.ui.projects import settings_from_session, persist_decklist_widgets
+from proxy_scaler.ui.projects import (
+    selected_dpi_targets,
+    settings_from_session,
+    persist_decklist_widgets,
+)
 from proxy_scaler.upscale import UpscaleModel
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,20 +83,26 @@ def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
     try:
         with Image.open(path) as im:
             full_w, full_h = im.size
-            rgb = im.convert("RGB")
-            if max(rgb.size) > max_edge:
-                rgb.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+            has_alpha = im.mode in ("RGBA", "LA")
+            preview = im.convert("RGBA") if has_alpha else im.convert("RGB")
+            if max(preview.size) > max_edge:
+                preview.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
-            rgb.save(buf, format="JPEG", quality=82, optimize=True)
+            if has_alpha:
+                preview.save(buf, format="PNG", optimize=True)
+                mime = "image/png"
+            else:
+                preview.save(buf, format="JPEG", quality=82, optimize=True)
+                mime = "image/jpeg"
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         st.markdown(
-            f'<img src="data:image/jpeg;base64,{b64}" '
+            f'<img src="data:{mime};base64,{b64}" '
             f'loading="lazy" decoding="async" '
             f'style="width:100%;height:auto;display:block;" '
             f'alt="{path.name}" />',
             unsafe_allow_html=True,
         )
-        st.caption(f"preview {rgb.size[0]}×{rgb.size[1]} (file {full_w}×{full_h})")
+        st.caption(f"preview {preview.size[0]}×{preview.size[1]} (file {full_w}×{full_h})")
     except OSError as exc:
         st.warning(f"Could not load {path.name}: {exc}")
 
@@ -285,19 +295,11 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                 "RealESRNet reduces hallucination; Real-ESRGAN is faster/sharper."
             ),
         )
-        st.checkbox(
-            "Generate all DPIs (600 + 800 + 1200)",
-            key="all_dpis",
-            help="One upscale pass family per face, then resize to each target DPI.",
-        )
-        st.radio(
-            "Target DPI",
-            options=list(DPI_OPTIONS),
-            format_func=lambda d: f"{d} DPI",
-            horizontal=True,
-            key="dpi",
-            disabled=bool(st.session_state.all_dpis),
-        )
+        st.write("Target DPI")
+        dpi_cols = st.columns(len(DPI_OPTIONS))
+        for col, d in zip(dpi_cols, DPI_OPTIONS):
+            with col:
+                st.checkbox(f"{d} DPI", key=f"dpi_{d}")
         st.slider(
             "Cards / comparisons per page",
             min_value=1,
@@ -319,6 +321,13 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             st.session_state.gallery_page = 0
             st.rerun()
 
+        delete_generated_notes = st.session_state.get("_delete_generated_notes")
+        if delete_generated_notes is not None:
+            for note in delete_generated_notes:
+                st.write(note)
+            st.success("Generated data cleared.")
+            st.session_state._delete_generated_notes = None
+
         st.caption("Deletes output/ + imgcache/ on disk (keeps model weights).")
         confirm_delete = st.checkbox("Confirm delete generated data")
         if st.button(
@@ -332,14 +341,36 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             )
             st.session_state.gallery = []
             st.session_state.gallery_page = 0
-            for note in notes:
+            # Stashed and shown on the next run — a message written right
+            # before st.rerun() gets discarded before it's ever visible.
+            st.session_state._delete_generated_notes = notes
+            st.rerun()
+
+        clear_all_notes = st.session_state.get("_clear_all_notes")
+        if clear_all_notes is not None:
+            for note in clear_all_notes:
                 st.write(note)
-            st.success("Generated data cleared.")
+            st.success("All projects cleared — app reset to a clean slate.")
+            st.session_state._clear_all_notes = None
+
+        st.caption(
+            "Deletes every saved project and all generated images/cache — "
+            "a full reset. Settings above are kept as-is."
+        )
+        confirm_clear_all = st.checkbox("Confirm clear all projects")
+        if st.button(
+            "Clear all projects",
+            type="primary",
+            disabled=not confirm_clear_all,
+        ):
+            # Deferred to apply_pending_project_actions(): project_name is a
+            # widget-bound key already instantiated earlier in this run
+            # (render_project_bar), so it can't be written to directly here.
+            st.session_state._pending_clear_all = True
             st.rerun()
 
     model = st.session_state.model
-    all_dpis = bool(st.session_state.all_dpis)
-    dpi = int(st.session_state.dpi)
+    dpi_targets = selected_dpi_targets()
     page_size = int(st.session_state.page_size)
     skip_existing = bool(st.session_state.skip_existing)
     output_dir = Path(st.session_state.output_dir)
@@ -426,15 +457,13 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
         entries = parse_decklist_text(st.session_state.decklist_text)
         if not entries:
             status.error("No card entries found in the decklist.")
+        elif not dpi_targets:
+            status.error("Select at least one target DPI.")
         else:
             st.session_state.gallery = []
             st.session_state.gallery_page = 0
             lines: list[str] = []
-            target_msg = (
-                "all DPIs (600/800/1200)"
-                if all_dpis
-                else f"{dpi} DPI"
-            )
+            target_msg = "/".join(str(d) for d in dpi_targets) + " DPI"
             status.info(
                 f"Parsed {len(entries)} line(s) with {model} @ {target_msg}. "
                 "Comparisons appear as each finishes…"
@@ -463,8 +492,7 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                 result = process_entries(
                     entries,
                     output_dir=output_dir,
-                    dpi=dpi,
-                    all_dpis=all_dpis,
+                    dpi_targets=dpi_targets,
                     model=model,
                     cache_dir=cache_dir,
                     weights_dir=weights_dir,

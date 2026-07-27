@@ -8,6 +8,7 @@ import pytest
 
 from proxy_scaler.db import (
     ProjectSettings,
+    delete_all_projects,
     delete_project,
     init_db,
     list_projects,
@@ -29,8 +30,7 @@ def test_save_load_round_trip(db_path: Path) -> None:
     deck = "1 Sol Ring (c21) 263\n1 Lightning Bolt\n"
     settings = ProjectSettings(
         model="realesrnet",
-        dpi=1200,
-        all_dpis=True,
+        dpi_targets=[600, 1200],
         page_size=4,
         skip_existing=False,
         output_dir="/tmp/out",
@@ -73,8 +73,7 @@ def test_save_load_round_trip(db_path: Path) -> None:
     assert loaded.name == "Test Deck"
     assert loaded.import_decklist_text == deck
     assert loaded.settings.model == "realesrnet"
-    assert loaded.settings.dpi == 1200
-    assert loaded.settings.all_dpis is True
+    assert loaded.settings.dpi_targets == [600, 1200]
     assert loaded.settings.page_size == 4
     assert loaded.settings.skip_existing is False
     assert loaded.settings.output_dir == "/tmp/out"
@@ -110,7 +109,7 @@ def test_upsert_replaces_cards_and_gallery(db_path: Path) -> None:
     pid2 = save_project(
         "Upsert",
         import_decklist_text="1 Lightning Bolt (lea) 161\n",
-        settings=ProjectSettings(dpi=600),
+        settings=ProjectSettings(dpi_targets=[600]),
         gallery=[
             {
                 "scryfall_id": "b",
@@ -132,7 +131,7 @@ def test_upsert_replaces_cards_and_gallery(db_path: Path) -> None:
     assert pid2 == pid
     loaded = load_project(pid, db_path=db_path)
     assert "Lightning Bolt" in loaded.import_decklist_text
-    assert loaded.settings.dpi == 600
+    assert loaded.settings.dpi_targets == [600]
     assert len(loaded.gallery) == 1
     assert loaded.gallery[0]["scryfall_id"] == "b"
 
@@ -163,6 +162,72 @@ def test_delete_cascades(db_path: Path) -> None:
     assert list_projects(db_path) == []
     with pytest.raises(ValueError, match="not found"):
         load_project(pid, db_path=db_path)
+
+
+def test_delete_all_projects_cascades(db_path: Path) -> None:
+    pid_a = save_project(
+        "First",
+        import_decklist_text="1 Sol Ring (c21) 263\n",
+        settings=ProjectSettings(),
+        gallery=[
+            {
+                "scryfall_id": "a",
+                "face_index": None,
+                "face_name": "Sol Ring",
+                "card_name": "Sol Ring",
+                "set_code": "c21",
+                "collector_number": "263",
+                "model": "swinir",
+                "dpi": 800,
+                "out_path": "/o/a.png",
+                "original_path": "/c/a.png",
+                "png_url": "",
+            }
+        ],
+        db_path=db_path,
+    )
+    pid_b = save_project(
+        "Second",
+        import_decklist_text="1 Lightning Bolt (lea) 161\n",
+        settings=ProjectSettings(),
+        gallery=[
+            {
+                "scryfall_id": "b",
+                "face_index": None,
+                "face_name": "Lightning Bolt",
+                "card_name": "Lightning Bolt",
+                "set_code": "lea",
+                "collector_number": "161",
+                "model": "swinir",
+                "dpi": 800,
+                "out_path": "/o/b.png",
+                "original_path": "/c/b.png",
+                "png_url": "",
+            }
+        ],
+        db_path=db_path,
+    )
+    assert len(list_projects(db_path)) == 2
+
+    delete_all_projects(db_path=db_path)
+
+    assert list_projects(db_path) == []
+    with pytest.raises(ValueError, match="not found"):
+        load_project(pid_a, db_path=db_path)
+    with pytest.raises(ValueError, match="not found"):
+        load_project(pid_b, db_path=db_path)
+
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM project_cards").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM project_gallery_items").fetchone()[0]
+            == 0
+        )
+    finally:
+        conn.close()
 
 
 def test_save_requires_name(db_path: Path) -> None:

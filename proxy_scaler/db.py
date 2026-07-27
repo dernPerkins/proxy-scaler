@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS projects (
     dpi INTEGER NOT NULL DEFAULT 800,
     all_dpis INTEGER NOT NULL DEFAULT 0,
     dpi_row_mode INTEGER NOT NULL DEFAULT 0,
+    dpi_targets TEXT NOT NULL DEFAULT '800',
     page_size INTEGER NOT NULL DEFAULT 6,
     skip_existing INTEGER NOT NULL DEFAULT 1,
     output_dir TEXT NOT NULL DEFAULT '',
@@ -107,8 +108,7 @@ class ProjectSummary:
 @dataclass
 class ProjectSettings:
     model: str = UpscaleModel.SWINIR.value
-    dpi: int = DEFAULT_DPI
-    all_dpis: bool = False
+    dpi_targets: list[int] = field(default_factory=lambda: [DEFAULT_DPI])
     page_size: int = 6
     skip_existing: bool = True
     output_dir: str = ""
@@ -116,10 +116,10 @@ class ProjectSettings:
     weights_dir: str = ""
 
     def to_row(self) -> dict[str, Any]:
+        targets = sorted(set(self.dpi_targets)) or [DEFAULT_DPI]
         return {
             "model": self.model,
-            "dpi": int(self.dpi),
-            "all_dpis": 1 if self.all_dpis else 0,
+            "dpi_targets": ",".join(str(d) for d in targets),
             "page_size": int(self.page_size),
             "skip_existing": 1 if self.skip_existing else 0,
             "output_dir": self.output_dir,
@@ -130,10 +130,16 @@ class ProjectSettings:
     @classmethod
     def from_row(cls, row: sqlite3.Row | dict[str, Any]) -> ProjectSettings:
         get = row.__getitem__
+        raw_targets = str(get("dpi_targets") or "").strip()
+        if raw_targets:
+            targets = sorted(
+                {int(t) for t in raw_targets.split(",") if t.strip().isdigit()}
+            )
+        else:
+            targets = []
         return cls(
             model=str(get("model") or UpscaleModel.SWINIR.value),
-            dpi=int(get("dpi") or DEFAULT_DPI),
-            all_dpis=bool(get("all_dpis")),
+            dpi_targets=targets or [DEFAULT_DPI],
             page_size=int(get("page_size") or 6),
             skip_existing=bool(get("skip_existing")),
             output_dir=str(get("output_dir") or ""),
@@ -173,14 +179,22 @@ def init_db(db_path: Path | str | None = None) -> Path:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Additive migrations for existing databases."""
-    cols = {
+    gallery_cols = {
         row[1]
         for row in conn.execute("PRAGMA table_info(project_gallery_items)").fetchall()
     }
-    if "device" not in cols:
+    if "device" not in gallery_cols:
         conn.execute(
             "ALTER TABLE project_gallery_items "
             "ADD COLUMN device TEXT NOT NULL DEFAULT 'unknown'"
+        )
+
+    project_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()
+    }
+    if "dpi_targets" not in project_cols:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN dpi_targets TEXT NOT NULL DEFAULT '800'"
         )
 
 
@@ -198,6 +212,13 @@ def list_projects(db_path: Path | str | None = None) -> list[ProjectSummary]:
 def delete_project(project_id: int, db_path: Path | str | None = None) -> None:
     with connect(db_path) as conn:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+
+
+def delete_all_projects(db_path: Path | str | None = None) -> None:
+    """Delete every project; cards/gallery rows cascade via foreign keys."""
+    with connect(db_path) as conn:
+        conn.execute("DELETE FROM projects")
         conn.commit()
 
 
@@ -416,17 +437,16 @@ def save_project(
             cur = conn.execute(
                 """
                 INSERT INTO projects (
-                    name, import_decklist_text, model, dpi, all_dpis,
+                    name, import_decklist_text, model, dpi_targets,
                     page_size, skip_existing, output_dir, cache_dir, weights_dir,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
                     import_decklist_text,
                     s["model"],
-                    s["dpi"],
-                    s["all_dpis"],
+                    s["dpi_targets"],
                     s["page_size"],
                     s["skip_existing"],
                     s["output_dir"],
@@ -450,7 +470,7 @@ def save_project(
                 UPDATE projects SET
                     name = ?,
                     import_decklist_text = ?,
-                    model = ?, dpi = ?, all_dpis = ?,
+                    model = ?, dpi_targets = ?,
                     page_size = ?, skip_existing = ?,
                     output_dir = ?, cache_dir = ?, weights_dir = ?,
                     updated_at = ?
@@ -460,8 +480,7 @@ def save_project(
                     name,
                     import_decklist_text,
                     s["model"],
-                    s["dpi"],
-                    s["all_dpis"],
+                    s["dpi_targets"],
                     s["page_size"],
                     s["skip_existing"],
                     s["output_dir"],
