@@ -26,10 +26,15 @@ DEFAULT_OUTPUT = str(ROOT / "output")
 DEFAULT_CACHE = str(ROOT / "imgcache")
 DEFAULT_WEIGHTS = str(ROOT / "weights")
 DEFAULT_PAGE_SIZE = 6
+# Conservative starting point for memory-hungry transformer models (HAT,
+# DAT-based) to avoid GPU OOM on a ~12GB card — 0 = disabled (single
+# full-image pass), which is fine for the lighter CNN-based models.
+DEFAULT_TILE_SIZE = 384
 
-# Bound to Streamlit widgets in the Decklist tab. When that tab is unmounted
-# (user switches to PDF), Streamlit drops these keys — keep mirrors in
-# `_persist_*` so we can restore them.
+# Widgets bound to a tab's own sidebar section. Only the active tab's sidebar
+# section renders each run (see render_decklist_tab/render_pdf_tab), so when
+# a tab isn't active Streamlit drops its widget keys — keep mirrors in
+# `_persist_*` so we can restore them before the next run's widgets bind.
 _DECKLIST_WIDGET_KEYS = (
     "decklist_text",
     "model",
@@ -41,6 +46,13 @@ _DECKLIST_WIDGET_KEYS = (
     "output_dir",
     "cache_dir",
     "weights_dir",
+    "tile_size",
+)
+_PDF_WIDGET_KEYS = (
+    "pdf_image_dpi",
+    "pdf_orientation",
+    "pdf_paper",
+    "pdf_show_cut_lines",
 )
 
 
@@ -48,19 +60,37 @@ def _persist_key(key: str) -> str:
     return f"_persist_{key}"
 
 
-def persist_decklist_widgets() -> None:
-    """Snapshot widget values so they survive Decklist tab unmount."""
-    for key in _DECKLIST_WIDGET_KEYS:
+def _persist_widget_keys(keys: tuple[str, ...]) -> None:
+    for key in keys:
         if key in st.session_state:
             st.session_state[_persist_key(key)] = st.session_state[key]
 
 
-def restore_decklist_widgets() -> None:
-    """Rehydrate widget keys wiped when leaving the Decklist tab."""
-    for key in _DECKLIST_WIDGET_KEYS:
+def _restore_widget_keys(keys: tuple[str, ...]) -> None:
+    for key in keys:
         mirror = _persist_key(key)
         if key not in st.session_state and mirror in st.session_state:
             st.session_state[key] = st.session_state[mirror]
+
+
+def persist_decklist_widgets() -> None:
+    """Snapshot widget values so they survive the Decklist sidebar unmount."""
+    _persist_widget_keys(_DECKLIST_WIDGET_KEYS)
+
+
+def restore_decklist_widgets() -> None:
+    """Rehydrate widget keys wiped when the Decklist sidebar isn't rendered."""
+    _restore_widget_keys(_DECKLIST_WIDGET_KEYS)
+
+
+def persist_pdf_widgets() -> None:
+    """Snapshot widget values so they survive the PDF sidebar unmount."""
+    _persist_widget_keys(_PDF_WIDGET_KEYS)
+
+
+def restore_pdf_widgets() -> None:
+    """Rehydrate widget keys wiped when the PDF sidebar isn't rendered."""
+    _restore_widget_keys(_PDF_WIDGET_KEYS)
 
 
 def _session_setting(key: str, default=None):
@@ -92,6 +122,10 @@ def ensure_session_defaults() -> None:
         "output_dir": DEFAULT_OUTPUT,
         "cache_dir": DEFAULT_CACHE,
         "weights_dir": DEFAULT_WEIGHTS,
+        # 0 = "not manually set" — decklist.py falls back to
+        # DEFAULT_TILE_SIZE automatically for memory-hungry models only,
+        # leaving already-working lighter models untouched.
+        "tile_size": 0,
         "save_as_name": "",
         "confirm_delete_project": False,
         "_pending_load_id": None,
@@ -100,14 +134,23 @@ def ensure_session_defaults() -> None:
         "_pending_clear_all": False,
         "_clear_all_notes": None,
         "_delete_generated_notes": None,
+        "pdf_image_dpi": 1200,
+        "pdf_orientation": "Portrait",
+        "pdf_paper": "A4",
+        "pdf_show_cut_lines": True,
+        "_pdf_bytes": None,
+        "_pdf_filename": None,
     }
-    # Restore widget keys Streamlit cleared on the previous (PDF) run before
-    # applying first-time defaults — otherwise defaults would mask the mirror.
+    # Restore widget keys Streamlit cleared on the previous run (whichever
+    # tab's sidebar wasn't rendered) before applying first-time defaults —
+    # otherwise defaults would mask the mirror.
     restore_decklist_widgets()
+    restore_pdf_widgets()
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
     persist_decklist_widgets()
+    persist_pdf_widgets()
 
 
 def maybe_load_last_project() -> None:
@@ -167,6 +210,7 @@ def settings_from_session() -> ProjectSettings:
         output_dir=str(_session_setting("output_dir", DEFAULT_OUTPUT)),
         cache_dir=str(_session_setting("cache_dir", DEFAULT_CACHE)),
         weights_dir=str(_session_setting("weights_dir", DEFAULT_WEIGHTS)),
+        tile_size=int(_session_setting("tile_size", 0)),
     )
 
 
@@ -190,6 +234,7 @@ def apply_loaded_project(loaded) -> None:
         st.session_state.cache_dir = s.cache_dir
     if s.weights_dir:
         st.session_state.weights_dir = s.weights_dir
+    st.session_state.tile_size = s.tile_size
     persist_decklist_widgets()
 
 
@@ -209,6 +254,7 @@ def reset_to_new_project() -> None:
     st.session_state.output_dir = DEFAULT_OUTPUT
     st.session_state.cache_dir = DEFAULT_CACHE
     st.session_state.weights_dir = DEFAULT_WEIGHTS
+    st.session_state.tile_size = 0
     persist_decklist_widgets()
 
 

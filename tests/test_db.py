@@ -36,6 +36,7 @@ def test_save_load_round_trip(db_path: Path) -> None:
         output_dir="/tmp/out",
         cache_dir="/tmp/cache",
         weights_dir="/tmp/weights",
+        tile_size=384,
     )
     gallery = [
         {
@@ -77,6 +78,7 @@ def test_save_load_round_trip(db_path: Path) -> None:
     assert loaded.settings.page_size == 4
     assert loaded.settings.skip_existing is False
     assert loaded.settings.output_dir == "/tmp/out"
+    assert loaded.settings.tile_size == 384
     assert len(loaded.gallery) == 1
     assert loaded.gallery[0]["scryfall_id"] == "abc-123"
     assert loaded.gallery[0]["set_code"] == "c21"
@@ -289,6 +291,18 @@ def test_parse_output_filename() -> None:
     assert hyphen_collector is not None
     assert hyphen_collector["set_code"] == "plst"
     assert hyphen_collector["collector_number"] == "DDG-14"
+
+    # Underscored model values (e.g. from the newer model options) must not
+    # be truncated by a shorter alternative sharing a prefix
+    # (realesrgan_anime vs realesrgan).
+    anime = parse_output_filename("Sol_Ring-C21-263-realesrgan_anime-800dpi.png")
+    assert anime is not None
+    assert anime["model"] == "realesrgan_anime"
+    assert anime["dpi"] == 800
+
+    hat = parse_output_filename("Sol_Ring-C21-263-hat-1200dpi.png")
+    assert hat is not None
+    assert hat["model"] == "hat"
 
 
 def test_load_recovers_gallery_from_output(db_path: Path, tmp_path: Path) -> None:

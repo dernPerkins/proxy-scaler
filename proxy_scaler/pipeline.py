@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -122,6 +123,23 @@ class FaceResult:
         )
 
 
+def group_by_face(items: list[FaceResult]) -> list[tuple[str, list[FaceResult]]]:
+    """Group results by card face (same printing/face/model) for multi-DPI rows."""
+    groups: dict[str, list[FaceResult]] = defaultdict(list)
+    order: list[str] = []
+    for item in items:
+        identity = item.scryfall_id or f"{item.set_code}/{item.collector_number}"
+        key = f"{identity}:{item.face_index}:{item.face_label}:{item.model}"
+        if key not in groups:
+            order.append(key)
+        groups[key].append(item)
+    result: list[tuple[str, list[FaceResult]]] = []
+    for key in order:
+        face_items = sorted(groups[key], key=lambda x: x.dpi)
+        result.append((key, face_items))
+    return result
+
+
 FaceDoneCallback = Callable[[FaceResult], None]
 
 
@@ -213,11 +231,14 @@ def _upscalers_for_targets(
     model_id: UpscaleModel,
     dpi_targets: list[int],
     weights_dir: Path,
+    tile_size: int = 0,
 ) -> dict[int, Upscaler]:
     """Build unique Upscaler instances keyed by native scale."""
     needed = {native_scale_for_dpi(d, model_id) for d in dpi_targets}
     return {
-        scale: Upscaler(model=model_id, scale=scale, weights_dir=weights_dir)
+        scale: Upscaler(
+            model=model_id, scale=scale, weights_dir=weights_dir, tile=tile_size
+        )
         for scale in sorted(needed)
     }
 
@@ -230,6 +251,7 @@ def regenerate_face(
     weights_dir: Path = Path("weights"),
     dpi: int | None = None,
     model: UpscaleModel | str | None = None,
+    tile_size: int = 0,
     on_progress: ProgressCallback | None = None,
 ) -> FaceResult:
     """Force re-upscale one face at a target DPI (bypasses upscale cache)."""
@@ -238,7 +260,9 @@ def regenerate_face(
     native = native_scale_for_dpi(dpi, model_id)
     output_dir = output_dir or item.out_path.parent
     client = ScryfallClient()
-    upscaler = Upscaler(model=model_id, scale=native, weights_dir=weights_dir)
+    upscaler = Upscaler(
+        model=model_id, scale=native, weights_dir=weights_dir, tile=tile_size
+    )
 
     def log(msg: str) -> None:
         if on_progress:
@@ -300,6 +324,7 @@ def process_entries(
     weights_dir: Path = Path("weights"),
     skip_existing: bool = False,
     force: bool = False,
+    tile_size: int = 0,
     on_progress: ProgressCallback | None = None,
     on_face_done: FaceDoneCallback | None = None,
 ) -> PipelineResult:
@@ -308,6 +333,10 @@ def process_entries(
     `dpi_targets`, when given, selects an arbitrary DPI subset directly
     (used by the UI's independent checkboxes) and takes priority over the
     single-`dpi`/`all_dpis` combo (used by the CLI's --dpi/--all-dpis flags).
+
+    `tile_size` (0 = disabled) processes each face in overlapping tiles
+    instead of one full-image forward pass — needed to keep memory-hungry
+    transformer models (HAT, DAT-based) within a GPU's VRAM budget.
     """
     result = PipelineResult()
     if not entries:
@@ -315,7 +344,9 @@ def process_entries(
 
     model_id = parse_model(model)
     dpi_targets = resolve_dpi_targets(dpi=dpi, all_dpis=all_dpis, dpi_targets=dpi_targets)
-    upscalers = _upscalers_for_targets(model_id, dpi_targets, Path(weights_dir))
+    upscalers = _upscalers_for_targets(
+        model_id, dpi_targets, Path(weights_dir), tile_size
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     client = ScryfallClient()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import io
-from collections import defaultdict
 from pathlib import Path
 
 import streamlit as st
@@ -16,11 +15,13 @@ from proxy_scaler.dpi import DPI_OPTIONS
 from proxy_scaler.pipeline import (
     FaceResult,
     clear_generated_data,
+    group_by_face,
     process_entries,
     regenerate_face,
 )
 from proxy_scaler.ui.compare import open_comparison_dialog
 from proxy_scaler.ui.projects import (
+    DEFAULT_TILE_SIZE,
     selected_dpi_targets,
     settings_from_session,
     persist_decklist_widgets,
@@ -31,6 +32,21 @@ ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_PATH = ROOT / "cards.example.txt"
 
 _PREVIEW_MAX_EDGE = 600
+
+# Transformer/attention-heavy architectures that can OOM a ~12GB GPU on a
+# full-image forward pass — the lighter CNN-based models don't need tiling.
+_HEAVY_MODELS = frozenset(
+    {UpscaleModel.ILLUSTRATIONJANAI, UpscaleModel.ULTRASHARP_V2, UpscaleModel.HAT}
+)
+
+
+def _effective_tile_size(model_id: UpscaleModel, tile_size_setting: int) -> int:
+    """0 (not manually set) auto-falls-back to DEFAULT_TILE_SIZE for heavy
+    models only, leaving already-working lighter models untouched. An
+    explicit non-zero setting always wins, regardless of model."""
+    if tile_size_setting > 0:
+        return tile_size_setting
+    return DEFAULT_TILE_SIZE if model_id in _HEAVY_MODELS else 0
 
 
 def _gallery_items() -> list[FaceResult]:
@@ -56,23 +72,6 @@ def _upsert_gallery(item: FaceResult) -> None:
             items[i] = item.to_dict()
             return
     items.append(item.to_dict())
-
-
-def _group_by_face(items: list[FaceResult]) -> list[tuple[str, list[FaceResult]]]:
-    """Group results by card face for multi-DPI rows."""
-    groups: dict[str, list[FaceResult]] = defaultdict(list)
-    order: list[str] = []
-    for item in items:
-        identity = item.scryfall_id or f"{item.set_code}/{item.collector_number}"
-        key = f"{identity}:{item.face_index}:{item.face_label}:{item.model}"
-        if key not in groups:
-            order.append(key)
-        groups[key].append(item)
-    result: list[tuple[str, list[FaceResult]]] = []
-    for key in order:
-        face_items = sorted(groups[key], key=lambda x: x.dpi)
-        result.append((key, face_items))
-    return result
 
 
 def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
@@ -217,7 +216,7 @@ def _draw_gallery(
             st.write("No images yet. Paste a list and click Generate.")
             return
 
-        entries = _group_by_face(items)
+        entries = group_by_face(items)
         unit = "card face(s)"
 
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
@@ -275,52 +274,12 @@ def _draw_gallery(
             _render_dpi_row(face_items, show_regen=show_regen)
 
 
-def render_decklist_tab(*, draw_gallery: bool = True) -> None:
-    """Generate / gallery / regenerate UI (settings from session_state keys).
-
-    Always mount widgets (even when another tab is visible) so Streamlit does
-    not wipe keyed settings. Set draw_gallery=False to skip heavy image
-    previews while this tab is hidden.
-    """
+def render_global_sidebar_actions() -> None:
+    """Destructive actions always shown at the bottom of the sidebar,
+    regardless of which tab is active. Call this AFTER both tabs render so
+    it lands below their tab-specific settings sections in the sidebar
+    (Streamlit appends to st.sidebar in call order)."""
     with st.sidebar:
-        st.header("Settings")
-        model_values = [m.value for m in UpscaleModel]
-        st.selectbox(
-            "Upscale model",
-            options=model_values,
-            format_func=lambda v: UpscaleModel(v).label,
-            key="model",
-            help=(
-                "SwinIR is fidelity-first (default). "
-                "RealESRNet reduces hallucination; Real-ESRGAN is faster/sharper."
-            ),
-        )
-        st.write("Target DPI")
-        dpi_cols = st.columns(len(DPI_OPTIONS))
-        for col, d in zip(dpi_cols, DPI_OPTIONS):
-            with col:
-                st.checkbox(f"{d} DPI", key=f"dpi_{d}")
-        st.slider(
-            "Cards / comparisons per page",
-            min_value=1,
-            max_value=20,
-            key="page_size",
-            help=(
-                "Only this many entries are rendered at once (lazy gallery). "
-                "Images also use browser loading=lazy and a downscaled preview."
-            ),
-        )
-        st.checkbox("Skip existing output files", key="skip_existing")
-        st.text_input("Output directory", key="output_dir")
-        st.text_input("Cache directory", key="cache_dir")
-        st.text_input("Weights directory", key="weights_dir")
-
-        st.divider()
-        if st.button("Clear gallery view"):
-            st.session_state.gallery = []
-            st.session_state.gallery_page = 0
-            st.rerun()
-
         delete_generated_notes = st.session_state.get("_delete_generated_notes")
         if delete_generated_notes is not None:
             for note in delete_generated_notes:
@@ -369,6 +328,78 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             st.session_state._pending_clear_all = True
             st.rerun()
 
+
+def render_decklist_tab(*, draw_gallery: bool = True) -> None:
+    """Generate / gallery / regenerate UI (settings from session_state keys).
+
+    Always mount widgets (even when another tab is visible) so Streamlit does
+    not wipe keyed settings. Set draw_gallery=False to skip heavy image
+    previews while this tab is hidden.
+    """
+    if draw_gallery:
+        with st.sidebar:
+            st.header("Settings")
+            model_values = [m.value for m in UpscaleModel]
+            st.selectbox(
+                "Upscale model",
+                options=model_values,
+                format_func=lambda v: UpscaleModel(v).label,
+                key="model",
+                help=(
+                    "SwinIR is fidelity-first (default). "
+                    "RealESRNet reduces hallucination; Real-ESRGAN is faster/sharper."
+                ),
+            )
+            st.number_input(
+                "Tile size (0 = auto)",
+                min_value=0,
+                max_value=2000,
+                step=32,
+                key="tile_size",
+                help=(
+                    "Processes each card in overlapping tiles instead of one "
+                    "full-image pass, to avoid GPU out-of-memory errors. "
+                    "0 = automatic: stays off for lighter models, and falls "
+                    f"back to {DEFAULT_TILE_SIZE}px for memory-hungry ones "
+                    "(IllustrationJaNai/UltraSharpV2/HAT). Set explicitly to "
+                    "override — lower if you still hit OOM, higher for more "
+                    "speed/quality if you have headroom."
+                ),
+            )
+            _effective_preview = _effective_tile_size(
+                UpscaleModel(st.session_state.model), int(st.session_state.tile_size)
+            )
+            if _effective_preview:
+                st.caption(
+                    f"Effective tile size: {_effective_preview}px"
+                    + (" (auto)" if int(st.session_state.tile_size) == 0 else "")
+                )
+            st.write("Target DPI")
+            dpi_cols = st.columns(len(DPI_OPTIONS))
+            for col, d in zip(dpi_cols, DPI_OPTIONS):
+                with col:
+                    st.checkbox(f"{d} DPI", key=f"dpi_{d}")
+            st.slider(
+                "Cards / comparisons per page",
+                min_value=1,
+                max_value=20,
+                key="page_size",
+                help=(
+                    "Only this many entries are rendered at once (lazy gallery). "
+                    "Images also use browser loading=lazy and a downscaled preview."
+                ),
+            )
+            st.checkbox("Skip existing output files", key="skip_existing")
+            st.text_input("Output directory", key="output_dir")
+            st.text_input("Cache directory", key="cache_dir")
+            st.text_input("Weights directory", key="weights_dir")
+
+            st.divider()
+            if st.button("Clear gallery view"):
+                st.session_state.gallery = []
+                st.session_state.gallery_page = 0
+                st.rerun()
+
     model = st.session_state.model
     dpi_targets = selected_dpi_targets()
     page_size = int(st.session_state.page_size)
@@ -376,6 +407,9 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     output_dir = Path(st.session_state.output_dir)
     cache_dir = Path(st.session_state.cache_dir)
     weights_dir = Path(st.session_state.weights_dir)
+    tile_size = _effective_tile_size(
+        UpscaleModel(model), int(st.session_state.tile_size)
+    )
 
     if st.button("Load example deck (full)"):
         if EXAMPLE_PATH.is_file():
@@ -414,6 +448,11 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             status.info(
                 f"Regenerating {match.face_name} with {model} @ {target_dpi} DPI…"
             )
+            # Keep the existing gallery visible while this one face
+            # regenerates instead of leaving gallery_slot blank for the
+            # whole (multi-second) upscale — mirrors the batch Generate
+            # flow's pattern below.
+            _draw_gallery(gallery_slot, show_regen=False, page_size=page_size)
             lines: list[str] = []
 
             def on_progress(msg: str) -> None:
@@ -428,6 +467,7 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                     weights_dir=weights_dir,
                     dpi=target_dpi,
                     model=model,
+                    tile_size=tile_size,
                     on_progress=on_progress,
                 )
                 _upsert_gallery(updated)
@@ -497,6 +537,7 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                     cache_dir=cache_dir,
                     weights_dir=weights_dir,
                     skip_existing=skip_existing,
+                    tile_size=tile_size,
                     on_progress=on_progress_gen,
                     on_face_done=on_face_done,
                 )

@@ -3,6 +3,29 @@
 from proxy_scaler.decklist import parse_line, parse_decklist
 from proxy_scaler.pipeline import output_filename
 from proxy_scaler.scryfall import expand_faces, _names_compatible
+from proxy_scaler.ui.decklist import _effective_tile_size
+from proxy_scaler.upscale import UpscaleModel
+
+
+def test_effective_tile_size_heavy_model_auto_default():
+    # Not manually set (0) — heavy models fall back to DEFAULT_TILE_SIZE.
+    assert _effective_tile_size(UpscaleModel.HAT, 0) > 0
+    assert _effective_tile_size(UpscaleModel.ILLUSTRATIONJANAI, 0) > 0
+    assert _effective_tile_size(UpscaleModel.ULTRASHARP_V2, 0) > 0
+
+
+def test_effective_tile_size_light_model_stays_off_by_default():
+    # Not manually set (0) — lighter models are left untouched (no
+    # regression risk for models that already work fine).
+    assert _effective_tile_size(UpscaleModel.SWINIR, 0) == 0
+    assert _effective_tile_size(UpscaleModel.REALESRGAN, 0) == 0
+    assert _effective_tile_size(UpscaleModel.REALESRNET, 0) == 0
+    assert _effective_tile_size(UpscaleModel.REALESRGAN_ANIME, 0) == 0
+
+
+def test_effective_tile_size_explicit_override_always_wins():
+    assert _effective_tile_size(UpscaleModel.SWINIR, 256) == 256
+    assert _effective_tile_size(UpscaleModel.HAT, 512) == 512
 
 
 def test_parse_exact_printing():

@@ -21,7 +21,9 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "proxy_scaler.d
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
     r"(?:-(?P<face>front|back))?"
-    r"-(?P<model>swinir|realesrnet|realesrgan)"
+    # realesrgan_anime listed before realesrgan since it's a prefix of it.
+    r"-(?P<model>swinir|realesrnet|realesrgan_anime|realesrgan"
+    r"|illustrationjanai|ultrasharp_v2|hat)"
     r"-(?P<dpi>\d+)dpi\.png$",
     re.IGNORECASE,
 )
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS projects (
     output_dir TEXT NOT NULL DEFAULT '',
     cache_dir TEXT NOT NULL DEFAULT '',
     weights_dir TEXT NOT NULL DEFAULT '',
+    tile_size INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -114,6 +117,7 @@ class ProjectSettings:
     output_dir: str = ""
     cache_dir: str = ""
     weights_dir: str = ""
+    tile_size: int = 0
 
     def to_row(self) -> dict[str, Any]:
         targets = sorted(set(self.dpi_targets)) or [DEFAULT_DPI]
@@ -125,6 +129,7 @@ class ProjectSettings:
             "output_dir": self.output_dir,
             "cache_dir": self.cache_dir,
             "weights_dir": self.weights_dir,
+            "tile_size": int(self.tile_size),
         }
 
     @classmethod
@@ -145,6 +150,7 @@ class ProjectSettings:
             output_dir=str(get("output_dir") or ""),
             cache_dir=str(get("cache_dir") or ""),
             weights_dir=str(get("weights_dir") or ""),
+            tile_size=int(get("tile_size") or 0),
         )
 
 
@@ -195,6 +201,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "dpi_targets" not in project_cols:
         conn.execute(
             "ALTER TABLE projects ADD COLUMN dpi_targets TEXT NOT NULL DEFAULT '800'"
+        )
+    if "tile_size" not in project_cols:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN tile_size INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -439,8 +449,8 @@ def save_project(
                 INSERT INTO projects (
                     name, import_decklist_text, model, dpi_targets,
                     page_size, skip_existing, output_dir, cache_dir, weights_dir,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tile_size, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -452,6 +462,7 @@ def save_project(
                     s["output_dir"],
                     s["cache_dir"],
                     s["weights_dir"],
+                    s["tile_size"],
                     now,
                     now,
                 ),
@@ -473,6 +484,7 @@ def save_project(
                     model = ?, dpi_targets = ?,
                     page_size = ?, skip_existing = ?,
                     output_dir = ?, cache_dir = ?, weights_dir = ?,
+                    tile_size = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -486,6 +498,7 @@ def save_project(
                     s["output_dir"],
                     s["cache_dir"],
                     s["weights_dir"],
+                    s["tile_size"],
                     now,
                     project_id,
                 ),

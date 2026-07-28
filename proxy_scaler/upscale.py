@@ -18,6 +18,10 @@ class UpscaleModel(str, Enum):
     REALESRGAN = "realesrgan"
     REALESRNET = "realesrnet"
     SWINIR = "swinir"
+    REALESRGAN_ANIME = "realesrgan_anime"
+    ILLUSTRATIONJANAI = "illustrationjanai"
+    ULTRASHARP_V2 = "ultrasharp_v2"
+    HAT = "hat"
 
     @property
     def label(self) -> str:
@@ -25,11 +29,27 @@ class UpscaleModel(str, Enum):
             UpscaleModel.REALESRGAN: "Real-ESRGAN (fast, sharper / more invented detail)",
             UpscaleModel.REALESRNET: "RealESRNet (less hallucination, better for text)",
             UpscaleModel.SWINIR: "SwinIR classical (fidelity-first, slower)",
+            UpscaleModel.REALESRGAN_ANIME: (
+                "Real-ESRGAN Anime (official, tuned for illustrated/non-photo art)"
+            ),
+            UpscaleModel.ILLUSTRATIONJANAI: (
+                "IllustrationJaNai (trained on digital art/illustrations, not photos)"
+            ),
+            UpscaleModel.ULTRASHARP_V2: (
+                "UltraSharpV2 (general-purpose, strong on illustration/artwork)"
+            ),
+            UpscaleModel.HAT: "HAT (newer transformer architecture, high fidelity)",
         }[self]
 
     @property
     def supported_scales(self) -> tuple[int, ...]:
-        if self is UpscaleModel.REALESRNET:
+        if self in (
+            UpscaleModel.REALESRNET,
+            UpscaleModel.REALESRGAN_ANIME,
+            UpscaleModel.ILLUSTRATIONJANAI,
+            UpscaleModel.ULTRASHARP_V2,
+            UpscaleModel.HAT,
+        ):
             return (4,)
         return (2, 4)
 
@@ -61,6 +81,32 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
     (UpscaleModel.SWINIR, 4): _WeightSpec(
         "001_classicalSR_DF2K_s64w8_SwinIR-M_x4.pth",
         "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/001_classicalSR_DF2K_s64w8_SwinIR-M_x4.pth",
+    ),
+    (UpscaleModel.REALESRGAN_ANIME, 4): _WeightSpec(
+        "RealESRGAN_x4plus_anime_6B.pth",
+        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+    ),
+    # CC-BY-NC-SA-4.0 (non-commercial). Original author hosts on Google
+    # Drive only, which our simple streaming downloader can't handle for
+    # files this size — using a third-party HuggingFace mirror instead.
+    # If this mirror ever disappears, search for
+    # "4x_IllustrationJaNai_V1_DAT2" on huggingface.co for a replacement.
+    (UpscaleModel.ILLUSTRATIONJANAI, 4): _WeightSpec(
+        "4x_IllustrationJaNai_V1_DAT2_190k.pth",
+        "https://huggingface.co/tomjackson2023/upscale_models/resolve/main/4x_IllustrationJaNai_V1_DAT2_190k.pth",
+    ),
+    # CC-BY-NC-SA-4.0 (non-commercial). Officially hosted by the creator.
+    (UpscaleModel.ULTRASHARP_V2, 4): _WeightSpec(
+        "4x-UltraSharpV2.safetensors",
+        "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors",
+    ),
+    # Official author hosts on Google Drive only (same limitation as
+    # IllustrationJaNai above) — using a third-party HuggingFace mirror.
+    # If this mirror disappears, search for "Real_HAT_GAN_SRx4" on
+    # huggingface.co for a replacement.
+    (UpscaleModel.HAT, 4): _WeightSpec(
+        "Real_HAT_GAN_SRx4.pth",
+        "https://huggingface.co/jaideepsingh/upscale_models/resolve/main/HAT/Real_HAT_GAN_SRx4.pth",
     ),
 }
 
@@ -160,7 +206,7 @@ class Upscaler:
         scale: int = 4,
         weights_dir: Path | str = "weights",
         tile: int = 0,
-        tile_pad: int = 10,
+        tile_pad: int = 32,
     ) -> None:
         self.model_id = parse_model(model)
         if scale not in self.model_id.supported_scales:

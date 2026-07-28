@@ -129,6 +129,51 @@ def test_upscale_no_alpha_source_stays_rgb(tmp_path) -> None:
     assert result.image.size == (64, 64)
 
 
+def test_tiled_inference_matches_full_pass(tmp_path) -> None:
+    """Tiled inference should reconstruct the same result as a single
+    full-image pass for a deterministic, per-pixel-independent 'model' —
+    validates the tile/pad/crop/stitch math has no off-by-one gaps or
+    double-counted overlap, for both an exact tile multiple and a
+    non-multiple (ragged last tile) image size."""
+    up = Upscaler(model=UpscaleModel.SWINIR, scale=2, weights_dir=tmp_path, tile=8, tile_pad=2)
+    up._device = torch.device("cpu")
+
+    def fake_descriptor(tensor: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.interpolate(tensor, scale_factor=2, mode="nearest")
+
+    torch.manual_seed(0)
+    for h, w in [(16, 16), (20, 14)]:  # exact multiple, then ragged
+        img = torch.rand(1, 3, h, w)
+        full = fake_descriptor(img)
+        tiled = up._tiled_inference(fake_descriptor, img)
+        assert tiled.shape == full.shape
+        assert torch.allclose(tiled, full, atol=1e-5)
+
+
+def test_run_inference_tiling_gate(tmp_path) -> None:
+    """Tiling only kicks in when tile>0 AND the image exceeds the tile size."""
+    up = Upscaler(model=UpscaleModel.SWINIR, scale=2, weights_dir=tmp_path, tile=8)
+    up._device = torch.device("cpu")
+    small = torch.rand(1, 3, 6, 6)  # smaller than tile=8
+    large = torch.rand(1, 3, 20, 20)
+
+    with patch.object(up, "_tiled_inference") as tiled_mock:
+        up._run_inference(MagicMock(return_value=torch.rand(1, 3, 12, 12)), small)
+        tiled_mock.assert_not_called()
+
+        up._run_inference(MagicMock(), large)
+        tiled_mock.assert_called_once()
+
+    # tile=0 (disabled) never tiles regardless of image size.
+    up_off = Upscaler(model=UpscaleModel.SWINIR, scale=2, weights_dir=tmp_path, tile=0)
+    up_off._device = torch.device("cpu")
+    with patch.object(up_off, "_tiled_inference") as tiled_mock:
+        descriptor = MagicMock(return_value=torch.rand(1, 3, 40, 40))
+        up_off._run_inference(descriptor, large)
+        tiled_mock.assert_not_called()
+        descriptor.assert_called_once()
+
+
 def test_cache_device_sidecar(tmp_path) -> None:
     png = tmp_path / "x.png"
     png.write_bytes(b"fake")

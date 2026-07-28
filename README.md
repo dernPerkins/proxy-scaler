@@ -19,6 +19,14 @@ Unlike [mpc-scryfall](https://github.com/fediazgon/mpc-scryfall), this tool does
 | `swinir` (default) | Classical SwinIR (DF2K); fidelity-first, slower |
 | `realesrnet` | Less hallucination; often cleaner text/symbols (x4-native) |
 | `realesrgan` | Fast; invents more detail |
+| `realesrgan_anime` | Official Real-ESRGAN variant tuned for illustrated/non-photo art (x4-native) |
+| `illustrationjanai` | Trained on digital art/illustrations rather than photos (x4-native, CC-BY-NC-SA-4.0) |
+| `ultrasharp_v2` | General-purpose DAT model, strong on illustration/artwork (x4-native, CC-BY-NC-SA-4.0) |
+| `hat` | Newer transformer architecture (Hybrid Attention Transformer), high fidelity (x4-native) |
+
+The first three are trained mainly on photographic benchmark datasets. Since
+MTG card art is illustrated, not photographic, the last four are worth trying
+if the photo-trained models introduce artifacts on card art specifically.
 
 ## Target DPI
 
