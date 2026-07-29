@@ -123,19 +123,35 @@ class FaceResult:
         )
 
 
+def face_group_key(item: FaceResult) -> str:
+    """Stable identity for grouping/tracking one card face across DPIs and
+    models. Prefers set_code+collector_number — a stable physical-printing
+    key — over scryfall_id. Items reconstructed from disk
+    (db.py::scan_gallery_from_output) never have a real scryfall_id, so
+    keying on it first would silently split a freshly-generated variant and
+    a disk-recovered variant of the exact same card into two separate
+    groups — and, via pdf_layout.py's match_quantities(), into two
+    duplicate physical print slots for the same card.
+    """
+    if item.set_code and item.collector_number:
+        identity = f"{item.set_code.lower()}/{item.collector_number}"
+    else:
+        identity = item.scryfall_id or "unknown"
+    return f"{identity}:{item.face_index}:{item.face_label}"
+
+
 def group_by_face(items: list[FaceResult]) -> list[tuple[str, list[FaceResult]]]:
-    """Group results by card face (same printing/face/model) for multi-DPI rows."""
+    """Group results by card face (same printing/face) for multi-DPI/model rows."""
     groups: dict[str, list[FaceResult]] = defaultdict(list)
     order: list[str] = []
     for item in items:
-        identity = item.scryfall_id or f"{item.set_code}/{item.collector_number}"
-        key = f"{identity}:{item.face_index}:{item.face_label}:{item.model}"
+        key = face_group_key(item)
         if key not in groups:
             order.append(key)
         groups[key].append(item)
     result: list[tuple[str, list[FaceResult]]] = []
     for key in order:
-        face_items = sorted(groups[key], key=lambda x: x.dpi)
+        face_items = sorted(groups[key], key=lambda x: (x.dpi, x.model))
         result.append((key, face_items))
     return result
 
@@ -243,26 +259,26 @@ def _upscalers_for_targets(
     }
 
 
-def regenerate_face(
+def regenerate_face_multi(
     item: FaceResult,
     *,
+    dpi_targets: list[int],
     output_dir: Path | None = None,
     cache_dir: Path = Path("imgcache"),
     weights_dir: Path = Path("weights"),
-    dpi: int | None = None,
     model: UpscaleModel | str | None = None,
     tile_size: int = 0,
     on_progress: ProgressCallback | None = None,
-) -> FaceResult:
-    """Force re-upscale one face at a target DPI (bypasses upscale cache)."""
-    dpi = dpi if dpi is not None else item.dpi
+) -> list[FaceResult]:
+    """Force re-upscale one face at multiple target DPIs (bypasses upscale
+    cache), reusing a single upscale pass per distinct native scale — e.g.
+    800 and 1200 DPI both resolving to native x4 only run the model once."""
+    if not dpi_targets:
+        return []
     model_id = parse_model(model) if model is not None else parse_model(item.model)
-    native = native_scale_for_dpi(dpi, model_id)
     output_dir = output_dir or item.out_path.parent
     client = ScryfallClient()
-    upscaler = Upscaler(
-        model=model_id, scale=native, weights_dir=weights_dir, tile=tile_size
-    )
+    upscalers = _upscalers_for_targets(model_id, dpi_targets, Path(weights_dir), tile_size)
 
     def log(msg: str) -> None:
         if on_progress:
@@ -279,9 +295,10 @@ def regenerate_face(
     )
     if item.original_path.is_file():
         png_bytes = item.original_path.read_bytes()
+        dpi_label = ",".join(str(d) for d in sorted(set(dpi_targets)))
         log(
-            f"Regenerating {dpi} DPI with {model_id.value} "
-            f"(native x{native}) from {item.original_path.name}"
+            f"Regenerating {dpi_label} DPI with {model_id.value} "
+            f"from {item.original_path.name}"
         )
     else:
         log(f"Re-downloading {item.png_url}")
@@ -290,26 +307,64 @@ def regenerate_face(
     original_path = _save_original(
         png_bytes, cache_dir, face.scryfall_id, face.face_index
     )
-    raw = load_or_upscale(
-        png_bytes=png_bytes,
-        upscaler=upscaler,
-        cache_dir=cache_dir,
-        scryfall_id=face.scryfall_id,
-        face_index=face.face_index,
-        force=True,
-    )
-    result = _write_dpi_variant(
-        face=face,
-        raw=raw.image,
-        original_path=original_path,
+
+    raw_by_scale: dict[int, Image.Image] = {}
+    device_by_scale: dict[int, str] = {}
+    results: list[FaceResult] = []
+    for target_dpi in sorted(set(dpi_targets)):
+        native = native_scale_for_dpi(target_dpi, model_id)
+        if native not in raw_by_scale:
+            upscaled = load_or_upscale(
+                png_bytes=png_bytes,
+                upscaler=upscalers[native],
+                cache_dir=cache_dir,
+                scryfall_id=face.scryfall_id,
+                face_index=face.face_index,
+                force=True,
+            )
+            raw_by_scale[native] = upscaled.image
+            device_by_scale[native] = upscaled.device
+
+        result = _write_dpi_variant(
+            face=face,
+            raw=raw_by_scale[native],
+            original_path=original_path,
+            output_dir=output_dir,
+            model_id=model_id,
+            dpi=target_dpi,
+            native_scale=native,
+            device=device_by_scale[native],
+        )
+        log(f"  regenerated {result.out_path} ({result.out_path.stat().st_size} bytes)")
+        results.append(result)
+
+    return results
+
+
+def regenerate_face(
+    item: FaceResult,
+    *,
+    output_dir: Path | None = None,
+    cache_dir: Path = Path("imgcache"),
+    weights_dir: Path = Path("weights"),
+    dpi: int | None = None,
+    model: UpscaleModel | str | None = None,
+    tile_size: int = 0,
+    on_progress: ProgressCallback | None = None,
+) -> FaceResult:
+    """Force re-upscale one face at a target DPI (bypasses upscale cache)."""
+    dpi = dpi if dpi is not None else item.dpi
+    results = regenerate_face_multi(
+        item,
+        dpi_targets=[dpi],
         output_dir=output_dir,
-        model_id=model_id,
-        dpi=dpi,
-        native_scale=native,
-        device=raw.device,
+        cache_dir=cache_dir,
+        weights_dir=weights_dir,
+        model=model,
+        tile_size=tile_size,
+        on_progress=on_progress,
     )
-    log(f"  regenerated {result.out_path} ({result.out_path.stat().st_size} bytes)")
-    return result
+    return results[0]
 
 
 def process_entries(

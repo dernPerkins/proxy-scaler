@@ -371,6 +371,90 @@ def scan_gallery_from_output(
         )
     return gallery
 
+def _gallery_item_key(item: dict[str, Any]) -> tuple:
+    """Identity for de-duplicating gallery item dicts by physical variant
+    (printing + face + model + dpi) — independent of scryfall_id/paths, so
+    a DB-loaded entry and a disk-scanned entry for the same file compare
+    equal."""
+    return (
+        (item.get("set_code") or "").lower(),
+        str(item.get("collector_number") or ""),
+        item.get("face_index"),
+        item.get("face_label"),
+        item.get("model"),
+        int(item.get("dpi") or 0),
+    )
+
+
+def _face_identity(item: dict[str, Any]) -> tuple:
+    """Identity for one physical card face, independent of DPI/model —
+    matches group_by_face()'s (set/collector preferred over scryfall_id)
+    grouping in pipeline.py, so a donor found here really is the same face."""
+    return (
+        (item.get("set_code") or "").lower(),
+        str(item.get("collector_number") or ""),
+        item.get("face_index"),
+        item.get("face_label"),
+    )
+
+
+def _merge_disk_gallery(
+    gallery: list[dict[str, Any]],
+    entries: list[DeckEntry],
+    output_dir: str | None,
+    cache_dir: str | None,
+) -> list[dict[str, Any]]:
+    """Add any on-disk output PNGs not already represented in `gallery`.
+
+    A project's saved gallery can lag behind what's actually on disk — e.g.
+    an interrupted generate run, or files written in an earlier/different
+    session before this project was last saved — leaving real output files
+    that this project's own record doesn't know about. Scanning disk on
+    every load/save (not just when the gallery is completely empty, as
+    before) keeps the gallery in sync with reality regardless of how it got
+    out of date, without needing a heavier "generated images are shared
+    across projects" redesign.
+
+    A disk-scanned item can't know its scryfall_id/original_path/png_url —
+    a filename alone doesn't encode them — so it's backfilled here from any
+    other already-known variant of the same physical face (e.g. a DB-loaded
+    entry at a different DPI): they share the same original card image, so
+    reusing those fields is exactly correct, not a guess. Without this, a
+    disk-recovered variant that happens to render as a face's "first"
+    (lowest DPI) item shows its Original column as missing even though a
+    sibling variant has a perfectly good original on disk.
+    """
+    if not output_dir:
+        return gallery
+    disk_gallery = scan_gallery_from_output(output_dir, entries, cache_dir=cache_dir)
+    if not disk_gallery:
+        return gallery
+
+    donors: dict[tuple, dict[str, str]] = {}
+    for item in gallery:
+        if item.get("scryfall_id") or item.get("original_path") or item.get("png_url"):
+            donors.setdefault(
+                _face_identity(item),
+                {
+                    "scryfall_id": item.get("scryfall_id") or "",
+                    "original_path": item.get("original_path") or "",
+                    "png_url": item.get("png_url") or "",
+                },
+            )
+
+    known = {_gallery_item_key(g) for g in gallery}
+    merged = list(gallery)
+    for item in disk_gallery:
+        item_key = _gallery_item_key(item)
+        if item_key not in known:
+            donor = donors.get(_face_identity(item))
+            if donor:
+                item = {**item, **{k: v for k, v in donor.items() if v}}
+            merged.append(item)
+            known.add(item_key)
+    return merged
+
+
 def _match_card_id(
     cards: list[tuple[int, DeckEntry]],
     item: dict[str, Any],
@@ -419,14 +503,13 @@ def save_project(
     now = _utc_now()
     s = settings.to_row()
 
-    # If the session gallery is empty (e.g. saved before generate, or after a
-    # refresh), recover metadata from PNGs already on disk.
-    if not gallery and settings.output_dir:
-        gallery = scan_gallery_from_output(
-            settings.output_dir,
-            entries,
-            cache_dir=settings.cache_dir or None,
-        )
+    # Fold in any on-disk output PNGs this project's own gallery doesn't
+    # already know about (e.g. saved before generate, after a refresh, an
+    # interrupted run, or files from an earlier session) — see
+    # _merge_disk_gallery for why this isn't just an "empty gallery" check.
+    gallery = _merge_disk_gallery(
+        gallery, entries, settings.output_dir, settings.cache_dir or None
+    )
 
     with connect(db_path) as conn:
         if project_id is not None:
@@ -613,12 +696,12 @@ def load_project(
 
     settings = ProjectSettings.from_row(row)
     import_text = row["import_decklist_text"] or ""
-    if not gallery and settings.output_dir:
-        gallery = scan_gallery_from_output(
-            settings.output_dir,
-            parse_decklist_text(import_text),
-            cache_dir=settings.cache_dir or None,
-        )
+    gallery = _merge_disk_gallery(
+        gallery,
+        parse_decklist_text(import_text),
+        settings.output_dir,
+        settings.cache_dir or None,
+    )
 
     return LoadedProject(
         id=int(row["id"]),

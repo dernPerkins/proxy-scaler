@@ -11,9 +11,11 @@ from PIL import Image
 from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.pdf_layout import (
     BLEED_MM,
+    CARD_WIDTH_MM,
     MM_PER_IN,
+    PAGE_SIZE_PRESETS_MM,
     PrintUnit,
-    _cut_positions,
+    _card_trim_edges,
     add_bleed,
     build_pdf,
     expand_print_slots,
@@ -23,6 +25,19 @@ from proxy_scaler.pdf_layout import (
     resolve_page_layout,
 )
 from proxy_scaler.pipeline import FaceResult
+
+
+def _a4_portrait_layout(**overrides):
+    """3x3 grid on A4 portrait with default bleed/spacing — the app's own
+    defaults — as a base for geometry tests."""
+    kwargs = dict(
+        page_w_mm=PAGE_SIZE_PRESETS_MM["a4"][0],
+        page_h_mm=PAGE_SIZE_PRESETS_MM["a4"][1],
+        cols=3,
+        rows=3,
+    )
+    kwargs.update(overrides)
+    return resolve_page_layout(**kwargs)
 
 
 def _face(
@@ -56,7 +71,7 @@ def _face(
 # --- Geometry -----------------------------------------------------------
 
 
-def test_page_layout_all_combos_fit() -> None:
+def test_page_layout_letter_a4_defaults_fit() -> None:
     expected = {
         ("letter", "landscape"): (279.4, 215.9, 8.7, 17.05),
         ("letter", "portrait"): (215.9, 279.4, 9.7, 3.35),
@@ -64,7 +79,11 @@ def test_page_layout_all_combos_fit() -> None:
         ("a4", "portrait"): (210.0, 297.0, 6.75, 12.15),
     }
     for (paper, orientation), (page_w, page_h, margin_x, margin_y) in expected.items():
-        layout = resolve_page_layout(orientation=orientation, paper=paper)
+        w, h = PAGE_SIZE_PRESETS_MM[paper]
+        if orientation == "landscape":
+            w, h = h, w
+        cols, rows = (4, 2) if orientation == "landscape" else (3, 3)
+        layout = resolve_page_layout(page_w_mm=w, page_h_mm=h, cols=cols, rows=rows)
         assert layout.page_w_mm == pytest.approx(page_w, abs=0.01)
         assert layout.page_h_mm == pytest.approx(page_h, abs=0.01)
         assert layout.margin_x_mm == pytest.approx(margin_x, abs=0.01)
@@ -73,24 +92,70 @@ def test_page_layout_all_combos_fit() -> None:
         assert layout.margin_y_mm > 0
 
 
+def test_page_layout_rejects_nonsense_but_not_overflow() -> None:
+    with pytest.raises(ValueError):
+        resolve_page_layout(page_w_mm=0, page_h_mm=297, cols=3, rows=3)
+    with pytest.raises(ValueError):
+        resolve_page_layout(page_w_mm=210, page_h_mm=297, cols=0, rows=3)
+    with pytest.raises(ValueError):
+        resolve_page_layout(page_w_mm=210, page_h_mm=297, cols=3, rows=3, bleed_mm=-1)
+
+    # A grid that doesn't fit the page must NOT raise — a deliberate
+    # position offset can intentionally push content near/past an edge
+    # (e.g. to work around a specific printer's feed quirk); the caller
+    # decides whether to warn, not resolve_page_layout itself.
+    layout = resolve_page_layout(page_w_mm=50, page_h_mm=50, cols=5, rows=5)
+    assert layout.grid_w_mm > layout.page_w_mm
+    assert layout.grid_h_mm > layout.page_h_mm
+
+
+def test_page_layout_spacing_increases_cell_stride() -> None:
+    layout = _a4_portrait_layout(spacing_x_mm=3.0, spacing_y_mm=2.0)
+    bled_w = CARD_WIDTH_MM + 2 * BLEED_MM
+    assert layout.cell_w_mm == pytest.approx(bled_w + 3.0)
+    assert layout.bled_card_w_mm == pytest.approx(bled_w)  # card's own drawn size unaffected
+
+
+def test_page_layout_offset_shifts_margins() -> None:
+    base = _a4_portrait_layout()
+    shifted = _a4_portrait_layout(offset_x_mm=5.0, offset_y_mm=-9.0)
+    assert shifted.margin_x_mm == pytest.approx(base.margin_x_mm + 5.0)
+    assert shifted.margin_y_mm == pytest.approx(base.margin_y_mm - 9.0)
+
+
 def test_fpdf2_page_size_matches_layout() -> None:
     for paper in ("letter", "a4"):
-        for orientation in ("landscape", "portrait"):
-            layout = resolve_page_layout(orientation=orientation, paper=paper)
-            pdf = FPDF(orientation=layout.orientation, unit="mm", format=layout.paper)
+        for cols, rows in ((3, 3), (4, 2)):
+            w, h = PAGE_SIZE_PRESETS_MM[paper]
+            layout = resolve_page_layout(page_w_mm=w, page_h_mm=h, cols=cols, rows=rows)
+            pdf = FPDF(orientation="portrait", unit="mm", format=(layout.page_w_mm, layout.page_h_mm))
             assert abs(pdf.w - layout.page_w_mm) < 0.01
             assert abs(pdf.h - layout.page_h_mm) < 0.01
 
 
-def test_cut_positions() -> None:
-    assert _cut_positions(2, 10, 1, 0) == [1, 10, 19]
+def test_card_trim_edges() -> None:
+    # 2 cards, cell=10, bleed=1, origin=0 — card 0's own edges at 1/9, card
+    # 1's own edges at 11/19: 2mm apart at the interior gap, not coincident
+    # at the shared cell boundary (10).
+    assert _card_trim_edges(2, 10, 1, 0) == [1, 9, 11, 19]
+
+
+def test_card_trim_edges_interior_gap_is_two_bleeds_wide() -> None:
+    """Regression guard: adjacent cards' facing trim edges must be
+    2*BLEED_MM apart (two distinct cut lines), never coincident at one
+    shared line down the middle of the gap."""
+    layout = _a4_portrait_layout()
+    xs = _card_trim_edges(layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm)
+    # xs holds 2 edges per card, e.g. [c0_left, c0_right, c1_left, c1_right, ...]
+    interior_gap = xs[2] - xs[1]
+    assert interior_gap == pytest.approx(2 * BLEED_MM)
 
 
 def test_draw_cut_marks_uses_both_colors() -> None:
     from proxy_scaler.pdf_layout import _MARK_COLOR, _draw_cut_marks
 
-    layout = resolve_page_layout(orientation="portrait", paper="letter")
-    pdf = FPDF(orientation=layout.orientation, unit="mm", format=layout.paper)
+    layout = _a4_portrait_layout()
+    pdf = FPDF(orientation="portrait", unit="mm", format=(layout.page_w_mm, layout.page_h_mm))
     pdf.add_page()
     _draw_cut_marks(pdf, layout)  # should run both the outer-line and mark
     # blocks without error; final draw color is the green mark color (drawn
@@ -214,6 +279,27 @@ def test_match_quantities_name_fallback() -> None:
     assert units[0].quantity == 4
 
 
+def test_match_quantities_exact_printing_entry_not_double_counted_by_name_fallback() -> None:
+    """A decklist with both an exact printing of a card AND a name-only
+    line for the same card name (resolving to a *different* printing, e.g.
+    Scryfall's default pick) must give each printing quantity 1, not let
+    the exact-printing entry's quantity leak into the other printing's
+    fuzzy name match — this is exactly the app's own default decklist text
+    (Sol Ring (c21) 263 + a bare "Sol Ring" line)."""
+    gallery = [
+        _face("sol-c21-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+        _face("sol-msc-id", None, "Sol Ring", "Sol Ring", "msc", "211", 800),
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
+        DeckEntry(quantity=1, name="Sol Ring"),
+    ]
+    units, unmatched = match_quantities(entries, gallery)
+    assert unmatched == []
+    assert len(units) == 2
+    assert all(u.quantity == 1 for u in units)
+
+
 def test_match_quantities_unmatched_defaults_to_one() -> None:
     gallery = [_face("y-id", None, "Counterspell", "Counterspell", "lea", "55", 800)]
     units, unmatched = match_quantities([], gallery)
@@ -247,6 +333,60 @@ def test_match_quantities_preferred_dpi_used_when_available() -> None:
     units, _ = match_quantities(entries, gallery, preferred_dpi=800)
     assert units[0].best.dpi == 800
     assert units[0].dpi_fallback is False
+
+
+def test_match_quantities_preferred_model_used_when_available() -> None:
+    gallery = [
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="hat"),
+        _face(
+            "sol-id",
+            None,
+            "Sol Ring",
+            "Sol Ring",
+            "c21",
+            "263",
+            800,
+            model="ultrasharp_v2",
+        ),
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, _ = match_quantities(
+        entries, gallery, preferred_dpi=800, preferred_model="ultrasharp_v2"
+    )
+    assert units[0].best.model == "ultrasharp_v2"
+
+    units_hat, _ = match_quantities(
+        entries, gallery, preferred_dpi=800, preferred_model="hat"
+    )
+    assert units_hat[0].best.model == "hat"
+
+
+def test_match_quantities_no_duplicate_units_across_models() -> None:
+    """A face generated under two models must still yield exactly one
+    PrintUnit — previously group_by_face split by model, causing double
+    physical copies of the same face in the PDF."""
+    gallery = [
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="hat"),
+        _face(
+            "sol-id",
+            None,
+            "Sol Ring",
+            "Sol Ring",
+            "c21",
+            "263",
+            800,
+            model="ultrasharp_v2",
+        ),
+    ]
+    entries = [
+        DeckEntry(quantity=3, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, unmatched = match_quantities(entries, gallery)
+    assert unmatched == []
+    assert len(units) == 1
+    assert units[0].quantity == 3
 
 
 def test_match_quantities_preferred_dpi_falls_back_when_missing() -> None:
@@ -296,10 +436,39 @@ def test_build_pdf_smoke(tmp_path) -> None:
         png_url="",
         dpi=800,
     )
-    layout = resolve_page_layout(orientation="landscape", paper="letter")
+    w, h = PAGE_SIZE_PRESETS_MM["letter"]
+    layout = resolve_page_layout(page_w_mm=h, page_h_mm=w, cols=4, rows=2)
     pages = paginate([face], layout.cards_per_page)
-    pdf_bytes = build_pdf(pages, layout=layout, show_cut_lines=True)
+    pdf_bytes = build_pdf(pages, layout=layout, export_dpi=800, show_cut_lines=True)
 
     assert pdf_bytes.startswith(b"%PDF")
     assert pdf_bytes.rstrip().endswith(b"%%EOF")
     assert len(pdf_bytes) > 500
+
+
+def test_build_pdf_export_dpi_resizes_source(tmp_path) -> None:
+    """PDF export DPI is independent of the source image's own dpi — a
+    higher export_dpi should embed visibly more pixel data (and therefore
+    produce a larger file) than a lower one, from the same source image."""
+    img = Image.new("RGBA", (200, 280), (10, 20, 30, 255))
+    out_path = tmp_path / "card.png"
+    img.save(out_path, format="PNG")
+
+    face = FaceResult(
+        out_path=out_path,
+        original_path=out_path,
+        scryfall_id="abc",
+        face_index=None,
+        face_name="Test Card",
+        card_name="Test Card",
+        set_code="tst",
+        collector_number="1",
+        png_url="",
+        dpi=800,
+    )
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    pages = paginate([face], layout.cards_per_page)
+
+    small = build_pdf(pages, layout=layout, export_dpi=800, show_cut_lines=False)
+    large = build_pdf(pages, layout=layout, export_dpi=1200, show_cut_lines=False)
+    assert len(large) > len(small)

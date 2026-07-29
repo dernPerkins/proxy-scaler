@@ -15,9 +15,11 @@ from proxy_scaler.dpi import DPI_OPTIONS
 from proxy_scaler.pipeline import (
     FaceResult,
     clear_generated_data,
+    face_group_key,
     group_by_face,
     process_entries,
     regenerate_face,
+    regenerate_face_multi,
 )
 from proxy_scaler.ui.compare import open_comparison_dialog
 from proxy_scaler.ui.projects import (
@@ -32,6 +34,11 @@ ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_PATH = ROOT / "cards.example.txt"
 
 _PREVIEW_MAX_EDGE = 600
+# Fixed grid width per card face (Original + variants); rows wrap instead of
+# stretching to fill the width, so a sparse row (e.g. Original + 1 variant)
+# stays left-aligned at a consistent image size rather than rendering two
+# oversized images to fill 2 wide columns.
+_IMAGES_PER_ROW = 4
 
 # Transformer/attention-heavy architectures that can OOM a ~12GB GPU on a
 # full-image forward pass — the lighter CNN-based models don't need tiling.
@@ -70,8 +77,40 @@ def _upsert_gallery(item: FaceResult) -> None:
         existing_item = FaceResult.from_dict(existing)
         if _item_key(existing_item) == key:
             items[i] = item.to_dict()
-            return
-    items.append(item.to_dict())
+            break
+    else:
+        items.append(item.to_dict())
+    # A freshly generated/regenerated face should appear immediately (live
+    # progress feedback) rather than sitting behind the click-to-load gate
+    # meant for images that were already on disk before this page opened.
+    st.session_state.loaded_faces.add(face_group_key(item))
+
+
+@st.cache_data(show_spinner=False)
+def _encode_preview(
+    path_str: str, _mtime: float, max_edge: int
+) -> tuple[str, str, int, int, int, int]:
+    """Downscale + base64-encode one preview. Cached on (path, mtime,
+    max_edge) so reruns triggered by unrelated widgets (e.g. changing the
+    sidebar model) don't re-decode/re-encode every image in the gallery —
+    that PIL work was the actual cost behind the visible full-gallery
+    "refresh" on every settings change; identical output also lets
+    Streamlit's frontend skip repainting the <img> tag entirely."""
+    with Image.open(path_str) as im:
+        full_w, full_h = im.size
+        has_alpha = im.mode in ("RGBA", "LA")
+        preview = im.convert("RGBA") if has_alpha else im.convert("RGB")
+        if max(preview.size) > max_edge:
+            preview.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        if has_alpha:
+            preview.save(buf, format="PNG", optimize=True)
+            mime = "image/png"
+        else:
+            preview.save(buf, format="JPEG", quality=82, optimize=True)
+            mime = "image/jpeg"
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return b64, mime, preview.size[0], preview.size[1], full_w, full_h
 
 
 def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
@@ -80,20 +119,8 @@ def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
         st.warning("missing")
         return
     try:
-        with Image.open(path) as im:
-            full_w, full_h = im.size
-            has_alpha = im.mode in ("RGBA", "LA")
-            preview = im.convert("RGBA") if has_alpha else im.convert("RGB")
-            if max(preview.size) > max_edge:
-                preview.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            if has_alpha:
-                preview.save(buf, format="PNG", optimize=True)
-                mime = "image/png"
-            else:
-                preview.save(buf, format="JPEG", quality=82, optimize=True)
-                mime = "image/jpeg"
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        mtime = path.stat().st_mtime
+        b64, mime, pw, ph, full_w, full_h = _encode_preview(str(path), mtime, max_edge)
         st.markdown(
             f'<img src="data:{mime};base64,{b64}" '
             f'loading="lazy" decoding="async" '
@@ -101,7 +128,7 @@ def _lazy_image(path: Path, *, max_edge: int = _PREVIEW_MAX_EDGE) -> None:
             f'alt="{path.name}" />',
             unsafe_allow_html=True,
         )
-        st.caption(f"preview {preview.size[0]}×{preview.size[1]} (file {full_w}×{full_h})")
+        st.caption(f"preview {pw}×{ph} (file {full_w}×{full_h})")
     except OSError as exc:
         st.warning(f"Could not load {path.name}: {exc}")
 
@@ -143,53 +170,97 @@ def _dpi_action_buttons(item: FaceResult, target_dpi: int) -> None:
         st.rerun()
 
 
-def _generate_button(template: FaceResult, target_dpi: int) -> None:
-    """Generate X for a DPI that hasn't been produced yet."""
+def _generate_card_button(template: FaceResult) -> None:
+    """Generate this card face using the sidebar's current model + checked DPIs."""
     if st.button(
-        f"Generate {target_dpi}",
-        key=f"gen-{_item_key(template)}-{target_dpi}",
+        "Generate",
+        key=f"gen-card-{_item_key(template)}",
         use_container_width=True,
+        type="primary",
     ):
-        st.session_state.regen_key = _item_key(template)
-        st.session_state.regen_target_dpi = target_dpi
+        st.session_state.card_regen_key = _item_key(template)
         st.rerun()
 
 
-def _render_dpi_row(face_items: list[FaceResult], *, show_regen: bool) -> None:
-    """Original + one column per DPI target; buttons stack under each image."""
+@st.fragment
+def _render_face_row(
+    group_key: str, face_items: list[FaceResult], *, show_regen: bool
+) -> None:
+    """Header (name/printing + Generate) then one column per existing
+    (dpi, model) variant — images stay behind a click-to-load placeholder
+    until the user asks for this specific face, so opening a gallery full
+    of previously-generated images doesn't block the page on decoding every
+    one of them up front.
+
+    Wrapped as a fragment so clicking "Load images" only reruns this one
+    row instead of the whole app — a full-app st.rerun() resets the
+    browser's scroll position, which on a long gallery makes it look like
+    the click did nothing (the row that loaded is now off-screen). The
+    Generate/Regen/Compare buttons below still call plain st.rerun(), which
+    per Streamlit's fragment semantics still forces a full-app rerun (their
+    handling lives in render_decklist_tab(), outside this fragment) — only
+    the Load-images click needed to change behavior.
+    """
     first = face_items[0]
-    by_dpi = {item.dpi: item for item in face_items}
     label = first.face_name
     if first.face_label:
         label = f"{label} ({first.face_label})"
-    st.markdown(
-        f"**{label}** — `{first.set_code.upper()}/{first.collector_number}` "
-        f"· **{first.model}**"
-    )
-    cols = st.columns(1 + len(DPI_OPTIONS))
-    with cols[0]:
-        st.caption("Original ~300 DPI")
-        _lazy_image(first.original_path)
+    header_label, header_btn = st.columns([5, 1], vertical_alignment="center")
+    with header_label:
+        st.markdown(
+            f"**{label}** — `{first.set_code.upper()}/{first.collector_number}`"
+        )
+    with header_btn:
         if show_regen:
-            _download_button(
-                first.original_path,
-                label="Download original",
-                key=f"dl-orig-{_item_key(first)}",
-            )
-    for col, target_dpi in zip(cols[1:], DPI_OPTIONS):
+            _generate_card_button(first)
+
+    if group_key not in st.session_state.loaded_faces:
+        variants = ", ".join(f"{item.dpi} DPI · {item.model}" for item in face_items)
+        st.caption(f"Original + {len(face_items)} variant(s): {variants}")
+        if show_regen:
+            if st.button(
+                "Load images",
+                key=f"load-{group_key}",
+                icon=":material/image:",
+            ):
+                st.session_state.loaded_faces.add(group_key)
+                st.rerun(scope="fragment")
+        return
+
+    def _render_original(col) -> None:
         with col:
-            item = by_dpi.get(target_dpi)
-            if item is not None:
-                device = (item.device or "unknown").lower()
-                device_bit = {"gpu": "GPU", "cpu": "CPU"}.get(device, "?")
-                st.caption(f"{target_dpi} DPI · {device_bit}")
-                _lazy_image(item.out_path)
-                if show_regen:
-                    _dpi_action_buttons(item, target_dpi)
+            st.caption("Original ~300 DPI")
+            _lazy_image(first.original_path)
+            if show_regen:
+                _download_button(
+                    first.original_path,
+                    label="Download original",
+                    key=f"dl-orig-{_item_key(first)}",
+                )
+
+    def _render_variant(col, item: FaceResult) -> None:
+        with col:
+            device = (item.device or "unknown").lower()
+            device_bit = {"gpu": "GPU", "cpu": "CPU"}.get(device, "?")
+            st.caption(f"{item.dpi} DPI · {item.model} · {device_bit}")
+            _lazy_image(item.out_path)
+            if show_regen:
+                _dpi_action_buttons(item, item.dpi)
+
+    # Fixed 4-wide grid (Original counts as one slot) that wraps to a new
+    # row of columns rather than stretching fewer images to fill the width —
+    # unfilled trailing slots are simply left blank, so a sparse row (e.g.
+    # Original + 1 variant) stays left-aligned with a gap on the right
+    # instead of rendering two oversized images.
+    slots: list[tuple] = [("original", None)] + [("variant", item) for item in face_items]
+    for chunk_start in range(0, len(slots), _IMAGES_PER_ROW):
+        chunk = slots[chunk_start : chunk_start + _IMAGES_PER_ROW]
+        cols = st.columns(_IMAGES_PER_ROW)
+        for col, (kind, item) in zip(cols, chunk):
+            if kind == "original":
+                _render_original(col)
             else:
-                st.caption(f"{target_dpi} DPI · not generated")
-                if show_regen:
-                    _generate_button(first, target_dpi)
+                _render_variant(col, item)
 
 
 def _paginate(entries: list, page: int, page_size: int) -> tuple[list, int]:
@@ -269,9 +340,9 @@ def _draw_gallery(
 
         page_entries, _ = _paginate(entries, page, page_size)
 
-        for _group_key, face_items in page_entries:
+        for group_key, face_items in page_entries:
             st.divider()
-            _render_dpi_row(face_items, show_regen=show_regen)
+            _render_face_row(group_key, face_items, show_regen=show_regen)
 
 
 def render_global_sidebar_actions() -> None:
@@ -434,7 +505,12 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     gallery_slot = st.empty()
 
     # When this tab is hidden, still mount controls/state but skip image work.
-    if not draw_gallery and not run and st.session_state.regen_key is None:
+    if (
+        not draw_gallery
+        and not run
+        and st.session_state.regen_key is None
+        and st.session_state.get("card_regen_key") is None
+    ):
         persist_decklist_widgets()
         return
 
@@ -445,8 +521,15 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
         target_dpi = st.session_state.get("regen_target_dpi")
         if match is not None:
             target_dpi = target_dpi if target_dpi is not None else match.dpi
+            # Redo this exact variant unchanged — its own model/tile size,
+            # not whatever the sidebar currently has selected (a separate
+            # model may be picked there while comparing variants side by
+            # side in the same row).
+            regen_tile_size = _effective_tile_size(
+                UpscaleModel(match.model), int(st.session_state.tile_size)
+            )
             status.info(
-                f"Regenerating {match.face_name} with {model} @ {target_dpi} DPI…"
+                f"Regenerating {match.face_name} with {match.model} @ {target_dpi} DPI…"
             )
             # Keep the existing gallery visible while this one face
             # regenerates instead of leaving gallery_slot blank for the
@@ -466,8 +549,8 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                     cache_dir=cache_dir,
                     weights_dir=weights_dir,
                     dpi=target_dpi,
-                    model=model,
-                    tile_size=tile_size,
+                    model=match.model,
+                    tile_size=regen_tile_size,
                     on_progress=on_progress,
                 )
                 _upsert_gallery(updated)
@@ -492,6 +575,60 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
                 status.error(f"Regenerate failed: {exc}")
         st.session_state.regen_key = None
         st.session_state.regen_target_dpi = None
+
+    card_regen_key = st.session_state.get("card_regen_key")
+    if card_regen_key is not None:
+        items = _gallery_items()
+        match = next((i for i in items if _item_key(i) == card_regen_key), None)
+        if match is not None:
+            if not dpi_targets:
+                status.error("Select at least one target DPI in the sidebar first.")
+            else:
+                target_msg = "/".join(str(d) for d in dpi_targets) + " DPI"
+                status.info(
+                    f"Generating {match.face_name} with {model} @ {target_msg}…"
+                )
+                # Keep the existing gallery visible while this face
+                # generates, mirroring the single-variant Regen flow above.
+                _draw_gallery(gallery_slot, show_regen=False, page_size=page_size)
+                lines = []
+
+                def on_progress_card(msg: str) -> None:
+                    lines.append(msg)
+                    log_box.code("\n".join(lines[-30:]), language="text")
+
+                try:
+                    generated = regenerate_face_multi(
+                        match,
+                        dpi_targets=dpi_targets,
+                        output_dir=output_dir,
+                        cache_dir=cache_dir,
+                        weights_dir=weights_dir,
+                        model=model,
+                        tile_size=tile_size,
+                        on_progress=on_progress_card,
+                    )
+                    for r in generated:
+                        _upsert_gallery(r)
+                    name = (st.session_state.get("project_name") or "").strip()
+                    if name and st.session_state.gallery:
+                        try:
+                            pid = save_project(
+                                name,
+                                import_decklist_text=st.session_state.decklist_text or "",
+                                settings=settings_from_session(),
+                                gallery=list(st.session_state.gallery),
+                                project_id=st.session_state.get("project_id"),
+                            )
+                            st.session_state.project_id = pid
+                        except ValueError:
+                            pass
+                    status.success(
+                        f"Generated {len(generated)} image(s) for {match.face_name}."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status.error(f"Generate failed: {exc}")
+        st.session_state.card_regen_key = None
 
     if run:
         entries = parse_decklist_text(st.session_state.decklist_text)

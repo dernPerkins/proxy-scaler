@@ -325,6 +325,58 @@ def test_load_recovers_gallery_from_output(db_path: Path, tmp_path: Path) -> Non
     assert "Sol_Ring" in loaded.gallery[0]["out_path"]
 
 
+def test_load_merges_on_disk_variant_missing_from_saved_gallery(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """A project's saved gallery can lag behind disk — e.g. an interrupted
+    generate run, or files written before this project's last save. Loading
+    must still surface an on-disk 800dpi file even though the saved
+    gallery only ever recorded the 1200dpi variant (previously this only
+    triggered a disk scan when the whole gallery was empty)."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "Sol_Ring-C21-263-swinir-800dpi.png").write_bytes(b"fake-800")
+    (out / "Sol_Ring-C21-263-swinir-1200dpi.png").write_bytes(b"fake-1200")
+
+    pid = save_project(
+        "Partial",
+        import_decklist_text="1 Sol Ring (c21) 263\n",
+        settings=ProjectSettings(output_dir=str(out)),
+        gallery=[
+            {
+                "scryfall_id": "sol-id",
+                "face_index": None,
+                "face_name": "Sol Ring",
+                "card_name": "Sol Ring",
+                "set_code": "c21",
+                "collector_number": "263",
+                "model": "swinir",
+                "dpi": 1200,
+                "out_path": str(out / "Sol_Ring-C21-263-swinir-1200dpi.png"),
+                "original_path": "/c/x.png",
+                "png_url": "",
+            }
+        ],
+        db_path=db_path,
+    )
+    loaded = load_project(pid, db_path=db_path)
+    dpis = {g["dpi"] for g in loaded.gallery}
+    assert dpis == {800, 1200}
+    # The 1200dpi entry keeps its DB-recorded scryfall_id (not clobbered by
+    # the disk-scanned duplicate, which would have an empty scryfall_id).
+    twelve_hundred = next(g for g in loaded.gallery if g["dpi"] == 1200)
+    assert twelve_hundred["scryfall_id"] == "sol-id"
+    # The disk-recovered 800dpi entry backfills original_path/scryfall_id
+    # from its sibling 1200dpi entry — a filename alone can't tell it where
+    # the cached original lives, but the two variants share the same
+    # original card image, so reusing the sibling's path is correct. Without
+    # this, a UI sorting variants by DPI would show this 800dpi entry first
+    # and its "Original" column would incorrectly say the file is missing.
+    eight_hundred = next(g for g in loaded.gallery if g["dpi"] == 800)
+    assert eight_hundred["original_path"] == "/c/x.png"
+    assert eight_hundred["scryfall_id"] == "sol-id"
+
+
 def test_scan_gallery_from_output(tmp_path: Path) -> None:
     from proxy_scaler.decklist import parse_decklist_text
 

@@ -50,8 +50,21 @@ _DECKLIST_WIDGET_KEYS = (
 )
 _PDF_WIDGET_KEYS = (
     "pdf_image_dpi",
+    "pdf_preferred_model",
+    "pdf_page_size_preset",
+    "pdf_page_width_mm",
+    "pdf_page_height_mm",
     "pdf_orientation",
-    "pdf_paper",
+    "pdf_cols",
+    "pdf_rows",
+    "pdf_bleed_mm",
+    "pdf_spacing_x_mm",
+    "pdf_spacing_y_mm",
+    "pdf_offset_x_mm",
+    "pdf_offset_y_mm",
+    "pdf_guide_width_pt",
+    "pdf_guide_length_mm",
+    "pdf_export_dpi",
     "pdf_show_cut_lines",
 )
 
@@ -110,10 +123,17 @@ def ensure_session_defaults() -> None:
         "gallery": [],
         "regen_key": None,
         "regen_target_dpi": None,
+        "card_regen_key": None,
+        # Face group keys whose images the user has clicked to load — starts
+        # empty each session so opening a gallery full of pre-existing
+        # images doesn't decode/encode all of them up front (decklist.py's
+        # _upsert_gallery adds a face here the moment it's freshly
+        # generated/regenerated, so live progress still shows immediately).
+        "loaded_faces": set(),
         "gallery_page": 0,
         "project_id": None,
         "project_name": "",
-        "model": UpscaleModel.SWINIR.value,
+        "model": UpscaleModel.ULTRASHARP_V2.value,
         "dpi_600": False,
         "dpi_800": True,
         "dpi_1200": False,
@@ -135,8 +155,21 @@ def ensure_session_defaults() -> None:
         "_clear_all_notes": None,
         "_delete_generated_notes": None,
         "pdf_image_dpi": 1200,
+        "pdf_preferred_model": UpscaleModel.ULTRASHARP_V2.value,
+        "pdf_page_size_preset": "A4",
+        "pdf_page_width_mm": 210.0,
+        "pdf_page_height_mm": 297.0,
         "pdf_orientation": "Portrait",
-        "pdf_paper": "A4",
+        "pdf_cols": 3,
+        "pdf_rows": 3,
+        "pdf_bleed_mm": 1.0,
+        "pdf_spacing_x_mm": 0.0,
+        "pdf_spacing_y_mm": 0.0,
+        "pdf_offset_x_mm": 0.0,
+        "pdf_offset_y_mm": 0.0,
+        "pdf_guide_width_pt": 0.75,
+        "pdf_guide_length_mm": 2.75,
+        "pdf_export_dpi": 1200,
         "pdf_show_cut_lines": True,
         "_pdf_bytes": None,
         "_pdf_filename": None,
@@ -222,6 +255,8 @@ def apply_loaded_project(loaded) -> None:
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
+    st.session_state.card_regen_key = None
+    st.session_state.loaded_faces = set()
     s = loaded.settings
     st.session_state.model = s.model
     for d in DPI_OPTIONS:
@@ -246,7 +281,9 @@ def reset_to_new_project() -> None:
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
-    st.session_state.model = UpscaleModel.SWINIR.value
+    st.session_state.card_regen_key = None
+    st.session_state.loaded_faces = set()
+    st.session_state.model = UpscaleModel.ULTRASHARP_V2.value
     for d in DPI_OPTIONS:
         st.session_state[f"dpi_{d}"] = d == DEFAULT_DPI
     st.session_state.page_size = DEFAULT_PAGE_SIZE
@@ -277,6 +314,8 @@ def clear_all_projects() -> list[str]:
     st.session_state.gallery_page = 0
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
+    st.session_state.card_regen_key = None
+    st.session_state.loaded_faces = set()
     persist_decklist_widgets()
     return notes
 
