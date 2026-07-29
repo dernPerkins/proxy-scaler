@@ -430,7 +430,15 @@ def build_pdf(
             jpeg_bytes = cache.get(face.out_path)
             if jpeg_bytes is None:
                 with Image.open(face.out_path) as raw:
-                    img = raw.convert("RGBA")
+                    # Flatten the rounded-corner alpha to opaque BEFORE any
+                    # resize — resizing while corners are still transparent
+                    # lets the resample filter (LANCZOS) blend the
+                    # transparent region's RGB into the opaque body right
+                    # at the boundary (classic alpha fringing), baking in a
+                    # visible smear at every corner. add_bleed() below also
+                    # flattens internally, but that's now a safe no-op
+                    # (already-opaque corners have nothing left to flatten).
+                    img = flatten_corner_alpha(raw.convert("RGBA"))
                 if export_dpi != face.dpi:
                     img = _resize_to_dpi(img, export_dpi)
                 bled = add_bleed(img, dpi=export_dpi, bleed_mm=layout.bleed_mm)

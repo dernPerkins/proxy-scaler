@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from proxy_scaler.db import init_db
+from proxy_scaler.db import ensure_worker_running, init_db
 from proxy_scaler.ui.decklist import render_decklist_tab, render_global_sidebar_actions
 from proxy_scaler.ui.pdf import render_pdf_tab
 from proxy_scaler.ui.projects import (
@@ -13,18 +13,23 @@ from proxy_scaler.ui.projects import (
     maybe_load_last_project,
     render_project_bar,
 )
+from proxy_scaler.ui.tasks import render_tasks_tab
 
 _TAB_DECKLIST = "decklist"
 _TAB_PDF = "pdf"
+_TAB_TASKS = "tasks"
 _LABEL_DECKLIST = "Decklist"
 _LABEL_PDF = "PDF Generation"
+_LABEL_TASKS = "Tasks"
 _PARAM_TO_LABEL = {
     _TAB_DECKLIST: _LABEL_DECKLIST,
     _TAB_PDF: _LABEL_PDF,
+    _TAB_TASKS: _LABEL_TASKS,
 }
 _LABEL_TO_PARAM = {
     _LABEL_DECKLIST: _TAB_DECKLIST,
     _LABEL_PDF: _TAB_PDF,
+    _LABEL_TASKS: _TAB_TASKS,
 }
 
 
@@ -47,6 +52,10 @@ def _on_tab_change() -> None:
 def main() -> None:
     st.set_page_config(page_title="proxy-scaler", layout="wide")
     init_db()
+    # Cheap no-op once a worker already holds its lock — safe to call on
+    # every rerun. See db.py::ensure_worker_running for the flock-based
+    # single-worker guarantee.
+    ensure_worker_running()
     ensure_session_defaults()
     maybe_load_last_project()
     apply_pending_project_actions()
@@ -70,20 +79,22 @@ def main() -> None:
     if "ui_tab" not in st.session_state:
         st.session_state.ui_tab = _PARAM_TO_LABEL[_normalize_tab(st.query_params.get("tab"))]
 
-    tab_deck, tab_pdf = st.tabs(
-        [_LABEL_DECKLIST, _LABEL_PDF],
+    tab_deck, tab_pdf, tab_tasks = st.tabs(
+        [_LABEL_DECKLIST, _LABEL_PDF, _LABEL_TASKS],
         key="ui_tab",
         on_change=_on_tab_change,
     )
 
-    # Always run both tab bodies (their own active-tab checks gate whether
+    # Always run all tab bodies (their own active-tab checks gate whether
     # each renders its sidebar section / main body this run — see
     # persist_decklist_widgets/persist_pdf_widgets for how widget state
-    # survives being unmounted while the other tab is active).
+    # survives being unmounted while another tab is active).
     with tab_deck:
         render_decklist_tab(draw_gallery=bool(tab_deck.open))
     with tab_pdf:
         render_pdf_tab(active=bool(tab_pdf.open))
+    with tab_tasks:
+        render_tasks_tab(active=bool(tab_tasks.open))
     render_global_sidebar_actions()
 
 

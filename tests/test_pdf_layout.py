@@ -219,6 +219,63 @@ def test_flatten_corner_alpha() -> None:
     assert flattened.getpixel((w // 2, h // 2)) == (10, 20, 30, 255)
 
 
+def test_build_pdf_flattens_corners_before_resizing_for_export_dpi(tmp_path) -> None:
+    """Regression guard for the corner-smearing bug: resizing an RGBA image
+    while its rounded corners are still transparent lets the resample
+    filter (LANCZOS) blend the transparent region's RGB into the opaque
+    body right at the boundary — a visible smear baked in before the
+    corner ever gets flattened to opaque. build_pdf() must flatten before
+    resizing for a different export_dpi, not after. Verified by call
+    order, not pixel values — the actual ringing artifact is subtle and
+    depends on filter internals, but the ordering is the entire fix."""
+    import proxy_scaler.pdf_layout as pdf_layout_module
+
+    img = _rounded_rect_rgba(100, 100, 15)
+    out_path = tmp_path / "card.png"
+    img.save(out_path, format="PNG")
+
+    face = FaceResult(
+        out_path=out_path,
+        original_path=out_path,
+        scryfall_id="abc",
+        face_index=None,
+        face_name="Test Card",
+        card_name="Test Card",
+        set_code="tst",
+        collector_number="1",
+        png_url="",
+        dpi=800,  # differs from export_dpi below, forcing the resize path
+    )
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    pages = paginate([face], layout.cards_per_page)
+
+    call_order: list[str] = []
+    real_flatten = pdf_layout_module.flatten_corner_alpha
+    real_resize = pdf_layout_module._resize_to_dpi
+
+    def spy_flatten(*args, **kwargs):
+        call_order.append("flatten")
+        return real_flatten(*args, **kwargs)
+
+    def spy_resize(*args, **kwargs):
+        call_order.append("resize")
+        return real_resize(*args, **kwargs)
+
+    pdf_layout_module.flatten_corner_alpha = spy_flatten
+    pdf_layout_module._resize_to_dpi = spy_resize
+    try:
+        build_pdf(pages, layout=layout, export_dpi=1200, show_cut_lines=False)
+    finally:
+        pdf_layout_module.flatten_corner_alpha = real_flatten
+        pdf_layout_module._resize_to_dpi = real_resize
+
+    # flatten (explicit, pre-resize) -> resize -> flatten (add_bleed()'s own
+    # internal call, now a safe no-op since corners are already opaque).
+    # The critical property is that resize never happens before the FIRST
+    # flatten.
+    assert call_order[:2] == ["flatten", "resize"]
+
+
 def test_add_bleed_dimensions_and_replicate() -> None:
     w, h = 40, 40
     img = Image.new("RGBA", (w, h), (0, 0, 0, 255))

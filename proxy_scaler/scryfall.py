@@ -78,6 +78,17 @@ class ScryfallClient:
             )
         return resp.json()
 
+    def _post(self, path: str, json: dict[str, Any]) -> dict[str, Any]:
+        self._throttle()
+        url = f"{SCRYFALL_API}{path}"
+        resp = self._session.post(url, json=json, timeout=30)
+        self._last_request = time.monotonic()
+        if not resp.ok:
+            raise ScryfallError(
+                f"Scryfall HTTP {resp.status_code} for {url}: {resp.text[:200]}"
+            )
+        return resp.json()
+
     def fetch_by_set_collector(self, set_code: str, collector: str) -> dict[str, Any]:
         # Collector numbers may contain letters/hyphens; URL-encode the path segment
         code = quote(set_code.lower(), safe="")
@@ -88,6 +99,22 @@ class ScryfallClient:
         # Prefer fuzzy named lookup (mpc-scryfall style)
         return self._get("/cards/named", params={"fuzzy": name})
 
+    def resolve_collection(
+        self, identifiers: list[dict[str, str]], *, chunk_size: int = 75
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Resolve many cards in one or more batched requests via Scryfall's
+        /cards/collection endpoint — their recommended way to look up many
+        cards at once (up to `chunk_size` identifiers per request), instead
+        of one request per card. Returns (data, not_found)."""
+        data: list[dict[str, Any]] = []
+        not_found: list[dict[str, Any]] = []
+        for i in range(0, len(identifiers), chunk_size):
+            chunk = identifiers[i : i + chunk_size]
+            resp = self._post("/cards/collection", {"identifiers": chunk})
+            data.extend(resp.get("data", []))
+            not_found.extend(resp.get("not_found", []))
+        return data, not_found
+
     def resolve(self, entry: DeckEntry) -> tuple[dict[str, Any], list[str]]:
         """Resolve a deck entry to a Scryfall card object.
 
@@ -97,21 +124,106 @@ class ScryfallClient:
         if entry.has_exact_printing:
             assert entry.set_code is not None and entry.collector_number is not None
             card = self.fetch_by_set_collector(entry.set_code, entry.collector_number)
-            returned = card.get("name", "")
-            if not _names_compatible(entry.name, returned):
-                warnings.append(
-                    f"Name mismatch: list has {entry.name!r}, "
-                    f"Scryfall returned {returned!r} "
-                    f"({card.get('set')}/{card.get('collector_number')})"
-                )
+            warning = _exact_printing_warning(entry, card)
+            if warning:
+                warnings.append(warning)
         else:
             card = self.fetch_by_name(entry.name)
-            warnings.append(
-                f"Name-only lookup resolved to "
-                f"{card.get('name')} ({card.get('set')}/{card.get('collector_number')}) "
-                f"[image_status={card.get('image_status')}]"
-            )
+            warnings.append(_name_only_note(card))
         return card, warnings
+
+    def resolve_many(
+        self, entries: list[DeckEntry]
+    ) -> list[tuple[dict[str, Any], list[str]] | ScryfallError]:
+        """Resolve many deck entries efficiently.
+
+        Exact-printing entries are batch-resolved via resolve_collection()
+        (a handful of requests instead of one per card). Name-only entries
+        still resolve individually via fuzzy name search — the collection
+        endpoint only does exact name matching, which would silently break
+        fuzzy resolution for typo'd or partial names.
+
+        Positionally aligned with `entries`: each slot is either a
+        successful (card_json, warnings) or a ScryfallError representing
+        that entry's own failure, mirroring how process_entries()
+        independently try/excepts each entry today so one bad card doesn't
+        abort the rest.
+        """
+        results: list[tuple[dict[str, Any], list[str]] | ScryfallError] = [
+            None  # type: ignore[list-item]
+        ] * len(entries)
+
+        exact_indices = [i for i, e in enumerate(entries) if e.has_exact_printing]
+        if exact_indices:
+            identifiers = [
+                {
+                    "set": entries[i].set_code,
+                    "collector_number": entries[i].collector_number,
+                }
+                for i in exact_indices
+            ]
+            try:
+                data, _not_found = self.resolve_collection(identifiers)
+            except ScryfallError:
+                # Batch call itself failed — fall back to resolving every
+                # exact-printing entry individually rather than failing
+                # the whole run; batching is a speed optimization, not a
+                # new failure mode.
+                data = []
+
+            by_key: dict[tuple[str, str], dict[str, Any]] = {
+                (str(card.get("set", "")).lower(), str(card.get("collector_number", ""))): card
+                for card in data
+            }
+
+            for i in exact_indices:
+                entry = entries[i]
+                key = (entry.set_code.lower(), str(entry.collector_number))
+                card = by_key.get(key)
+                if card is None:
+                    # Missing from the batch response (genuinely not_found,
+                    # or the whole batch call failed) — fall back to an
+                    # individual request for a precise per-card error.
+                    try:
+                        card = self.fetch_by_set_collector(
+                            entry.set_code, entry.collector_number
+                        )
+                    except ScryfallError as exc:
+                        results[i] = exc
+                        continue
+                warning = _exact_printing_warning(entry, card)
+                results[i] = (card, [warning] if warning else [])
+
+        for i, entry in enumerate(entries):
+            if entry.has_exact_printing:
+                continue
+            try:
+                card = self.fetch_by_name(entry.name)
+            except ScryfallError as exc:
+                results[i] = exc
+                continue
+            results[i] = (card, [_name_only_note(card)])
+
+        return results
+
+
+def _exact_printing_warning(entry: DeckEntry, card: dict[str, Any]) -> str | None:
+    returned = card.get("name", "")
+    if _names_compatible(entry.name, returned):
+        return None
+    return (
+        f"Name mismatch: list has {entry.name!r}, "
+        f"Scryfall returned {returned!r} "
+        f"({card.get('set')}/{card.get('collector_number')})"
+    )
+
+
+def _name_only_note(card: dict[str, Any]) -> str:
+    return (
+        f"Name-only lookup resolved to "
+        f"{card.get('name')} ({card.get('set')}/{card.get('collector_number')}) "
+        f"[image_status={card.get('image_status')}]"
+    )
 
 
 def _names_compatible(listed: str, returned: str) -> bool:

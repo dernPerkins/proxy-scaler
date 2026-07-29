@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
 import streamlit as st
 
 from proxy_scaler.decklist import parse_decklist_text
@@ -19,6 +22,46 @@ from proxy_scaler.ui.projects import persist_pdf_widgets
 from proxy_scaler.upscale import UpscaleModel
 
 _EXPORT_DPI_OPTIONS = (800, 1200, 1401)
+
+# Re-asserted immediately before the widgets mount (see render_pdf_tab),
+# not just once at startup in ensure_session_defaults() — mirrors the
+# "clamp right before the widget" pattern already used for pdf_image_dpi/
+# pdf_preferred_model below, which is the one thing observed to reliably
+# survive a live new-project -> generate -> switch-to-PDF-tab sequence
+# where the plain-default fields sometimes didn't. Root cause unconfirmed
+# (not reproducible via Streamlit's AppTest harness), but this is a safe,
+# low-cost mitigation regardless of mechanism.
+_PDF_SIMPLE_DEFAULTS: dict[str, object] = {
+    "pdf_page_size_preset": "A4",
+    "pdf_page_width_mm": 210.0,
+    "pdf_page_height_mm": 297.0,
+    "pdf_orientation": "Portrait",
+    "pdf_cols": 3,
+    "pdf_rows": 3,
+    "pdf_bleed_mm": 1.0,
+    "pdf_spacing_x_mm": 0.0,
+    "pdf_spacing_y_mm": 0.0,
+    "pdf_offset_x_mm": 0.0,
+    "pdf_offset_y_mm": 0.0,
+    "pdf_guide_width_pt": 0.75,
+    "pdf_guide_length_mm": 2.75,
+    "pdf_export_dpi": 1200,
+    "pdf_show_cut_lines": True,
+}
+
+
+def _slugify(name: str) -> str:
+    """ASCII-slug a project name for use as a PDF filename: transliterate
+    accented Latin characters (e.g. "é" -> "e") via Unicode decomposition,
+    drop anything that doesn't decompose to ASCII (emoji, CJK, ...),
+    collapse whitespace to hyphens, and strip remaining punctuation.
+    Distinct from pipeline.py's _safe_filename_part(), which preserves
+    Unicode word characters and uses underscores for card output
+    filenames — a different, deliberately non-ASCII-only need."""
+    ascii_only = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"\s+", "-", ascii_only.strip())
+    slug = re.sub(r"[^A-Za-z0-9\-]+", "", slug)
+    return re.sub(r"-+", "-", slug).strip("-")
 
 
 def _apply_page_size_preset() -> None:
@@ -55,6 +98,10 @@ def render_pdf_tab(*, active: bool = True) -> None:
     items = [FaceResult.from_dict(d) for d in st.session_state.gallery]
 
     if active:
+        for _key, _default in _PDF_SIMPLE_DEFAULTS.items():
+            if _key not in st.session_state:
+                st.session_state[_key] = _default
+
         st.subheader("PDF Generation")
 
         st.markdown("**Page size**")
@@ -295,10 +342,9 @@ def render_pdf_tab(*, active: bool = True) -> None:
                 export_dpi=int(st.session_state.pdf_export_dpi),
                 show_cut_lines=bool(st.session_state.pdf_show_cut_lines),
             )
-        st.session_state._pdf_filename = (
-            f"proxies-{layout.page_w_mm:.0f}x{layout.page_h_mm:.0f}mm-"
-            f"{layout.orientation}.pdf"
-        )
+        project_name = (st.session_state.get("project_name") or "").strip()
+        slug = _slugify(project_name) if project_name else ""
+        st.session_state._pdf_filename = f"{slug or 'proxies'}.pdf"
         size_bytes = len(st.session_state._pdf_bytes)
         size_label = (
             f"{size_bytes / 1024 / 1024:.1f} MB"

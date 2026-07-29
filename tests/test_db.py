@@ -8,15 +8,29 @@ import pytest
 
 from proxy_scaler.db import (
     ProjectSettings,
+    acquire_worker_lock,
+    cancel_task,
+    claim_next_task,
     delete_all_projects,
     delete_project,
+    enqueue_task,
+    ensure_worker_running,
+    get_task,
     init_db,
+    is_worker_running,
+    list_gallery_items_for_project,
     list_projects,
+    list_tasks,
     load_project,
+    mark_task_done,
+    mark_task_failed,
     parse_output_filename,
+    release_worker_lock,
     save_project,
     scan_gallery_from_output,
+    upsert_gallery_item_for_task,
 )
+from proxy_scaler.pipeline import FaceResult
 
 
 @pytest.fixture()
@@ -388,3 +402,199 @@ def test_scan_gallery_from_output(tmp_path: Path) -> None:
     gallery = scan_gallery_from_output(out, entries)
     assert len(gallery) == 2
     assert {g["dpi"] for g in gallery} == {600, 800}
+
+
+# --- Task queue -------------------------------------------------------
+
+
+def _enqueue_sol_ring(db_path: Path, **overrides) -> int:
+    kwargs = dict(
+        project_id=None,
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+        output_dir="/tmp/out",
+        cache_dir="/tmp/cache",
+        weights_dir="/tmp/weights",
+        db_path=db_path,
+    )
+    kwargs.update(overrides)
+    return enqueue_task(kwargs.pop("project_id"), **kwargs)
+
+
+def test_enqueue_and_claim_task(db_path: Path) -> None:
+    tid = _enqueue_sol_ring(db_path)
+    [pending] = list_tasks(db_path=db_path)
+    assert pending.id == tid
+    assert pending.status == "pending"
+
+    claimed = claim_next_task(db_path=db_path)
+    assert claimed is not None
+    assert claimed.id == tid
+    assert claimed.status == "running"
+    assert claimed.started_at is not None
+
+    # Nothing else pending — a second claim finds nothing.
+    assert claim_next_task(db_path=db_path) is None
+
+
+def test_claim_returns_oldest_pending_first(db_path: Path) -> None:
+    first = _enqueue_sol_ring(db_path, collector_number="1")
+    _enqueue_sol_ring(db_path, collector_number="2")
+    claimed = claim_next_task(db_path=db_path)
+    assert claimed.id == first
+
+
+def test_mark_task_done_and_failed(db_path: Path) -> None:
+    tid_done = _enqueue_sol_ring(db_path, collector_number="1")
+    tid_failed = _enqueue_sol_ring(db_path, collector_number="2")
+
+    mark_task_done(tid_done, db_path=db_path)
+    mark_task_failed(tid_failed, "boom", db_path=db_path)
+
+    done = get_task(tid_done, db_path=db_path)
+    failed = get_task(tid_failed, db_path=db_path)
+    assert done.status == "done"
+    assert done.completed_at is not None
+    assert failed.status == "failed"
+    assert failed.error == "boom"
+    assert failed.completed_at is not None
+
+
+def test_cancel_task_only_affects_pending(db_path: Path) -> None:
+    tid = _enqueue_sol_ring(db_path)
+    assert cancel_task(tid, db_path=db_path) is True
+    assert get_task(tid, db_path=db_path).status == "canceled"
+    # Already canceled — a second cancel is a no-op.
+    assert cancel_task(tid, db_path=db_path) is False
+
+    tid2 = _enqueue_sol_ring(db_path, collector_number="99")
+    claim_next_task(db_path=db_path)  # now running, not pending
+    assert cancel_task(tid2, db_path=db_path) is False
+    assert get_task(tid2, db_path=db_path).status == "running"
+
+
+def test_list_tasks_filters_by_project_and_status(db_path: Path) -> None:
+    pid_a = save_project(
+        "A", import_decklist_text="", settings=ProjectSettings(), gallery=[], db_path=db_path
+    )
+    pid_b = save_project(
+        "B", import_decklist_text="", settings=ProjectSettings(), gallery=[], db_path=db_path
+    )
+    _enqueue_sol_ring(db_path, project_id=pid_a, collector_number="1")
+    t2 = _enqueue_sol_ring(db_path, project_id=pid_a, collector_number="2")
+    _enqueue_sol_ring(db_path, project_id=pid_b, collector_number="3")
+    mark_task_done(t2, db_path=db_path)
+
+    a_tasks = list_tasks(project_id=pid_a, db_path=db_path)
+    assert len(a_tasks) == 2
+    assert all(t.project_id == pid_a for t in a_tasks)
+
+    a_pending = list_tasks(project_id=pid_a, statuses=["pending"], db_path=db_path)
+    assert len(a_pending) == 1
+
+    all_tasks = list_tasks(db_path=db_path)
+    assert len(all_tasks) == 3
+
+
+def test_upsert_gallery_item_for_task_writes_and_updates(db_path: Path) -> None:
+    pid = save_project(
+        "P",
+        import_decklist_text="1 Sol Ring (c21) 263\n",
+        settings=ProjectSettings(),
+        gallery=[],
+        db_path=db_path,
+    )
+    tid = _enqueue_sol_ring(db_path, project_id=pid)
+    task = claim_next_task(db_path=db_path)
+    assert task.id == tid
+
+    result = FaceResult(
+        out_path=Path("/o/Sol_Ring-C21-263-swinir-800dpi.png"),
+        original_path=Path("/c/orig.png"),
+        scryfall_id="sol-id",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+        device="gpu",
+    )
+    upsert_gallery_item_for_task(task, result, db_path=db_path)
+    items = list_gallery_items_for_project(pid, db_path=db_path)
+    assert len(items) == 1
+    assert items[0]["device"] == "gpu"
+
+    # Re-upserting the same (card, scryfall_id, face_index, model, dpi)
+    # updates in place rather than duplicating — e.g. a later regen of the
+    # same variant.
+    updated_result = FaceResult(**{**result.__dict__, "device": "cpu"})
+    upsert_gallery_item_for_task(task, updated_result, db_path=db_path)
+    items2 = list_gallery_items_for_project(pid, db_path=db_path)
+    assert len(items2) == 1
+    assert items2[0]["device"] == "cpu"
+
+
+def test_upsert_gallery_item_for_task_noop_without_project(db_path: Path) -> None:
+    tid = _enqueue_sol_ring(db_path, project_id=None)
+    task = get_task(tid, db_path=db_path)
+    result = FaceResult(
+        out_path=Path("/o/x.png"),
+        original_path=Path("/c/x.png"),
+        scryfall_id="sol-id",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=800,
+        model="swinir",
+    )
+    # Should not raise even though there's no project to attach to.
+    upsert_gallery_item_for_task(task, result, db_path=db_path)
+
+
+def test_worker_lock_prevents_double_acquire(tmp_path: Path) -> None:
+    lock_path = tmp_path / "worker.lock"
+    assert is_worker_running(lock_path) is False
+
+    fd = acquire_worker_lock(lock_path)
+    assert fd is not None
+    assert is_worker_running(lock_path) is True
+    assert acquire_worker_lock(lock_path) is None  # already held
+
+    release_worker_lock(fd)
+    assert is_worker_running(lock_path) is False
+
+
+def test_ensure_worker_running_spawns_only_when_not_already_running(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lock_path = tmp_path / "worker.lock"
+    log_path = tmp_path / "worker.log"
+    calls = []
+    monkeypatch.setattr(
+        "proxy_scaler.db.subprocess.Popen",
+        lambda *a, **kw: calls.append((a, kw)),
+    )
+
+    ensure_worker_running(lock_path, log_path)
+    assert len(calls) == 1
+
+    # A live lock (simulating an already-running worker) must prevent a
+    # second spawn.
+    fd = acquire_worker_lock(lock_path)
+    ensure_worker_running(lock_path, log_path)
+    assert len(calls) == 1
+    release_worker_lock(fd)

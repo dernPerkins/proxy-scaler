@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .decklist import DeckEntry, parse_decklist_text
 from .dpi import DEFAULT_DPI
 from .upscale import UpscaleModel
 
+if TYPE_CHECKING:
+    from .pipeline import FaceResult
+
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "proxy_scaler.db"
+WORKER_LOCK_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.lock"
+WORKER_LOG_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.log"
 
 # Abandoned_Air_Temple-TLA-263-swinir-600dpi.png
 # Name-SET-COLLECTOR-front-swinir-800dpi.png  (collector may contain hyphens)
@@ -92,6 +101,35 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS generation_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    scryfall_id TEXT NOT NULL,
+    face_index INTEGER,
+    face_label TEXT,
+    face_name TEXT NOT NULL,
+    card_name TEXT NOT NULL,
+    set_code TEXT NOT NULL,
+    collector_number TEXT NOT NULL,
+    png_url TEXT NOT NULL,
+    dpi INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    tile_size INTEGER NOT NULL DEFAULT 0,
+    output_dir TEXT NOT NULL,
+    cache_dir TEXT NOT NULL,
+    weights_dir TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status
+    ON generation_tasks(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_project
+    ON generation_tasks(project_id);
 """
 
 _LAST_PROJECT_KEY = "last_project_id"
@@ -165,12 +203,73 @@ class LoadedProject:
     updated_at: str
 
 
+@dataclass
+class TaskRow:
+    """One row of generation_tasks — a single (face, dpi, model) unit of
+    background generation work. Carries fully-resolved Scryfall data (no
+    Scryfall call needed by the worker) since resolution already happened,
+    fast, at enqueue time."""
+
+    id: int
+    project_id: int | None
+    status: str  # "pending" | "running" | "done" | "failed" | "canceled"
+    scryfall_id: str
+    face_index: int | None
+    face_label: str | None
+    face_name: str
+    card_name: str
+    set_code: str
+    collector_number: str
+    png_url: str
+    dpi: int
+    model: str
+    tile_size: int
+    output_dir: str
+    cache_dir: str
+    weights_dir: str
+    error: str | None
+    created_at: str
+    started_at: str | None
+    completed_at: str | None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> TaskRow:
+        return cls(
+            id=int(row["id"]),
+            project_id=row["project_id"],
+            status=row["status"],
+            scryfall_id=row["scryfall_id"],
+            face_index=row["face_index"],
+            face_label=row["face_label"],
+            face_name=row["face_name"],
+            card_name=row["card_name"],
+            set_code=row["set_code"],
+            collector_number=row["collector_number"],
+            png_url=row["png_url"],
+            dpi=int(row["dpi"]),
+            model=row["model"],
+            tile_size=int(row["tile_size"]),
+            output_dir=row["output_dir"],
+            cache_dir=row["cache_dir"],
+            weights_dir=row["weights_dir"],
+            error=row["error"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+        )
+
+
 def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL allows the Streamlit process and the background worker process to
+    # both hit this file regularly without "database is locked" errors —
+    # the default rollback-journal mode serializes writers too coarsely for
+    # two independent processes polling/writing on their own schedules.
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -205,6 +304,355 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "tile_size" not in project_cols:
         conn.execute(
             "ALTER TABLE projects ADD COLUMN tile_size INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def enqueue_task(
+    project_id: int | None,
+    *,
+    scryfall_id: str,
+    face_index: int | None,
+    face_label: str | None,
+    face_name: str,
+    card_name: str,
+    set_code: str,
+    collector_number: str,
+    png_url: str,
+    dpi: int,
+    model: str,
+    output_dir: str,
+    cache_dir: str,
+    weights_dir: str,
+    tile_size: int = 0,
+    db_path: Path | str | None = None,
+) -> int:
+    """Add one (face, dpi, model) unit of generation work to the queue,
+    picked up by the background worker (see worker.py)."""
+    now = _utc_now()
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                project_id, status, scryfall_id, face_index, face_label,
+                face_name, card_name, set_code, collector_number, png_url,
+                dpi, model, tile_size, output_dir, cache_dir, weights_dir,
+                created_at
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                scryfall_id,
+                face_index,
+                face_label,
+                face_name,
+                card_name,
+                set_code,
+                collector_number,
+                png_url,
+                dpi,
+                model,
+                tile_size,
+                output_dir,
+                cache_dir,
+                weights_dir,
+                now,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def claim_next_task(db_path: Path | str | None = None) -> TaskRow | None:
+    """Atomically pick the oldest pending task and mark it running. One
+    worker process ever calls this, so contention isn't a real concern,
+    but the claim itself is still a proper conditional UPDATE (not a
+    plain SELECT then UPDATE) so it stays correct if that ever changes."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM generation_tasks WHERE status = 'pending' "
+            "ORDER BY created_at ASC, id ASC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        task_id = int(row["id"])
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'running', started_at = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (_utc_now(), task_id),
+        )
+        if cur.rowcount == 0:
+            conn.commit()
+            return None
+        updated = conn.execute(
+            "SELECT * FROM generation_tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        conn.commit()
+    return TaskRow.from_row(updated)
+
+
+def mark_task_done(task_id: int, db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'done', completed_at = ? WHERE id = ?",
+            (_utc_now(), task_id),
+        )
+        conn.commit()
+
+
+def mark_task_failed(
+    task_id: int, error: str, db_path: Path | str | None = None
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'failed', error = ?, "
+            "completed_at = ? WHERE id = ?",
+            (error[:2000], _utc_now(), task_id),
+        )
+        conn.commit()
+
+
+def cancel_task(task_id: int, db_path: Path | str | None = None) -> bool:
+    """Cancel a task if it's still pending. Returns False (no-op) if it's
+    already running/done/failed/canceled — cancellation only ever applies
+    to work that hasn't started."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'canceled', completed_at = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (_utc_now(), task_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_tasks(
+    project_id: int | None = None,
+    statuses: list[str] | None = None,
+    db_path: Path | str | None = None,
+) -> list[TaskRow]:
+    query = "SELECT * FROM generation_tasks"
+    clauses: list[str] = []
+    params: list[Any] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        clauses.append(f"status IN ({placeholders})")
+        params.extend(statuses)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY created_at DESC, id DESC"
+    with connect(db_path) as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [TaskRow.from_row(r) for r in rows]
+
+
+def get_task(task_id: int, db_path: Path | str | None = None) -> TaskRow | None:
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM generation_tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+    return TaskRow.from_row(row) if row is not None else None
+
+
+def list_gallery_items_for_project(
+    project_id: int, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """Lightweight read of a project's DB-persisted gallery rows (no disk
+    scan, unlike load_project()) — cheap enough to call on every Decklist
+    tab rerun to pick up results the background worker wrote directly via
+    upsert_gallery_item_for_task(), without an explicit Save/reload."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT g.* FROM project_gallery_items g
+            JOIN project_cards c ON c.id = g.card_id
+            WHERE c.project_id = ?
+            ORDER BY c.sort_order ASC, g.dpi ASC, g.face_index ASC
+            """,
+            (project_id,),
+        ).fetchall()
+    return [
+        {
+            "out_path": g["out_path"],
+            "original_path": g["original_path"],
+            "scryfall_id": g["scryfall_id"],
+            "face_index": g["face_index"],
+            "face_name": g["face_name"] or "",
+            "card_name": g["card_name"] or "",
+            "set_code": g["set_code"] or "",
+            "collector_number": g["collector_number"] or "",
+            "png_url": g["png_url"] or "",
+            "dpi": int(g["dpi"]),
+            "model": g["model"],
+            "face_label": g["face_label"],
+            "native_scale": int(g["native_scale"] or 4),
+            "device": g["device"] if "device" in g.keys() else "unknown",
+            "image_filename": g["image_filename"],
+        }
+        for g in rows
+    ]
+
+
+def upsert_gallery_item_for_task(
+    task: TaskRow, result: FaceResult, db_path: Path | str | None = None
+) -> None:
+    """Persist one completed task's result straight into
+    project_gallery_items — how a background-worker-produced image makes
+    it into a project's gallery without an explicit Save. A no-op if the
+    task has no project (nothing to attach it to) or the project's cards
+    no longer contain a match (e.g. the project was deleted mid-task)."""
+    if task.project_id is None:
+        return
+    with connect(db_path) as conn:
+        card_rows = conn.execute(
+            "SELECT id, set_code, collector_number, card_name FROM project_cards "
+            "WHERE project_id = ?",
+            (task.project_id,),
+        ).fetchall()
+        cards = [
+            (
+                int(r["id"]),
+                DeckEntry(
+                    quantity=1,
+                    name=r["card_name"] or "",
+                    set_code=r["set_code"],
+                    collector_number=r["collector_number"],
+                ),
+            )
+            for r in card_rows
+        ]
+        card_id = _match_card_id(
+            cards,
+            {
+                "set_code": task.set_code,
+                "collector_number": task.collector_number,
+                "card_name": task.card_name,
+                "face_name": task.face_name,
+            },
+        )
+        if card_id is None:
+            return
+        # Not a plain `ON CONFLICT` upsert: the UNIQUE constraint includes
+        # face_index, which is NULL for the common single-faced-card case,
+        # and SQLite treats every NULL as distinct in a UNIQUE index — so
+        # ON CONFLICT would never fire and repeated regenerations of the
+        # same card/dpi/model would just keep inserting duplicate rows.
+        # `IS ?` (unlike `= ?`) matches NULL-to-NULL correctly.
+        existing = conn.execute(
+            "SELECT id FROM project_gallery_items WHERE card_id = ? "
+            "AND scryfall_id = ? AND face_index IS ? AND model = ? AND dpi = ?",
+            (card_id, result.scryfall_id, result.face_index, result.model, result.dpi),
+        ).fetchone()
+        values = (
+            result.face_name,
+            result.card_name,
+            result.set_code,
+            result.collector_number,
+            result.face_label,
+            result.native_scale,
+            result.device,
+            result.out_path.name,
+            str(result.out_path),
+            str(result.original_path),
+            result.png_url,
+        )
+        if existing is not None:
+            conn.execute(
+                """
+                UPDATE project_gallery_items SET
+                    face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
+                    face_label = ?, native_scale = ?, device = ?, image_filename = ?,
+                    out_path = ?, original_path = ?, png_url = ?
+                WHERE id = ?
+                """,
+                (*values, int(existing["id"])),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO project_gallery_items (
+                    card_id, scryfall_id, face_index, face_name, card_name,
+                    set_code, collector_number, face_label, model, dpi, native_scale,
+                    device, image_filename, out_path, original_path, png_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    card_id,
+                    result.scryfall_id,
+                    result.face_index,
+                    result.face_name,
+                    result.card_name,
+                    result.set_code,
+                    result.collector_number,
+                    result.face_label,
+                    result.model,
+                    result.dpi,
+                    result.native_scale,
+                    result.device,
+                    result.out_path.name,
+                    str(result.out_path),
+                    str(result.original_path),
+                    result.png_url,
+                ),
+            )
+        conn.commit()
+
+
+def acquire_worker_lock(lock_path: Path | str | None = None) -> int | None:
+    """Try to exclusively lock the worker lock file. Returns an open fd
+    holding the lock on success (the caller — the worker process — should
+    just keep it open for its entire lifetime; the OS releases it
+    automatically on exit/crash), or None if another process already
+    holds it."""
+    path = Path(lock_path) if lock_path else WORKER_LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def release_worker_lock(fd: int) -> None:
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
+def is_worker_running(lock_path: Path | str | None = None) -> bool:
+    fd = acquire_worker_lock(lock_path)
+    if fd is None:
+        return True
+    release_worker_lock(fd)
+    return False
+
+
+def ensure_worker_running(
+    lock_path: Path | str | None = None,
+    log_path: Path | str | None = None,
+) -> None:
+    """Spawn the background generation worker (proxy_scaler.worker) if one
+    isn't already running. Safe to call on every Streamlit rerun — the
+    common case (a worker already holds the lock) is a cheap no-op, so
+    there's no need to track "have I already tried this" separately."""
+    if is_worker_running(lock_path):
+        return
+    log_file_path = Path(log_path) if log_path else WORKER_LOG_FILE
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file_path, "a") as log_file:
+        subprocess.Popen(
+            # -u: unbuffered stdout/stderr, so worker.log shows progress
+            # live instead of only flushing when the buffer fills or the
+            # process exits — otherwise "tail -f" on it looks dead for a
+            # long time even while the worker is actively processing.
+            [sys.executable, "-u", "-m", "proxy_scaler.worker"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
 
 

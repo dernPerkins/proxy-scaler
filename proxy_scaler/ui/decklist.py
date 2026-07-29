@@ -9,18 +9,19 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image
 
+from proxy_scaler import db
 from proxy_scaler.decklist import parse_decklist_text
 from proxy_scaler.db import save_project
 from proxy_scaler.dpi import DPI_OPTIONS
 from proxy_scaler.pipeline import (
     FaceResult,
     clear_generated_data,
+    expected_face_result,
     face_group_key,
     group_by_face,
-    process_entries,
-    regenerate_face,
-    regenerate_face_multi,
+    output_filename,
 )
+from proxy_scaler.scryfall import ScryfallClient, ScryfallError, expand_faces
 from proxy_scaler.ui.compare import open_comparison_dialog
 from proxy_scaler.ui.projects import (
     DEFAULT_TILE_SIZE,
@@ -84,6 +85,195 @@ def _upsert_gallery(item: FaceResult) -> None:
     # progress feedback) rather than sitting behind the click-to-load gate
     # meant for images that were already on disk before this page opened.
     st.session_state.loaded_faces.add(face_group_key(item))
+
+
+def _enqueue_face(
+    *,
+    scryfall_id: str,
+    face_index: int | None,
+    face_label: str | None,
+    face_name: str,
+    card_name: str,
+    set_code: str,
+    collector_number: str,
+    png_url: str,
+    dpi_targets: list[int],
+    model: str,
+    tile_size: int,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    project_id: int | None,
+) -> list[int]:
+    """Queue one task per requested DPI for an already-resolved face (no
+    Scryfall call needed — caller already has scryfall_id/png_url/etc, from
+    either a fresh batch resolve or an existing gallery FaceResult).
+    Tracks the new task ids in session_state so this session's own gallery
+    can pick up their results the moment they're done (see
+    _sync_pending_tasks) — works even before a project is ever saved."""
+    task_ids = [
+        db.enqueue_task(
+            project_id,
+            scryfall_id=scryfall_id,
+            face_index=face_index,
+            face_label=face_label,
+            face_name=face_name,
+            card_name=card_name,
+            set_code=set_code,
+            collector_number=collector_number,
+            png_url=png_url,
+            dpi=dpi,
+            model=model,
+            tile_size=tile_size,
+            output_dir=str(output_dir),
+            cache_dir=str(cache_dir),
+            weights_dir=str(weights_dir),
+        )
+        for dpi in dpi_targets
+    ]
+    st.session_state.pending_task_ids = [
+        *st.session_state.get("pending_task_ids", []),
+        *task_ids,
+    ]
+    return task_ids
+
+
+def _enqueue_decklist_entries(
+    entries: list,
+    *,
+    model: str,
+    dpi_targets: list[int],
+    skip_existing: bool,
+    tile_size: int,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    project_id: int | None,
+    on_note=None,
+) -> tuple[int, int]:
+    """Resolve decklist entries (one batched Scryfall call, not one per
+    card) and queue one task per (face, dpi) not already satisfied on
+    disk. Returns (queued_count, failed_count)."""
+    client = ScryfallClient()
+    resolved = client.resolve_many(entries)
+    queued = 0
+    failed = 0
+    seen_keys: set[str] = set()
+    for entry, pre in zip(entries, resolved):
+        try:
+            if isinstance(pre, ScryfallError):
+                raise pre
+            card, warnings = pre
+            for w in warnings:
+                if on_note:
+                    on_note(w)
+            for face in expand_faces(card):
+                face_key = f"{face.scryfall_id}:{face.face_index}"
+                if face_key in seen_keys:
+                    continue
+                seen_keys.add(face_key)
+
+                targets_needed = []
+                for target_dpi in dpi_targets:
+                    out_name = output_filename(
+                        face.face_name,
+                        face.set_code,
+                        face.collector_number,
+                        face.face_label,
+                        model,
+                        target_dpi,
+                    )
+                    if skip_existing and (output_dir / out_name).exists():
+                        continue
+                    targets_needed.append(target_dpi)
+                if not targets_needed:
+                    continue
+
+                _enqueue_face(
+                    scryfall_id=face.scryfall_id,
+                    face_index=face.face_index,
+                    face_label=face.face_label,
+                    face_name=face.face_name,
+                    card_name=face.card_name,
+                    set_code=face.set_code,
+                    collector_number=face.collector_number,
+                    png_url=face.png_url,
+                    dpi_targets=targets_needed,
+                    model=model,
+                    tile_size=tile_size,
+                    output_dir=output_dir,
+                    cache_dir=cache_dir,
+                    weights_dir=weights_dir,
+                    project_id=project_id,
+                )
+                queued += len(targets_needed)
+        except ScryfallError as exc:
+            failed += 1
+            if on_note:
+                on_note(f"FAIL [{entry.raw_line}]: {exc}")
+    return queued, failed
+
+
+def _sync_pending_tasks() -> None:
+    """Pull results for tasks this session enqueued into
+    st.session_state.gallery once they're done — reconstructed
+    deterministically from the task's own fields (pipeline.
+    expected_face_result), so this works even before a project is saved
+    (no project_id yet for the worker to attach a DB gallery row to)."""
+    pending = st.session_state.get("pending_task_ids") or []
+    if not pending:
+        return
+    still_pending = []
+    for task_id in pending:
+        task = db.get_task(task_id)
+        if task is None:
+            continue
+        if task.status in ("pending", "running"):
+            still_pending.append(task_id)
+        elif task.status == "done":
+            _upsert_gallery(expected_face_result(task))
+        # failed/canceled tasks are dropped here — visible in the Tasks tab.
+    st.session_state.pending_task_ids = still_pending
+
+
+def _sync_gallery_from_db() -> None:
+    """Pull any project_gallery_items rows not yet reflected in
+    st.session_state.gallery — how a background task's result (written
+    directly to the DB by the worker) shows up without an explicit
+    Save/reload, including tasks queued from an earlier session."""
+    project_id = st.session_state.get("project_id")
+    if project_id is None:
+        return
+    for item in db.list_gallery_items_for_project(project_id):
+        _upsert_gallery(FaceResult.from_dict(item))
+
+
+def _ensure_project_id() -> int | None:
+    """If a project name has been entered but not saved yet, save it now
+    so newly-enqueued tasks can be attached to a real project_id — that's
+    what lets the background worker persist their results straight to the
+    DB (upsert_gallery_item_for_task), not just this session's own
+    reconstruction (_sync_pending_tasks). Returns the current project_id,
+    which may still be None if no name has been entered at all — tasks can
+    still be enqueued with project_id=None, they just won't get a DB
+    gallery row until/unless the project is saved later."""
+    name = (st.session_state.get("project_name") or "").strip()
+    if not name:
+        return st.session_state.get("project_id")
+    if st.session_state.get("project_id") is not None:
+        return st.session_state.project_id
+    try:
+        pid = save_project(
+            name,
+            import_decklist_text=st.session_state.decklist_text or "",
+            settings=settings_from_session(),
+            gallery=list(st.session_state.gallery or []),
+            project_id=None,
+        )
+        st.session_state.project_id = pid
+        return pid
+    except ValueError:
+        return None
 
 
 @st.cache_data(show_spinner=False)
@@ -273,6 +463,7 @@ def _paginate(entries: list, page: int, page_size: int) -> tuple[list, int]:
     return entries[start : start + page_size], total_pages
 
 
+@st.fragment(run_every="3s")
 def _draw_gallery(
     slot,
     *,
@@ -280,6 +471,14 @@ def _draw_gallery(
     page_size: int,
     jump_to_last: bool = False,
 ) -> None:
+    """Wrapped as a fragment with a periodic tick so completed background
+    tasks (see db.py's generation_tasks / worker.py) show up on their own
+    — generation no longer blocks the script, so nothing else triggers a
+    rerun once a task finishes. Syncing here (not just once at the top of
+    render_decklist_tab()) is what makes the periodic tick actually pick
+    up new results, not just redraw the same stale gallery every 3s."""
+    _sync_pending_tasks()
+    _sync_gallery_from_db()
     items = _gallery_items()
     with slot.container():
         st.subheader(f"Comparisons ({len(items)} image(s))")
@@ -500,7 +699,6 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     )
 
     run = st.button("Generate upscaled images", type="primary")
-    log_box = st.empty()
     status = st.empty()
     gallery_slot = st.empty()
 
@@ -513,6 +711,13 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
     ):
         persist_decklist_widgets()
         return
+
+    # All three generation actions below just enqueue work — actual
+    # download/upscale runs in the background worker (see db.py's
+    # generation_tasks / worker.py), not here, so none of this blocks the
+    # script. Results appear automatically via _draw_gallery()'s periodic
+    # sync (see its @st.fragment(run_every=...) decorator), and progress
+    # is visible in the Tasks tab.
 
     regen_key = st.session_state.regen_key
     if regen_key is not None:
@@ -528,51 +733,27 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             regen_tile_size = _effective_tile_size(
                 UpscaleModel(match.model), int(st.session_state.tile_size)
             )
-            status.info(
-                f"Regenerating {match.face_name} with {match.model} @ {target_dpi} DPI…"
+            _enqueue_face(
+                scryfall_id=match.scryfall_id,
+                face_index=match.face_index,
+                face_label=match.face_label,
+                face_name=match.face_name,
+                card_name=match.card_name,
+                set_code=match.set_code,
+                collector_number=match.collector_number,
+                png_url=match.png_url,
+                dpi_targets=[target_dpi],
+                model=match.model,
+                tile_size=regen_tile_size,
+                output_dir=output_dir,
+                cache_dir=cache_dir,
+                weights_dir=weights_dir,
+                project_id=_ensure_project_id(),
             )
-            # Keep the existing gallery visible while this one face
-            # regenerates instead of leaving gallery_slot blank for the
-            # whole (multi-second) upscale — mirrors the batch Generate
-            # flow's pattern below.
-            _draw_gallery(gallery_slot, show_regen=False, page_size=page_size)
-            lines: list[str] = []
-
-            def on_progress(msg: str) -> None:
-                lines.append(msg)
-                log_box.code("\n".join(lines[-30:]), language="text")
-
-            try:
-                updated = regenerate_face(
-                    match,
-                    output_dir=output_dir,
-                    cache_dir=cache_dir,
-                    weights_dir=weights_dir,
-                    dpi=target_dpi,
-                    model=match.model,
-                    tile_size=regen_tile_size,
-                    on_progress=on_progress,
-                )
-                _upsert_gallery(updated)
-                name = (st.session_state.get("project_name") or "").strip()
-                if name and st.session_state.gallery:
-                    try:
-                        pid = save_project(
-                            name,
-                            import_decklist_text=st.session_state.decklist_text or "",
-                            settings=settings_from_session(),
-                            gallery=list(st.session_state.gallery),
-                            project_id=st.session_state.get("project_id"),
-                        )
-                        st.session_state.project_id = pid
-                    except ValueError:
-                        pass
-                status.success(
-                    f"Regenerated {updated.face_name} "
-                    f"({updated.model} {updated.dpi} DPI)"
-                )
-            except Exception as exc:  # noqa: BLE001
-                status.error(f"Regenerate failed: {exc}")
+            status.success(
+                f"Queued regenerate for {match.face_name} "
+                f"({match.model} {target_dpi} DPI) — see the Tasks tab."
+            )
         st.session_state.regen_key = None
         st.session_state.regen_target_dpi = None
 
@@ -584,50 +765,28 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
             if not dpi_targets:
                 status.error("Select at least one target DPI in the sidebar first.")
             else:
-                target_msg = "/".join(str(d) for d in dpi_targets) + " DPI"
-                status.info(
-                    f"Generating {match.face_name} with {model} @ {target_msg}…"
+                _enqueue_face(
+                    scryfall_id=match.scryfall_id,
+                    face_index=match.face_index,
+                    face_label=match.face_label,
+                    face_name=match.face_name,
+                    card_name=match.card_name,
+                    set_code=match.set_code,
+                    collector_number=match.collector_number,
+                    png_url=match.png_url,
+                    dpi_targets=dpi_targets,
+                    model=model,
+                    tile_size=tile_size,
+                    output_dir=output_dir,
+                    cache_dir=cache_dir,
+                    weights_dir=weights_dir,
+                    project_id=_ensure_project_id(),
                 )
-                # Keep the existing gallery visible while this face
-                # generates, mirroring the single-variant Regen flow above.
-                _draw_gallery(gallery_slot, show_regen=False, page_size=page_size)
-                lines = []
-
-                def on_progress_card(msg: str) -> None:
-                    lines.append(msg)
-                    log_box.code("\n".join(lines[-30:]), language="text")
-
-                try:
-                    generated = regenerate_face_multi(
-                        match,
-                        dpi_targets=dpi_targets,
-                        output_dir=output_dir,
-                        cache_dir=cache_dir,
-                        weights_dir=weights_dir,
-                        model=model,
-                        tile_size=tile_size,
-                        on_progress=on_progress_card,
-                    )
-                    for r in generated:
-                        _upsert_gallery(r)
-                    name = (st.session_state.get("project_name") or "").strip()
-                    if name and st.session_state.gallery:
-                        try:
-                            pid = save_project(
-                                name,
-                                import_decklist_text=st.session_state.decklist_text or "",
-                                settings=settings_from_session(),
-                                gallery=list(st.session_state.gallery),
-                                project_id=st.session_state.get("project_id"),
-                            )
-                            st.session_state.project_id = pid
-                        except ValueError:
-                            pass
-                    status.success(
-                        f"Generated {len(generated)} image(s) for {match.face_name}."
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    status.error(f"Generate failed: {exc}")
+                target_msg = "/".join(str(d) for d in dpi_targets) + " DPI"
+                status.success(
+                    f"Queued {match.face_name} with {model} @ {target_msg} — "
+                    "see the Tasks tab."
+                )
         st.session_state.card_regen_key = None
 
     if run:
@@ -637,78 +796,31 @@ def render_decklist_tab(*, draw_gallery: bool = True) -> None:
         elif not dpi_targets:
             status.error("Select at least one target DPI.")
         else:
-            st.session_state.gallery = []
-            st.session_state.gallery_page = 0
-            lines: list[str] = []
-            target_msg = "/".join(str(d) for d in dpi_targets) + " DPI"
-            status.info(
-                f"Parsed {len(entries)} line(s) with {model} @ {target_msg}. "
-                "Comparisons appear as each finishes…"
+            notes: list[str] = []
+            queued, failed = _enqueue_decklist_entries(
+                entries,
+                model=model,
+                dpi_targets=dpi_targets,
+                skip_existing=skip_existing,
+                tile_size=tile_size,
+                output_dir=output_dir,
+                cache_dir=cache_dir,
+                weights_dir=weights_dir,
+                project_id=_ensure_project_id(),
+                on_note=notes.append,
             )
-            _draw_gallery(
-                gallery_slot,
-                show_regen=False,
-                page_size=page_size,
-                jump_to_last=True,
-            )
-
-            def on_progress_gen(msg: str) -> None:
-                lines.append(msg)
-                log_box.code("\n".join(lines[-50:]), language="text")
-
-            def on_face_done(face: FaceResult) -> None:
-                _upsert_gallery(face)
-                _draw_gallery(
-                    gallery_slot,
-                    show_regen=False,
-                    page_size=page_size,
-                    jump_to_last=True,
+            if failed:
+                status.warning(
+                    f"Queued {queued} task(s) — {failed} card(s) failed to resolve."
                 )
-
-            try:
-                result = process_entries(
-                    entries,
-                    output_dir=output_dir,
-                    dpi_targets=dpi_targets,
-                    model=model,
-                    cache_dir=cache_dir,
-                    weights_dir=weights_dir,
-                    skip_existing=skip_existing,
-                    tile_size=tile_size,
-                    on_progress=on_progress_gen,
-                    on_face_done=on_face_done,
+                for msg in notes:
+                    st.text(msg)
+            elif queued:
+                status.success(
+                    f"Queued {queued} task(s) — see the Tasks tab to monitor progress."
                 )
-            except ValueError as exc:
-                status.error(str(exc))
-                result = None
-
-            if result is not None:
-                if result.failed:
-                    status.warning(f"Finished with {len(result.failed)} failure(s)")
-                    for msg in result.failed:
-                        st.text(msg)
-                elif result.wrote:
-                    status.success(
-                        f"Done — {len(result.wrote)} image(s) in {output_dir}"
-                    )
-                else:
-                    status.error("Nothing was written.")
-
-                # Persist gallery into the open project so Load restores comparisons.
-                name = (st.session_state.get("project_name") or "").strip()
-                if name and st.session_state.gallery:
-                    try:
-                        pid = save_project(
-                            name,
-                            import_decklist_text=st.session_state.decklist_text or "",
-                            settings=settings_from_session(),
-                            gallery=list(st.session_state.gallery),
-                            project_id=st.session_state.get("project_id"),
-                        )
-                        st.session_state.project_id = pid
-                        status.caption(f"Project “{name}” updated with gallery.")
-                    except ValueError:
-                        pass
+            else:
+                status.info("Nothing to do — every requested image already exists.")
 
     _draw_gallery(
         gallery_slot,

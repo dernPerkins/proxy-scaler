@@ -8,8 +8,12 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image
+
+if TYPE_CHECKING:
+    from .db import TaskRow
 
 from .decklist import DeckEntry
 from .dpi import (
@@ -259,50 +263,59 @@ def _upscalers_for_targets(
     }
 
 
-def regenerate_face_multi(
-    item: FaceResult,
+def _regenerate_face_from_card(
+    face: CardFaceImage,
     *,
     dpi_targets: list[int],
-    output_dir: Path | None = None,
-    cache_dir: Path = Path("imgcache"),
-    weights_dir: Path = Path("weights"),
-    model: UpscaleModel | str | None = None,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    model_id: UpscaleModel,
     tile_size: int = 0,
+    known_original_path: Path | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> list[FaceResult]:
-    """Force re-upscale one face at multiple target DPIs (bypasses upscale
-    cache), reusing a single upscale pass per distinct native scale — e.g.
-    800 and 1200 DPI both resolving to native x4 only run the model once."""
+    """Shared core of regenerate_face_multi()/process_task(): given an
+    already-resolved CardFaceImage (no Scryfall call needed here — the
+    caller already has scryfall_id/png_url/etc.), reuse a cached original
+    if present (downloading via png_url only if not), then force-upscale
+    at each requested DPI, sharing one upscale pass per distinct native
+    scale — e.g. 800 and 1200 DPI both resolving to native x4 only run the
+    model once.
+
+    `known_original_path`, when given (regenerate_face_multi's caller
+    already has a FaceResult with its own recorded original_path), is
+    checked first; the canonical cache_dir-derived location is always
+    checked as a fallback (the only option process_task has, since a task
+    row has no prior FaceResult to carry a known path)."""
     if not dpi_targets:
         return []
-    model_id = parse_model(model) if model is not None else parse_model(item.model)
-    output_dir = output_dir or item.out_path.parent
-    client = ScryfallClient()
-    upscalers = _upscalers_for_targets(model_id, dpi_targets, Path(weights_dir), tile_size)
 
     def log(msg: str) -> None:
         if on_progress:
             on_progress(msg)
 
-    face = CardFaceImage(
-        scryfall_id=item.scryfall_id,
-        card_name=item.card_name,
-        face_name=item.face_name,
-        set_code=item.set_code,
-        collector_number=item.collector_number,
-        png_url=item.png_url,
-        face_index=item.face_index,
+    upscalers = _upscalers_for_targets(model_id, dpi_targets, Path(weights_dir), tile_size)
+
+    canonical_original = original_cache_path(cache_dir, face.scryfall_id, face.face_index)
+    cached_original = next(
+        (
+            p
+            for p in (known_original_path, canonical_original)
+            if p is not None and p.is_file()
+        ),
+        None,
     )
-    if item.original_path.is_file():
-        png_bytes = item.original_path.read_bytes()
+    if cached_original is not None:
+        png_bytes = cached_original.read_bytes()
         dpi_label = ",".join(str(d) for d in sorted(set(dpi_targets)))
         log(
             f"Regenerating {dpi_label} DPI with {model_id.value} "
-            f"from {item.original_path.name}"
+            f"from {cached_original.name}"
         )
     else:
-        log(f"Re-downloading {item.png_url}")
-        png_bytes = download_png(face.png_url, session=client._session)
+        log(f"Downloading {face.png_url}")
+        png_bytes = download_png(face.png_url)
 
     original_path = _save_original(
         png_bytes, cache_dir, face.scryfall_id, face.face_index
@@ -339,6 +352,118 @@ def regenerate_face_multi(
         results.append(result)
 
     return results
+
+
+def regenerate_face_multi(
+    item: FaceResult,
+    *,
+    dpi_targets: list[int],
+    output_dir: Path | None = None,
+    cache_dir: Path = Path("imgcache"),
+    weights_dir: Path = Path("weights"),
+    model: UpscaleModel | str | None = None,
+    tile_size: int = 0,
+    on_progress: ProgressCallback | None = None,
+) -> list[FaceResult]:
+    """Force re-upscale one face at multiple target DPIs (bypasses upscale
+    cache), reusing a single upscale pass per distinct native scale — e.g.
+    800 and 1200 DPI both resolving to native x4 only run the model once."""
+    model_id = parse_model(model) if model is not None else parse_model(item.model)
+    output_dir = output_dir or item.out_path.parent
+    face = CardFaceImage(
+        scryfall_id=item.scryfall_id,
+        card_name=item.card_name,
+        face_name=item.face_name,
+        set_code=item.set_code,
+        collector_number=item.collector_number,
+        png_url=item.png_url,
+        face_index=item.face_index,
+    )
+    return _regenerate_face_from_card(
+        face,
+        dpi_targets=dpi_targets,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        weights_dir=weights_dir,
+        model_id=model_id,
+        tile_size=tile_size,
+        known_original_path=item.original_path,
+        on_progress=on_progress,
+    )
+
+
+def process_task(
+    task: TaskRow, *, on_progress: ProgressCallback | None = None
+) -> FaceResult:
+    """Process one generation_tasks row (see db.py) into a FaceResult —
+    the unit of work the background worker (worker.py) performs. Shares
+    its core with regenerate_face_multi(), just fed from a task row's
+    already-resolved fields (set at enqueue time, no Scryfall call needed
+    here) instead of an existing FaceResult, and always exactly one target
+    DPI (one task = one face+dpi+model unit of work)."""
+    model_id = parse_model(task.model)
+    face = CardFaceImage(
+        scryfall_id=task.scryfall_id,
+        card_name=task.card_name,
+        face_name=task.face_name,
+        set_code=task.set_code,
+        collector_number=task.collector_number,
+        png_url=task.png_url,
+        face_index=task.face_index,
+    )
+    results = _regenerate_face_from_card(
+        face,
+        dpi_targets=[task.dpi],
+        output_dir=Path(task.output_dir),
+        cache_dir=Path(task.cache_dir),
+        weights_dir=Path(task.weights_dir),
+        model_id=model_id,
+        tile_size=task.tile_size,
+        on_progress=on_progress,
+    )
+    return results[0]
+
+
+def expected_face_result(task: TaskRow) -> FaceResult:
+    """Deterministically reconstruct the FaceResult a *done* task produced,
+    purely from the task row's own fields — no DB gallery lookup needed.
+    Lets the UI sync a task it enqueued into st.session_state.gallery the
+    moment it's done, even when no project has been saved yet (so there's
+    no project_id for the worker to attach a DB gallery row to). Mirrors
+    exactly how process_entries()'s skip_existing branch builds a
+    FaceResult from cache without re-running the upscaler."""
+    model_id = parse_model(task.model)
+    native = native_scale_for_dpi(task.dpi, model_id)
+    out_path = Path(task.output_dir) / output_filename(
+        task.face_name,
+        task.set_code,
+        task.collector_number,
+        task.face_label,
+        model_id,
+        task.dpi,
+    )
+    original_path = original_cache_path(
+        Path(task.cache_dir), task.scryfall_id, task.face_index
+    )
+    cached = cache_path(
+        Path(task.cache_dir), task.scryfall_id, task.face_index, native, model_id
+    )
+    return FaceResult(
+        out_path=out_path,
+        original_path=original_path,
+        scryfall_id=task.scryfall_id,
+        face_index=task.face_index,
+        face_name=task.face_name,
+        card_name=task.card_name,
+        set_code=task.set_code,
+        collector_number=task.collector_number,
+        png_url=task.png_url,
+        dpi=task.dpi,
+        model=task.model,
+        face_label=task.face_label,
+        native_scale=native,
+        device=read_cache_device(cached),
+    )
 
 
 def regenerate_face(
@@ -417,9 +542,17 @@ def process_entries(
         f"[{model_id.value} @ {dpi_label} DPI]"
     )
 
-    for entry in entries:
+    # Resolve every entry up front in a handful of batched Scryfall
+    # requests (via /cards/collection for exact printings) instead of one
+    # request per card — the per-card resolve was previously the dominant
+    # cost even for cards that end up skipped below.
+    resolved = client.resolve_many(entries)
+
+    for entry, pre_resolved in zip(entries, resolved):
         try:
-            card, warnings = client.resolve(entry)
+            if isinstance(pre_resolved, ScryfallError):
+                raise pre_resolved
+            card, warnings = pre_resolved
             for w in warnings:
                 result.notes.append(w)
                 log(f"  note: {w}")
