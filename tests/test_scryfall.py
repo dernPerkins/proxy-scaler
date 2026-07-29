@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from proxy_scaler.decklist import DeckEntry
-from proxy_scaler.scryfall import ScryfallClient, ScryfallError
+from proxy_scaler.scryfall import USER_AGENT, ScryfallClient, ScryfallError, download_png
 
 
 def _entry(set_code: str, collector: str, name: str = "X") -> DeckEntry:
@@ -153,3 +153,46 @@ def test_resolve_many_batch_call_failure_falls_back_to_individual(monkeypatch) -
 
     assert get_calls == ["c21/263"]
     assert results[0][0]["name"] == "Sol Ring"
+
+
+class _FakeResponse:
+    def __init__(self, *, ok=True, status_code=200, text="", content=b"png-bytes"):
+        self.ok = ok
+        self.status_code = status_code
+        self.text = text
+        self.content = content
+
+
+class _FakeSession:
+    """Mimics requests.Session()'s own pre-populated default headers, the
+    exact thing that made download_png()'s old `setdefault` a no-op."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self.headers = {"User-Agent": "python-requests/2.34.2"}
+        self._response = response
+        self.get_calls: list[str] = []
+
+    def get(self, url, timeout=None):
+        self.get_calls.append(url)
+        return self._response
+
+
+def test_download_png_overrides_default_user_agent() -> None:
+    """Regression test: requests.Session() pre-populates headers with its
+    own default User-Agent, so download_png() must override it (not just
+    setdefault it) or Scryfall's CDN rejects the request with a 400."""
+    sess = _FakeSession(_FakeResponse())
+    content = download_png("https://cards.scryfall.io/x.png", session=sess)
+    assert content == b"png-bytes"
+    assert sess.headers["User-Agent"] == USER_AGENT
+    assert sess.headers["User-Agent"] != "python-requests/2.34.2"
+
+
+def test_download_png_raises_with_status_and_body_on_failure() -> None:
+    sess = _FakeSession(
+        _FakeResponse(ok=False, status_code=400, text="bot detection triggered")
+    )
+    with pytest.raises(ScryfallError) as exc_info:
+        download_png("https://cards.scryfall.io/x.png", session=sess)
+    assert "400" in str(exc_info.value)
+    assert "bot detection triggered" in str(exc_info.value)

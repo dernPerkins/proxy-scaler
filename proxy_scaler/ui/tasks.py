@@ -11,25 +11,10 @@ from __future__ import annotations
 import streamlit as st
 
 from proxy_scaler import db
+from proxy_scaler.ui.task_status import STATUS_ICON, task_label
 
-_STATUS_ICON = {
-    "pending": "🕒",
-    "running": "⚙️",
-    "done": "✅",
-    "failed": "❌",
-    "canceled": "🚫",
-}
 _ACTIVE_STATUSES = ("pending", "running")
 _HISTORY_STATUSES = ("done", "failed", "canceled")
-
-
-def _task_label(task: db.TaskRow) -> str:
-    face_bit = f" ({task.face_label})" if task.face_label else ""
-    return (
-        f"{task.face_name}{face_bit} — "
-        f"{task.set_code.upper()}/{task.collector_number} · "
-        f"{task.dpi} DPI · {task.model}"
-    )
 
 
 @st.fragment(run_every="2s")
@@ -65,8 +50,8 @@ def _render_task_monitor(project_id: int | None) -> None:
     counts: dict[str, int] = {}
     for t in tasks:
         counts[t.status] = counts.get(t.status, 0) + 1
-    cols = st.columns(len(_STATUS_ICON))
-    for col, (status, icon) in zip(cols, _STATUS_ICON.items()):
+    cols = st.columns(len(STATUS_ICON))
+    for col, (status, icon) in zip(cols, STATUS_ICON.items()):
         with col:
             st.metric(f"{icon} {status.title()}", counts.get(status, 0))
 
@@ -77,13 +62,13 @@ def _render_task_monitor(project_id: int | None) -> None:
         for task in active:
             row_label, row_action = st.columns([5, 1])
             with row_label:
-                st.write(f"{_STATUS_ICON[task.status]} {_task_label(task)}")
+                st.write(f"{STATUS_ICON[task.status]} {task_label(task)}")
             with row_action:
                 if task.status == "pending":
                     if st.button(
                         "Cancel",
                         key=f"cancel-task-{task.id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         db.cancel_task(task.id)
                         st.rerun(scope="fragment")
@@ -95,14 +80,14 @@ def _render_task_monitor(project_id: int | None) -> None:
         st.dataframe(
             [
                 {
-                    "Status": f"{_STATUS_ICON[t.status]} {t.status}",
-                    "Card": _task_label(t),
+                    "Status": f"{STATUS_ICON[t.status]} {t.status}",
+                    "Card": task_label(t),
                     "Completed": t.completed_at or "",
                     "Error": t.error or "",
                 }
                 for t in history
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 

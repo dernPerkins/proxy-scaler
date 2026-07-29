@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 from proxy_scaler.db import (
+    ProjectCardRow,
     ProjectSettings,
+    TaskRow,
     acquire_worker_lock,
+    add_cards_to_project,
     cancel_task,
     claim_next_task,
     delete_all_projects,
@@ -19,6 +22,7 @@ from proxy_scaler.db import (
     init_db,
     is_worker_running,
     list_gallery_items_for_project,
+    list_project_cards,
     list_projects,
     list_tasks,
     load_project,
@@ -26,6 +30,7 @@ from proxy_scaler.db import (
     mark_task_failed,
     parse_output_filename,
     release_worker_lock,
+    remove_project_card,
     save_project,
     scan_gallery_from_output,
     upsert_gallery_item_for_task,
@@ -40,6 +45,51 @@ def db_path(tmp_path: Path) -> Path:
     return path
 
 
+def _fake_task(project_id: int | None, **overrides) -> TaskRow:
+    """A minimal TaskRow for exercising upsert_gallery_item_for_task()
+    directly, without going through enqueue_task/claim_next_task — only
+    the identity fields it reads (project_id/set_code/collector_number/
+    card_name/face_name) matter for matching against project_cards."""
+    kwargs = dict(
+        id=1,
+        project_id=project_id,
+        status="running",
+        scryfall_id="x",
+        face_index=None,
+        face_label=None,
+        face_name="X",
+        card_name="X",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=800,
+        model="swinir",
+        tile_size=0,
+        output_dir="",
+        cache_dir="",
+        weights_dir="",
+        error=None,
+        created_at="2026-01-01T00:00:00Z",
+        started_at=None,
+        completed_at=None,
+    )
+    kwargs.update(overrides)
+    return TaskRow(**kwargs)
+
+
+def _card_dict(
+    *, scryfall_id: str, card_name: str, set_code: str, collector_number: str, quantity: int = 1
+) -> dict:
+    return {
+        "scryfall_id": scryfall_id,
+        "card_name": card_name,
+        "set_code": set_code,
+        "collector_number": collector_number,
+        "quantity": quantity,
+        "original_import_line": f"{quantity} {card_name} ({set_code}) {collector_number}",
+    }
+
+
 def test_save_load_round_trip(db_path: Path) -> None:
     deck = "1 Sol Ring (c21) 263\n1 Lightning Bolt\n"
     settings = ProjectSettings(
@@ -52,33 +102,45 @@ def test_save_load_round_trip(db_path: Path) -> None:
         weights_dir="/tmp/weights",
         tile_size=384,
     )
-    gallery = [
-        {
-            "scryfall_id": "abc-123",
-            "face_index": None,
-            "face_name": "Sol Ring",
-            "card_name": "Sol Ring",
-            "set_code": "c21",
-            "collector_number": "263",
-            "face_label": None,
-            "model": "realesrnet",
-            "dpi": 1200,
-            "native_scale": 4,
-            "image_filename": "Sol_Ring-C21-263-realesrnet-1200dpi.png",
-            "out_path": "/tmp/out/Sol_Ring-C21-263-realesrnet-1200dpi.png",
-            "original_path": "/tmp/cache/orig.png",
-            "png_url": "https://example.com/x.png",
-        }
-    ]
 
     pid = save_project(
         "Test Deck",
         import_decklist_text=deck,
         settings=settings,
-        gallery=gallery,
         db_path=db_path,
     )
     assert pid > 0
+
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="abc-123", card_name="Sol Ring", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    result = FaceResult(
+        out_path=Path("/tmp/out/Sol_Ring-C21-263-realesrnet-1200dpi.png"),
+        original_path=Path("/tmp/cache/orig.png"),
+        scryfall_id="abc-123",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/x.png",
+        dpi=1200,
+        model="realesrnet",
+    )
+    upsert_gallery_item_for_task(
+        _fake_task(
+            pid,
+            scryfall_id="abc-123",
+            set_code="c21",
+            collector_number="263",
+            card_name="Sol Ring",
+            face_name="Sol Ring",
+        ),
+        result,
+        db_path=db_path,
+    )
 
     projects = list_projects(db_path)
     assert len(projects) == 1
@@ -93,54 +155,56 @@ def test_save_load_round_trip(db_path: Path) -> None:
     assert loaded.settings.skip_existing is False
     assert loaded.settings.output_dir == "/tmp/out"
     assert loaded.settings.tile_size == 384
+    assert len(loaded.cards) == 1
+    assert loaded.cards[0].card_name == "Sol Ring"
     assert len(loaded.gallery) == 1
     assert loaded.gallery[0]["scryfall_id"] == "abc-123"
     assert loaded.gallery[0]["set_code"] == "c21"
     assert loaded.gallery[0]["dpi"] == 1200
 
 
-def test_upsert_replaces_cards_and_gallery(db_path: Path) -> None:
-    settings = ProjectSettings()
+def test_save_does_not_touch_cards_or_gallery(db_path: Path) -> None:
+    """Regression test: save_project() must NOT replace project_cards/
+    project_gallery_items. It used to wipe-and-rebuild both from whatever
+    import_decklist_text was in the box at save time — the actual root
+    cause of generated images silently disappearing whenever the box
+    didn't exactly match what had been generated. Cards/gallery are now
+    persistent and survive repeated saves untouched, even with completely
+    different text pasted in."""
     pid = save_project(
-        "Upsert",
+        "Persistent",
         import_decklist_text="1 Sol Ring (c21) 263\n",
-        settings=settings,
-        gallery=[
-            {
-                "scryfall_id": "a",
-                "face_index": None,
-                "face_name": "Sol Ring",
-                "card_name": "Sol Ring",
-                "set_code": "c21",
-                "collector_number": "263",
-                "model": "swinir",
-                "dpi": 800,
-                "out_path": "/o/a.png",
-                "original_path": "/c/a.png",
-                "png_url": "",
-            }
-        ],
+        settings=ProjectSettings(),
         db_path=db_path,
     )
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    result = FaceResult(
+        out_path=Path("/o/a.png"),
+        original_path=Path("/c/a.png"),
+        scryfall_id="a",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=800,
+        model="swinir",
+    )
+    upsert_gallery_item_for_task(
+        _fake_task(pid, scryfall_id="a", set_code="c21", collector_number="263", card_name="Sol Ring", face_name="Sol Ring"),
+        result,
+        db_path=db_path,
+    )
+
     pid2 = save_project(
-        "Upsert",
+        "Persistent",
         import_decklist_text="1 Lightning Bolt (lea) 161\n",
         settings=ProjectSettings(dpi_targets=[600]),
-        gallery=[
-            {
-                "scryfall_id": "b",
-                "face_index": None,
-                "face_name": "Lightning Bolt",
-                "card_name": "Lightning Bolt",
-                "set_code": "lea",
-                "collector_number": "161",
-                "model": "swinir",
-                "dpi": 600,
-                "out_path": "/o/b.png",
-                "original_path": "/c/b.png",
-                "png_url": "",
-            }
-        ],
         project_id=pid,
         db_path=db_path,
     )
@@ -148,8 +212,10 @@ def test_upsert_replaces_cards_and_gallery(db_path: Path) -> None:
     loaded = load_project(pid, db_path=db_path)
     assert "Lightning Bolt" in loaded.import_decklist_text
     assert loaded.settings.dpi_targets == [600]
+    assert len(loaded.cards) == 1
+    assert loaded.cards[0].card_name == "Sol Ring"
     assert len(loaded.gallery) == 1
-    assert loaded.gallery[0]["scryfall_id"] == "b"
+    assert loaded.gallery[0]["scryfall_id"] == "a"
 
 
 def test_delete_cascades(db_path: Path) -> None:
@@ -157,21 +223,11 @@ def test_delete_cascades(db_path: Path) -> None:
         "Gone",
         import_decklist_text="1 Sol Ring (c21) 263\n",
         settings=ProjectSettings(),
-        gallery=[
-            {
-                "scryfall_id": "a",
-                "face_index": None,
-                "face_name": "Sol Ring",
-                "card_name": "Sol Ring",
-                "set_code": "c21",
-                "collector_number": "263",
-                "model": "swinir",
-                "dpi": 800,
-                "out_path": "/o/a.png",
-                "original_path": "/c/a.png",
-                "png_url": "",
-            }
-        ],
+        db_path=db_path,
+    )
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263")],
         db_path=db_path,
     )
     delete_project(pid, db_path=db_path)
@@ -185,42 +241,40 @@ def test_delete_all_projects_cascades(db_path: Path) -> None:
         "First",
         import_decklist_text="1 Sol Ring (c21) 263\n",
         settings=ProjectSettings(),
-        gallery=[
-            {
-                "scryfall_id": "a",
-                "face_index": None,
-                "face_name": "Sol Ring",
-                "card_name": "Sol Ring",
-                "set_code": "c21",
-                "collector_number": "263",
-                "model": "swinir",
-                "dpi": 800,
-                "out_path": "/o/a.png",
-                "original_path": "/c/a.png",
-                "png_url": "",
-            }
-        ],
+        db_path=db_path,
+    )
+    add_cards_to_project(
+        pid_a,
+        [_card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    result = FaceResult(
+        out_path=Path("/o/a.png"),
+        original_path=Path("/c/a.png"),
+        scryfall_id="a",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=800,
+        model="swinir",
+    )
+    upsert_gallery_item_for_task(
+        _fake_task(pid_a, scryfall_id="a", set_code="c21", collector_number="263", card_name="Sol Ring", face_name="Sol Ring"),
+        result,
         db_path=db_path,
     )
     pid_b = save_project(
         "Second",
         import_decklist_text="1 Lightning Bolt (lea) 161\n",
         settings=ProjectSettings(),
-        gallery=[
-            {
-                "scryfall_id": "b",
-                "face_index": None,
-                "face_name": "Lightning Bolt",
-                "card_name": "Lightning Bolt",
-                "set_code": "lea",
-                "collector_number": "161",
-                "model": "swinir",
-                "dpi": 800,
-                "out_path": "/o/b.png",
-                "original_path": "/c/b.png",
-                "png_url": "",
-            }
-        ],
+        db_path=db_path,
+    )
+    add_cards_to_project(
+        pid_b,
+        [_card_dict(scryfall_id="b", card_name="Lightning Bolt", set_code="lea", collector_number="161")],
         db_path=db_path,
     )
     assert len(list_projects(db_path)) == 2
@@ -252,7 +306,6 @@ def test_save_requires_name(db_path: Path) -> None:
             "  ",
             import_decklist_text="",
             settings=ProjectSettings(),
-            gallery=[],
             db_path=db_path,
         )
 
@@ -262,14 +315,12 @@ def test_rename_collision(db_path: Path) -> None:
         "Alpha",
         import_decklist_text="",
         settings=ProjectSettings(),
-        gallery=[],
         db_path=db_path,
     )
     save_project(
         "Beta",
         import_decklist_text="",
         settings=ProjectSettings(),
-        gallery=[],
         db_path=db_path,
     )
     with pytest.raises(ValueError, match="already exists"):
@@ -277,7 +328,6 @@ def test_rename_collision(db_path: Path) -> None:
             "Beta",
             import_decklist_text="",
             settings=ProjectSettings(),
-            gallery=[],
             project_id=a,
             db_path=db_path,
         )
@@ -329,7 +379,11 @@ def test_load_recovers_gallery_from_output(db_path: Path, tmp_path: Path) -> Non
         "Recover",
         import_decklist_text="1 Sol Ring (c21) 263\n",
         settings=ProjectSettings(output_dir=str(out)),
-        gallery=[],  # empty — simulates save-before-generate
+        db_path=db_path,
+    )
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="sol-id", card_name="Sol Ring", set_code="c21", collector_number="263")],
         db_path=db_path,
     )
     loaded = load_project(pid, db_path=db_path)
@@ -356,21 +410,29 @@ def test_load_merges_on_disk_variant_missing_from_saved_gallery(
         "Partial",
         import_decklist_text="1 Sol Ring (c21) 263\n",
         settings=ProjectSettings(output_dir=str(out)),
-        gallery=[
-            {
-                "scryfall_id": "sol-id",
-                "face_index": None,
-                "face_name": "Sol Ring",
-                "card_name": "Sol Ring",
-                "set_code": "c21",
-                "collector_number": "263",
-                "model": "swinir",
-                "dpi": 1200,
-                "out_path": str(out / "Sol_Ring-C21-263-swinir-1200dpi.png"),
-                "original_path": "/c/x.png",
-                "png_url": "",
-            }
-        ],
+        db_path=db_path,
+    )
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="sol-id", card_name="Sol Ring", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    result = FaceResult(
+        out_path=Path(str(out / "Sol_Ring-C21-263-swinir-1200dpi.png")),
+        original_path=Path("/c/x.png"),
+        scryfall_id="sol-id",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=1200,
+        model="swinir",
+    )
+    upsert_gallery_item_for_task(
+        _fake_task(pid, scryfall_id="sol-id", set_code="c21", collector_number="263", card_name="Sol Ring", face_name="Sol Ring"),
+        result,
         db_path=db_path,
     )
     loaded = load_project(pid, db_path=db_path)
@@ -483,10 +545,10 @@ def test_cancel_task_only_affects_pending(db_path: Path) -> None:
 
 def test_list_tasks_filters_by_project_and_status(db_path: Path) -> None:
     pid_a = save_project(
-        "A", import_decklist_text="", settings=ProjectSettings(), gallery=[], db_path=db_path
+        "A", import_decklist_text="", settings=ProjectSettings(), db_path=db_path
     )
     pid_b = save_project(
-        "B", import_decklist_text="", settings=ProjectSettings(), gallery=[], db_path=db_path
+        "B", import_decklist_text="", settings=ProjectSettings(), db_path=db_path
     )
     _enqueue_sol_ring(db_path, project_id=pid_a, collector_number="1")
     t2 = _enqueue_sol_ring(db_path, project_id=pid_a, collector_number="2")
@@ -509,7 +571,11 @@ def test_upsert_gallery_item_for_task_writes_and_updates(db_path: Path) -> None:
         "P",
         import_decklist_text="1 Sol Ring (c21) 263\n",
         settings=ProjectSettings(),
-        gallery=[],
+        db_path=db_path,
+    )
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="sol-id", card_name="Sol Ring", set_code="c21", collector_number="263")],
         db_path=db_path,
     )
     tid = _enqueue_sol_ring(db_path, project_id=pid)
@@ -598,3 +664,146 @@ def test_ensure_worker_running_spawns_only_when_not_already_running(
     ensure_worker_running(lock_path, log_path)
     assert len(calls) == 1
     release_worker_lock(fd)
+
+
+# --- Persistent project_cards -------------------------------------------
+
+
+def _new_project(db_path: Path, name: str = "Cards Test") -> int:
+    return save_project(
+        name, import_decklist_text="", settings=ProjectSettings(), db_path=db_path
+    )
+
+
+def test_add_cards_to_project_inserts_in_order(db_path: Path) -> None:
+    pid = _new_project(db_path)
+    added = add_cards_to_project(
+        pid,
+        [
+            _card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263"),
+            _card_dict(scryfall_id="b", card_name="Lightning Bolt", set_code="lea", collector_number="161"),
+        ],
+        db_path=db_path,
+    )
+    assert added == 2
+    cards = list_project_cards(pid, db_path=db_path)
+    assert [c.card_name for c in cards] == ["Sol Ring", "Lightning Bolt"]
+    assert [c.sort_order for c in cards] == [0, 1]
+    assert all(isinstance(c, ProjectCardRow) for c in cards)
+
+
+def test_add_cards_to_project_dedupes_by_scryfall_id(db_path: Path) -> None:
+    pid = _new_project(db_path)
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    # Re-importing the same card (even under a different nominal name) is a
+    # no-op — scryfall_id is the strongest identity signal.
+    added = add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="a", card_name="Sol Ring (again)", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    assert added == 0
+    assert len(list_project_cards(pid, db_path=db_path)) == 1
+
+
+def test_add_cards_to_project_dedupes_by_set_and_collector(db_path: Path) -> None:
+    """No scryfall_id known (unresolved) but the same printing — still
+    deduped via set+collector, matching _match_card_id's precedence."""
+    pid = _new_project(db_path)
+    add_cards_to_project(
+        pid,
+        [{"scryfall_id": None, "card_name": "Sol Ring", "set_code": "c21", "collector_number": "263", "quantity": 1, "original_import_line": "1 Sol Ring (c21) 263"}],
+        db_path=db_path,
+    )
+    added = add_cards_to_project(
+        pid,
+        [{"scryfall_id": None, "card_name": "Sol Ring", "set_code": "c21", "collector_number": "263", "quantity": 1, "original_import_line": "1 Sol Ring (c21) 263"}],
+        db_path=db_path,
+    )
+    assert added == 0
+
+
+def test_add_cards_to_project_dedupes_within_same_batch(db_path: Path) -> None:
+    """The same card pasted twice in one Import must only be added once."""
+    pid = _new_project(db_path)
+    added = add_cards_to_project(
+        pid,
+        [
+            _card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263"),
+            _card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263"),
+        ],
+        db_path=db_path,
+    )
+    assert added == 1
+    assert len(list_project_cards(pid, db_path=db_path)) == 1
+
+
+def test_add_cards_to_project_different_cards_both_added(db_path: Path) -> None:
+    pid = _new_project(db_path)
+    added = add_cards_to_project(
+        pid,
+        [
+            _card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263"),
+            _card_dict(scryfall_id="b", card_name="Lightning Bolt", set_code="lea", collector_number="161"),
+        ],
+        db_path=db_path,
+    )
+    assert added == 2
+
+
+def test_remove_project_card_cascades_gallery_not_tasks(db_path: Path) -> None:
+    pid = _new_project(db_path)
+    add_cards_to_project(
+        pid,
+        [_card_dict(scryfall_id="a", card_name="Sol Ring", set_code="c21", collector_number="263")],
+        db_path=db_path,
+    )
+    [card] = list_project_cards(pid, db_path=db_path)
+    result = FaceResult(
+        out_path=Path("/o/a.png"),
+        original_path=Path("/c/a.png"),
+        scryfall_id="a",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=800,
+        model="swinir",
+    )
+    upsert_gallery_item_for_task(
+        _fake_task(pid, scryfall_id="a", set_code="c21", collector_number="263", card_name="Sol Ring", face_name="Sol Ring"),
+        result,
+        db_path=db_path,
+    )
+    tid = enqueue_task(
+        pid,
+        scryfall_id="a",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=1200,
+        model="swinir",
+        output_dir="/tmp/out",
+        cache_dir="/tmp/cache",
+        weights_dir="/tmp/weights",
+        db_path=db_path,
+    )
+    assert len(list_gallery_items_for_project(pid, db_path=db_path)) == 1
+
+    remove_project_card(card.id, db_path=db_path)
+
+    assert list_project_cards(pid, db_path=db_path) == []
+    assert list_gallery_items_for_project(pid, db_path=db_path) == []
+    # The in-flight task itself is untouched (no FK to project_cards) —
+    # it'll just fail to attach a gallery row once it completes.
+    assert get_task(tid, db_path=db_path) is not None

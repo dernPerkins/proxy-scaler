@@ -10,7 +10,7 @@ from proxy_scaler.upscale import UpscaleModel
 
 
 def test_defaults():
-    assert DEFAULT_DPI == 800
+    assert DEFAULT_DPI == 1200
     assert target_pixels(800) == (2000, 2800)
     assert target_pixels(600) == (1500, 2100)
     assert target_pixels(1200) == (3000, 4200)

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .decklist import DeckEntry, parse_decklist_text
+from .decklist import DeckEntry
 from .dpi import DEFAULT_DPI
 from .upscale import UpscaleModel
 
@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS project_cards (
     quantity INTEGER,
     card_name TEXT,
     set_code TEXT,
-    collector_number TEXT
+    collector_number TEXT,
+    scryfall_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_cards_project
@@ -193,12 +194,53 @@ class ProjectSettings:
 
 
 @dataclass
+class ProjectCardRow:
+    """One row of project_cards — a persistent, incrementally-managed entry
+    in a project's card list (added via Import, removed via Remove Card;
+    never wholesale replaced — see save_project())."""
+
+    id: int
+    project_id: int
+    sort_order: int
+    original_import_line: str
+    quantity: int | None
+    card_name: str | None
+    set_code: str | None
+    collector_number: str | None
+    scryfall_id: str | None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> ProjectCardRow:
+        return cls(
+            id=int(row["id"]),
+            project_id=int(row["project_id"]),
+            sort_order=int(row["sort_order"]),
+            original_import_line=row["original_import_line"],
+            quantity=row["quantity"],
+            card_name=row["card_name"],
+            set_code=row["set_code"],
+            collector_number=row["collector_number"],
+            scryfall_id=row["scryfall_id"] if "scryfall_id" in row.keys() else None,
+        )
+
+    def to_deck_entry(self) -> DeckEntry:
+        return DeckEntry(
+            quantity=self.quantity or 1,
+            name=self.card_name or "",
+            set_code=self.set_code,
+            collector_number=self.collector_number,
+            raw_line=self.original_import_line,
+        )
+
+
+@dataclass
 class LoadedProject:
     id: int
     name: str
     import_decklist_text: str
     settings: ProjectSettings
     gallery: list[dict[str, Any]]
+    cards: list[ProjectCardRow]
     created_at: str
     updated_at: str
 
@@ -305,6 +347,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE projects ADD COLUMN tile_size INTEGER NOT NULL DEFAULT 0"
         )
+
+    card_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(project_cards)").fetchall()
+    }
+    if "scryfall_id" not in card_cols:
+        conn.execute("ALTER TABLE project_cards ADD COLUMN scryfall_id TEXT")
 
 
 def enqueue_task(
@@ -933,31 +981,139 @@ def _match_card_id(
     return cards[0][0] if cards else None
 
 
+def list_project_cards(
+    project_id: int, db_path: Path | str | None = None
+) -> list[ProjectCardRow]:
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM project_cards WHERE project_id = ? ORDER BY sort_order ASC",
+            (project_id,),
+        ).fetchall()
+    return [ProjectCardRow.from_row(r) for r in rows]
+
+
+def _card_matches(existing: ProjectCardRow, candidate: dict[str, Any]) -> bool:
+    """Same identity precedence as _match_card_id: prefer an exact
+    scryfall_id match, then set+collector, then case-folded name — used to
+    dedupe a re-Import against cards already in the project."""
+    cand_scryfall_id = candidate.get("scryfall_id") or None
+    if cand_scryfall_id and existing.scryfall_id:
+        return cand_scryfall_id == existing.scryfall_id
+
+    cand_set = (candidate.get("set_code") or "").lower() or None
+    cand_collector = candidate.get("collector_number") or None
+    if cand_set and cand_collector and existing.set_code and existing.collector_number:
+        return (
+            cand_set == existing.set_code.lower()
+            and cand_collector == existing.collector_number
+        )
+
+    cand_name = (candidate.get("card_name") or "").casefold()
+    existing_name = (existing.card_name or "").casefold()
+    if cand_name and existing_name:
+        return cand_name == existing_name
+
+    return False
+
+
+def add_cards_to_project(
+    project_id: int, cards: list[dict[str, Any]], db_path: Path | str | None = None
+) -> int:
+    """Add pre-resolved cards (scryfall_id/card_name/set_code/
+    collector_number/quantity/original_import_line dicts — resolution is a
+    UI-layer concern, see decklist.py's _import_entries) to a project's
+    persistent card list. Cards already present (by scryfall_id, else
+    set+collector, else name) are skipped, not duplicated. Returns the
+    count actually inserted."""
+    with connect(db_path) as conn:
+        existing_rows = conn.execute(
+            "SELECT * FROM project_cards WHERE project_id = ? ORDER BY sort_order ASC",
+            (project_id,),
+        ).fetchall()
+        existing = [ProjectCardRow.from_row(r) for r in existing_rows]
+        next_order = (existing[-1].sort_order + 1) if existing else 0
+
+        added = 0
+        for candidate in cards:
+            if any(_card_matches(e, candidate) for e in existing):
+                continue
+            conn.execute(
+                """
+                INSERT INTO project_cards (
+                    project_id, sort_order, original_import_line,
+                    quantity, card_name, set_code, collector_number, scryfall_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    next_order,
+                    candidate.get("original_import_line") or "",
+                    candidate.get("quantity") or 1,
+                    candidate.get("card_name"),
+                    candidate.get("set_code"),
+                    candidate.get("collector_number"),
+                    candidate.get("scryfall_id"),
+                ),
+            )
+            # Reflect the newly-inserted row so later candidates in this
+            # same batch can also be deduped against it (e.g. the same
+            # card pasted twice in one Import).
+            existing.append(
+                ProjectCardRow(
+                    id=-1,
+                    project_id=project_id,
+                    sort_order=next_order,
+                    original_import_line=candidate.get("original_import_line") or "",
+                    quantity=candidate.get("quantity") or 1,
+                    card_name=candidate.get("card_name"),
+                    set_code=candidate.get("set_code"),
+                    collector_number=candidate.get("collector_number"),
+                    scryfall_id=candidate.get("scryfall_id"),
+                )
+            )
+            next_order += 1
+            added += 1
+        conn.commit()
+    return added
+
+
+def remove_project_card(card_id: int, db_path: Path | str | None = None) -> None:
+    """Remove one card from a project's list. Cascades to that card's
+    project_gallery_items rows (DB records only — PNG files on disk are
+    untouched, matching how "Delete generated data" is a separate explicit
+    action). Any in-flight generation_tasks for the removed card just
+    complete normally and fail to attach (generation_tasks has no FK to
+    project_cards — see upsert_gallery_item_for_task's existing no-op
+    behavior when no matching card is found)."""
+    with connect(db_path) as conn:
+        conn.execute("DELETE FROM project_cards WHERE id = ?", (card_id,))
+        conn.commit()
+
+
 def save_project(
     name: str,
     *,
     import_decklist_text: str,
     settings: ProjectSettings,
-    gallery: list[dict[str, Any]],
     project_id: int | None = None,
     db_path: Path | str | None = None,
 ) -> int:
-    """Upsert a project and replace its cards + gallery in one transaction."""
+    """Upsert a project's name/settings. Does NOT touch project_cards or
+    project_gallery_items — those are persistent and managed incrementally
+    (see add_cards_to_project/remove_project_card and the background
+    worker's upsert_gallery_item_for_task), not derived from
+    import_decklist_text on every save. (Save used to wipe-and-rebuild both
+    from whatever text was in the box at save time — the actual root cause
+    of generated images silently disappearing whenever the box didn't
+    exactly match what had been generated.) import_decklist_text is kept
+    purely as "last imported text" for the UI to show back, not as a source
+    of truth for what cards exist."""
     name = name.strip()
     if not name:
         raise ValueError("Project name is required")
 
-    entries = parse_decklist_text(import_decklist_text)
     now = _utc_now()
     s = settings.to_row()
-
-    # Fold in any on-disk output PNGs this project's own gallery doesn't
-    # already know about (e.g. saved before generate, after a refresh, an
-    # interrupted run, or files from an earlier session) — see
-    # _merge_disk_gallery for why this isn't just an "empty gallery" check.
-    gallery = _merge_disk_gallery(
-        gallery, entries, settings.output_dir, settings.cache_dir or None
-    )
 
     with connect(db_path) as conn:
         if project_id is not None:
@@ -1035,65 +1191,6 @@ def save_project(
                 ),
             )
 
-        # Replace children
-        conn.execute("DELETE FROM project_cards WHERE project_id = ?", (project_id,))
-
-        inserted: list[tuple[int, DeckEntry]] = []
-        for order, entry in enumerate(entries):
-            cur = conn.execute(
-                """
-                INSERT INTO project_cards (
-                    project_id, sort_order, original_import_line,
-                    quantity, card_name, set_code, collector_number
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    project_id,
-                    order,
-                    entry.raw_line,
-                    entry.quantity,
-                    entry.name,
-                    entry.set_code,
-                    entry.collector_number,
-                ),
-            )
-            inserted.append((int(cur.lastrowid), entry))
-
-        for item in gallery:
-            card_id = _match_card_id(inserted, item)
-            if card_id is None:
-                continue
-            out_path = str(item.get("out_path") or "")
-            image_filename = item.get("image_filename") or Path(out_path).name
-            face_index = item.get("face_index")
-            conn.execute(
-                """
-                INSERT INTO project_gallery_items (
-                    card_id, scryfall_id, face_index, face_name, card_name,
-                    set_code, collector_number, face_label, model, dpi, native_scale,
-                    device, image_filename, out_path, original_path, png_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    card_id,
-                    item.get("scryfall_id") or "",
-                    face_index,
-                    item.get("face_name"),
-                    item.get("card_name"),
-                    item.get("set_code"),
-                    item.get("collector_number"),
-                    item.get("face_label"),
-                    item.get("model") or settings.model,
-                    int(item.get("dpi") or settings.dpi),
-                    int(item.get("native_scale") or 4),
-                    str(item.get("device") or "unknown"),
-                    image_filename,
-                    out_path,
-                    str(item.get("original_path") or ""),
-                    str(item.get("png_url") or ""),
-                ),
-            )
-
         conn.commit()
         return project_id
 
@@ -1144,9 +1241,10 @@ def load_project(
 
     settings = ProjectSettings.from_row(row)
     import_text = row["import_decklist_text"] or ""
+    cards = list_project_cards(project_id, db_path=db_path)
     gallery = _merge_disk_gallery(
         gallery,
-        parse_decklist_text(import_text),
+        [c.to_deck_entry() for c in cards],
         settings.output_dir,
         settings.cache_dir or None,
     )
@@ -1157,6 +1255,7 @@ def load_project(
         import_decklist_text=import_text,
         settings=settings,
         gallery=gallery,
+        cards=cards,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

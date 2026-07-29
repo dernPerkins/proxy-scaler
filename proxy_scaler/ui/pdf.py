@@ -7,7 +7,7 @@ import unicodedata
 
 import streamlit as st
 
-from proxy_scaler.decklist import parse_decklist_text
+from proxy_scaler import db
 from proxy_scaler.dpi import DEFAULT_DPI
 from proxy_scaler.pdf_layout import (
     PAGE_SIZE_PRESETS_MM,
@@ -283,7 +283,9 @@ def render_pdf_tab(*, active: bool = True) -> None:
         st.info("No images yet — generate some in the Decklist tab first.")
         return
 
-    entries = parse_decklist_text(st.session_state.decklist_text or "")
+    project_id = st.session_state.get("project_id")
+    cards = db.list_project_cards(project_id) if project_id is not None else []
+    entries = [c.to_deck_entry() for c in cards]
     units, unmatched = match_quantities(
         entries,
         items,
@@ -360,6 +362,6 @@ def render_pdf_tab(*, active: bool = True) -> None:
             data=pdf_bytes,
             file_name=st.session_state._pdf_filename,
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
         )
 

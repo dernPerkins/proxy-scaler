@@ -9,7 +9,7 @@ CARD_HEIGHT_IN = 3.5
 
 # User-facing DPI choices
 DPI_OPTIONS: tuple[int, ...] = (600, 800, 1200)
-DEFAULT_DPI = 800
+DEFAULT_DPI = 1200
 
 
 def target_pixels(dpi: int) -> tuple[int, int]:

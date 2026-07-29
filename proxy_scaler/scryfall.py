@@ -307,7 +307,14 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
 
 def download_png(url: str, session: requests.Session | None = None) -> bytes:
     sess = session or requests.Session()
-    sess.headers.setdefault("User-Agent", USER_AGENT)
+    # .update(), not .setdefault(): requests.Session() already pre-populates
+    # headers with its own default User-Agent (python-requests/X.Y.Z), which
+    # setdefault() would never override — and Scryfall's CDN rejects that
+    # default UA with a 400.
+    sess.headers.update({"User-Agent": USER_AGENT})
     resp = sess.get(url, timeout=60)
-    resp.raise_for_status()
+    if not resp.ok:
+        raise ScryfallError(
+            f"Scryfall HTTP {resp.status_code} downloading {url}: {resp.text[:200]}"
+        )
     return resp.content

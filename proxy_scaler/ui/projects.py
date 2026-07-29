@@ -47,6 +47,9 @@ _DECKLIST_WIDGET_KEYS = (
     "cache_dir",
     "weights_dir",
     "tile_size",
+    "card_sort_primary",
+    "card_sort_secondary",
+    "card_sort_desc",
 )
 _PDF_WIDGET_KEYS = (
     "pdf_image_dpi",
@@ -123,21 +126,27 @@ def ensure_session_defaults() -> None:
         "gallery": [],
         "regen_key": None,
         "regen_target_dpi": None,
-        "card_regen_key": None,
+        "card_generate_id": None,
+        "generate_all_requested": False,
         # Face group keys whose images the user has clicked to load — starts
         # empty each session so opening a gallery full of pre-existing
         # images doesn't decode/encode all of them up front (decklist.py's
         # _upsert_gallery adds a face here the moment it's freshly
         # generated/regenerated, so live progress still shows immediately).
         "loaded_faces": set(),
-        "gallery_page": 0,
+        # Card ids just removed this session, hidden immediately in the
+        # table via a fragment-scoped rerun (avoids a full-page rerun
+        # resetting scroll position) — pruned automatically once
+        # _draw_card_table's own next fetch confirms they're really gone.
+        "removed_card_ids": set(),
         "project_id": None,
         "project_name": "",
         "model": UpscaleModel.ULTRASHARP_V2.value,
-        "dpi_600": False,
-        "dpi_800": True,
-        "dpi_1200": False,
+        **{f"dpi_{d}": d == DEFAULT_DPI for d in DPI_OPTIONS},
         "page_size": DEFAULT_PAGE_SIZE,
+        "card_sort_primary": "Name",
+        "card_sort_secondary": "(none)",
+        "card_sort_desc": False,
         "skip_existing": True,
         "output_dir": DEFAULT_OUTPUT,
         "cache_dir": DEFAULT_CACHE,
@@ -252,11 +261,11 @@ def apply_loaded_project(loaded) -> None:
     st.session_state.project_name = loaded.name
     st.session_state.decklist_text = loaded.import_decklist_text
     st.session_state.gallery = loaded.gallery
-    st.session_state.gallery_page = 0
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
-    st.session_state.card_regen_key = None
+    st.session_state.card_generate_id = None
     st.session_state.loaded_faces = set()
+    st.session_state.removed_card_ids = set()
     s = loaded.settings
     st.session_state.model = s.model
     for d in DPI_OPTIONS:
@@ -278,11 +287,11 @@ def reset_to_new_project() -> None:
     st.session_state.project_name = ""
     st.session_state.decklist_text = ""
     st.session_state.gallery = []
-    st.session_state.gallery_page = 0
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
-    st.session_state.card_regen_key = None
+    st.session_state.card_generate_id = None
     st.session_state.loaded_faces = set()
+    st.session_state.removed_card_ids = set()
     st.session_state.model = UpscaleModel.ULTRASHARP_V2.value
     for d in DPI_OPTIONS:
         st.session_state[f"dpi_{d}"] = d == DEFAULT_DPI
@@ -311,22 +320,26 @@ def clear_all_projects() -> list[str]:
     st.session_state.project_name = ""
     st.session_state.decklist_text = ""
     st.session_state.gallery = []
-    st.session_state.gallery_page = 0
     st.session_state.regen_key = None
     st.session_state.regen_target_dpi = None
-    st.session_state.card_regen_key = None
+    st.session_state.card_generate_id = None
     st.session_state.loaded_faces = set()
+    st.session_state.removed_card_ids = set()
     persist_decklist_widgets()
     return notes
 
 
 def _do_save(*, name: str, project_id: int | None) -> None:
-    """Persist current session; raises ValueError on validation errors."""
+    """Persist current session's name/settings; raises ValueError on
+    validation errors. Cards/gallery are persistent and managed
+    incrementally (Import/Remove Card/the background worker) — Save no
+    longer touches them. Note: "Save As" (project_id=None with an existing
+    session) therefore starts the new project with an empty card list, not
+    a copy of the current one's cards."""
     pid = save_project(
         name,
         import_decklist_text=_session_setting("decklist_text", "") or "",
         settings=settings_from_session(),
-        gallery=list(st.session_state.gallery or []),
         project_id=project_id,
     )
     st.session_state.project_id = pid
@@ -359,7 +372,7 @@ def render_project_bar() -> None:
             help="Name used when saving this project",
         )
     with save_col:
-        if st.button("Save", use_container_width=True, type="primary"):
+        if st.button("Save", width="stretch", type="primary"):
             name = (st.session_state.project_name or "").strip()
             if not name:
                 st.error("Enter a project name before saving.")
@@ -370,13 +383,13 @@ def render_project_bar() -> None:
                 except ValueError as exc:
                     st.error(str(exc))
     with new_col:
-        if st.button("New", use_container_width=True):
+        if st.button("New", width="stretch"):
             st.session_state._pending_new = True
             st.rerun()
     with as_col:
-        with st.popover("Save As…", use_container_width=True):
+        with st.popover("Save As…", width="stretch"):
             st.text_input("Save as", key="save_as_name", placeholder="New project name")
-            if st.button("Save copy", use_container_width=True, type="primary"):
+            if st.button("Save copy", width="stretch", type="primary"):
                 name = (st.session_state.save_as_name or "").strip()
                 if not name:
                     st.error("Name required.")
@@ -401,14 +414,14 @@ def render_project_bar() -> None:
                 help="Load a previously saved project",
             )
         with go_col:
-            if st.button("Load", use_container_width=True):
+            if st.button("Load", width="stretch"):
                 if choice not in options:
                     st.warning("Pick a project to load.")
                 else:
                     st.session_state._pending_load_id = options[choice]
                     st.rerun()
         with del_col:
-            with st.popover("Delete…", use_container_width=True):
+            with st.popover("Delete…", width="stretch"):
                 if choice not in options:
                     st.caption("Select a project above first.")
                 else:
@@ -420,7 +433,7 @@ def render_project_bar() -> None:
                     )
                     if st.button(
                         "Delete permanently",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary",
                         disabled=not confirm,
                     ):

@@ -198,11 +198,11 @@ def open_comparison_dialog(item: FaceResult) -> None:
         return
     if not has_original:
         st.warning("Original image missing — showing upscaled only.")
-        st.image(str(item.out_path), use_container_width=True)
+        st.image(str(item.out_path), width="stretch")
         return
     if not has_upscaled:
         st.warning("Upscaled image missing — showing original only.")
-        st.image(str(item.original_path), use_container_width=True)
+        st.image(str(item.original_path), width="stretch")
         return
 
     pair = _comparison_pair(item.original_path, item.out_path)

@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=DPI_OPTIONS,
         default=DEFAULT_DPI,
-        help="Target print DPI: 600, 800 (default), or 1200",
+        help="Target print DPI: 600, 800, or 1200 (default)",
     )
     p.add_argument(
         "--all-dpis",
