@@ -517,12 +517,24 @@ def _status_for_pairs(
 
 
 def _render_status_badges(face_items: list[FaceResult], face_tasks: list[db.TaskRow]) -> None:
-    """No image decode at all — just an icon+text line per (dpi, model)."""
-    for dpi, model, status, error in _status_for_pairs(face_items, face_tasks):
+    """No image decode at all — one compact line per face, every (dpi,
+    model) pair joined together instead of a separate caption line each
+    (a multi-DPI card used to take several lines; now it's one)."""
+    pairs = _status_for_pairs(face_items, face_tasks)
+    if not pairs:
+        return
+    source = face_items[0] if face_items else face_tasks[0]
+    prefix = f"{source.face_label}: " if source.face_label else ""
+    parts = []
+    failed_error = None
+    for dpi, model, status, error in pairs:
         icon = STATUS_ICON.get(status, "•")
-        st.caption(f"{icon} {dpi} DPI · {model} · {status}")
-        if status == "failed" and error:
-            st.caption(f"　{error[:200]}")
+        parts.append(f"{icon} {dpi}·{model} {status}")
+        if status == "failed" and error and failed_error is None:
+            failed_error = error
+    st.caption(prefix + "　".join(parts))
+    if failed_error:
+        st.caption(f"　{failed_error[:200]}")
 
 
 def _render_face_images(face_items: list[FaceResult], *, show_regen: bool) -> None:
@@ -591,9 +603,12 @@ def _render_card_row(
     has_images = any(face_items for _k, face_items, _t in face_groups)
     expanded = row_key in st.session_state.loaded_faces
 
-    st.divider()
+    st.markdown(
+        '<hr style="margin:2px 0;border:none;border-top:1px solid rgba(128,128,128,0.25);" />',
+        unsafe_allow_html=True,
+    )
     name_col, set_col, coll_col, qty_col, show_col, gen_col, rm_col = st.columns(
-        [3, 1, 1, 0.7, 1.4, 1, 1], vertical_alignment="center"
+        [3.5, 1, 1, 0.6, 0.4, 0.4, 0.4], vertical_alignment="center"
     )
     with name_col:
         st.write(f"**{card.card_name or card.original_import_line}**")
@@ -605,8 +620,9 @@ def _render_card_row(
         st.write(f"×{card.quantity or 1}")
     with show_col:
         if has_images:
-            label = "Hide images" if expanded else "Show images"
-            if st.button(label, key=f"show-{row_key}", width="stretch"):
+            icon = ":material/visibility_off:" if expanded else ":material/visibility:"
+            help_text = "Hide images" if expanded else "Show images"
+            if st.button("", key=f"show-{row_key}", icon=icon, help=help_text):
                 if expanded:
                     st.session_state.loaded_faces.discard(row_key)
                 else:
@@ -614,12 +630,21 @@ def _render_card_row(
                 st.rerun(scope="fragment")
     with gen_col:
         if show_regen and st.button(
-            "Generate", key=f"gen-{row_key}", width="stretch", type="primary"
+            "",
+            key=f"gen-{row_key}",
+            icon=":material/auto_awesome:",
+            help=f"Generate {card.card_name or 'this card'}",
+            type="primary",
         ):
             st.session_state.card_generate_id = card.id
             st.rerun()
     with rm_col:
-        if show_regen and st.button("Remove", key=f"rm-{row_key}", width="stretch"):
+        if show_regen and st.button(
+            "",
+            key=f"rm-{row_key}",
+            icon=":material/delete:",
+            help=f"Remove {card.card_name or 'this card'}",
+        ):
             db.remove_project_card(card.id)
             st.session_state.removed_card_ids.add(card.id)
             st.rerun(scope="fragment")
