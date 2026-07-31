@@ -167,15 +167,68 @@
         };
       }
 
-      async function connect() {
-        const config = getConfig();
+      const REMOTE_TIMEOUT_MS = 8000;
+
+      function renderConnecting() {
         render(`
           <h1>Proxy Scaler</h1>
-          <div class="status" id="status">Connecting…</div>
+          <div class="status">Connecting…</div>
+          <button class="link" id="cancel">cancel</button>
         `);
+        document.getElementById("cancel").onclick = () => {
+          clearConfig();
+          renderPicker();
+        };
+      }
+
+      function renderConnectError(message) {
+        render(`
+          <h1>Proxy Scaler</h1>
+          <div class="error">${message}</div>
+          <button class="link" id="retry">try again</button>
+          <button class="link" id="change">change server</button>
+        `);
+        document.getElementById("retry").onclick = connect;
+        document.getElementById("change").onclick = () => {
+          clearConfig();
+          renderPicker();
+        };
+      }
+
+      // Cross-origin fetches to an arbitrary remote host won't have CORS
+      // headers to read a real response, so this uses mode: "no-cors" —
+      // the response itself is opaque and unreadable, but the fetch
+      // promise still rejects on a genuine network failure (unreachable
+      // host, connection refused, DNS failure), which is all this needs:
+      // "is anything there at all" before committing the whole window to
+      // navigating at it.
+      async function isReachable(url, timeoutMs) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          await fetch(url, { mode: "no-cors", signal: controller.signal });
+          return true;
+        } catch {
+          return false;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      async function connect() {
+        const config = getConfig();
+        renderConnecting();
 
         if (config.mode === "remote") {
-          window.location.href = `http://${config.host}:8501`;
+          const url = `http://${config.host}:8501`;
+          const reachable = await isReachable(url, REMOTE_TIMEOUT_MS);
+          if (!reachable) {
+            renderConnectError(
+              `Couldn't reach ${config.host}:8501 — check the address and that the server is running.`
+            );
+            return;
+          }
+          window.location.href = url;
           return;
         }
 
@@ -183,17 +236,7 @@
           const url = await invoke("start_local_server");
           window.location.href = url;
         } catch (err) {
-          render(`
-            <h1>Proxy Scaler</h1>
-            <div class="error">Couldn't start the local server: ${err}</div>
-            <button class="link" id="retry">try again</button>
-            <button class="link" id="change">change server</button>
-          `);
-          document.getElementById("retry").onclick = connect;
-          document.getElementById("change").onclick = () => {
-            clearConfig();
-            renderPicker();
-          };
+          renderConnectError(`Couldn't start the local server: ${err}`);
         }
       }
 
