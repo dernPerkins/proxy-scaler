@@ -1,0 +1,11 @@
+[package]
+name = "proxy-scaler-spike"
+version = "0.1.0"
+description = "Phase 0 spike: validate Tauri webview + Streamlit websocket behavior"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
