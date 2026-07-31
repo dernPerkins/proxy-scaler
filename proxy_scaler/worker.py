@@ -59,4 +59,13 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    import os
+
+    # Env var overrides (unset -> None -> normal default-path behavior) so
+    # a supervisor/test harness spawning this as `python -m
+    # proxy_scaler.worker` can point it at an isolated DB/lock file
+    # without needing a CLI arg parser here.
+    main(
+        db_path=os.environ.get("PROXY_SCALER_DB_PATH") or None,
+        lock_path=os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None,
+    )

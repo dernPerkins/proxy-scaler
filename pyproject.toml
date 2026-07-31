@@ -18,8 +18,15 @@ dependencies = [
   "fpdf2>=2.7",
 ]
 
+[project.optional-dependencies]
+# Windows-only: gives supervisor.py a Job Object (KILL_ON_JOB_CLOSE) so
+# Streamlit/worker are guaranteed cleaned up even if the supervisor itself
+# is force-killed. Falls back to a taskkill-based best-effort without it.
+win32 = ["pywin32; sys_platform == 'win32'"]
+
 [project.scripts]
 proxy-scaler = "proxy_scaler.cli:main"
+proxy-scaler-serve = "proxy_scaler.supervisor:cli_main"
 
 [tool.setuptools.packages.find]
 include = ["proxy_scaler*"]

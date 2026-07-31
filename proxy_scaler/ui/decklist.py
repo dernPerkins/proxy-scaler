@@ -47,7 +47,12 @@ _IMAGES_PER_ROW = 4
 # Transformer/attention-heavy architectures that can OOM a ~12GB GPU on a
 # full-image forward pass — the lighter CNN-based models don't need tiling.
 _HEAVY_MODELS = frozenset(
-    {UpscaleModel.ILLUSTRATIONJANAI, UpscaleModel.ULTRASHARP_V2, UpscaleModel.HAT}
+    {
+        UpscaleModel.ILLUSTRATIONJANAI,
+        UpscaleModel.ULTRASHARP,
+        UpscaleModel.ULTRASHARP_V2,
+        UpscaleModel.HAT,
+    }
 )
 
 _SORT_FIELDS = {
