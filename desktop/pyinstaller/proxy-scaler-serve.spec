@@ -5,8 +5,11 @@
 # package is installed in the build venv — no explicit hookspath needed.
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-ENTRY_SCRIPT = Path(__file__).resolve().parent / "run_supervisor.py"
+# Spec files are exec()'d directly by PyInstaller, not imported as a
+# module — there's no __file__ in this namespace. PyInstaller injects
+# SPECPATH (this spec's own directory) instead.
+ROOT = Path(SPECPATH).resolve().parents[1]  # noqa: F821
+ENTRY_SCRIPT = Path(SPECPATH).resolve() / "run_supervisor.py"  # noqa: F821
 
 a = Analysis(
     [str(ENTRY_SCRIPT)],
