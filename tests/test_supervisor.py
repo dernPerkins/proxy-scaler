@@ -109,14 +109,34 @@ def _shutdown(proc: subprocess.Popen) -> None:
         pass
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ps-based check is Linux/Unix-only")
-def test_supervisor_spawns_and_cleanly_stops_both_children(tmp_path: Path) -> None:
-    """End-to-end: run the real supervisor as a subprocess (isolated
-    port/DB/lock so it can't collide with anything else running), confirm
-    both its Streamlit and worker children actually start, send it a
-    shutdown signal, and confirm both children are actually gone
-    afterward — the real regression this phase is about (today's detached
-    worker survives its parent; the supervisor's children must not)."""
+class _RunningSupervisor:
+    def __init__(
+        self,
+        proc: subprocess.Popen,
+        log_path: Path,
+        streamlit_pids: list[int],
+        worker_pids: list[int],
+    ) -> None:
+        self.proc = proc
+        self.log_path = log_path
+        self.streamlit_pids = streamlit_pids
+        self.worker_pids = worker_pids
+
+    def assert_children_gone(self) -> None:
+        for pid in self.streamlit_pids:
+            assert not Path(f"/proc/{pid}").exists(), "Streamlit child survived shutdown"
+        for pid in self.worker_pids:
+            assert not Path(f"/proc/{pid}").exists(), "worker child survived shutdown"
+
+
+@pytest.fixture
+def running_supervisor(tmp_path: Path):
+    """Spawn the real supervisor as a subprocess (isolated port/DB/lock so
+    it can't collide with anything else running), wait for it to report
+    ready, and confirm both its Streamlit and worker children actually
+    started. Yields a _RunningSupervisor; always cleans up via SIGTERM
+    even if the test already stopped it a different way (double-stop is a
+    no-op — see _shutdown's poll() check)."""
     port = 8000 + (os.getpid() % 1000)  # avoid clashing with a real 8501 instance
     db_path = tmp_path / "test.db"
     lock_path = tmp_path / "worker.lock"
@@ -133,6 +153,10 @@ def test_supervisor_spawns_and_cleanly_stops_both_children(tmp_path: Path) -> No
         [sys.executable, "-u", "-m", "proxy_scaler.supervisor"],
         cwd=str(ROOT),
         env=env,
+        stdin=subprocess.PIPE,  # must be an open pipe, not inherited — an
+        # inherited stdin that's already closed/EOF in this environment
+        # would trigger an immediate shutdown via the stdin-watcher most
+        # tests using this fixture aren't trying to exercise.
         stdout=log_file,
         stderr=subprocess.STDOUT,
     )
@@ -169,16 +193,27 @@ def test_supervisor_spawns_and_cleanly_stops_both_children(tmp_path: Path) -> No
             f"worker never acquired its (isolated) lock file; log:\n{log_path.read_text()}"
         )
 
-        # Ask the supervisor to shut down, same as Ctrl+C / a service
-        # manager stopping it.
-        _shutdown(proc)
-
-        # The regression this phase exists to fix: both children must
-        # actually be gone, not orphaned.
-        for pid in streamlit_pids:
-            assert not Path(f"/proc/{pid}").exists(), "Streamlit child survived shutdown"
-        for pid in worker_pids:
-            assert not Path(f"/proc/{pid}").exists(), "worker child survived shutdown"
+        yield _RunningSupervisor(proc, log_path, streamlit_pids, worker_pids)
     finally:
         _shutdown(proc)
         log_file.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ps-based check is Linux/Unix-only")
+def test_supervisor_spawns_and_cleanly_stops_both_children(running_supervisor) -> None:
+    """The core regression this phase is about: today's detached worker
+    survives its parent; the supervisor's children must not."""
+    _shutdown(running_supervisor.proc)  # same as Ctrl+C / a service manager stopping it
+    running_supervisor.assert_children_gone()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ps-based check is Linux/Unix-only")
+def test_supervisor_stops_on_stdin_close(running_supervisor) -> None:
+    """Tauri's sidecar API documents CommandChild::kill() as a hard kill,
+    not a graceful signal — closing the sidecar's stdin pipe is the
+    documented workaround for triggering a clean shutdown instead. Confirm
+    that path alone (no SIGTERM at all) still cleanly stops both
+    children."""
+    running_supervisor.proc.stdin.close()
+    running_supervisor.proc.wait(timeout=30)
+    running_supervisor.assert_children_gone()

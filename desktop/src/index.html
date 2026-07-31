@@ -2,14 +2,207 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>proxy-scaler-spike placeholder</title>
+    <title>Proxy Scaler</title>
+    <style>
+      body {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #1b1d22;
+        color: #e8e8ec;
+      }
+      .card {
+        width: 420px;
+        padding: 32px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 24px;
+      }
+      .choice {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 14px 16px;
+        margin-bottom: 12px;
+        border-radius: 8px;
+        border: 1px solid #3a3d46;
+        background: #24262d;
+        color: inherit;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      .choice:hover {
+        border-color: #5a90ff;
+      }
+      .choice strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+      .choice span {
+        color: #9a9ca5;
+        font-size: 12px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        margin: 8px 0 16px;
+        border-radius: 6px;
+        border: 1px solid #3a3d46;
+        background: #14151a;
+        color: inherit;
+        font-size: 14px;
+      }
+      button.primary {
+        padding: 10px 18px;
+        border-radius: 6px;
+        border: none;
+        background: #5a90ff;
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button.link {
+        background: none;
+        border: none;
+        color: #9a9ca5;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 0;
+        margin-top: 16px;
+        text-decoration: underline;
+      }
+      .status {
+        color: #9a9ca5;
+        font-size: 13px;
+      }
+      .error {
+        color: #ff6b6b;
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      .hint {
+        color: #9a9ca5;
+        font-size: 12px;
+        margin: -8px 0 16px;
+      }
+      #back {
+        margin-bottom: 16px;
+      }
+    </style>
   </head>
   <body>
-    <!--
-      Unused at runtime: tauri.conf.json points the main window's `url`
-      directly at http://127.0.0.1:8501, so this file is never navigated
-      to. It only exists because Tauri's config validation requires
-      build.frontendDist to resolve to a real directory.
-    -->
+    <div class="card" id="app"></div>
+
+    <script>
+      const CONFIG_KEY = "proxyScalerConfig";
+      const { invoke } = window.__TAURI__.core;
+
+      function getConfig() {
+        try {
+          return JSON.parse(localStorage.getItem(CONFIG_KEY));
+        } catch {
+          return null;
+        }
+      }
+
+      function saveConfig(config) {
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+      }
+
+      function clearConfig() {
+        localStorage.removeItem(CONFIG_KEY);
+      }
+
+      function render(html) {
+        document.getElementById("app").innerHTML = html;
+      }
+
+      function renderPicker() {
+        render(`
+          <h1>Proxy Scaler</h1>
+          <button class="choice" id="pick-local">
+            <strong>Use this device</strong>
+            <span>Runs everything locally — no setup needed.</span>
+          </button>
+          <button class="choice" id="pick-remote">
+            <strong>Connect to a server</strong>
+            <span>Point this app at a proxy-scaler server running elsewhere.</span>
+          </button>
+        `);
+        document.getElementById("pick-local").onclick = () => {
+          saveConfig({ mode: "local" });
+          connect();
+        };
+        document.getElementById("pick-remote").onclick = renderRemoteForm;
+      }
+
+      function renderRemoteForm() {
+        render(`
+          <button class="link" id="back">&larr; back</button>
+          <h1>Connect to a server</h1>
+          <div class="hint">
+            We recommend a tool like
+            <a href="https://tailscale.com" target="_blank">Tailscale</a>
+            for connecting to your remote server.
+          </div>
+          <input type="text" id="host" placeholder="IP or name (e.g. 100.x.x.x or my-server)" />
+          <button class="primary" id="connect">Connect</button>
+          <div class="error" id="remote-error"></div>
+        `);
+        document.getElementById("back").onclick = renderPicker;
+        document.getElementById("connect").onclick = () => {
+          const host = document.getElementById("host").value.trim();
+          if (!host) {
+            document.getElementById("remote-error").textContent =
+              "Enter an IP address or hostname.";
+            return;
+          }
+          saveConfig({ mode: "remote", host });
+          connect();
+        };
+      }
+
+      async function connect() {
+        const config = getConfig();
+        render(`
+          <h1>Proxy Scaler</h1>
+          <div class="status" id="status">Connecting…</div>
+        `);
+
+        if (config.mode === "remote") {
+          window.location.href = `http://${config.host}:8501`;
+          return;
+        }
+
+        try {
+          const url = await invoke("start_local_server");
+          window.location.href = url;
+        } catch (err) {
+          render(`
+            <h1>Proxy Scaler</h1>
+            <div class="error">Couldn't start the local server: ${err}</div>
+            <button class="link" id="retry">try again</button>
+            <button class="link" id="change">change server</button>
+          `);
+          document.getElementById("retry").onclick = connect;
+          document.getElementById("change").onclick = () => {
+            clearConfig();
+            renderPicker();
+          };
+        }
+      }
+
+      const existing = getConfig();
+      if (existing) {
+        connect();
+      } else {
+        renderPicker();
+      }
+    </script>
   </body>
 </html>

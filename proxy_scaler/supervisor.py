@@ -22,6 +22,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -44,10 +45,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # any launcher (a human, a systemd unit, Tauri's sidecar stdout watcher)
 # can watch for instead of guessing a fixed startup delay.
 READY_MARKER = "PROXY_SCALER_READY"
-
-
-class ShutdownRequested(Exception):
-    """Raised from a signal handler to unwind the main wait loop cleanly."""
 
 
 def _spawn(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.Popen:
@@ -233,12 +230,39 @@ def main(
         for proc in children:
             _assign_to_job(job, proc)
 
+    # A single event flips on any shutdown trigger; the main loop below just
+    # waits on it. Using an Event (not exceptions raised from a signal
+    # handler) is what lets the stdin-watcher thread below trigger shutdown
+    # safely too — CPython signal handlers only ever run on the main
+    # thread, so a background thread can't "raise" into the main loop the
+    # way an actual OS signal delivery can.
+    shutdown_event = threading.Event()
+
     def _handle_signal(signum, frame) -> None:  # noqa: ARG001
-        raise ShutdownRequested()
+        shutdown_event.set()
 
     signal.signal(signal.SIGINT, _handle_signal)
     if not IS_WINDOWS:
         signal.signal(signal.SIGTERM, _handle_signal)
+
+    # A shell wrapping this as a subprocess (in particular Tauri's sidecar
+    # API) may not have a reliable way to send this process a real signal —
+    # Tauri's own CommandChild::kill() is documented to hard-kill rather
+    # than signal gracefully, which would skip the cleanup below entirely
+    # and orphan Streamlit/worker underneath it. Any stdin input, or stdin
+    # simply closing (EOF — e.g. the sidecar handle being dropped), is
+    # treated as an equivalent shutdown trigger. (Deliberately not routed
+    # through os.kill(self, SIGTERM): on Windows that calls TerminateProcess
+    # directly rather than invoking a Python handler, which would hard-kill
+    # this process instead of triggering the graceful path.)
+    def _watch_stdin() -> None:
+        try:
+            sys.stdin.readline()
+        except Exception:
+            pass
+        shutdown_event.set()
+
+    threading.Thread(target=_watch_stdin, daemon=True).start()
 
     exit_code = 0
     try:
@@ -251,9 +275,10 @@ def main(
                 file=sys.stderr,
             )
             exit_code = 1
-            raise ShutdownRequested()
+            shutdown_event.set()
 
-        while True:
+        while not shutdown_event.is_set():
+            exited = False
             for proc, name in ((streamlit_proc, "streamlit"), (worker_proc, "worker")):
                 code = proc.poll()
                 if code is not None:
@@ -262,10 +287,11 @@ def main(
                         file=sys.stderr,
                     )
                     exit_code = code or 1
-                    raise ShutdownRequested()
-            time.sleep(POLL_INTERVAL_S)
-    except ShutdownRequested:
-        pass
+                    shutdown_event.set()
+                    exited = True
+                    break
+            if not exited:
+                shutdown_event.wait(POLL_INTERVAL_S)
     finally:
         print("Shutting down…")
         for proc in children:

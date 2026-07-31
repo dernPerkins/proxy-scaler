@@ -1,83 +1,104 @@
-# Phase 0 spike: Tauri webview + Streamlit compatibility
+# Desktop shell (Tauri)
 
-This is deliberately minimal: no sidecar, no supervisor integration yet —
-just a bare Tauri window pointed at a manually-started Streamlit instance.
-The only thing it's testing is whether the OS-native webview (WebView2 on
-Windows, WKWebView on macOS, WebKitGTK on Linux) holds a Streamlit
-websocket connection through a real, long-running GPU job without dropping
-or needing a reconnect. If this doesn't hold up, no shell language choice
-(Tauri, Wails, pywebview) fixes it — it's a property of the underlying
-native webview engine itself.
+Phase 0 (validated ✅ — native webview holds a Streamlit websocket through a
+real long-running GPU job with no drops or stuck UI) is done. This is now
+the real Phase 2 shell: a first-launch Local/Remote picker, and — in Local
+mode — the Phase 1 `proxy-scaler-serve` supervisor spawned as a Tauri
+sidecar instead of a manually-started `streamlit run`.
 
-## 1. Prerequisites
+**Heads up**: the Rust code here (`src-tauri/src/main.rs`) was written
+without a Rust/Tauri toolchain available to compile against — expect a
+round or two of compiler-error fixes on your machine, the same way the
+icon path needed correcting earlier. The exact `CommandEvent` variant
+names and a couple of Tauri plugin-shell API details are the most likely
+spots to need small adjustments.
 
-Install these on whichever machine you're testing first (pick your daily
-driver — Phase 0 only needs to pass once to de-risk the approach, though
-you'll eventually want to confirm on each target OS):
+## 1. Build the sidecar binary (required even for `cargo tauri dev`)
 
-- **Rust**: via [rustup.rs](https://rustup.rs)
-- **Tauri CLI**: `cargo install tauri-cli --version "^2.0.0" --locked`
-- **Platform webview deps**:
-  - **Linux**: `webkit2gtk-4.1` + `libgtk-3-dev` (package name varies by
-    distro — e.g. Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev
-    libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`)
-  - **Windows**: WebView2 runtime — already preinstalled on Windows 11;
-    otherwise grab the [Evergreen
-    Bootstrapper](https://developer.microsoft.com/microsoft-edge/webview2/)
-  - **macOS**: nothing extra, WKWebView ships with the OS
-- The existing proxy-scaler Python venv, already set up for this repo
-  (`.venv` with `streamlit`, `torch`, etc. installed)
-
-## 2. Run it
-
-From the repo root, in one terminal, start Streamlit manually (not the
-supervisor — Phase 0 isolates the webview/websocket question from the
-process-management question, which Phase 1 already solved separately):
+Sidecars aren't special-cased in dev mode — Tauri looks for a real frozen
+binary at `src-tauri/binaries/proxy-scaler-serve-<target-triple>[.exe]`
+whether you're running `cargo tauri dev` or a packaged build. PyInstaller
+freezes are platform-specific (no cross-compiling from another OS), so
+this has to be built on the same machine/OS you're testing on.
 
 ```bash
-.venv/bin/streamlit run app.py --server.headless true
+# from the repo root, using the existing project venv
+.venv/bin/pip install pyinstaller pyinstaller-hooks-contrib
+.venv/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
+  --distpath desktop/pyinstaller/dist \
+  --workpath desktop/pyinstaller/build
 ```
 
-Wait for `You can now view your Streamlit app in your browser` and confirm
-it's on the default port 8501 (matches `tauri.conf.json`'s window `url`).
+This is a one-folder build (not `--onefile` — discouraged for large ML
+bundles, it re-unpacks to a temp dir on every launch), so the output is a
+whole folder: `desktop/pyinstaller/dist/proxy-scaler-serve/` containing
+the executable plus torch/streamlit/etc. Expect this step to take a while
+and produce a multi-GB folder.
 
-In a second terminal:
+Now place it where Tauri's sidecar lookup expects it, renaming *only* the
+main executable to include your platform's target triple (everything else
+in the folder keeps its original name — the frozen deps need to sit right
+next to it):
+
+```bash
+mkdir -p desktop/src-tauri/binaries
+cp -r desktop/pyinstaller/dist/proxy-scaler-serve/* desktop/src-tauri/binaries/
+
+# find your target triple:
+rustc -vV | grep host
+# e.g. "host: aarch64-apple-darwin" on an M-series Mac
+
+# rename just the executable to match (adjust the triple to what you got above):
+mv desktop/src-tauri/binaries/proxy-scaler-serve \
+   desktop/src-tauri/binaries/proxy-scaler-serve-aarch64-apple-darwin
+```
+
+(On Windows the executable is `proxy-scaler-serve.exe` → rename to
+`proxy-scaler-serve-<triple>.exe`.)
+
+## 2. Run it
 
 ```bash
 cd desktop/src-tauri
 cargo tauri dev
 ```
 
-A native window should open showing the proxy-scaler UI. If it opens
-before Streamlit finished starting, you'll see a webview connection-error
-page — just reload (Ctrl+R / Cmd+R) once Streamlit is up.
+A window opens showing the first-launch picker: **Use this device**
+(Local — spawns the sidecar, waits for it to report ready, then navigates
+to it) or **Connect to a server** (Remote — asks for an IP/hostname, no
+sidecar involved, navigates straight to `http://<host>:8501`). The choice
+is remembered via `localStorage`; to change it later, clear it manually
+(devtools → Application → Local Storage) — a proper in-app Settings
+view is a nice-to-have, not built yet.
 
-## 3. What to actually test
+## 3. What to test
 
-Run one full, real upscale job through the Tauri window — pick a card,
-a real model, a real DPI, whatever most resembles genuine use. Watch for:
-
-- Does the progress/status UI stay reactive the whole time, or does it
-  ever look stuck/frozen mid-job?
-- Any visible reconnect banner or dropped-connection indicator from
-  Streamlit itself?
-- After the job finishes, does the gallery/result update live without
-  needing a manual page reload?
-
-If all three look clean, the webview choice is validated and Phase 2 (the
-sidecar-managed version, using the already-built `proxy-scaler-serve`
-supervisor from Phase 1) is safe to build. If you *do* see drops, note
-roughly how long into the job they happen (helps distinguish "long GPU job
-idles the connection" from something Streamlit-version-specific).
+- **Local mode**: does the window transition from "Connecting…" to the
+  real app once the sidecar reports ready? Check the terminal running
+  `cargo tauri dev` for `[proxy-scaler-serve] PROXY_SCALER_READY` and any
+  stderr output if it hangs or errors.
+- **Closing the window**: this is the actual point of the stdin-handshake
+  work in `main.rs` — confirm that closing the window actually stops both
+  the sidecar *and* the Streamlit/worker processes underneath it, not just
+  the visible window. Check `ps aux | grep -E "streamlit|proxy_scaler"`
+  (or Activity Monitor on macOS) right after closing — nothing should be
+  left running.
+- **Remote mode**: point it at another proxy-scaler instance (or even
+  `127.0.0.1` if you have one running manually via `streamlit run app.py`
+  in a separate terminal) and confirm it connects with no sidecar spawned.
 
 ## 4. Notes
 
-- `bundle.active` is `false` in `tauri.conf.json` — this is `cargo tauri
-  dev` only, no installer/icons needed yet. That's Phase 3.
-- `security.csp` is `null`, which disables Tauri's default Content-Security-Policy.
-  Fine for this local-only spike; Phase 2's real config should scope this
-  down instead of leaving it fully open.
-- `desktop/src/index.html` is an unused placeholder — the window's `url`
-  in `tauri.conf.json` points straight at `http://127.0.0.1:8501`, so this
-  file is never actually loaded. It exists only because Tauri's config
-  validation requires `build.frontendDist` to resolve to a real directory.
+- `bundle.active` is still `false` — no installers/code-signing yet,
+  that's Phase 3.
+- `security.csp` is `null` (disabled). Fine for now; should be scoped down
+  before a real release build.
+- Local/Remote config is deliberately plain `localStorage`, not
+  `tauri-plugin-store` — the plan called out the store plugin, but for two
+  small string fields it wasn't worth the extra Rust dependency surface,
+  especially with no way to compile-test it here. Worth reconsidering if a
+  real Settings UI grows more state later.
+- `desktop/src/index.html` is no longer a placeholder — it's the actual
+  first-launch UI now, loaded via `tauri.conf.json`'s window `url:
+  "index.html"` (previously pointed straight at Streamlit for the Phase 0
+  spike).
