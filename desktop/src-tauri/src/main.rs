@@ -114,7 +114,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![start_local_server])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_default();
+                api.prevent_close();
                 let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<SidecarState>();
