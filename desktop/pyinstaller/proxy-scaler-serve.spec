@@ -15,12 +15,24 @@
 # explicit hookspath needed.
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
+
 # Spec files are exec()'d directly by PyInstaller, not imported as a
 # module — there's no __file__ in this namespace. PyInstaller injects
 # SPECPATH (this spec's own directory) instead.
 ROOT = Path(SPECPATH).resolve().parents[1]  # noqa: F821
 ENTRY_SCRIPT = Path(SPECPATH).resolve() / "run_supervisor.py"  # noqa: F821
 APP_SCRIPT = ROOT / "app.py"
+
+# PyInstaller only bundles a package's actual code by default, not its
+# pip-level dist-info/METADATA — but streamlit reads its own version via
+# importlib.metadata.version("streamlit") at import time, which needs
+# that metadata to exist on disk. Without this, streamlit fails to import
+# at all inside the frozen build with "PackageNotFoundError: No package
+# metadata was found for streamlit". If other packages hit the same
+# error later, add them here too — this is a common, expected pattern for
+# frozen builds, not specific to streamlit.
+METADATA_PACKAGES = ["streamlit"]
 
 a = Analysis(
     # app.py is included as a second script (not just a data file) so
@@ -35,7 +47,8 @@ a = Analysis(
     [str(ENTRY_SCRIPT), str(APP_SCRIPT)],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[(str(APP_SCRIPT), ".")],
+    datas=[(str(APP_SCRIPT), ".")]
+    + [entry for pkg in METADATA_PACKAGES for entry in copy_metadata(pkg)],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
