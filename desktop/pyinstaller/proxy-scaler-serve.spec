@@ -15,7 +15,7 @@
 # explicit hookspath needed.
 from pathlib import Path
 
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 # Spec files are exec()'d directly by PyInstaller, not imported as a
 # module — there's no __file__ in this namespace. PyInstaller injects
@@ -34,6 +34,15 @@ APP_SCRIPT = ROOT / "app.py"
 # frozen builds, not specific to streamlit.
 METADATA_PACKAGES = ["streamlit"]
 
+# Separately: streamlit also ships its compiled frontend (the static
+# HTML/JS/CSS app shell it serves at "/") as plain data files inside its
+# own package directory, not Python code — PyInstaller's import-graph
+# analysis has no way to discover those on its own. Without this, the
+# frozen build's Streamlit process starts and reports healthy, but every
+# page request 404s ("Not Found") since the app shell it would serve
+# was never bundled.
+DATA_PACKAGES = ["streamlit"]
+
 a = Analysis(
     # app.py is included as a second script (not just a data file) so
     # PyInstaller's static analysis also traces *its* import graph
@@ -48,7 +57,8 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[(str(APP_SCRIPT), ".")]
-    + [entry for pkg in METADATA_PACKAGES for entry in copy_metadata(pkg)],
+    + [entry for pkg in METADATA_PACKAGES for entry in copy_metadata(pkg)]
+    + [entry for pkg in DATA_PACKAGES for entry in collect_data_files(pkg)],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
