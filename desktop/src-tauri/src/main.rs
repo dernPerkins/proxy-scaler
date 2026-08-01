@@ -107,20 +107,39 @@ async fn stop_sidecar(state: &SidecarState) {
     }
 }
 
+/// Shared by both shutdown triggers below — the window's close button and
+/// Ctrl+C in whatever terminal is running `cargo tauri dev` / the packaged
+/// app. Ctrl+C sends the *process* a SIGINT; that's a completely different
+/// thing from a Tauri window-close event, and on_window_event alone never
+/// sees it — so without this, stopping dev mode with Ctrl+C (a very
+/// natural thing to do while iterating) skipped sidecar cleanup entirely
+/// and left Streamlit/worker running, still holding port 8501 for the
+/// *next* run to collide with.
+async fn shutdown_and_exit(app: AppHandle) {
+    let state = app.state::<SidecarState>();
+    stop_sidecar(&state).await;
+    app.exit(0);
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![start_local_server])
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    shutdown_and_exit(app_handle).await;
+                }
+            });
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let app = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let state = app.state::<SidecarState>();
-                    stop_sidecar(&state).await;
-                    app.exit(0);
-                });
+                tauri::async_runtime::spawn(shutdown_and_exit(app));
             }
         })
         .run(tauri::generate_context!())
