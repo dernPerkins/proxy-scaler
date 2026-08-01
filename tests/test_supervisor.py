@@ -52,6 +52,45 @@ def test_wait_for_health_times_out(monkeypatch) -> None:
     assert supervisor._wait_for_health("127.0.0.1", 8501, timeout=0.2) is False
 
 
+def test_child_command_not_frozen_uses_module_flag(monkeypatch) -> None:
+    """Regression guard for a real shipped bug: outside a frozen build,
+    sys.executable is a genuine Python interpreter, so children are
+    launched via `-m` as before."""
+    monkeypatch.setattr(supervisor, "IS_FROZEN", False)
+    assert supervisor._child_command("worker") == [
+        sys.executable,
+        "-u",
+        "-m",
+        "proxy_scaler.worker",
+    ]
+    assert supervisor._child_command("streamlit", ["run", "app.py"]) == [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        "app.py",
+    ]
+
+
+def test_child_command_frozen_uses_role_flag_not_module_flag(monkeypatch) -> None:
+    """The actual bug this guards against: inside a PyInstaller-frozen
+    build, sys.executable IS the frozen binary, not a Python interpreter.
+    `[sys.executable, "-m", "streamlit", ...]` doesn't invoke Streamlit at
+    all in that case — it just re-runs this program's own entry point
+    again, ignoring the args, which then does the same thing for its own
+    children: an uncontrolled self-spawning loop. Frozen builds must never
+    produce a `-m`-flavored command; they must always route through the
+    --role dispatch in frozen_main() instead."""
+    monkeypatch.setattr(supervisor, "IS_FROZEN", True)
+    worker_cmd = supervisor._child_command("worker")
+    streamlit_cmd = supervisor._child_command("streamlit", ["run", "app.py"])
+
+    assert worker_cmd == [sys.executable, "--role", "worker"]
+    assert streamlit_cmd == [sys.executable, "--role", "streamlit", "run", "app.py"]
+    assert "-m" not in worker_cmd
+    assert "-m" not in streamlit_cmd
+
+
 def _child_pids(ppid: int, needle: str) -> list[int]:
     """PIDs of *direct children* of `ppid` whose command line contains
     `needle`. Filtering by parent PID (not just command line) is what

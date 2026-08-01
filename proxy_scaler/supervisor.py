@@ -39,12 +39,56 @@ POLL_INTERVAL_S = 1.0
 
 IS_WINDOWS = sys.platform == "win32"
 
-ROOT = Path(__file__).resolve().parents[1]
+# PyInstaller's standard "am I frozen" flag. This matters a lot here: once
+# frozen, sys.executable is this same frozen binary, not a real Python
+# interpreter — see _child_command below for why that breaks the naive
+# `[sys.executable, "-m", ...]` spawn approach.
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+if IS_FROZEN:
+    # PyInstaller onefile builds unpack bundled data files (see the
+    # `datas` entry in desktop/pyinstaller/proxy-scaler-serve.spec) to a
+    # temp dir at sys._MEIPASS at runtime; that's where app.py lives when
+    # frozen, not next to this source file.
+    ROOT = Path(getattr(sys, "_MEIPASS"))
+else:
+    ROOT = Path(__file__).resolve().parents[1]
 
 # Printed to stdout once Streamlit is confirmed healthy — a stable marker
 # any launcher (a human, a systemd unit, Tauri's sidecar stdout watcher)
 # can watch for instead of guessing a fixed startup delay.
 READY_MARKER = "PROXY_SCALER_READY"
+
+
+def _child_command(role: str, extra_args: list[str] | None = None) -> list[str]:
+    """Build the argv used to spawn the Streamlit or worker child.
+
+    In a normal (non-frozen) install, sys.executable is a real Python
+    interpreter, so these are launched the obvious way via `-m`.
+
+    Inside a PyInstaller-frozen build, sys.executable is *this same frozen
+    binary* — passing it `-m streamlit run ...` doesn't invoke Python's
+    module machinery at all, since a frozen bootloader isn't a generic
+    interpreter. It would just re-run this program's own entry point
+    again, silently ignoring those args. That was a real, previously
+    shipped bug: the "Streamlit" child was actually just another copy of
+    this same supervisor, which went on to spawn its own "Streamlit" and
+    "worker" children the same broken way — an uncontrolled self-spawning
+    loop that pegged a real machine's CPU/memory.
+
+    Frozen builds instead re-invoke the same frozen binary with a --role
+    flag, which run_supervisor.py's frozen_main() dispatches on — so
+    there's still only ever one binary on disk, just playing three
+    different parts depending on how it's invoked.
+    """
+    extra_args = extra_args or []
+    if IS_FROZEN:
+        return [sys.executable, "--role", role, *extra_args]
+    if role == "worker":
+        return [sys.executable, "-u", "-m", "proxy_scaler.worker"]
+    if role == "streamlit":
+        return [sys.executable, "-m", "streamlit", *extra_args]
+    raise ValueError(f"unknown role: {role!r}")
 
 
 def _spawn(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.Popen:
@@ -201,26 +245,26 @@ def main(
 
     print(f"Starting Streamlit on {host}:{port}…")
     streamlit_proc = _spawn(
-        [
-            sys.executable,
-            "-m",
+        _child_command(
             "streamlit",
-            "run",
-            str(ROOT / "app.py"),
-            "--server.address",
-            host,
-            "--server.port",
-            str(port),
-            "--server.headless",
-            "true",
-            "--browser.gatherUsageStats",
-            "false",
-        ]
+            [
+                "run",
+                str(ROOT / "app.py"),
+                "--server.address",
+                host,
+                "--server.port",
+                str(port),
+                "--server.headless",
+                "true",
+                "--browser.gatherUsageStats",
+                "false",
+            ],
+        )
     )
 
     print("Starting worker…")
     worker_proc = _spawn(
-        [sys.executable, "-u", "-m", "proxy_scaler.worker"],
+        _child_command("worker"),
         env=worker_env or None,
     )
 
@@ -315,6 +359,38 @@ def cli_main() -> int:
         db_path=os.environ.get("PROXY_SCALER_DB_PATH") or None,
         worker_lock_path=os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None,
     )
+
+
+def frozen_main() -> int:
+    """Entry point for the frozen sidecar binary (see
+    desktop/pyinstaller/run_supervisor.py). A frozen build has to be a
+    single executable to fit Tauri's sidecar model, but this same
+    supervisor needs to spawn Streamlit and worker *children* too — so
+    this dispatches on a --role flag (see _child_command) to let that one
+    binary also play the "Streamlit" and "worker" parts when invoked that
+    way, instead of naively re-invoking itself as `python -m X`, which
+    doesn't mean anything to a frozen bootloader (see _child_command's
+    docstring for the bug that caused)."""
+    if len(sys.argv) >= 3 and sys.argv[1] == "--role":
+        role = sys.argv[2]
+        remaining = sys.argv[3:]
+        if role == "worker":
+            from . import worker
+
+            worker.main(
+                db_path=os.environ.get("PROXY_SCALER_DB_PATH") or None,
+                lock_path=os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None,
+            )
+            return 0
+        if role == "streamlit":
+            import streamlit.web.cli as stcli
+
+            sys.argv = ["streamlit", *remaining]
+            return stcli.main()
+        print(f"unknown role: {role!r}", file=sys.stderr)
+        return 1
+
+    return cli_main()
 
 
 if __name__ == "__main__":

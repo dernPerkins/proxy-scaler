@@ -13,6 +13,25 @@ icon path needed correcting earlier. The exact `CommandEvent` variant
 names and a couple of Tauri plugin-shell API details are the most likely
 spots to need small adjustments.
 
+**Fixed but worth knowing about**: an earlier version of the frozen
+sidecar caused a real self-spawning process explosion when Local mode was
+used — inside a PyInstaller-frozen build, `sys.executable` is the frozen
+binary itself, not a Python interpreter, so `supervisor.py`'s old
+`[sys.executable, "-m", "streamlit", ...]` spawn calls just re-launched
+more copies of the supervisor instead of Streamlit, recursively. Fixed via
+a `--role` dispatch (see `supervisor._child_command` and
+`supervisor.frozen_main`) so the frozen binary can play the supervisor,
+Streamlit, or worker role without ever re-invoking itself blindly. A
+regression test (`test_child_command_frozen_uses_role_flag_not_module_flag`
+in `tests/test_supervisor.py`) asserts a frozen build's spawn commands
+never contain `-m`. Still open, separately: the frozen build currently
+crashes on import with torch/torchvision errors (`operator
+torchvision::nms does not exist`, an `inspect.getsource` failure) — a
+different, known class of PyInstaller+torch freezing issue, not yet
+resolved. Expect Local mode to still fail after rebuilding, just safely
+now (one process crashing and exiting) instead of dangerously (many
+processes spawning uncontrolled).
+
 ## 1. Build the sidecar binary (required even for `cargo tauri dev`)
 
 Sidecars aren't special-cased in dev mode — Tauri looks for a real frozen

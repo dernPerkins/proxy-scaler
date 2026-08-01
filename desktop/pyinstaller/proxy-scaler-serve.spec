@@ -20,12 +20,22 @@ from pathlib import Path
 # SPECPATH (this spec's own directory) instead.
 ROOT = Path(SPECPATH).resolve().parents[1]  # noqa: F821
 ENTRY_SCRIPT = Path(SPECPATH).resolve() / "run_supervisor.py"  # noqa: F821
+APP_SCRIPT = ROOT / "app.py"
 
 a = Analysis(
-    [str(ENTRY_SCRIPT)],
+    # app.py is included as a second script (not just a data file) so
+    # PyInstaller's static analysis also traces *its* import graph
+    # (proxy_scaler.ui.*, etc.) — run_supervisor.py alone never imports
+    # app.py, it only ever invokes it as a path via Streamlit's own CLI
+    # (see supervisor.frozen_main's "streamlit" role), so nothing app.py
+    # needs would otherwise get bundled. It's also listed under `datas`
+    # below because Streamlit's script loader reads the file directly off
+    # disk at a real path — bundling its bytecode into the archive alone
+    # isn't enough for that lookup to succeed.
+    [str(ENTRY_SCRIPT), str(APP_SCRIPT)],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[],
+    datas=[(str(APP_SCRIPT), ".")],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
