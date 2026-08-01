@@ -258,6 +258,17 @@ def main(
                 "true",
                 "--browser.gatherUsageStats",
                 "false",
+                # Streamlit infers "development mode" from whether its own
+                # __file__ path looks like a normal pip install (contains
+                # "site-packages") — inside a PyInstaller-frozen build it
+                # never does (it's under the unpacked temp dir instead),
+                # so Streamlit wrongly concludes it's in dev mode and then
+                # refuses to combine that with an explicit --server.port.
+                # Force it off explicitly; harmless in a normal
+                # (non-frozen) install too, since it isn't in dev mode
+                # there either.
+                "--global.developmentMode",
+                "false",
             ],
         )
     )
