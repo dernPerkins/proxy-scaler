@@ -24,32 +24,32 @@ this has to be built on the same machine/OS you're testing on.
 ```bash
 # from the repo root, using the existing project venv
 .venv/bin/pip install pyinstaller pyinstaller-hooks-contrib
+rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build  # clear any stale one-folder build
 .venv/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
   --distpath desktop/pyinstaller/dist \
   --workpath desktop/pyinstaller/build
 ```
 
-This is a one-folder build (not `--onefile` — discouraged for large ML
-bundles, it re-unpacks to a temp dir on every launch), so the output is a
-whole folder: `desktop/pyinstaller/dist/proxy-scaler-serve/` containing
-the executable plus torch/streamlit/etc. Expect this step to take a while
-and produce a multi-GB folder.
+This produces a single self-contained executable at
+`desktop/pyinstaller/dist/proxy-scaler-serve` (onefile mode — Tauri's
+sidecar mechanism only manages one named file, not a supporting folder;
+see the comment at the top of the `.spec` for why this isn't one-folder
+mode). Expect this step to take a while — it's freezing `torch`.
 
-Now place it where Tauri's sidecar lookup expects it, renaming *only* the
-main executable to include your platform's target triple (everything else
-in the folder keeps its original name — the frozen deps need to sit right
-next to it):
+Now place it where Tauri's sidecar lookup expects it, renamed to include
+your platform's target triple:
 
 ```bash
 mkdir -p desktop/src-tauri/binaries
-cp -r desktop/pyinstaller/dist/proxy-scaler-serve/* desktop/src-tauri/binaries/
+rm -f desktop/src-tauri/binaries/proxy-scaler-serve*  # clear any stale one-folder copy
+rm -rf desktop/src-tauri/target/debug/_internal        # stale one-folder copy Tauri made in dev mode
 
 # find your target triple:
 rustc -vV | grep host
 # e.g. "host: aarch64-apple-darwin" on an M-series Mac
 
-# rename just the executable to match (adjust the triple to what you got above):
-mv desktop/src-tauri/binaries/proxy-scaler-serve \
+# copy + rename to match (adjust the triple to what you got above):
+cp desktop/pyinstaller/dist/proxy-scaler-serve \
    desktop/src-tauri/binaries/proxy-scaler-serve-aarch64-apple-darwin
 ```
 
