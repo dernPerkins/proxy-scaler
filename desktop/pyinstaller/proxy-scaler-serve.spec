@@ -43,6 +43,15 @@ METADATA_PACKAGES = ["streamlit"]
 # was never bundled.
 DATA_PACKAGES = ["streamlit"]
 
+# Streamlit's "magic" feature (auto-writing a bare top-level expression,
+# e.g. app.py's own module docstring, via st.write()) dynamically imports
+# this module at runtime rather than at normal import time — invisible to
+# PyInstaller's static import-graph analysis, so it has to be listed
+# explicitly. If other "ModuleNotFoundError" surprises show up for
+# similarly dynamically-imported streamlit/proxy_scaler internals later,
+# add them here too.
+HIDDEN_IMPORTS = ["streamlit.runtime.scriptrunner.magic_funcs"]
+
 a = Analysis(
     # app.py is included as a second script (not just a data file) so
     # PyInstaller's static analysis also traces *its* import graph
@@ -59,7 +68,7 @@ a = Analysis(
     datas=[(str(APP_SCRIPT), ".")]
     + [entry for pkg in METADATA_PACKAGES for entry in copy_metadata(pkg)]
     + [entry for pkg in DATA_PACKAGES for entry in collect_data_files(pkg)],
-    hiddenimports=[],
+    hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
