@@ -1,4 +1,4 @@
-import { getApiBaseUrl } from "../config";
+import { getApiBaseUrl, waitForServerReady } from "../config";
 import type {
   Card,
   GenerateRequest,
@@ -24,6 +24,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  await waitForServerReady();
   const resp = await fetch(`${getApiBaseUrl()}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
@@ -39,6 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function downloadPdf(projectId: number, body: PdfLayoutRequest): Promise<Blob> {
+  await waitForServerReady();
   const resp = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}/pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

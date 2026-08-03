@@ -132,10 +132,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // silently overridden by this.
   useEffect(() => {
     let cancelled = false;
-    api.listProjects().then((projects) => {
-      if (cancelled || projects.length === 0) return;
-      loadMutation.mutate(projects[0].id);
-    });
+    api
+      .listProjects()
+      .then((projects) => {
+        if (cancelled || projects.length === 0) return;
+        loadMutation.mutate(projects[0].id);
+      })
+      .catch(() => {
+        // Best-effort — if the local server failed to start,
+        // ServerStatusToast already surfaces that to the user.
+      });
     return () => {
       cancelled = true;
     };

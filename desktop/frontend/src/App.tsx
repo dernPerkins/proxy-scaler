@@ -1,5 +1,6 @@
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import ProjectBar from "./components/ProjectBar";
+import ServerStatusToast from "./components/ServerStatusToast";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
 import PdfPage from "./pages/PdfPage";
@@ -13,6 +14,7 @@ export default function App() {
   return (
     <ProjectProvider>
       <div style={{ fontFamily: "sans-serif", padding: 16 }}>
+        <ServerStatusToast />
         <ProjectBar />
         <nav style={{ marginBottom: 16, display: "flex", gap: 12 }}>
           <NavLink to="/decklist">Decklist</NavLink>

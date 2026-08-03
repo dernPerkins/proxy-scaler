@@ -27,3 +27,69 @@ export function getConnectionMode(): "local" | "remote" | null {
 export function setConnectionMode(mode: "local" | "remote"): void {
   connectionMode = mode;
 }
+
+// Server-readiness gate. Local mode's sidecar can take real time to
+// start (cold model-loading, disk I/O) — rather than block the whole UI
+// behind a "Connecting…" screen, ConnectGate renders the app immediately
+// and drives this gate through "starting" -> "ready"/"error". api/client.ts
+// awaits waitForServerReady() before every real request, so in-flight
+// queries just wait in place (staying in their normal loading state)
+// instead of firing doomed fetches against a server that isn't up yet.
+// Remote mode never touches this — its reachability check already
+// resolves synchronously before the app renders, so the gate stays at
+// its default "ready" state for that path.
+export type ServerReadiness =
+  | { status: "ready" }
+  | { status: "starting" }
+  | { status: "error"; message: string };
+
+let readiness: ServerReadiness = { status: "ready" };
+let readyPromise: Promise<void> = Promise.resolve();
+let readyResolve: (() => void) | null = null;
+let readyReject: ((err: Error) => void) | null = null;
+let listeners: Array<() => void> = [];
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}
+
+export function setServerStarting(): void {
+  readiness = { status: "starting" };
+  readyPromise = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  // Swallow here so a rejection with nothing yet awaiting it (e.g. the
+  // server errors before any query is in flight) doesn't surface as an
+  // unhandled rejection — real callers still get it via their own await,
+  // since this is a separate derived chain off the same promise.
+  readyPromise.catch(() => {});
+  notify();
+}
+
+export function setServerReady(): void {
+  readiness = { status: "ready" };
+  readyResolve?.();
+  notify();
+}
+
+export function setServerError(message: string): void {
+  readiness = { status: "error", message };
+  readyReject?.(new Error(message));
+  notify();
+}
+
+export function getServerReadiness(): ServerReadiness {
+  return readiness;
+}
+
+export function subscribeServerReadiness(callback: () => void): () => void {
+  listeners.push(callback);
+  return () => {
+    listeners = listeners.filter((l) => l !== callback);
+  };
+}
+
+export function waitForServerReady(): Promise<void> {
+  return readyPromise;
+}

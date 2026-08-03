@@ -1,9 +1,19 @@
 import { useState, type ReactNode } from "react";
-import { setApiBaseUrl, setConnectionMode } from "./config";
+import {
+  setApiBaseUrl,
+  setConnectionMode,
+  setServerError,
+  setServerReady,
+  setServerStarting,
+} from "./config";
 import { invokeStartLocalServer, isTauri } from "./tauri";
 
 const REMOTE_TIMEOUT_MS = 8000;
 const API_PORT = 8000;
+// Matches main.rs's fixed LOCAL_URL constant — known before the sidecar
+// even reports ready, so this can be set optimistically the instant Local
+// is picked instead of waiting on invokeStartLocalServer() to resolve.
+const LOCAL_URL = "http://127.0.0.1:8000";
 
 interface ChosenConfig {
   mode: "local" | "remote";
@@ -55,9 +65,8 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
   const [host, setHost] = useState("");
 
   async function connect(config: ChosenConfig) {
-    setStatus({ kind: "connecting" });
-
     if (config.mode === "remote") {
+      setStatus({ kind: "connecting" });
       const url = `http://${config.host}:${API_PORT}`;
       const reachable = await isReachable(`${url}/api/health`, REMOTE_TIMEOUT_MS);
       if (!reachable) {
@@ -73,17 +82,24 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
       return;
     }
 
-    try {
-      const url = await invokeStartLocalServer();
-      setApiBaseUrl(url);
-      setConnectionMode("local");
-      setStatus({ kind: "connected" });
-    } catch (err) {
-      setStatus({
-        kind: "error",
-        message: `Couldn't start the local server: ${err instanceof Error ? err.message : String(err)}`,
+    // Local doesn't block on the sidecar becoming ready — render the app
+    // immediately and let ServerStatusToast (driven by config.ts's
+    // readiness gate) tell the user once it's actually up, or if it
+    // failed. api/client.ts's request()/downloadPdf() await the same
+    // gate, so any queries fired before then just wait in place.
+    setConnectionMode("local");
+    setApiBaseUrl(LOCAL_URL);
+    setServerStarting();
+    setStatus({ kind: "connected" });
+
+    invokeStartLocalServer()
+      .then((url) => {
+        setApiBaseUrl(url);
+        setServerReady();
+      })
+      .catch((err) => {
+        setServerError(err instanceof Error ? err.message : String(err));
       });
-    }
   }
 
   function pickLocal() {
