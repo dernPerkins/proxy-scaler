@@ -1,0 +1,193 @@
+"""Generation-enqueue orchestration, extracted from proxy_scaler/ui/decklist.py
+during the Streamlit -> FastAPI migration. Pure functions, no session-state
+coupling — the old Streamlit version stashed newly-queued task ids into
+st.session_state.pending_task_ids so a session could track its own
+in-flight work; callers here (the API layer) get those ids back as a
+return value instead and are responsible for tracking them client-side.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from proxy_scaler import db
+from proxy_scaler.pipeline import output_filename
+from proxy_scaler.scryfall import ScryfallClient, ScryfallError, expand_faces
+
+
+def enqueue_face(
+    *,
+    scryfall_id: str,
+    face_index: int | None,
+    face_label: str | None,
+    face_name: str,
+    card_name: str,
+    set_code: str,
+    collector_number: str,
+    png_url: str,
+    dpi_targets: list[int],
+    model: str,
+    tile_size: int,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    project_id: int | None,
+    db_path: Path | str | None = None,
+) -> list[int]:
+    """Queue one task per requested DPI for an already-resolved face (no
+    Scryfall call needed — caller already has scryfall_id/png_url/etc, from
+    either a fresh batch resolve or an existing gallery FaceResult).
+    Returns the new task ids."""
+    return [
+        db.enqueue_task(
+            project_id,
+            scryfall_id=scryfall_id,
+            face_index=face_index,
+            face_label=face_label,
+            face_name=face_name,
+            card_name=card_name,
+            set_code=set_code,
+            collector_number=collector_number,
+            png_url=png_url,
+            dpi=dpi,
+            model=model,
+            tile_size=tile_size,
+            output_dir=str(output_dir),
+            cache_dir=str(cache_dir),
+            weights_dir=str(weights_dir),
+            db_path=db_path,
+        )
+        for dpi in dpi_targets
+    ]
+
+
+def active_task_keys(
+    project_id: int | None, db_path: Path | str | None = None
+) -> set[tuple[str, int | None, int, str]]:
+    """(scryfall_id, face_index, dpi, model) keys with a pending/running
+    task for this project. Enqueueing must skip these too, not just
+    disk-existing files — otherwise enqueueing again before a previous
+    batch finishes would queue duplicate work for an image already in
+    flight."""
+    if project_id is None:
+        return set()
+    tasks = db.list_tasks(project_id=project_id, statuses=["pending", "running"], db_path=db_path)
+    return {(t.scryfall_id, t.face_index, t.dpi, t.model) for t in tasks}
+
+
+def enqueue_decklist_entries(
+    entries: list,
+    *,
+    model: str,
+    dpi_targets: list[int],
+    skip_existing: bool,
+    tile_size: int,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    project_id: int | None,
+    on_note=None,
+    db_path: Path | str | None = None,
+) -> tuple[int, int, list[int]]:
+    """Resolve entries (one batched Scryfall call, not one per card) and
+    queue one task per (face, dpi) that's actually missing: not already
+    satisfied on disk (when skip_existing) and not already pending/running
+    for this project (always — regardless of skip_existing, duplicating
+    in-flight work is never wanted). Returns (queued_count, failed_count,
+    task_ids)."""
+    client = ScryfallClient()
+    resolved = client.resolve_many(entries)
+    active = active_task_keys(project_id, db_path=db_path)
+    queued = 0
+    failed = 0
+    task_ids: list[int] = []
+    seen_keys: set[str] = set()
+    for entry, pre in zip(entries, resolved):
+        try:
+            if isinstance(pre, ScryfallError):
+                raise pre
+            card, warnings = pre
+            for w in warnings:
+                if on_note:
+                    on_note(w)
+            for face in expand_faces(card):
+                face_key = f"{face.scryfall_id}:{face.face_index}"
+                if face_key in seen_keys:
+                    continue
+                seen_keys.add(face_key)
+
+                targets_needed = []
+                for target_dpi in dpi_targets:
+                    if (face.scryfall_id, face.face_index, target_dpi, model) in active:
+                        continue
+                    out_name = output_filename(
+                        face.face_name,
+                        face.set_code,
+                        face.collector_number,
+                        face.face_label,
+                        model,
+                        target_dpi,
+                    )
+                    if skip_existing and (output_dir / out_name).exists():
+                        continue
+                    targets_needed.append(target_dpi)
+                if not targets_needed:
+                    continue
+
+                new_ids = enqueue_face(
+                    scryfall_id=face.scryfall_id,
+                    face_index=face.face_index,
+                    face_label=face.face_label,
+                    face_name=face.face_name,
+                    card_name=face.card_name,
+                    set_code=face.set_code,
+                    collector_number=face.collector_number,
+                    png_url=face.png_url,
+                    dpi_targets=targets_needed,
+                    model=model,
+                    tile_size=tile_size,
+                    output_dir=output_dir,
+                    cache_dir=cache_dir,
+                    weights_dir=weights_dir,
+                    project_id=project_id,
+                    db_path=db_path,
+                )
+                task_ids.extend(new_ids)
+                queued += len(targets_needed)
+        except ScryfallError as exc:
+            failed += 1
+            if on_note:
+                on_note(f"FAIL [{entry.raw_line}]: {exc}")
+    return queued, failed, task_ids
+
+
+def import_entries(
+    project_id: int, entries: list, db_path: Path | str | None = None
+) -> tuple[int, int, int]:
+    """Resolve entries and add new cards to the project's persistent card
+    list — add_cards_to_project() skips any already present (by
+    scryfall_id, then set+collector, then name), so re-importing the same
+    text is a safe no-op rather than a duplicate. Returns
+    (added, skipped, failed)."""
+    client = ScryfallClient()
+    resolved = client.resolve_many(entries)
+    candidates: list[dict] = []
+    failed = 0
+    for entry, pre in zip(entries, resolved):
+        if isinstance(pre, ScryfallError):
+            failed += 1
+            continue
+        card, _warnings = pre
+        candidates.append(
+            {
+                "scryfall_id": card.get("id"),
+                "card_name": card.get("name"),
+                "set_code": card.get("set"),
+                "collector_number": card.get("collector_number"),
+                "quantity": entry.quantity,
+                "original_import_line": entry.raw_line,
+            }
+        )
+    added = db.add_cards_to_project(project_id, candidates, db_path=db_path)
+    skipped = len(candidates) - added
+    return added, skipped, failed

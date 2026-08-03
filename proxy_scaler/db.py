@@ -523,6 +523,7 @@ def list_gallery_items_for_project(
         ).fetchall()
     return [
         {
+            "id": int(g["id"]),
             "out_path": g["out_path"],
             "original_path": g["original_path"],
             "scryfall_id": g["scryfall_id"],
@@ -1221,6 +1222,7 @@ def load_project(
     for g in gallery_rows:
         gallery.append(
             {
+                "id": int(g["id"]),
                 "out_path": g["out_path"],
                 "original_path": g["original_path"],
                 "scryfall_id": g["scryfall_id"],
