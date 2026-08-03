@@ -100,6 +100,15 @@ export default function DecklistPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cards", projectId] }),
   });
 
+  const [confirmClearGenerated, setConfirmClearGenerated] = useState(false);
+  const clearGeneratedMutation = useMutation({
+    mutationFn: () => api.clearGeneratedData(settings.output_dir, settings.cache_dir),
+    onSuccess: () => {
+      setConfirmClearGenerated(false);
+      queryClient.invalidateQueries({ queryKey: ["cards"] });
+    },
+  });
+
   function toggleDpi(dpi: number) {
     setSettings((s) => ({
       ...s,
@@ -199,6 +208,34 @@ export default function DecklistPage() {
             onChange={(e) => setSettings((s) => ({ ...s, weights_dir: e.target.value }))}
           />
         </label>
+
+        <hr style={{ margin: "16px 0" }} />
+        <p style={{ fontSize: 12, opacity: 0.7 }}>
+          Deletes the output and cache directories above (keeps model weights).
+        </p>
+        <label>
+          <input
+            type="checkbox"
+            checked={confirmClearGenerated}
+            onChange={(e) => setConfirmClearGenerated(e.target.checked)}
+          />
+          Confirm delete generated data
+        </label>
+        <button
+          onClick={() => clearGeneratedMutation.mutate()}
+          disabled={!confirmClearGenerated || clearGeneratedMutation.isPending}
+        >
+          Delete all generated images & cache
+        </button>
+        {clearGeneratedMutation.data && (
+          <div style={{ fontSize: 12, marginTop: 4 }}>
+            {clearGeneratedMutation.data.notes.length > 0 ? (
+              clearGeneratedMutation.data.notes.map((note, i) => <div key={i}>{note}</div>)
+            ) : (
+              <div>Generated data cleared.</div>
+            )}
+          </div>
+        )}
       </aside>
 
       <main style={{ flex: 1 }}>
