@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { setApiBaseUrl } from "./config";
+import { setApiBaseUrl, setConnectionMode } from "./config";
 import { invokeStartLocalServer, isTauri } from "./tauri";
 
 const REMOTE_TIMEOUT_MS = 8000;
@@ -68,6 +68,7 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
         return;
       }
       setApiBaseUrl(url);
+      setConnectionMode("remote");
       setStatus({ kind: "connected" });
       return;
     }
@@ -75,6 +76,7 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
     try {
       const url = await invokeStartLocalServer();
       setApiBaseUrl(url);
+      setConnectionMode("local");
       setStatus({ kind: "connected" });
     } catch (err) {
       setStatus({

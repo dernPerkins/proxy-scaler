@@ -1,18 +1,28 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { getConnectionMode } from "../config";
 import type { ProjectSettings } from "../api/types";
 
-const DEFAULT_SETTINGS: ProjectSettings = {
-  model: "ultrasharp_v2",
-  dpi_targets: [800],
-  page_size: 6,
-  skip_existing: true,
-  output_dir: "output",
-  cache_dir: "imgcache",
-  weights_dir: "weights",
-  tile_size: 0,
-};
+// Local runs upscaling on-device, so a fast/light model is the sensible
+// default; a remote server is assumed to have real GPU headroom, so it
+// defaults to the higher-quality (slower) model instead.
+function defaultModelForMode(): string {
+  return getConnectionMode() === "local" ? "realesrgan_anime_fast" : "ultrasharp_v2";
+}
+
+function getDefaultSettings(): ProjectSettings {
+  return {
+    model: defaultModelForMode(),
+    dpi_targets: [1200],
+    page_size: 6,
+    skip_existing: true,
+    output_dir: "output",
+    cache_dir: "imgcache",
+    weights_dir: "weights",
+    tile_size: 0,
+  };
+}
 
 interface ProjectContextValue {
   projectId: number | null;
@@ -50,7 +60,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState<number | null>(null);
   const [projectName, setProjectName] = useState("");
-  const [settings, setSettings] = useState<ProjectSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<ProjectSettings>(getDefaultSettings);
   const [error, setError] = useState<string | null>(null);
 
   const saveMutation = useMutation({
@@ -109,7 +119,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   function createNew() {
     setProjectId(null);
     setProjectName("");
-    setSettings(DEFAULT_SETTINGS);
+    setSettings(getDefaultSettings());
     setError(null);
   }
 

@@ -13,3 +13,17 @@ export function getApiBaseUrl(): string {
 export function setApiBaseUrl(url: string): void {
   apiBaseUrl = url;
 }
+
+// Set once by ConnectGate alongside setApiBaseUrl, right after Local/Remote
+// is resolved. Used to pick a sensible default upscale model per mode (see
+// ProjectContext.tsx) — local runs on-device, so a fast/light model is the
+// better default; a remote server is assumed to have real GPU headroom.
+let connectionMode: "local" | "remote" | null = null;
+
+export function getConnectionMode(): "local" | "remote" | null {
+  return connectionMode;
+}
+
+export function setConnectionMode(mode: "local" | "remote"): void {
+  connectionMode = mode;
+}
