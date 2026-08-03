@@ -1,14 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-# --onefile-equivalent build: a single self-contained executable. Originally
-# built as one-folder (the generally-recommended mode for large ML bundles,
-# since one-folder avoids re-unpacking to a temp dir on every launch) but
-# switched to onefile because Tauri's sidecar mechanism only manages a
-# single named executable — in `cargo tauri dev` it copies just that one
-# file next to the app binary, not a whole supporting directory, which
-# broke the one-folder build's runtime lookup for its _internal/ folder.
-# Revisit with a tauri `bundle.resources`-based one-folder setup during
-# real packaging if onefile's slower cold start becomes a real problem —
-# not worth the complexity before then.
+# One-folder build (a directory: the exe + a supporting _internal/ tree),
+# loaded directly off disk with no per-launch unpacking step. This was
+# originally onefile (a single self-contained executable that
+# self-extracts to a fresh temp dir on *every* launch) because Tauri's
+# externalBin/sidecar mechanism only manages a single named executable —
+# but with torch alone at ~1.2GB on disk, re-extracting the whole bundle
+# on every single app launch was the dominant cost behind a real, reported
+# "server still starting" delay, independent of how fast Python itself
+# imports things once files are actually on disk (see upscale.py's lazy
+# torch/spandrel/torchvision imports for that separate, still-valid fix).
+# Shipped via Tauri's `bundle.resources` mechanism instead of
+# `externalBin` (see tauri.conf.json + main.rs) — resources aren't
+# restricted to a single file, so onedir's directory output works
+# directly with no extraction step at all.
 #
 # This got much simpler once the sidecar's child changed from Streamlit to
 # a plain FastAPI/uvicorn server: no more bundling app.py as a second
@@ -62,15 +66,22 @@ pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="proxy-scaler-serve",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=True,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="proxy-scaler-serve",
 )

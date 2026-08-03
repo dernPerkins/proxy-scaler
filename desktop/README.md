@@ -30,17 +30,27 @@ Produces `desktop/frontend/dist/`, which is what `tauri.conf.json`'s
 (`cargo tauri dev`), you don't need this build — see step 3, which uses
 Vite's dev server directly via `devUrl` instead.
 
-## 2. Build the sidecar binary (required even for `cargo tauri dev`)
+## 2. Build the sidecar resources (required even for `cargo tauri dev`)
 
-Sidecars aren't special-cased in dev mode — Tauri looks for a real frozen
-binary at `src-tauri/binaries/proxy-scaler-serve-<target-triple>[.exe]`
-whether you're running `cargo tauri dev` or a packaged build. PyInstaller
-freezes are platform-specific (no cross-compiling from another OS), so
-this has to be built on the same machine/OS you're testing on.
+Not special-cased in dev mode — Tauri looks for the frozen server at
+`src-tauri/resources/proxy-scaler-serve/proxy-scaler-serve[.exe]` whether
+you're running `cargo tauri dev` or a packaged build. PyInstaller freezes
+are platform-specific (no cross-compiling from another OS), so this has
+to be built on the same machine/OS you're testing on.
+
+This ships as a bundled Tauri **resource directory** (`bundle.resources`
+in `tauri.conf.json`), not a sidecar/`externalBin` — `externalBin` only
+supports a single executable file, which used to force PyInstaller into
+`onefile` mode. Onefile self-extracts its entire bundle (torch alone runs
+~1GB+) to a fresh temp directory on *every single launch* — a real,
+measured startup-time cost. PyInstaller now builds `onedir` instead (a
+plain directory, loaded directly off disk, no per-launch extraction), and
+`main.rs` resolves + spawns it via `app.shell().command(path)` rather than
+`app.shell().sidecar(name)`.
 
 The easiest path is `make sidecar` from the repo root (see the root
-`Makefile`) — it wraps exactly the commands below, detects your target
-triple automatically, and clears stale artifacts first:
+`Makefile`) — it wraps exactly the commands below and clears stale
+artifacts first:
 
 ```bash
 make sidecar
@@ -55,14 +65,10 @@ Equivalent by hand:
   --distpath desktop/pyinstaller/dist \
   --workpath desktop/pyinstaller/build
 
-mkdir -p desktop/src-tauri/binaries
-rustc -vV | grep host   # e.g. "host: aarch64-apple-darwin" on an M-series Mac
-cp desktop/pyinstaller/dist/proxy-scaler-serve \
-   desktop/src-tauri/binaries/proxy-scaler-serve-aarch64-apple-darwin
+mkdir -p desktop/src-tauri/resources/proxy-scaler-serve
+rsync -a --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
+  desktop/src-tauri/resources/proxy-scaler-serve/
 ```
-
-(On Windows the executable is `proxy-scaler-serve.exe` → rename to
-`proxy-scaler-serve-<triple>.exe`.)
 
 This freeze is meaningfully simpler now than it was with Streamlit as the
 sidecar's child — no more `copy_metadata`/`collect_data_files` for

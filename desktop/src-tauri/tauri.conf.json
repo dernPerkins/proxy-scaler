@@ -26,6 +26,6 @@
   "bundle": {
     "active": false,
     "icon": ["icons/icon.png"],
-    "externalBin": ["binaries/proxy-scaler-serve"]
+    "resources": { "resources/proxy-scaler-serve/": "proxy-scaler-serve/" }
   }
 }

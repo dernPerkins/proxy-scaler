@@ -10,8 +10,9 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "binaries/proxy-scaler-serve",
-          "sidecar": true,
+          "name": "proxy-scaler-serve",
+          "cmd": "$RESOURCE/proxy-scaler-serve/proxy-scaler-serve",
+          "sidecar": false,
           "args": true
         }
       ]

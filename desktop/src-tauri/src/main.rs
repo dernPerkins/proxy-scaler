@@ -1,10 +1,19 @@
 // The desktop shell. In Local mode this spawns proxy-scaler-serve (the
-// supervisor, frozen via PyInstaller — see desktop/pyinstaller/) as a
-// Tauri sidecar and waits for it to report ready, returning the local API
-// server's base URL to the React frontend; in Remote mode there's no
-// sidecar at all, the frontend just configures its API client to point at
-// the user-supplied host directly. The Local/Remote choice itself is
-// asked fresh on every launch (see ConnectGate.tsx), not persisted.
+// supervisor, frozen via PyInstaller — see desktop/pyinstaller/) and waits
+// for it to report ready, returning the local API server's base URL to the
+// React frontend; in Remote mode there's no local process at all, the
+// frontend just configures its API client to point at the user-supplied
+// host directly. The Local/Remote choice itself is asked fresh on every
+// launch (see ConnectGate.tsx), not persisted.
+//
+// proxy-scaler-serve is shipped as a bundled *resource* (tauri.conf.json's
+// bundle.resources), not a Tauri sidecar/externalBin — externalBin only
+// supports a single executable file, which forced PyInstaller into onefile
+// mode (self-extracts its ~1GB+ torch/spandrel/torchvision bundle to a
+// fresh temp dir on *every* launch, a real measured startup-time
+// regression). PyInstaller now builds onedir (a plain directory, loaded
+// directly off disk, no extraction step) and main.rs resolves + spawns it
+// via app.shell().command(path) instead of app.shell().sidecar(name).
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,13 +45,19 @@ async fn start_local_server(
         return Ok(LOCAL_URL.to_string());
     }
 
-    let sidecar = app
+    let exe_name = format!("proxy-scaler-serve{}", std::env::consts::EXE_SUFFIX);
+    let exe_path = app
+        .path()
+        .resolve(
+            format!("proxy-scaler-serve/{exe_name}"),
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(|e| format!("failed to resolve bundled server path: {e}"))?;
+    let (mut rx, child) = app
         .shell()
-        .sidecar("proxy-scaler-serve")
-        .map_err(|e| format!("failed to prepare sidecar: {e}"))?;
-    let (mut rx, child) = sidecar
+        .command(exe_path)
         .spawn()
-        .map_err(|e| format!("failed to spawn sidecar: {e}"))?;
+        .map_err(|e| format!("failed to spawn local server: {e}"))?;
     *guard = Some(child);
     drop(guard);
 

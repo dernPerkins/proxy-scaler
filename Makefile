@@ -1,9 +1,8 @@
 VENV := .venv
 PYTHON := $(VENV)/bin/python3
 PIP := $(VENV)/bin/pip
-TARGET_TRIPLE := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
-SIDECAR_BIN := desktop/src-tauri/binaries/proxy-scaler-serve-$(TARGET_TRIPLE)
 RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
+SIDECAR_RESOURCE_DIR := desktop/src-tauri/resources/proxy-scaler-serve
 
 .PHONY: help install test serve sidecar sidecar-clean \
 	build run desktop \
@@ -14,8 +13,8 @@ help:
 	@echo "build            Build the packaged app (assumes sidecar is already fresh;"
 	@echo "                 run 'make sidecar' first if Python code changed)"
 	@echo "run              Launch the already-built packaged app"
-	@echo "sidecar          Freeze the Python API+worker into the Tauri sidecar binary"
-	@echo "sidecar-clean    Remove built sidecar artifacts (stale binaries, dist/build dirs)"
+	@echo "sidecar          Freeze the Python API+worker into a bundled resource directory"
+	@echo "sidecar-clean    Remove built sidecar artifacts (stale resources, dist/build dirs)"
 	@echo ""
 	@echo "--- fast dev loop (hot reload -- no Tauri, no PyInstaller) ---"
 	@echo "api-dev          Run the API server with uvicorn --reload"
@@ -25,8 +24,8 @@ help:
 	@echo ""
 	@echo "--- Tauri dev mode (hot reload for Rust/frontend, NOT Python) ---"
 	@echo "desktop          Run the Tauri desktop app via cargo tauri dev"
-	@echo "                 (needs frontend-dev running alongside it, and a"
-	@echo "                 sidecar binary in place -- see 'sidecar' above)"
+	@echo "                 (needs frontend-dev running alongside it, and the"
+	@echo "                 sidecar resource directory in place -- see 'sidecar' above)"
 	@echo ""
 	@echo "--- misc ---"
 	@echo "install          Create $(VENV) and pip install -e ."
@@ -51,24 +50,25 @@ serve:
 
 sidecar-clean:
 	rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build
-	rm -f desktop/src-tauri/binaries/proxy-scaler-serve*
+	rm -rf desktop/src-tauri/resources
 	rm -rf desktop/src-tauri/target/debug/_internal
 
-# Onefile PyInstaller freeze (see desktop/pyinstaller/proxy-scaler-serve.spec
-# for why not one-folder — Tauri's sidecar mechanism only manages a single
-# named executable). Re-freezes torch every time, so this is slow — that's
-# inherent to the approach, not something to optimize away here. Only
-# needed when Python code (proxy_scaler/*) changed; a Rust- or
-# frontend-only change doesn't need this.
+# One-folder PyInstaller freeze (see desktop/pyinstaller/proxy-scaler-serve.spec
+# for why onedir, not onefile — onefile self-extracts its ~1GB+ torch bundle
+# to a fresh temp dir on *every* launch, a real measured startup-time cost;
+# onedir is loaded directly off disk instead). Re-freezes torch every time,
+# so this step itself is slow — that's inherent to the approach, not
+# something to optimize away here. Only needed when Python code
+# (proxy_scaler/*) changed; a Rust- or frontend-only change doesn't need
+# this.
 sidecar: sidecar-clean
-	@test -n "$(TARGET_TRIPLE)" || { echo "error: couldn't detect a target triple — is rustc on PATH?"; exit 1; }
 	$(PIP) install pyinstaller pyinstaller-hooks-contrib
 	$(VENV)/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
-	mkdir -p desktop/src-tauri/binaries
-	cp desktop/pyinstaller/dist/proxy-scaler-serve $(SIDECAR_BIN)
-	@echo "sidecar built: $(SIDECAR_BIN)"
+	mkdir -p $(SIDECAR_RESOURCE_DIR)
+	rsync -a --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RESOURCE_DIR)/
+	@echo "sidecar resources built: $(SIDECAR_RESOURCE_DIR)"
 
 # The real packaged-app build: compiles main.rs and (via tauri.conf.json's
 # beforeBuildCommand) rebuilds the frontend automatically. Does NOT
@@ -82,8 +82,8 @@ run:
 
 # Tauri dev mode: Rust auto-rebuilds/relaunches on change, and the window
 # loads Vite's dev server (devUrl in tauri.conf.json) for frontend HMR.
-# Needs frontend-dev running in another terminal, and a sidecar binary
-# already in place (dev mode doesn't build one for you either).
+# Needs frontend-dev running in another terminal, and sidecar resources
+# already in place (dev mode doesn't build them for you either).
 desktop:
 	cd desktop/src-tauri && cargo tauri dev
 
