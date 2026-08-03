@@ -6,14 +6,23 @@
 // host directly. The Local/Remote choice itself is asked fresh on every
 // launch (see ConnectGate.tsx), not persisted.
 //
-// proxy-scaler-serve is shipped as a bundled *resource* (tauri.conf.json's
-// bundle.resources), not a Tauri sidecar/externalBin — externalBin only
-// supports a single executable file, which forced PyInstaller into onefile
-// mode (self-extracts its ~1GB+ torch/spandrel/torchvision bundle to a
-// fresh temp dir on *every* launch, a real measured startup-time
-// regression). PyInstaller now builds onedir (a plain directory, loaded
-// directly off disk, no extraction step) and main.rs resolves + spawns it
-// via app.shell().command(path) instead of app.shell().sidecar(name).
+// proxy-scaler-serve is a PyInstaller onedir build (a plain directory,
+// loaded directly off disk, no per-launch extraction) placed by `make
+// sidecar` as a sibling of the compiled binary at
+// target/release/proxy-scaler-serve/ — NOT via Tauri's externalBin
+// (single-file only, which forced onefile mode: self-extracting its
+// ~1GB+ torch/spandrel/torchvision bundle to a fresh temp dir on *every*
+// launch, a real measured startup-time regression) and NOT via
+// tauri.conf.json's bundle.resources either (tried that first; hit a
+// reproducible crash — "Not a directory (os error 20)" — inside
+// tauri-build 2.6.3's own copy_resources/ResourcePaths code walking this
+// real, ~1500+ file bundle, that couldn't be resolved without a local
+// Rust toolchain to step through it). This sidesteps Tauri's resource
+// pipeline entirely: main.rs computes the path itself, relative to
+// std::env::current_exe(), and the Makefile places files there directly.
+// Revisit if/when bundle.active flips to true for real .app/.dmg
+// packaging — this placement doesn't survive that step and needs its own
+// solution then (afterBuildCommand copying into the bundle, most likely).
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,13 +55,12 @@ async fn start_local_server(
     }
 
     let exe_name = format!("proxy-scaler-serve{}", std::env::consts::EXE_SUFFIX);
-    let exe_path = app
-        .path()
-        .resolve(
-            format!("proxy-scaler-serve/{exe_name}"),
-            tauri::path::BaseDirectory::Resource,
-        )
-        .map_err(|e| format!("failed to resolve bundled server path: {e}"))?;
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("failed to resolve current executable path: {e}"))?
+        .parent()
+        .ok_or_else(|| "current executable has no parent directory".to_string())?
+        .to_path_buf();
+    let exe_path = exe_dir.join("proxy-scaler-serve").join(exe_name);
     let (mut rx, child) = app
         .shell()
         .command(exe_path)

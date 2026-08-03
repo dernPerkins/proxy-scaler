@@ -2,7 +2,17 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python3
 PIP := $(VENV)/bin/pip
 RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
-SIDECAR_RESOURCE_DIR := desktop/src-tauri/resources/proxy-scaler-serve
+# Placed as a sibling of the compiled binary in *both* target profiles —
+# main.rs finds it via std::env::current_exe()'s own directory at runtime,
+# not through Tauri's bundle.resources/externalBin mechanisms (see
+# main.rs's top-of-file comment for why: bundle.resources hit a
+# reproducible crash in tauri-build 2.6.3's own resource-copying code on
+# this real, ~1500+ file torch bundle). Both profiles are populated
+# unconditionally so 'make build' (release) and 'make desktop'/dev mode
+# (debug) each just work without having to know in advance which one
+# you'll use.
+SIDECAR_DEBUG_DIR := desktop/src-tauri/target/debug/proxy-scaler-serve
+SIDECAR_RELEASE_DIR := desktop/src-tauri/target/release/proxy-scaler-serve
 
 .PHONY: help install test serve sidecar sidecar-clean \
 	build run desktop \
@@ -13,8 +23,8 @@ help:
 	@echo "build            Build the packaged app (assumes sidecar is already fresh;"
 	@echo "                 run 'make sidecar' first if Python code changed)"
 	@echo "run              Launch the already-built packaged app"
-	@echo "sidecar          Freeze the Python API+worker into a bundled resource directory"
-	@echo "sidecar-clean    Remove built sidecar artifacts (stale resources, dist/build dirs)"
+	@echo "sidecar          Freeze the Python API+worker, placed next to the compiled binary"
+	@echo "sidecar-clean    Remove built sidecar artifacts (stale placements, dist/build dirs)"
 	@echo ""
 	@echo "--- fast dev loop (hot reload -- no Tauri, no PyInstaller) ---"
 	@echo "api-dev          Run the API server with uvicorn --reload"
@@ -50,8 +60,7 @@ serve:
 
 sidecar-clean:
 	rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build
-	rm -rf desktop/src-tauri/resources
-	rm -rf desktop/src-tauri/target/debug/_internal
+	rm -rf $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR)
 
 # One-folder PyInstaller freeze (see desktop/pyinstaller/proxy-scaler-serve.spec
 # for why onedir, not onefile — onefile self-extracts its ~1GB+ torch bundle
@@ -66,16 +75,14 @@ sidecar: sidecar-clean
 	$(VENV)/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
-	mkdir -p $(SIDECAR_RESOURCE_DIR)
+	mkdir -p $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR)
 	# -L (dereference symlinks): PyInstaller's onedir output commonly
 	# includes versioned .dylib/.so symlinks (torch's shared-library deps
-	# in particular). Tauri's bundle.resources copier has multiple open
-	# upstream bugs around symlinks inside resource directories (e.g.
-	# tauri-apps/tauri#13219, #5831) — copying the real file content
-	# instead of preserving the symlink sidesteps that whole class of
-	# issue rather than depending on it being fixed upstream.
-	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RESOURCE_DIR)/
-	@echo "sidecar resources built: $(SIDECAR_RESOURCE_DIR)"
+	# in particular) — copying the real file content instead keeps this
+	# a plain, boring directory of regular files, nothing fancier needed.
+	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_DEBUG_DIR)/
+	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RELEASE_DIR)/
+	@echo "sidecar placed: $(SIDECAR_DEBUG_DIR) and $(SIDECAR_RELEASE_DIR)"
 
 # The real packaged-app build: compiles main.rs and (via tauri.conf.json's
 # beforeBuildCommand) rebuilds the frontend automatically. Does NOT

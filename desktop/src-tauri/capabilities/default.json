@@ -11,7 +11,7 @@
       "allow": [
         {
           "name": "proxy-scaler-serve",
-          "cmd": "$RESOURCE/proxy-scaler-serve/proxy-scaler-serve",
+          "cmd": "proxy-scaler-serve/proxy-scaler-serve",
           "sidecar": false,
           "args": true
         }

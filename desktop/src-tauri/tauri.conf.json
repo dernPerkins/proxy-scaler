@@ -25,7 +25,6 @@
   },
   "bundle": {
     "active": false,
-    "icon": ["icons/icon.png"],
-    "resources": { "resources/proxy-scaler-serve/": "proxy-scaler-serve/" }
+    "icon": ["icons/icon.png"]
   }
 }

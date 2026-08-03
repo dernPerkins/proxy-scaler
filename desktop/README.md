@@ -30,23 +30,28 @@ Produces `desktop/frontend/dist/`, which is what `tauri.conf.json`'s
 (`cargo tauri dev`), you don't need this build — see step 3, which uses
 Vite's dev server directly via `devUrl` instead.
 
-## 2. Build the sidecar resources (required even for `cargo tauri dev`)
+## 2. Build the sidecar (required even for `cargo tauri dev`)
 
-Not special-cased in dev mode — Tauri looks for the frozen server at
-`src-tauri/resources/proxy-scaler-serve/proxy-scaler-serve[.exe]` whether
-you're running `cargo tauri dev` or a packaged build. PyInstaller freezes
-are platform-specific (no cross-compiling from another OS), so this has
-to be built on the same machine/OS you're testing on.
+Not special-cased in dev mode — `main.rs` looks for the frozen server as
+`proxy-scaler-serve/proxy-scaler-serve[.exe]` next to whichever binary is
+currently running (`target/debug/proxy-scaler-spike` under `cargo tauri
+dev`, `target/release/proxy-scaler-spike` under a real build), computed
+at runtime via `std::env::current_exe()`. PyInstaller freezes are
+platform-specific (no cross-compiling from another OS), so this has to be
+built on the same machine/OS you're testing on.
 
-This ships as a bundled Tauri **resource directory** (`bundle.resources`
-in `tauri.conf.json`), not a sidecar/`externalBin` — `externalBin` only
-supports a single executable file, which used to force PyInstaller into
-`onefile` mode. Onefile self-extracts its entire bundle (torch alone runs
-~1GB+) to a fresh temp directory on *every single launch* — a real,
-measured startup-time cost. PyInstaller now builds `onedir` instead (a
-plain directory, loaded directly off disk, no per-launch extraction), and
-`main.rs` resolves + spawns it via `app.shell().command(path)` rather than
-`app.shell().sidecar(name)`.
+This is a PyInstaller **onedir** build (a plain directory, loaded
+directly off disk, no per-launch extraction) placed there directly by the
+Makefile — deliberately **not** via Tauri's `externalBin` (single-file
+only, which used to force PyInstaller into `onefile` mode: self-extracts
+its entire bundle, torch alone ~1GB+, to a fresh temp dir on *every
+single launch*, a real measured startup-time cost) **and not** via
+`bundle.resources` either (tried that next; hit a reproducible crash —
+"Not a directory (os error 20)" — inside `tauri-build` 2.6.3's own
+resource-copying code walking this real, ~1500+ file bundle, that
+couldn't be pinned down further without a local Rust toolchain to step
+through it). Bypassing Tauri's resource pipeline entirely sidesteps that
+whole class of problem.
 
 The easiest path is `make sidecar` from the repo root (see the root
 `Makefile`) — it wraps exactly the commands below and clears stale
@@ -65,12 +70,17 @@ Equivalent by hand:
   --distpath desktop/pyinstaller/dist \
   --workpath desktop/pyinstaller/build
 
-mkdir -p desktop/src-tauri/resources/proxy-scaler-serve
+# Placed in both target profiles so either dev mode or a real build just
+# works without knowing in advance which one you'll use.
+mkdir -p desktop/src-tauri/target/debug/proxy-scaler-serve
+mkdir -p desktop/src-tauri/target/release/proxy-scaler-serve
 # -L dereferences symlinks (PyInstaller's onedir output on macOS commonly
-# includes versioned .dylib symlinks; Tauri's resource copier has open
-# upstream bugs handling those) — see the Makefile's sidecar target comment.
+# includes versioned .dylib symlinks) — keeps this a plain directory of
+# regular files, nothing fancier needed.
 rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
-  desktop/src-tauri/resources/proxy-scaler-serve/
+  desktop/src-tauri/target/debug/proxy-scaler-serve/
+rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
+  desktop/src-tauri/target/release/proxy-scaler-serve/
 ```
 
 This freeze is meaningfully simpler now than it was with Streamlit as the
