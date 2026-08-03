@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "../config";
+import { getApiBaseUrl } from "../config";
 import type {
   Card,
   GenerateRequest,
@@ -24,7 +24,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${API_BASE_URL}${path}`, {
+  const resp = await fetch(`${getApiBaseUrl()}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
@@ -39,7 +39,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function downloadPdf(projectId: number, body: PdfLayoutRequest): Promise<Blob> {
-  const resp = await fetch(`${API_BASE_URL}/api/projects/${projectId}/pdf`, {
+  const resp = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}/pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -118,7 +118,7 @@ export const api = {
   downloadPdf,
 
   imageUrl: (projectId: number, galleryItemId: number, variant: "full" | "original") =>
-    `${API_BASE_URL}/api/projects/${projectId}/images/${galleryItemId}/${variant}`,
+    `${getApiBaseUrl()}/api/projects/${projectId}/images/${galleryItemId}/${variant}`,
 
   clearGeneratedData: (outputDir: string, cacheDir: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {

@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.proxyscaler.spike",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:5173"
   },
   "app": {
     "withGlobalTauri": true,

@@ -7,67 +7,49 @@
 # file next to the app binary, not a whole supporting directory, which
 # broke the one-folder build's runtime lookup for its _internal/ folder.
 # Revisit with a tauri `bundle.resources`-based one-folder setup during
-# real Phase 3 packaging if onefile's slower cold start becomes a real
-# problem — not worth the complexity before then.
+# real packaging if onefile's slower cold start becomes a real problem —
+# not worth the complexity before then.
+#
+# This got much simpler once the sidecar's child changed from Streamlit to
+# a plain FastAPI/uvicorn server: no more bundling app.py as a second
+# Analysis script (Streamlit's script-runner read it off a real disk path
+# at runtime; FastAPI has no equivalent), no more copy_metadata/
+# collect_data_files for Streamlit's importlib.metadata version lookup and
+# bundled static frontend, no more hiddenimports for Streamlit's
+# dynamically-imported "magic" module. If a similar "PackageNotFoundError:
+# No package metadata was found for X" ever shows up for fastapi/uvicorn/
+# pydantic, the fix is the same pattern that solved it for Streamlit:
+# `from PyInstaller.utils.hooks import copy_metadata` and add
+# `copy_metadata("X")` to `datas` below.
 #
 # torch's hooks come from pyinstaller-hooks-contrib and are
 # auto-discovered once that package is installed in the build venv — no
 # explicit hookspath needed.
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, copy_metadata
-
 # Spec files are exec()'d directly by PyInstaller, not imported as a
 # module — there's no __file__ in this namespace. PyInstaller injects
 # SPECPATH (this spec's own directory) instead.
 ROOT = Path(SPECPATH).resolve().parents[1]  # noqa: F821
 ENTRY_SCRIPT = Path(SPECPATH).resolve() / "run_supervisor.py"  # noqa: F821
-APP_SCRIPT = ROOT / "app.py"
 
-# PyInstaller only bundles a package's actual code by default, not its
-# pip-level dist-info/METADATA — but streamlit reads its own version via
-# importlib.metadata.version("streamlit") at import time, which needs
-# that metadata to exist on disk. Without this, streamlit fails to import
-# at all inside the frozen build with "PackageNotFoundError: No package
-# metadata was found for streamlit". If other packages hit the same
-# error later, add them here too — this is a common, expected pattern for
-# frozen builds, not specific to streamlit.
-METADATA_PACKAGES = ["streamlit"]
-
-# Separately: streamlit also ships its compiled frontend (the static
-# HTML/JS/CSS app shell it serves at "/") as plain data files inside its
-# own package directory, not Python code — PyInstaller's import-graph
-# analysis has no way to discover those on its own. Without this, the
-# frozen build's Streamlit process starts and reports healthy, but every
-# page request 404s ("Not Found") since the app shell it would serve
-# was never bundled.
-DATA_PACKAGES = ["streamlit"]
-
-# Streamlit's "magic" feature (auto-writing a bare top-level expression,
-# e.g. app.py's own module docstring, via st.write()) dynamically imports
-# this module at runtime rather than at normal import time — invisible to
-# PyInstaller's static import-graph analysis, so it has to be listed
-# explicitly. If other "ModuleNotFoundError" surprises show up for
-# similarly dynamically-imported streamlit/proxy_scaler internals later,
-# add them here too.
-HIDDEN_IMPORTS = ["streamlit.runtime.scriptrunner.magic_funcs"]
+# uvicorn picks its HTTP/websocket/event-loop implementation at runtime via
+# its own internal "auto" modules (httptools vs h11, uvloop vs asyncio,
+# etc.) — invisible to PyInstaller's static import-graph analysis, so they
+# have to be listed explicitly, the same class of issue Streamlit's
+# dynamically-imported "magic" module was.
+HIDDEN_IMPORTS = [
+    "uvicorn.loops.auto",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.lifespan.on",
+]
 
 a = Analysis(
-    # app.py is included as a second script (not just a data file) so
-    # PyInstaller's static analysis also traces *its* import graph
-    # (proxy_scaler.ui.*, etc.) — run_supervisor.py alone never imports
-    # app.py, it only ever invokes it as a path via Streamlit's own CLI
-    # (see supervisor.frozen_main's "streamlit" role), so nothing app.py
-    # needs would otherwise get bundled. It's also listed under `datas`
-    # below because Streamlit's script loader reads the file directly off
-    # disk at a real path — bundling its bytecode into the archive alone
-    # isn't enough for that lookup to succeed.
-    [str(ENTRY_SCRIPT), str(APP_SCRIPT)],
+    [str(ENTRY_SCRIPT)],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[(str(APP_SCRIPT), ".")]
-    + [entry for pkg in METADATA_PACKAGES for entry in copy_metadata(pkg)]
-    + [entry for pkg in DATA_PACKAGES for entry in collect_data_files(pkg)],
+    datas=[],
     hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},

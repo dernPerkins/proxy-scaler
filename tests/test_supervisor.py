@@ -1,6 +1,6 @@
 """Tests for supervisor.py: health-check polling, and a real end-to-end
 lifecycle check (spawn the actual supervisor subprocess, confirm its
-Streamlit + worker children come up, signal it, confirm both children are
+API server + worker children come up, signal it, confirm both children are
 actually gone afterward — not just that the signal was sent)."""
 
 from __future__ import annotations
@@ -63,19 +63,22 @@ def test_child_command_not_frozen_uses_module_flag(monkeypatch) -> None:
         "-m",
         "proxy_scaler.worker",
     ]
-    assert supervisor._child_command("streamlit", ["run", "app.py"]) == [
+    assert supervisor._child_command("api", ["--host", "127.0.0.1", "--port", "8000"]) == [
         sys.executable,
         "-m",
-        "streamlit",
-        "run",
-        "app.py",
+        "uvicorn",
+        "proxy_scaler.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
     ]
 
 
 def test_child_command_frozen_uses_role_flag_not_module_flag(monkeypatch) -> None:
     """The actual bug this guards against: inside a PyInstaller-frozen
     build, sys.executable IS the frozen binary, not a Python interpreter.
-    `[sys.executable, "-m", "streamlit", ...]` doesn't invoke Streamlit at
+    `[sys.executable, "-m", "uvicorn", ...]` doesn't invoke uvicorn at
     all in that case — it just re-runs this program's own entry point
     again, ignoring the args, which then does the same thing for its own
     children: an uncontrolled self-spawning loop. Frozen builds must never
@@ -83,18 +86,26 @@ def test_child_command_frozen_uses_role_flag_not_module_flag(monkeypatch) -> Non
     --role dispatch in frozen_main() instead."""
     monkeypatch.setattr(supervisor, "IS_FROZEN", True)
     worker_cmd = supervisor._child_command("worker")
-    streamlit_cmd = supervisor._child_command("streamlit", ["run", "app.py"])
+    api_cmd = supervisor._child_command("api", ["--host", "127.0.0.1", "--port", "8000"])
 
     assert worker_cmd == [sys.executable, "--role", "worker"]
-    assert streamlit_cmd == [sys.executable, "--role", "streamlit", "run", "app.py"]
+    assert api_cmd == [
+        sys.executable,
+        "--role",
+        "api",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
     assert "-m" not in worker_cmd
-    assert "-m" not in streamlit_cmd
+    assert "-m" not in api_cmd
 
 
 def _child_pids(ppid: int, needle: str) -> list[int]:
     """PIDs of *direct children* of `ppid` whose command line contains
     `needle`. Filtering by parent PID (not just command line) is what
-    keeps this reliable even when an unrelated real worker/Streamlit
+    keeps this reliable even when an unrelated real worker/API-server
     process happens to already be running in the same environment —
     setsid() (used to give each child its own process group, see
     supervisor._spawn) does not change its parent PID, so this still
@@ -132,7 +143,7 @@ def _shutdown(proc: subprocess.Popen) -> None:
     """Graceful-then-forceful stop of a supervisor subprocess we spawned
     for a test. Never just proc.kill() as the only attempt — SIGKILL
     can't be caught, so it skips the supervisor's own child-cleanup
-    entirely and orphans Streamlit/worker underneath it."""
+    entirely and orphans the API server/worker underneath it."""
     if proc.poll() is not None:
         return
     proc.send_signal(signal.SIGTERM)
@@ -153,17 +164,17 @@ class _RunningSupervisor:
         self,
         proc: subprocess.Popen,
         log_path: Path,
-        streamlit_pids: list[int],
+        api_pids: list[int],
         worker_pids: list[int],
     ) -> None:
         self.proc = proc
         self.log_path = log_path
-        self.streamlit_pids = streamlit_pids
+        self.api_pids = api_pids
         self.worker_pids = worker_pids
 
     def assert_children_gone(self) -> None:
-        for pid in self.streamlit_pids:
-            assert not Path(f"/proc/{pid}").exists(), "Streamlit child survived shutdown"
+        for pid in self.api_pids:
+            assert not Path(f"/proc/{pid}").exists(), "API server child survived shutdown"
         for pid in self.worker_pids:
             assert not Path(f"/proc/{pid}").exists(), "worker child survived shutdown"
 
@@ -172,11 +183,11 @@ class _RunningSupervisor:
 def running_supervisor(tmp_path: Path):
     """Spawn the real supervisor as a subprocess (isolated port/DB/lock so
     it can't collide with anything else running), wait for it to report
-    ready, and confirm both its Streamlit and worker children actually
+    ready, and confirm both its API server and worker children actually
     started. Yields a _RunningSupervisor; always cleans up via SIGTERM
     even if the test already stopped it a different way (double-stop is a
     no-op — see _shutdown's poll() check)."""
-    port = 8000 + (os.getpid() % 1000)  # avoid clashing with a real 8501 instance
+    port = 8000 + (os.getpid() % 1000)  # avoid clashing with a real default-port instance
     db_path = tmp_path / "test.db"
     lock_path = tmp_path / "worker.lock"
     log_path = tmp_path / "supervisor.log"
@@ -201,7 +212,7 @@ def running_supervisor(tmp_path: Path):
     )
     try:
         ready = False
-        deadline = time.monotonic() + 90.0  # Streamlit/torch cold start can be slow
+        deadline = time.monotonic() + 90.0  # torch cold start (worker) can be slow
         while time.monotonic() < deadline:
             if supervisor.READY_MARKER in log_path.read_text():
                 ready = True
@@ -211,10 +222,10 @@ def running_supervisor(tmp_path: Path):
             time.sleep(0.2)
         assert ready, f"supervisor never reported ready; output so far:\n{log_path.read_text()}"
 
-        streamlit_pids = _child_pids(proc.pid, "streamlit")
+        api_pids = _child_pids(proc.pid, "uvicorn")
         worker_pids = _child_pids(proc.pid, "proxy_scaler.worker")
-        assert streamlit_pids, (
-            f"no Streamlit child found under our test supervisor; log:\n{log_path.read_text()}"
+        assert api_pids, (
+            f"no API server child found under our test supervisor; log:\n{log_path.read_text()}"
         )
         assert worker_pids, (
             f"no worker child found under our test supervisor; log:\n{log_path.read_text()}"
@@ -232,7 +243,7 @@ def running_supervisor(tmp_path: Path):
             f"worker never acquired its (isolated) lock file; log:\n{log_path.read_text()}"
         )
 
-        yield _RunningSupervisor(proc, log_path, streamlit_pids, worker_pids)
+        yield _RunningSupervisor(proc, log_path, api_pids, worker_pids)
     finally:
         _shutdown(proc)
         log_file.close()

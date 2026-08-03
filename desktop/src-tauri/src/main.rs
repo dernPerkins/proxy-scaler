@@ -1,9 +1,10 @@
-// Phase 2: the desktop shell. In Local mode this spawns proxy-scaler-serve
-// (the Phase 1 supervisor, frozen via PyInstaller — see
-// desktop/pyinstaller/) as a Tauri sidecar and waits for it to report
-// ready; in Remote mode there's no sidecar at all, the frontend just
-// navigates straight to the user-supplied host. Mode/host choice itself is
-// stored client-side via localStorage (see desktop/src/index.html) rather
+// The desktop shell. In Local mode this spawns proxy-scaler-serve (the
+// supervisor, frozen via PyInstaller — see desktop/pyinstaller/) as a
+// Tauri sidecar and waits for it to report ready, returning the local API
+// server's base URL to the React frontend; in Remote mode there's no
+// sidecar at all, the frontend just configures its API client to point at
+// the user-supplied host directly. Mode/host choice itself is stored
+// client-side via localStorage (see desktop/frontend/src/context) rather
 // than a Tauri plugin — it's two strings, not worth the extra dependency
 // surface.
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, Notify};
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
-const LOCAL_URL: &str = "http://127.0.0.1:8501";
+const LOCAL_URL: &str = "http://127.0.0.1:8000";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(12);
 
 #[derive(Default)]
@@ -87,9 +88,9 @@ async fn start_local_server(
 ///
 /// Never `child.kill()` as the *first* move: Tauri documents that as a
 /// hard kill (no graceful signal at all), which would skip supervisor.py's
-/// own cleanup of Streamlit/worker entirely and orphan them underneath
-/// it — the same failure mode Phase 1's own test suite already caught
-/// once for a bare `proc.kill()` in the test harness itself.
+/// own cleanup of the API server/worker entirely and orphan them
+/// underneath it — the same failure mode the Python test suite already
+/// caught once for a bare `proc.kill()` in its own test harness.
 async fn stop_sidecar(state: &SidecarState) {
     let mut guard = state.child.lock().await;
     let Some(mut child) = guard.take() else {
@@ -113,8 +114,8 @@ async fn stop_sidecar(state: &SidecarState) {
 /// thing from a Tauri window-close event, and on_window_event alone never
 /// sees it — so without this, stopping dev mode with Ctrl+C (a very
 /// natural thing to do while iterating) skipped sidecar cleanup entirely
-/// and left Streamlit/worker running, still holding port 8501 for the
-/// *next* run to collide with.
+/// and left the API server/worker running, still holding the port for
+/// the *next* run to collide with.
 async fn shutdown_and_exit(app: AppHandle) {
     let state = app.state::<SidecarState>();
     stop_sidecar(&state).await;

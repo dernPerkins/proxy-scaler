@@ -4,15 +4,18 @@ PIP := $(VENV)/bin/pip
 TARGET_TRIPLE := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 SIDECAR_BIN := desktop/src-tauri/binaries/proxy-scaler-serve-$(TARGET_TRIPLE)
 
-.PHONY: help install test serve sidecar sidecar-clean desktop
+.PHONY: help install test serve sidecar sidecar-clean desktop frontend-install frontend-dev frontend-build
 
 help:
-	@echo "install        Create $(VENV) and pip install -e ."
-	@echo "test           Run the full pytest suite"
-	@echo "serve          Run the supervisor directly (proxy-scaler-serve)"
-	@echo "sidecar        Freeze the desktop sidecar binary and place it for Tauri"
-	@echo "sidecar-clean  Remove built sidecar artifacts (stale binaries, dist/build dirs)"
-	@echo "desktop        Run the Tauri desktop app (cargo tauri dev)"
+	@echo "install          Create $(VENV) and pip install -e ."
+	@echo "test             Run the full pytest suite"
+	@echo "serve            Run the supervisor directly (proxy-scaler-serve)"
+	@echo "sidecar          Freeze the desktop sidecar binary and place it for Tauri"
+	@echo "sidecar-clean    Remove built sidecar artifacts (stale binaries, dist/build dirs)"
+	@echo "desktop          Run the Tauri desktop app (cargo tauri dev)"
+	@echo "frontend-install npm install in desktop/frontend"
+	@echo "frontend-dev     Run the Vite dev server (needed alongside 'make desktop')"
+	@echo "frontend-build   Build desktop/frontend/dist (needed for a real tauri build)"
 
 $(VENV)/bin/python3:
 	python3 -m venv $(VENV)
@@ -48,3 +51,12 @@ sidecar: sidecar-clean
 
 desktop:
 	cd desktop/src-tauri && cargo tauri dev
+
+frontend-install:
+	cd desktop/frontend && npm install
+
+frontend-dev:
+	cd desktop/frontend && npm run dev
+
+frontend-build:
+	cd desktop/frontend && npm run build

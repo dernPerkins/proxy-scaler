@@ -1,11 +1,12 @@
-"""Process supervisor: manages Streamlit and the background worker as a
-single managed unit.
+"""Process supervisor: manages the FastAPI server (proxy_scaler.api) and
+the background worker as a single managed unit.
 
 Unlike db.py::ensure_worker_running()'s deliberately-detached worker spawn
-(start_new_session=True on the worker alone, built to survive Streamlit's
-dev-mode hot-reloads without losing an in-flight GPU job), this supervisor
-explicitly owns *both* children's lifecycle: it starts them, health-checks
-Streamlit, and on any shutdown trigger stops both — gracefully first
+(start_new_session=True on the worker alone, built to survive Streamlit
+dev-mode hot-reloads without losing an in-flight GPU job — a concern that
+no longer applies now that Streamlit is gone), this supervisor explicitly
+owns *both* children's lifecycle: it starts them, health-checks the API
+server, and on any shutdown trigger stops both — gracefully first
 (SIGTERM/timeout), then forcefully (SIGKILL) if needed. That's the right
 tradeoff for a headless server deployment or a packaged desktop app, where
 there's no hot-reload churn and "stop the supervisor" should actually stop
@@ -31,7 +32,7 @@ import requests
 from . import db
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8501
+DEFAULT_PORT = 8000
 HEALTH_TIMEOUT_S = 60.0
 HEALTH_POLL_INTERVAL_S = 0.5
 SHUTDOWN_GRACE_S = 10.0
@@ -46,48 +47,47 @@ IS_WINDOWS = sys.platform == "win32"
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 
 if IS_FROZEN:
-    # PyInstaller onefile builds unpack bundled data files (see the
-    # `datas` entry in desktop/pyinstaller/proxy-scaler-serve.spec) to a
-    # temp dir at sys._MEIPASS at runtime; that's where app.py lives when
-    # frozen, not next to this source file.
+    # PyInstaller onefile builds unpack to a temp dir at sys._MEIPASS at
+    # runtime, not next to this source file.
     ROOT = Path(getattr(sys, "_MEIPASS"))
 else:
     ROOT = Path(__file__).resolve().parents[1]
 
-# Printed to stdout once Streamlit is confirmed healthy — a stable marker
-# any launcher (a human, a systemd unit, Tauri's sidecar stdout watcher)
+# Printed to stdout once the API server is confirmed healthy — a stable
+# marker any launcher (a human, a systemd unit, Tauri's sidecar stdout watcher)
 # can watch for instead of guessing a fixed startup delay.
 READY_MARKER = "PROXY_SCALER_READY"
 
 
 def _child_command(role: str, extra_args: list[str] | None = None) -> list[str]:
-    """Build the argv used to spawn the Streamlit or worker child.
+    """Build the argv used to spawn the API server or worker child.
 
     In a normal (non-frozen) install, sys.executable is a real Python
     interpreter, so these are launched the obvious way via `-m`.
 
     Inside a PyInstaller-frozen build, sys.executable is *this same frozen
-    binary* — passing it `-m streamlit run ...` doesn't invoke Python's
-    module machinery at all, since a frozen bootloader isn't a generic
+    binary* — passing it `-m uvicorn ...` doesn't invoke Python's module
+    machinery at all, since a frozen bootloader isn't a generic
     interpreter. It would just re-run this program's own entry point
     again, silently ignoring those args. That was a real, previously
-    shipped bug: the "Streamlit" child was actually just another copy of
-    this same supervisor, which went on to spawn its own "Streamlit" and
-    "worker" children the same broken way — an uncontrolled self-spawning
-    loop that pegged a real machine's CPU/memory.
+    shipped bug (when this child was Streamlit instead of the API
+    server): the child was actually just another copy of this same
+    supervisor, which went on to spawn its own children the same broken
+    way — an uncontrolled self-spawning loop that pegged a real machine's
+    CPU/memory.
 
     Frozen builds instead re-invoke the same frozen binary with a --role
     flag, which run_supervisor.py's frozen_main() dispatches on — so
-    there's still only ever one binary on disk, just playing three
-    different parts depending on how it's invoked.
+    there's still only ever one binary on disk, just playing multiple
+    parts depending on how it's invoked.
     """
     extra_args = extra_args or []
     if IS_FROZEN:
         return [sys.executable, "--role", role, *extra_args]
     if role == "worker":
         return [sys.executable, "-u", "-m", "proxy_scaler.worker"]
-    if role == "streamlit":
-        return [sys.executable, "-m", "streamlit", *extra_args]
+    if role == "api":
+        return [sys.executable, "-m", "uvicorn", "proxy_scaler.api:app", *extra_args]
     raise ValueError(f"unknown role: {role!r}")
 
 
@@ -110,8 +110,8 @@ def _spawn(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.P
 
 
 def _wait_for_health(host: str, port: int, timeout: float) -> bool:
-    """Poll Streamlit's built-in health endpoint until it responds OK."""
-    url = f"http://{host}:{port}/_stcore/health"
+    """Poll the API server's health endpoint until it responds OK."""
+    url = f"http://{host}:{port}/api/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -226,15 +226,14 @@ def main(
     db_path: Path | str | None = None,
     worker_lock_path: Path | str | None = None,
 ) -> int:
-    """Start Streamlit + the worker as managed children, block until
+    """Start the API server + the worker as managed children, block until
     shutdown, then stop both cleanly. Returns a process exit code."""
-    # Normally Streamlit's own startup (app.py::main -> db.init_db()) is
-    # what creates the schema on a fresh DB path. Since the worker starts
-    # concurrently here (not waiting on Streamlit), it can race ahead and
-    # hit the DB before that's happened — exactly what a genuinely fresh
-    # install (or an isolated test DB path) hits immediately, since
-    # there's no pre-existing DB file to paper over the race. Initialize
-    # it here, before spawning either child, so there's no race at all.
+    # Since the worker starts concurrently here (not waiting on the API
+    # server), it can race ahead and hit the DB before the schema exists
+    # — exactly what a genuinely fresh install (or an isolated test DB
+    # path) hits immediately, since there's no pre-existing DB file to
+    # paper over the race. Initialize it here, before spawning either
+    # child, so there's no race at all.
     db.init_db(db_path)
 
     worker_env: dict[str, str] = {}
@@ -243,34 +242,16 @@ def main(
     if worker_lock_path is not None:
         worker_env["PROXY_SCALER_WORKER_LOCK_PATH"] = str(worker_lock_path)
 
-    print(f"Starting Streamlit on {host}:{port}…")
-    streamlit_proc = _spawn(
-        _child_command(
-            "streamlit",
-            [
-                "run",
-                str(ROOT / "app.py"),
-                "--server.address",
-                host,
-                "--server.port",
-                str(port),
-                "--server.headless",
-                "true",
-                "--browser.gatherUsageStats",
-                "false",
-                # Streamlit infers "development mode" from whether its own
-                # __file__ path looks like a normal pip install (contains
-                # "site-packages") — inside a PyInstaller-frozen build it
-                # never does (it's under the unpacked temp dir instead),
-                # so Streamlit wrongly concludes it's in dev mode and then
-                # refuses to combine that with an explicit --server.port.
-                # Force it off explicitly; harmless in a normal
-                # (non-frozen) install too, since it isn't in dev mode
-                # there either.
-                "--global.developmentMode",
-                "false",
-            ],
-        )
+    api_env: dict[str, str] = {}
+    if db_path is not None:
+        api_env["PROXY_SCALER_DB_PATH"] = str(db_path)
+    if worker_lock_path is not None:
+        api_env["PROXY_SCALER_WORKER_LOCK_PATH"] = str(worker_lock_path)
+
+    print(f"Starting API server on {host}:{port}…")
+    api_proc = _spawn(
+        _child_command("api", ["--host", host, "--port", str(port)]),
+        env=api_env or None,
     )
 
     print("Starting worker…")
@@ -279,7 +260,7 @@ def main(
         env=worker_env or None,
     )
 
-    children = [streamlit_proc, worker_proc]
+    children = [api_proc, worker_proc]
     job = _create_job_object() if IS_WINDOWS else None
     if job is not None:
         for proc in children:
@@ -304,7 +285,7 @@ def main(
     # API) may not have a reliable way to send this process a real signal —
     # Tauri's own CommandChild::kill() is documented to hard-kill rather
     # than signal gracefully, which would skip the cleanup below entirely
-    # and orphan Streamlit/worker underneath it. Any stdin input, or stdin
+    # and orphan the API server/worker underneath it. Any stdin input, or stdin
     # simply closing (EOF — e.g. the sidecar handle being dropped), is
     # treated as an equivalent shutdown trigger. (Deliberately not routed
     # through os.kill(self, SIGTERM): on Windows that calls TerminateProcess
@@ -334,7 +315,7 @@ def main(
 
         while not shutdown_event.is_set():
             exited = False
-            for proc, name in ((streamlit_proc, "streamlit"), (worker_proc, "worker")):
+            for proc, name in ((api_proc, "api"), (worker_proc, "worker")):
                 code = proc.poll()
                 if code is not None:
                     print(
@@ -376,10 +357,10 @@ def frozen_main() -> int:
     """Entry point for the frozen sidecar binary (see
     desktop/pyinstaller/run_supervisor.py). A frozen build has to be a
     single executable to fit Tauri's sidecar model, but this same
-    supervisor needs to spawn Streamlit and worker *children* too — so
-    this dispatches on a --role flag (see _child_command) to let that one
-    binary also play the "Streamlit" and "worker" parts when invoked that
-    way, instead of naively re-invoking itself as `python -m X`, which
+    supervisor needs to spawn the API server and worker as *children*
+    too — so this dispatches on a --role flag (see _child_command) to
+    let that one binary also play those parts when invoked that way,
+    instead of naively re-invoking itself as `python -m X`, which
     doesn't mean anything to a frozen bootloader (see _child_command's
     docstring for the bug that caused)."""
     if len(sys.argv) >= 3 and sys.argv[1] == "--role":
@@ -393,11 +374,24 @@ def frozen_main() -> int:
                 lock_path=os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None,
             )
             return 0
-        if role == "streamlit":
-            import streamlit.web.cli as stcli
+        if role == "api":
+            import uvicorn
 
-            sys.argv = ["streamlit", *remaining]
-            return stcli.main()
+            from .api import app as fastapi_app
+
+            host = DEFAULT_HOST
+            port = DEFAULT_PORT
+            if "--host" in remaining:
+                host = remaining[remaining.index("--host") + 1]
+            if "--port" in remaining:
+                port = int(remaining[remaining.index("--port") + 1])
+            # Pass the app object directly rather than the "module:attr"
+            # import-string form (uvicorn supports both) — the string
+            # form re-resolves the import inside uvicorn's own reload/
+            # worker machinery, which is an unnecessary extra thing to
+            # trust working correctly inside a frozen build.
+            uvicorn.run(fastapi_app, host=host, port=port)
+            return 0
         print(f"unknown role: {role!r}", file=sys.stderr)
         return 1
 
