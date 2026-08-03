@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { ProjectSettings } from "../api/types";
@@ -112,6 +112,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setSettings(DEFAULT_SETTINGS);
     setError(null);
   }
+
+  // Auto-load the most recently updated project on startup, matching the
+  // old Streamlit version's maybe_load_last_project() — otherwise the app
+  // always opens blank even when projects already exist. list_projects()
+  // is already ordered by updated_at DESC server-side, so the first
+  // entry is exactly "the latest project." Runs once on mount only; a
+  // project explicitly loaded/created/deleted afterward should never be
+  // silently overridden by this.
+  useEffect(() => {
+    let cancelled = false;
+    api.listProjects().then((projects) => {
+      if (cancelled || projects.length === 0) return;
+      loadMutation.mutate(projects[0].id);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const value: ProjectContextValue = {
     projectId,

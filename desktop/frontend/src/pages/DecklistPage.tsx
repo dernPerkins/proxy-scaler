@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import CompareDialog from "../components/CompareDialog";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
 import type { Card, Variant } from "../api/types";
@@ -270,6 +271,12 @@ async function handleDownloadImage(url: string, filename: string): Promise<void>
   await downloadBlob(blob, filename);
 }
 
+interface CompareTarget {
+  originalUrl: string;
+  upscaledUrl: string;
+  label: string;
+}
+
 function CardRow(props: {
   card: Card;
   projectId: number;
@@ -283,6 +290,7 @@ function CardRow(props: {
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
   const hasImages = card.faces.some((f) => f.variants.some((v) => v.status === "done"));
+  const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
 
   return (
     <div style={{ borderTop: "1px solid #444", padding: "8px 0" }}>
@@ -337,11 +345,31 @@ function CardRow(props: {
                   >
                     Download
                   </button>
+                  <button
+                    onClick={() =>
+                      setCompareTarget({
+                        originalUrl: api.imageUrl(projectId, v.gallery_item_id, "original"),
+                        upscaledUrl: api.imageUrl(projectId, v.gallery_item_id, "full"),
+                        label: `${card.card_name ?? "Card"} — ${v.dpi} DPI · ${v.model}`,
+                      })
+                    }
+                  >
+                    Compare
+                  </button>
                   <button onClick={() => onRegenerate(v.gallery_item_id)}>Regen</button>
                 </div>
               ))}
           </div>
         ))}
+
+      {compareTarget && (
+        <CompareDialog
+          originalUrl={compareTarget.originalUrl}
+          upscaledUrl={compareTarget.upscaledUrl}
+          label={compareTarget.label}
+          onClose={() => setCompareTarget(null)}
+        />
+      )}
     </div>
   );
 }
