@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useProject } from "../context/ProjectContext";
+import { useServerReadiness } from "../config";
 
 // Always-visible, not a tab — matches ui/projects.py::render_project_bar's
 // old placement above the Decklist/PDF tabs.
 export default function ProjectBar() {
   const project = useProject();
+  const readiness = useServerReadiness();
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
   const [saveAsName, setSaveAsName] = useState("");
   const [showSaveAs, setShowSaveAs] = useState(false);
@@ -88,6 +90,8 @@ export default function ProjectBar() {
             Delete
           </button>
         </>
+      ) : readiness.status === "starting" ? (
+        <span>Starting local server…</span>
       ) : (
         <span>No saved projects yet — enter a name and click Save.</span>
       )}

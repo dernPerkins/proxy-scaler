@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import CompareDialog from "../components/CompareDialog";
+import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
 import type { Card, Variant } from "../api/types";
@@ -19,6 +20,7 @@ const STATUS_ICON: Record<string, string> = {
 export default function DecklistPage() {
   const queryClient = useQueryClient();
   const { projectId, settings, setSettings } = useProject();
+  const readiness = useServerReadiness();
 
   // Always read this from the API, never hardcode — see api/client.ts's
   // listModels comment for the regression this replaced.
@@ -134,7 +136,11 @@ export default function DecklistPage() {
     return (
       <div>
         <h2>Decklist</h2>
-        <p>Enter a project name in the project bar above and click Save to get started.</p>
+        {readiness.status === "starting" ? (
+          <p>Starting local server — your last project will load automatically.</p>
+        ) : (
+          <p>Enter a project name in the project bar above and click Save to get started.</p>
+        )}
       </div>
     );
   }

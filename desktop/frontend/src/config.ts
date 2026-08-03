@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 // Mutable: in a plain browser tab (no Tauri) this stays the dev default
 // below. Inside Tauri, ConnectGate overwrites it once via setApiBaseUrl
 // after resolving Local (the sidecar's own reported URL) or Remote (the
@@ -92,4 +94,11 @@ export function subscribeServerReadiness(callback: () => void): () => void {
 
 export function waitForServerReady(): Promise<void> {
   return readyPromise;
+}
+
+// For components that need to render differently while starting (e.g. a
+// "Starting local server…" placeholder instead of a misleading "no
+// projects yet" empty state) rather than just reacting to ready/error.
+export function useServerReadiness(): ServerReadiness {
+  return useSyncExternalStore(subscribeServerReadiness, getServerReadiness);
 }

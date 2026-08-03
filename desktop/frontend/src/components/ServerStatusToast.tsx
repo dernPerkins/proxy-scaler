@@ -1,14 +1,14 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { getServerReadiness, subscribeServerReadiness } from "../config";
+import { useEffect, useState } from "react";
+import { useServerReadiness } from "../config";
 
 const READY_TOAST_MS = 4000;
 
 // Local mode's server starts in the background (see ConnectGate.tsx) —
 // this is the user-visible signal for when it actually becomes usable,
 // or why it isn't. Renders nothing for "starting"/steady-state "ready":
-// each page's own query loading state already covers "still starting."
+// pages show their own "Starting local server…" placeholder for that.
 export default function ServerStatusToast() {
-  const readiness = useSyncExternalStore(subscribeServerReadiness, getServerReadiness);
+  const readiness = useServerReadiness();
   const [showReadyToast, setShowReadyToast] = useState(false);
   const [dismissedError, setDismissedError] = useState(false);
 
