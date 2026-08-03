@@ -5,7 +5,11 @@
   "identifier": "com.proxyscaler.spike",
   "build": {
     "frontendDist": "../frontend/dist",
-    "devUrl": "http://localhost:5173"
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": {
+      "command": "npm run build",
+      "cwd": "../frontend"
+    }
   },
   "app": {
     "withGlobalTauri": true,
