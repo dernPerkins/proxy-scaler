@@ -20,9 +20,39 @@ from .upscale import UpscaleModel
 if TYPE_CHECKING:
     from .pipeline import FaceResult
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "proxy_scaler.db"
-WORKER_LOCK_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.lock"
-WORKER_LOG_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.log"
+_IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def default_data_dir() -> Path:
+    """Stable, OS-conventional per-user data directory. Used as the
+    default DB/lock/log location below when frozen, and reused by
+    supervisor.py as the frozen sidecar's working directory (so relative
+    output/cache/weights paths land somewhere persistent too).
+
+    Deliberately NOT derived from __file__/sys.executable: for a frozen
+    PyInstaller onefile build those resolve inside a temp extraction
+    directory that's wiped and recreated fresh on every single launch —
+    a real shipped bug where saved projects (and, via supervisor.py's
+    cwd, generated images left at their relative default paths) silently
+    vanished on every app restart, even though everything worked fine
+    within a single running session."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "proxy-scaler"
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home())
+        return Path(base) / "proxy-scaler"
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "proxy-scaler"
+
+
+if _IS_FROZEN:
+    DEFAULT_DB_PATH = default_data_dir() / "proxy_scaler.db"
+    WORKER_LOCK_FILE = default_data_dir() / "worker.lock"
+    WORKER_LOG_FILE = default_data_dir() / "worker.log"
+else:
+    DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "proxy_scaler.db"
+    WORKER_LOCK_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.lock"
+    WORKER_LOG_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.log"
 
 # Abandoned_Air_Temple-TLA-263-swinir-600dpi.png
 # Name-SET-COLLECTOR-front-swinir-800dpi.png  (collector may contain hyphens)

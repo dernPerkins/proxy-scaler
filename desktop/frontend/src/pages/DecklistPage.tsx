@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useProject } from "../context/ProjectContext";
+import { downloadBlob } from "../download";
 import type { Card, Variant } from "../api/types";
 
 const DPI_OPTIONS = [600, 800, 1200];
@@ -259,6 +260,16 @@ function sortCards(cards: Card[], primary: "Name" | "Set" | "(none)"): Card[] {
   return [...cards].sort((a, b) => key(a).localeCompare(key(b)));
 }
 
+function slugify(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "card";
+}
+
+async function handleDownloadImage(url: string, filename: string): Promise<void> {
+  const resp = await fetch(url);
+  const blob = await resp.blob();
+  await downloadBlob(blob, filename);
+}
+
 function CardRow(props: {
   card: Card;
   projectId: number;
@@ -316,9 +327,16 @@ function CardRow(props: {
                     style={{ width: "100%" }}
                     loading="lazy"
                   />
-                  <a href={api.imageUrl(projectId, v.gallery_item_id, "full")} download>
+                  <button
+                    onClick={() =>
+                      handleDownloadImage(
+                        api.imageUrl(projectId, v.gallery_item_id, "full"),
+                        `${slugify(card.card_name ?? "card")}-${v.dpi}dpi-${v.model}.png`,
+                      )
+                    }
+                  >
                     Download
-                  </a>
+                  </button>
                   <button onClick={() => onRegenerate(v.gallery_item_id)}>Regen</button>
                 </div>
               ))}

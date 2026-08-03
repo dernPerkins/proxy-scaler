@@ -1,31 +1,13 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { setApiBaseUrl } from "./config";
 import { invokeStartLocalServer, isTauri } from "./tauri";
 
-const CONFIG_KEY = "proxyScalerConfig";
 const REMOTE_TIMEOUT_MS = 8000;
 const API_PORT = 8000;
 
-interface StoredConfig {
+interface ChosenConfig {
   mode: "local" | "remote";
   host?: string;
-}
-
-function getStoredConfig(): StoredConfig | null {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    return raw ? (JSON.parse(raw) as StoredConfig) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveConfig(config: StoredConfig): void {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-}
-
-function clearConfig(): void {
-  localStorage.removeItem(CONFIG_KEY);
 }
 
 // Cross-origin fetches to an arbitrary remote host won't have CORS headers
@@ -56,30 +38,23 @@ type Status =
   | { kind: "error"; message: string };
 
 // First-launch Local/Remote picker, ported from the old plain-JS
-// desktop/src/index.html into React so it can share localStorage config
-// and the same dynamic API_BASE_URL (config.ts) the rest of the app
-// depends on. Gates the whole app: nothing under it renders until
-// connected (or we're in a plain browser tab, where there's nothing to
-// gate — see the "not-tauri" status).
+// desktop/src/index.html into React so it can share the same dynamic
+// API_BASE_URL (config.ts) the rest of the app depends on. Gates the
+// whole app: nothing under it renders until connected (or we're in a
+// plain browser tab, where there's nothing to gate — see the
+// "not-tauri" status).
+//
+// Deliberately not persisted across launches (no localStorage) — every
+// app start asks again. An earlier version remembered the last choice
+// and silently reconnected, which meant there was no way to switch
+// Local/Remote without manually clearing devtools storage.
 export default function ConnectGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>(() =>
     isTauri() ? { kind: "picker" } : { kind: "not-tauri" },
   );
   const [host, setHost] = useState("");
 
-  useEffect(() => {
-    if (!isTauri()) return;
-    const existing = getStoredConfig();
-    if (existing) {
-      connect(existing);
-    }
-    // Only ever run once on mount — connect() itself is stable enough
-    // for this (it doesn't close over anything that changes in a way
-    // that would make a stale closure here matter).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function connect(config: StoredConfig) {
+  async function connect(config: ChosenConfig) {
     setStatus({ kind: "connecting" });
 
     if (config.mode === "remote") {
@@ -110,20 +85,15 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
   }
 
   function pickLocal() {
-    const config: StoredConfig = { mode: "local" };
-    saveConfig(config);
-    connect(config);
+    connect({ mode: "local" });
   }
 
   function submitRemote() {
     if (!host.trim()) return;
-    const config: StoredConfig = { mode: "remote", host: host.trim() };
-    saveConfig(config);
-    connect(config);
+    connect({ mode: "remote", host: host.trim() });
   }
 
-  function changeServer() {
-    clearConfig();
+  function backToPicker() {
     setHost("");
     setStatus({ kind: "picker" });
   }
@@ -161,7 +131,7 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
 
       {status.kind === "remote-form" && (
         <>
-          <button onClick={() => setStatus({ kind: "picker" })}>&larr; back</button>
+          <button onClick={backToPicker}>&larr; back</button>
           <p style={{ fontSize: 12, opacity: 0.7 }}>
             We recommend a tool like{" "}
             <a href="https://tailscale.com" target="_blank" rel="noreferrer">
@@ -186,7 +156,7 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
       {status.kind === "error" && (
         <>
           <p style={{ color: "#c66" }}>{status.message}</p>
-          <button onClick={changeServer}>change server</button>
+          <button onClick={backToPicker}>change server</button>
         </>
       )}
     </div>

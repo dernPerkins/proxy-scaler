@@ -3,14 +3,13 @@
 // Tauri sidecar and waits for it to report ready, returning the local API
 // server's base URL to the React frontend; in Remote mode there's no
 // sidecar at all, the frontend just configures its API client to point at
-// the user-supplied host directly. Mode/host choice itself is stored
-// client-side via localStorage (see desktop/frontend/src/context) rather
-// than a Tauri plugin — it's two strings, not worth the extra dependency
-// surface.
+// the user-supplied host directly. The Local/Remote choice itself is
+// asked fresh on every launch (see ConnectGate.tsx), not persisted.
 use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, Notify};
@@ -80,6 +79,30 @@ async fn start_local_server(
     }
 }
 
+/// Native "Save As" dialog + write to disk — replaces the browser
+/// `<a download>` pattern for image/PDF downloads. Confirmed by real
+/// testing that the HTML `download` attribute isn't reliably honored by
+/// Tauri's webview on macOS (WKWebView): an image link just navigated to
+/// a larger view of the image instead of saving it, and a PDF blob link
+/// did nothing at all. The frontend already has the bytes in hand (via
+/// its own `fetch()`, which works fine) — this command only handles the
+/// save-to-disk half, so there's no need for an HTTP client on the Rust
+/// side.
+///
+/// Returns Ok(true) if saved, Ok(false) if the user canceled the dialog
+/// (not an error case — the frontend should just no-op on false).
+#[tauri::command]
+async fn save_file(app: AppHandle, suggested_name: String, data: Vec<u8>) -> Result<bool, String> {
+    let chosen = app.dialog().file().set_file_name(&suggested_name).blocking_save_file();
+
+    let Some(file_path) = chosen else {
+        return Ok(false);
+    };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Graceful-then-forceful sidecar shutdown, mirroring supervisor.py's own
 /// discipline: try the cooperative path first — write a line to the
 /// sidecar's stdin, which supervisor.py's `_watch_stdin` treats as an
@@ -125,8 +148,9 @@ async fn shutdown_and_exit(app: AppHandle) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())
-        .invoke_handler(tauri::generate_handler![start_local_server])
+        .invoke_handler(tauri::generate_handler![start_local_server, save_file])
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

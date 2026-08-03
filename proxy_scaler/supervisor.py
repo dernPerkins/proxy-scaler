@@ -47,9 +47,16 @@ IS_WINDOWS = sys.platform == "win32"
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 
 if IS_FROZEN:
-    # PyInstaller onefile builds unpack to a temp dir at sys._MEIPASS at
-    # runtime, not next to this source file.
-    ROOT = Path(getattr(sys, "_MEIPASS"))
+    # Used as the API server/worker children's cwd (see _spawn) — must be
+    # a stable, persistent directory, not sys._MEIPASS (PyInstaller
+    # onefile's per-launch temp extraction dir, wiped and recreated fresh
+    # every single run). The same real bug that motivated db.py's
+    # frozen-aware DEFAULT_DB_PATH: relative output/cache/weights paths
+    # resolve against this cwd, so leaving it as _MEIPASS would silently
+    # lose generated images on every app restart the same way the DB was
+    # losing saved projects.
+    ROOT = db.default_data_dir()
+    ROOT.mkdir(parents=True, exist_ok=True)
 else:
     ROOT = Path(__file__).resolve().parents[1]
 

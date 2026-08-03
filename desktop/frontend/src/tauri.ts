@@ -26,3 +26,18 @@ export async function invokeStartLocalServer(): Promise<string> {
   }
   return window.__TAURI__.core.invoke<string>("start_local_server");
 }
+
+// Native "Save As" dialog + write to disk (see main.rs::save_file).
+// Confirmed by real testing that the HTML `download` attribute isn't
+// reliably honored by Tauri's webview on macOS — see downloadBlob in
+// download.ts for the full story and the plain-browser fallback.
+// Returns false if the user canceled the save dialog (not an error).
+export async function invokeSaveFile(suggestedName: string, bytes: Uint8Array): Promise<boolean> {
+  if (!window.__TAURI__) {
+    throw new Error("Not running inside Tauri");
+  }
+  return window.__TAURI__.core.invoke<boolean>("save_file", {
+    suggestedName,
+    data: Array.from(bytes),
+  });
+}

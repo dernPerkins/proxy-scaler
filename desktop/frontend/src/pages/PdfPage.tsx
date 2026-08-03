@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "../api/client";
 import { useProject } from "../context/ProjectContext";
+import { downloadBlob } from "../download";
 import type { PdfLayoutRequest } from "../api/types";
 
 const PAGE_PRESETS: Record<string, { width: number; height: number }> = {
@@ -56,14 +57,7 @@ export default function PdfPage() {
     setDownloading(true);
     try {
       const blob = await api.downloadPdf(projectId, layout);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${projectName || "proxy-scaler"}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await downloadBlob(blob, `${projectName || "proxy-scaler"}.pdf`);
     } catch (err) {
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {

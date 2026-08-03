@@ -90,13 +90,12 @@ cd desktop/frontend
 npm run dev
 ```
 
-A window opens showing the first-launch picker: **Use this device**
+A window opens showing the picker on every launch: **Use this device**
 (Local — spawns the sidecar, waits for it to report ready, then points
 the app's API client at it) or **Connect to a server** (Remote — asks
-for an IP/hostname, no sidecar involved). The choice is remembered via
-`localStorage`; to change it later, clear it manually (devtools →
-Application → Local Storage) — a proper in-app Settings view is a
-nice-to-have, not built yet.
+for an IP/hostname, no sidecar involved). Deliberately not remembered
+across launches — asks fresh every time rather than silently reconnecting
+to whatever was picked last.
 
 ## 4. What to test
 
@@ -104,12 +103,29 @@ nice-to-have, not built yet.
   app once the sidecar reports ready? Check the terminal running
   `cargo tauri dev` for `[proxy-scaler-serve] PROXY_SCALER_READY` and any
   stderr output if it hangs or errors.
-- **Generate + download a PDF end to end** — this is the actual point of
-  the whole migration: the old `st.download_button` silently did nothing
-  inside Tauri's webview (a WKWebView gap around the HTML `download`
-  attribute); the new PDF endpoint returns a real file response and the
-  frontend does `fetch()` → `blob()` → `<a download>`, which has none of
-  that gap. Confirm a real PDF actually saves.
+- **Generate + download a PDF, and download a generated image, end to
+  end** — this is the actual point of the whole migration: the old
+  `st.download_button` silently did nothing inside Tauri's webview, and a
+  first attempt at fixing it via a browser `fetch()` → `blob()` → `<a
+  download>` pattern *also* failed on real testing (WKWebView on macOS
+  doesn't reliably honor the HTML `download` attribute at all — an image
+  link just navigated to a larger view instead of saving, a PDF blob link
+  did nothing). The real fix goes through Tauri's native save-file dialog
+  instead (`main.rs::save_file`, `desktop/frontend/src/download.ts`) —
+  confirm both actually prompt a native "Save As" dialog and produce a
+  real file on disk.
+- **Saved projects survive an app restart** — a real shipped bug: the DB's
+  default path was derived from `__file__`, which for a frozen
+  PyInstaller onefile build resolves inside the per-launch temp
+  extraction directory, wiped and recreated fresh every single run.
+  Everything worked fine *within* one session and then silently reset on
+  the next launch. Fixed via `db.default_data_dir()` (a stable,
+  OS-conventional per-user directory — `~/Library/Application Support/
+  proxy-scaler` on macOS) used both for the DB and, via
+  `supervisor.py`'s frozen `ROOT`, as the API server/worker's working
+  directory (so relative output/cache/weights paths land somewhere
+  persistent too, not just the DB). Confirm: save a project, quit the
+  app fully, relaunch, and it's still there.
 - **Closing the window**: confirm that closing the window actually stops
   both the sidecar *and* the API server/worker processes underneath it,
   not just the visible window. Check `ps aux | grep -E "uvicorn|proxy_scaler"`
@@ -119,6 +135,10 @@ nice-to-have, not built yet.
   `127.0.0.1` if you have one running manually via
   `.venv/bin/uvicorn proxy_scaler.api:app` in a separate terminal) and
   confirm it connects with no sidecar spawned.
+- **The picker asks fresh on every launch** — an earlier version
+  remembered the last Local/Remote choice via `localStorage` and silently
+  reconnected; that's gone now on purpose (real user feedback: there was
+  no way to switch modes without manually clearing devtools storage).
 
 ## 5. Notes
 
@@ -126,10 +146,12 @@ nice-to-have, not built yet.
   that's still ahead.
 - `security.csp` is `null` (disabled). Fine for now; should be scoped down
   before a real release build.
-- Local/Remote config is deliberately plain `localStorage`, not
-  `tauri-plugin-store` — for two small string fields it wasn't worth the
-  extra Rust dependency surface, especially with no way to compile-test it
-  here. Worth reconsidering if a real Settings UI grows more state later.
+- File downloads (`desktop/frontend/src/download.ts`) go through a
+  Rust-side `save_file` command (`tauri-plugin-dialog` + `std::fs::write`)
+  when running inside Tauri, with a plain browser `<a download>` fallback
+  for the `npm run dev`-without-Tauri workflow, where the HTML attribute
+  works fine. Untested against a real compiler as of this writing — expect
+  the usual round of fixes.
 - `desktop/src/index.html` (the old plain-JS picker) is now dead code —
   `tauri.conf.json`'s `frontendDist`/`devUrl` point at
   `desktop/frontend/` instead. Left in place rather than deleted until the
