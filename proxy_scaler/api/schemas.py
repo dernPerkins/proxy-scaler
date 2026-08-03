@@ -8,6 +8,11 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class ModelOptionOut(BaseModel):
+    value: str
+    label: str
+
+
 class ProjectSettingsIn(BaseModel):
     model: str
     dpi_targets: list[int]

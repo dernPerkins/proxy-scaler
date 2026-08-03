@@ -2,6 +2,11 @@
 // pass can generate these from FastAPI's OpenAPI schema
 // (openapi-typescript) so the two sides can't silently drift.
 
+export interface ModelOption {
+  value: string;
+  label: string;
+}
+
 export interface ProjectSettings {
   model: string;
   dpi_targets: number[];

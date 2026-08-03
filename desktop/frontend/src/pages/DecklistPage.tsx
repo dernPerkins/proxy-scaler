@@ -5,15 +5,6 @@ import { useProject } from "../context/ProjectContext";
 import type { Card, Variant } from "../api/types";
 
 const DPI_OPTIONS = [600, 800, 1200];
-const MODEL_OPTIONS = [
-  "swinir",
-  "realesrnet",
-  "realesrgan",
-  "realesrgan_anime",
-  "illustrationjanai",
-  "ultrasharp_v2",
-  "hat",
-];
 
 const STATUS_ICON: Record<string, string> = {
   pending: "⏳",
@@ -26,6 +17,10 @@ const STATUS_ICON: Record<string, string> = {
 export default function DecklistPage() {
   const queryClient = useQueryClient();
   const { projectId, settings, setSettings } = useProject();
+
+  // Always read this from the API, never hardcode — see api/client.ts's
+  // listModels comment for the regression this replaced.
+  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => api.listModels() });
 
   const [decklistText, setDecklistText] = useState("");
   const [status, setStatus] = useState<string | null>(null);
@@ -143,9 +138,9 @@ export default function DecklistPage() {
             value={settings.model}
             onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
           >
-            {MODEL_OPTIONS.map((m) => (
-              <option key={m} value={m}>
-                {m}
+            {(modelsQuery.data ?? []).map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
               </option>
             ))}
           </select>

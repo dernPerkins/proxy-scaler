@@ -46,6 +46,22 @@ def test_health(client: TestClient) -> None:
     assert resp.json() == {"status": "ok"}
 
 
+def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
+    """Regression guard: the frontend's model dropdown must read this
+    list, not hardcode it — a hardcoded copy in the React rewrite
+    silently dropped two real models. Assert this endpoint stays in
+    lockstep with the enum itself, not a second hand-maintained list."""
+    from proxy_scaler.upscale import UpscaleModel
+
+    resp = client.get("/api/models")
+    assert resp.status_code == 200
+    models = resp.json()
+    assert {m["value"] for m in models} == {m.value for m in UpscaleModel}
+    assert len(models) == len(list(UpscaleModel))
+    for m in models:
+        assert m["label"]
+
+
 def test_project_crud_round_trip(client: TestClient) -> None:
     resp = client.post("/api/projects", json={"name": "My Deck"})
     assert resp.status_code == 200

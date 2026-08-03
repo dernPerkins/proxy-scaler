@@ -4,6 +4,7 @@ import type {
   GenerateRequest,
   GenerateResult,
   ImportResult,
+  ModelOption,
   PdfLayoutRequest,
   PdfPreview,
   ProjectDetail,
@@ -51,6 +52,11 @@ async function downloadPdf(projectId: number, body: PdfLayoutRequest): Promise<B
 }
 
 export const api = {
+  // The frontend must read this list, never hardcode it — a hand-typed
+  // copy previously shipped here silently dropped two real models.
+  // UpscaleModel (Python) is the only source of truth.
+  listModels: () => request<ModelOption[]>("/api/models"),
+
   listProjects: () => request<ProjectSummary[]>("/api/projects"),
   createProject: (name: string, settings?: ProjectSettings) =>
     request<ProjectSummary>("/api/projects", {
