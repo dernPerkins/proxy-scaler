@@ -69,100 +69,120 @@ export default function PdfPage() {
     return (
       <div>
         <h2>PDF</h2>
-        <p>Enter a project name in the project bar above and click Save to get started.</p>
+        <p className="hint" style={{ marginTop: 8 }}>
+          Enter a project name in the project bar above and click Save to get started.
+        </p>
       </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", gap: 24 }}>
-      <aside style={{ width: 280, flexShrink: 0 }}>
-        <h3>Layout</h3>
-        <label>
-          Page size
-          <select onChange={(e) => applyPreset(e.target.value)} defaultValue="A4">
-            {Object.keys(PAGE_PRESETS).map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Page width (mm)
-          <input
-            type="number"
-            value={layout.page_width_mm}
-            onChange={(e) => updateLayout("page_width_mm", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          Page height (mm)
-          <input
-            type="number"
-            value={layout.page_height_mm}
-            onChange={(e) => updateLayout("page_height_mm", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          Columns
-          <input
-            type="number"
-            min={1}
-            value={layout.cols}
-            onChange={(e) => updateLayout("cols", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          Rows
-          <input
-            type="number"
-            min={1}
-            value={layout.rows}
-            onChange={(e) => updateLayout("rows", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          Bleed (mm)
-          <input
-            type="number"
-            step={0.1}
-            value={layout.bleed_mm}
-            onChange={(e) => updateLayout("bleed_mm", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          Export DPI
-          <input
-            type="number"
-            value={layout.export_dpi}
-            onChange={(e) => updateLayout("export_dpi", Number(e.target.value))}
-          />
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={layout.show_cut_lines}
-            onChange={(e) => updateLayout("show_cut_lines", e.target.checked)}
-          />
-          Show cut lines
-        </label>
+    <div className="layout">
+      <aside className="sidebar panel">
+        <h3 style={{ marginBottom: 14 }}>Layout</h3>
+
+        <div className="field-group">
+          <label className="field">
+            <span>Page size</span>
+            <select onChange={(e) => applyPreset(e.target.value)} defaultValue="A4">
+              {Object.keys(PAGE_PRESETS).map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* Paired dimensions sit side by side — they're read together and
+              each is narrow enough that a full-width row each just adds
+              vertical scrolling to the sidebar. */}
+          <div style={{ display: "flex", gap: 10 }}>
+            <label className="field">
+              <span>Width (mm)</span>
+              <input
+                type="number"
+                value={layout.page_width_mm}
+                onChange={(e) => updateLayout("page_width_mm", Number(e.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Height (mm)</span>
+              <input
+                type="number"
+                value={layout.page_height_mm}
+                onChange={(e) => updateLayout("page_height_mm", Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <label className="field">
+              <span>Columns</span>
+              <input
+                type="number"
+                min={1}
+                value={layout.cols}
+                onChange={(e) => updateLayout("cols", Number(e.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Rows</span>
+              <input
+                type="number"
+                min={1}
+                value={layout.rows}
+                onChange={(e) => updateLayout("rows", Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <label className="field">
+            <span>Bleed (mm)</span>
+            <input
+              type="number"
+              step={0.1}
+              value={layout.bleed_mm}
+              onChange={(e) => updateLayout("bleed_mm", Number(e.target.value))}
+            />
+          </label>
+
+          <label className="field">
+            <span>Export DPI</span>
+            <input
+              type="number"
+              value={layout.export_dpi}
+              onChange={(e) => updateLayout("export_dpi", Number(e.target.value))}
+            />
+          </label>
+
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={layout.show_cut_lines}
+              onChange={(e) => updateLayout("show_cut_lines", e.target.checked)}
+            />
+            Show cut lines
+          </label>
+        </div>
       </aside>
 
-      <main style={{ flex: 1 }}>
+      <main className="content">
         <h2>PDF</h2>
+
         {previewQuery.isLoading ? (
-          <p>Calculating layout…</p>
+          <p className="hint" style={{ marginTop: 10 }}>
+            Calculating layout…
+          </p>
         ) : previewQuery.data ? (
-          <div>
+          <div className="panel" style={{ padding: 14, marginTop: 10 }}>
             <p>
-              {previewQuery.data.units} card(s) matched across {previewQuery.data.page_count} page
-              (s).
+              <strong>{previewQuery.data.units}</strong> card(s) across{" "}
+              <strong>{previewQuery.data.page_count}</strong> page(s).
             </p>
             {previewQuery.data.unmatched.length > 0 && (
-              <ul>
+              <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
                 {previewQuery.data.unmatched.map((note, i) => (
-                  <li key={i} style={{ color: "#c66" }}>
+                  <li key={i} className="error-text">
                     {note}
                   </li>
                 ))}
@@ -171,10 +191,12 @@ export default function PdfPage() {
           </div>
         ) : null}
 
-        <button onClick={handleDownload} disabled={downloading}>
-          {downloading ? "Generating…" : "Generate & Download PDF"}
-        </button>
-        {downloadError && <p style={{ color: "#c66" }}>{downloadError}</p>}
+        <div className="summary-row">
+          <button className="btn-primary" onClick={handleDownload} disabled={downloading}>
+            {downloading ? "Generating…" : "Generate & Download PDF"}
+          </button>
+          {downloadError && <span className="error-text">{downloadError}</span>}
+        </div>
       </main>
     </div>
   );

@@ -19,48 +19,19 @@ export default function CompareDialog({
   onClose,
 }: CompareDialogProps) {
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0, 0, 0, 0.8)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          width: "min(85vw, 700px)",
-          maxHeight: "90vh",
-          background: "#1b1d22",
-          padding: 16,
-          borderRadius: 8,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          boxSizing: "border-box",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 8,
-            color: "#e8e8ec",
-            flexShrink: 0,
-          }}
-        >
-          <strong>{label}</strong>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">{label}</span>
           <button onClick={onClose}>Close</button>
         </div>
+        {/* Explicit height, deliberately a bit under the modal's own 90vh
+            cap so the header and padding still fit — the slider needs a
+            definite height to size itself, and an earlier version at full
+            natural image height overflowed the window entirely. */}
         <ReactCompareSlider
           style={{
-            height: "min(80vh, 977px)",
+            height: "min(76vh, 900px)",
             width: "100%",
           }}
           itemOne={

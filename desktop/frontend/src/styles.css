@@ -1,0 +1,743 @@
+/* Global stylesheet. Before this existed every component carried its own
+   inline styles on top of raw browser defaults, which is how form fields
+   ended up visually colliding — `<label>text <input/></label>` is inline
+   by default, so label text and its control wrapped into each other
+   ("Skip existing output filesTile size"). Fields are now explicit
+   flex containers (.field / .check) instead of relying on inline flow.
+
+   Tokens are duplicated under prefers-color-scheme so the app follows the
+   OS appearance — it's a native desktop window, so looking like a
+   permanently-light web page in a dark macOS session reads as broken. */
+
+:root {
+  /* `color-scheme` makes the *native* bits (scrollbars, number-input
+     steppers, checkbox chrome, focus rings) follow suit too — without it
+     they stay light and clash badly with a dark surface. */
+  color-scheme: light dark;
+
+  --bg: #f6f6f8;
+  --surface: #ffffff;
+  --surface-2: #f1f1f4;
+  --surface-3: #e8e8ec;
+  --border: #e2e2e7;
+  --border-strong: #cbcbd3;
+  --text: #1b1b1f;
+  --text-muted: #6c6c78;
+  --text-faint: #9a9aa4;
+
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eeecfd;
+  --on-accent: #ffffff;
+
+  --ok: #15703f;
+  --ok-soft: #e4f4ea;
+  --run: #1a6298;
+  --run-soft: #e3eff9;
+  --wait: #7a5d10;
+  --wait-soft: #fbf1d8;
+  --err: #a52820;
+  --err-soft: #fbe8e6;
+  --off: #63636e;
+  --off-soft: #ededf1;
+
+  --radius: 6px;
+  --radius-lg: 10px;
+  --ring: 0 0 0 3px rgba(79, 70, 229, 0.25);
+  --shadow-sm: 0 1px 2px rgba(16, 16, 24, 0.06);
+  --shadow: 0 2px 6px rgba(16, 16, 24, 0.08), 0 12px 32px rgba(16, 16, 24, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151519;
+    --surface: #1d1d23;
+    --surface-2: #25252d;
+    --surface-3: #2e2e37;
+    --border: #32323c;
+    --border-strong: #45454f;
+    --text: #ececf1;
+    --text-muted: #a2a2af;
+    --text-faint: #73737e;
+
+    --accent: #7d75f0;
+    --accent-hover: #8f88f5;
+    --accent-soft: #262351;
+    --on-accent: #ffffff;
+
+    --ok: #58d68d;
+    --ok-soft: #13301e;
+    --run: #7fc4f2;
+    --run-soft: #10293a;
+    --wait: #e6cd7c;
+    --wait-soft: #302810;
+    --err: #f6918a;
+    --err-soft: #391613;
+    --off: #a2a2af;
+    --off-soft: #292931;
+
+    --ring: 0 0 0 3px rgba(125, 117, 240, 0.35);
+    --shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+h1 {
+  font-size: 22px;
+}
+h2 {
+  font-size: 17px;
+}
+h3 {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+/* ---------- form controls ---------- */
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input[type="text"],
+input[type="number"],
+input:not([type]),
+select,
+textarea {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+}
+
+textarea {
+  resize: vertical;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+/* Stacked label + control. The whole reason this class exists: a bare
+   `<label>` lets its text and control share an inline flow line and wrap
+   independently, which is what produced the collided fields. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.field > span {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+}
+/* :not(checkbox) matters — `.field > input` and `input[type="checkbox"]`
+   have equal specificity, so a bare rule here would win on source order
+   and stretch a checkbox to full width if one is ever placed directly
+   in a .field. */
+.field > input:not([type="checkbox"]),
+.field > select,
+.field > textarea {
+  width: 100%;
+}
+
+/* Inline checkbox + label, the one case where side-by-side is correct. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+button {
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+button:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--text-faint);
+}
+button:active:not(:disabled) {
+  background: var(--surface-3);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-danger {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, var(--border-strong));
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--err-soft);
+  border-color: var(--err);
+}
+
+.btn-sm {
+  padding: 3px 9px;
+  font-size: 12.5px;
+}
+
+.btn-block {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---------- app shell ---------- */
+
+.app {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 18px 24px 56px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.layout {
+  display: flex;
+  gap: 22px;
+  align-items: flex-start;
+}
+.sidebar {
+  width: 268px;
+  flex-shrink: 0;
+  padding: 16px;
+  position: sticky;
+  top: 18px;
+}
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- project bar ---------- */
+
+.project-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.project-bar .grow {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+}
+.project-bar .spacer {
+  flex: 1;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.chip-saved {
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+.divider-v {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tabs a {
+  padding: 7px 14px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  text-decoration: none;
+  color: var(--text-muted);
+  font-weight: 550;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs a:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.tabs a.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ---------- status badges ---------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.badge-done {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 25%, transparent);
+}
+.badge-running {
+  color: var(--run);
+  background: var(--run-soft);
+  border-color: color-mix(in srgb, var(--run) 25%, transparent);
+}
+.badge-pending {
+  color: var(--wait);
+  background: var(--wait-soft);
+  border-color: color-mix(in srgb, var(--wait) 25%, transparent);
+}
+.badge-failed {
+  color: var(--err);
+  background: var(--err-soft);
+  border-color: color-mix(in srgb, var(--err) 25%, transparent);
+}
+.badge-canceled {
+  color: var(--off);
+  background: var(--off-soft);
+  border-color: color-mix(in srgb, var(--off) 25%, transparent);
+}
+
+/* Steady pulse on in-flight work — the tasks list and card rows otherwise
+   look identical whether the worker is chewing on something or stalled. */
+.badge-running .dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ---------- decklist ---------- */
+
+.decklist-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 22px 0 4px;
+}
+.decklist-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 14px;
+}
+
+.card-row {
+  border-top: 1px solid var(--border);
+  padding: 11px 2px;
+}
+.card-row:last-child {
+  border-bottom: 1px solid var(--border);
+}
+.card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px 84px 40px auto;
+  gap: 12px;
+  align-items: center;
+}
+.card-name {
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-meta {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.card-qty {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: right;
+}
+.card-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.variants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.variant-face {
+  font-size: 12px;
+  color: var(--text-faint);
+  align-self: center;
+  margin-right: 2px;
+}
+
+.empty-note {
+  color: var(--text-faint);
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 12px;
+}
+.thumb {
+  width: 168px;
+}
+.thumb-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+.thumb img {
+  width: 100%;
+  display: block;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.thumb-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+/* ---------- danger zone ---------- */
+
+.danger-zone {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.error-text {
+  color: var(--err);
+  font-size: 13px;
+}
+
+/* ---------- tables ---------- */
+
+.table-wrap {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+tbody tr:hover {
+  background: var(--surface-2);
+}
+/* The panel already draws the bottom edge — without this the last row's
+   own border doubles up against it. */
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.summary-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+
+/* ---------- connect gate ---------- */
+
+.gate {
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 64px 24px;
+}
+.gate h1 {
+  margin-bottom: 6px;
+}
+.gate-sub {
+  color: var(--text-muted);
+  margin-bottom: 26px;
+}
+.gate-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-lg);
+  /* Undoes the base button nowrap — these are two-line option cards, and
+     the description underneath has to be free to wrap. */
+  white-space: normal;
+}
+.gate-option strong {
+  display: block;
+  font-weight: 580;
+  margin-bottom: 2px;
+}
+.gate-option span {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.gate-back {
+  margin-bottom: 14px;
+}
+
+/* ---------- compare dialog ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.modal {
+  width: min(85vw, 720px);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+.modal-title {
+  font-weight: 580;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- toast ---------- */
+
+.toast {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  max-width: 360px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  z-index: 2000;
+  animation: toast-in 0.22s ease-out;
+}
+.toast-ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong));
+}
+.toast-err {
+  border-color: color-mix(in srgb, var(--err) 50%, var(--border-strong));
+}
+.toast .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.toast-ok .dot {
+  background: var(--ok);
+}
+.toast-err .dot {
+  background: var(--err);
+}
+.toast-body {
+  flex: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

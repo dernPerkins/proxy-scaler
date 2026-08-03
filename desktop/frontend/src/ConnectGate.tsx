@@ -121,60 +121,58 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div style={{ fontFamily: "sans-serif", padding: 32, maxWidth: 420, margin: "0 auto" }}>
+    <div className="gate">
       <h1>Proxy Scaler</h1>
+      <p className="gate-sub">Where should generation run?</p>
 
       {status.kind === "picker" && (
         <>
-          <button
-            style={{ display: "block", width: "100%", marginBottom: 8, padding: 12 }}
-            onClick={pickLocal}
-          >
+          <button className="gate-option" onClick={pickLocal}>
             <strong>Use this device</strong>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>
-              Runs everything locally — no setup needed.
-            </div>
+            <span>Runs everything locally — no setup needed.</span>
           </button>
-          <button
-            style={{ display: "block", width: "100%", padding: 12 }}
-            onClick={() => setStatus({ kind: "remote-form" })}
-          >
+          <button className="gate-option" onClick={() => setStatus({ kind: "remote-form" })}>
             <strong>Connect to a server</strong>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>
-              Point this app at a proxy-scaler server running elsewhere.
-            </div>
+            <span>Point this app at a proxy-scaler server running elsewhere.</span>
           </button>
         </>
       )}
 
       {status.kind === "remote-form" && (
         <>
-          <button onClick={backToPicker}>&larr; back</button>
-          <p style={{ fontSize: 12, opacity: 0.7 }}>
+          <button className="btn-sm gate-back" onClick={backToPicker}>
+            &larr; Back
+          </button>
+          <p className="hint" style={{ marginBottom: 12 }}>
             We recommend a tool like{" "}
             <a href="https://tailscale.com" target="_blank" rel="noreferrer">
               Tailscale
             </a>{" "}
             for connecting to your remote server.
           </p>
-          <input
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            placeholder="IP or name (e.g. 100.x.x.x or my-server)"
-            style={{ width: "100%", marginBottom: 8, padding: 8 }}
-          />
-          <button onClick={submitRemote} disabled={!host.trim()}>
+          <label className="field" style={{ marginBottom: 12 }}>
+            <span>Server address</span>
+            <input
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitRemote()}
+              placeholder="IP or name (e.g. 100.x.x.x or my-server)"
+            />
+          </label>
+          <button className="btn-primary" onClick={submitRemote} disabled={!host.trim()}>
             Connect
           </button>
         </>
       )}
 
-      {status.kind === "connecting" && <p>Connecting…</p>}
+      {status.kind === "connecting" && <p className="hint">Connecting…</p>}
 
       {status.kind === "error" && (
         <>
-          <p style={{ color: "#c66" }}>{status.message}</p>
-          <button onClick={backToPicker}>change server</button>
+          <p className="error-text" style={{ marginBottom: 12 }}>
+            {status.message}
+          </p>
+          <button onClick={backToPicker}>Change server</button>
         </>
       )}
     </div>

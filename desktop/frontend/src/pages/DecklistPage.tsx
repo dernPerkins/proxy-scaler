@@ -2,20 +2,13 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import CompareDialog from "../components/CompareDialog";
+import StatusBadge from "../components/StatusBadge";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
 import type { Card, Variant } from "../api/types";
 
 const DPI_OPTIONS = [600, 800, 1200];
-
-const STATUS_ICON: Record<string, string> = {
-  pending: "⏳",
-  running: "⚙️",
-  done: "✅",
-  failed: "❌",
-  canceled: "🚫",
-};
 
 export default function DecklistPage() {
   const queryClient = useQueryClient();
@@ -136,134 +129,154 @@ export default function DecklistPage() {
     return (
       <div>
         <h2>Decklist</h2>
-        {readiness.status === "starting" ? (
-          <p>Starting local server — your last project will load automatically.</p>
-        ) : (
-          <p>Enter a project name in the project bar above and click Save to get started.</p>
-        )}
+        <p className="hint" style={{ marginTop: 8 }}>
+          {readiness.status === "starting"
+            ? "Starting local server — your last project will load automatically."
+            : "Enter a project name in the project bar above and click Save to get started."}
+        </p>
       </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", gap: 24 }}>
-      <aside style={{ width: 260, flexShrink: 0 }}>
-        <h3>Settings</h3>
-        <label>
-          Upscale model
-          <select
-            value={settings.model}
-            onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
-          >
-            {(modelsQuery.data ?? []).map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div>
-          <div>Target DPI</div>
-          {DPI_OPTIONS.map((dpi) => (
-            <label key={dpi} style={{ marginRight: 8 }}>
-              <input
-                type="checkbox"
-                checked={settings.dpi_targets.includes(dpi)}
-                onChange={() => toggleDpi(dpi)}
-              />
-              {dpi}
-            </label>
-          ))}
-        </div>
-        <label>
-          <input
-            type="checkbox"
-            checked={settings.skip_existing}
-            onChange={(e) => setSettings((s) => ({ ...s, skip_existing: e.target.checked }))}
-          />
-          Skip existing output files
-        </label>
-        <label>
-          Tile size (0 = auto)
-          <input
-            type="number"
-            min={0}
-            step={32}
-            value={settings.tile_size}
-            onChange={(e) => setSettings((s) => ({ ...s, tile_size: Number(e.target.value) }))}
-          />
-        </label>
-        <label>
-          Output directory
-          <input
-            value={settings.output_dir}
-            onChange={(e) => setSettings((s) => ({ ...s, output_dir: e.target.value }))}
-          />
-        </label>
-        <label>
-          Cache directory
-          <input
-            value={settings.cache_dir}
-            onChange={(e) => setSettings((s) => ({ ...s, cache_dir: e.target.value }))}
-          />
-        </label>
-        <label>
-          Weights directory
-          <input
-            value={settings.weights_dir}
-            onChange={(e) => setSettings((s) => ({ ...s, weights_dir: e.target.value }))}
-          />
-        </label>
+    <div className="layout">
+      <aside className="sidebar panel">
+        <h3 style={{ marginBottom: 14 }}>Settings</h3>
 
-        <hr style={{ margin: "16px 0" }} />
-        <p style={{ fontSize: 12, opacity: 0.7 }}>
-          Deletes the output and cache directories above (keeps model weights).
-        </p>
-        <label>
-          <input
-            type="checkbox"
-            checked={confirmClearGenerated}
-            onChange={(e) => setConfirmClearGenerated(e.target.checked)}
-          />
-          Confirm delete generated data
-        </label>
-        <button
-          onClick={() => clearGeneratedMutation.mutate()}
-          disabled={!confirmClearGenerated || clearGeneratedMutation.isPending}
-        >
-          Delete all generated images & cache
-        </button>
-        {clearGeneratedMutation.data && (
-          <div style={{ fontSize: 12, marginTop: 4 }}>
-            {clearGeneratedMutation.data.notes.length > 0 ? (
-              clearGeneratedMutation.data.notes.map((note, i) => <div key={i}>{note}</div>)
-            ) : (
-              <div>Generated data cleared.</div>
-            )}
+        <div className="field-group">
+          <label className="field">
+            <span>Upscale model</span>
+            <select
+              value={settings.model}
+              onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
+            >
+              {(modelsQuery.data ?? []).map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="field">
+            <span>Target DPI</span>
+            <div className="check-row">
+              {DPI_OPTIONS.map((dpi) => (
+                <label key={dpi} className="check">
+                  <input
+                    type="checkbox"
+                    checked={settings.dpi_targets.includes(dpi)}
+                    onChange={() => toggleDpi(dpi)}
+                  />
+                  {dpi}
+                </label>
+              ))}
+            </div>
           </div>
-        )}
+
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.skip_existing}
+              onChange={(e) => setSettings((s) => ({ ...s, skip_existing: e.target.checked }))}
+            />
+            Skip existing output files
+          </label>
+
+          <label className="field">
+            <span>Tile size (0 = auto)</span>
+            <input
+              type="number"
+              min={0}
+              step={32}
+              value={settings.tile_size}
+              onChange={(e) => setSettings((s) => ({ ...s, tile_size: Number(e.target.value) }))}
+            />
+          </label>
+
+          <label className="field">
+            <span>Output directory</span>
+            <input
+              value={settings.output_dir}
+              onChange={(e) => setSettings((s) => ({ ...s, output_dir: e.target.value }))}
+            />
+          </label>
+
+          <label className="field">
+            <span>Cache directory</span>
+            <input
+              value={settings.cache_dir}
+              onChange={(e) => setSettings((s) => ({ ...s, cache_dir: e.target.value }))}
+            />
+          </label>
+
+          <label className="field">
+            <span>Weights directory</span>
+            <input
+              value={settings.weights_dir}
+              onChange={(e) => setSettings((s) => ({ ...s, weights_dir: e.target.value }))}
+            />
+          </label>
+        </div>
+
+        <div className="danger-zone">
+          <h3>Danger zone</h3>
+          <p className="hint">
+            Deletes the output and cache directories above. Model weights are kept.
+          </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={confirmClearGenerated}
+              onChange={(e) => setConfirmClearGenerated(e.target.checked)}
+            />
+            Confirm delete generated data
+          </label>
+          <button
+            className="btn-danger btn-block"
+            onClick={() => clearGeneratedMutation.mutate()}
+            disabled={!confirmClearGenerated || clearGeneratedMutation.isPending}
+          >
+            Delete all generated images &amp; cache
+          </button>
+          {clearGeneratedMutation.data && (
+            <div className="hint">
+              {clearGeneratedMutation.data.notes.length > 0 ? (
+                clearGeneratedMutation.data.notes.map((note, i) => <div key={i}>{note}</div>)
+              ) : (
+                <div>Generated data cleared.</div>
+              )}
+            </div>
+          )}
+        </div>
       </aside>
 
-      <main style={{ flex: 1 }}>
+      <main className="content">
         <h2>Decklist</h2>
-        <textarea
-          value={decklistText}
-          onChange={(e) => setDecklistText(e.target.value)}
-          rows={8}
-          style={{ width: "100%" }}
-          placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
-        />
-        <button
-          onClick={() => importMutation.mutate(decklistText)}
-          disabled={!decklistText.trim() || importMutation.isPending}
-        >
-          Import cards
-        </button>
-        {status && <p>{status}</p>}
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3>Cards ({cards.length})</h3>
-          <div>
+        <div className="import-box panel" style={{ marginTop: 10 }}>
+          <textarea
+            value={decklistText}
+            onChange={(e) => setDecklistText(e.target.value)}
+            rows={6}
+            style={{ width: "100%" }}
+            placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
+          />
+          <button
+            className="btn-primary"
+            onClick={() => importMutation.mutate(decklistText)}
+            disabled={!decklistText.trim() || importMutation.isPending}
+          >
+            {importMutation.isPending ? "Importing…" : "Import cards"}
+          </button>
+          {status && <p className="hint">{status}</p>}
+        </div>
+
+        <div className="decklist-head">
+          <h2>
+            Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
+          </h2>
+          <div className="decklist-actions">
             <select
               value={sortPrimary}
               onChange={(e) => setSortPrimary(e.target.value as typeof sortPrimary)}
@@ -273,6 +286,7 @@ export default function DecklistPage() {
               <option value="(none)">Sort: (none)</option>
             </select>
             <button
+              className="btn-primary"
               onClick={() => generateAllMutation.mutate()}
               disabled={!cards.length || generateAllMutation.isPending}
             >
@@ -280,6 +294,10 @@ export default function DecklistPage() {
             </button>
           </div>
         </div>
+
+        {cards.length === 0 && !cardsQuery.isLoading && (
+          <p className="empty-note">No cards yet — paste a decklist above and import it.</p>
+        )}
 
         {sortedCards.map((card) => (
           <CardRow
@@ -300,7 +318,8 @@ export default function DecklistPage() {
 
 function sortCards(cards: Card[], primary: "Name" | "Set" | "(none)"): Card[] {
   if (primary === "(none)") return cards;
-  const key = (c: Card) => (primary === "Name" ? (c.card_name ?? "") : (c.set_code ?? "")).toLowerCase();
+  const key = (c: Card) =>
+    (primary === "Name" ? (c.card_name ?? "") : (c.set_code ?? "")).toLowerCase();
   return [...cards].sort((a, b) => key(a).localeCompare(key(b)));
 }
 
@@ -329,77 +348,96 @@ function CardRow(props: {
   onGenerate: () => void;
   onRegenerate: (galleryItemId: number) => void;
 }) {
-  const { card, projectId, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate } = props;
+  const { card, projectId, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate } =
+    props;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
   const hasImages = card.faces.some((f) => f.variants.some((v) => v.status === "done"));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
 
   return (
-    <div style={{ borderTop: "1px solid #444", padding: "8px 0" }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <strong style={{ flex: 3 }}>{card.card_name ?? card.original_import_line}</strong>
-        <span style={{ flex: 1 }}>{(card.set_code ?? "—").toUpperCase()}</span>
-        <span style={{ flex: 1 }}>{card.collector_number ?? "—"}</span>
-        <span style={{ flex: 0.5 }}>×{card.quantity ?? 1}</span>
-        {hasImages && (
-          <button onClick={() => onToggleExpand(rowKey)}>{expanded ? "Hide" : "Show"}</button>
-        )}
-        <button onClick={onGenerate}>Generate</button>
-        <button onClick={onRemove}>Remove</button>
+    <div className="card-row">
+      <div className="card-main">
+        <span className="card-name">{card.card_name ?? card.original_import_line}</span>
+        <span className="card-meta mono">{(card.set_code ?? "—").toUpperCase()}</span>
+        <span className="card-meta mono">{card.collector_number ?? "—"}</span>
+        <span className="card-qty">×{card.quantity ?? 1}</span>
+        <span className="card-buttons">
+          {hasImages && (
+            <button className="btn-sm" onClick={() => onToggleExpand(rowKey)}>
+              {expanded ? "Hide" : "Show"}
+            </button>
+          )}
+          <button className="btn-sm" onClick={onGenerate}>
+            Generate
+          </button>
+          <button className="btn-sm btn-danger" onClick={onRemove}>
+            Remove
+          </button>
+        </span>
       </div>
 
       {card.faces.length === 0 ? (
-        <div style={{ color: "#888" }}>Not generated yet.</div>
+        <div className="empty-note">Not generated yet.</div>
       ) : (
         card.faces.map((face, i) => (
-          <div key={i}>
-            {(face.face_label ? `${face.face_label}: ` : "") +
-              face.variants
-                .map((v) => `${STATUS_ICON[v.status] ?? "•"} ${v.dpi}·${v.model} ${v.status}`)
-                .join("   ")}
+          <div key={i} className="variants">
+            {face.face_label && <span className="variant-face">{face.face_label}</span>}
+            {face.variants.map((v) => (
+              <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
+                {v.dpi} · {v.model}
+              </StatusBadge>
+            ))}
           </div>
         ))
       )}
 
       {expanded &&
         card.faces.map((face, i) => (
-          <div key={i} style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
+          <div key={i} className="thumbs">
             {face.variants
-              .filter((v): v is Variant & { gallery_item_id: number } => v.status === "done" && v.gallery_item_id != null)
+              .filter(
+                (v): v is Variant & { gallery_item_id: number } =>
+                  v.status === "done" && v.gallery_item_id != null,
+              )
               .map((v) => (
-                <div key={`${v.dpi}-${v.model}`} style={{ width: 160 }}>
-                  <div>
+                <div key={`${v.dpi}-${v.model}`} className="thumb">
+                  <div className="thumb-label">
                     {v.dpi} DPI · {v.model}
                   </div>
                   <img
                     src={api.imageUrl(projectId, v.gallery_item_id, "full")}
                     alt={card.card_name ?? ""}
-                    style={{ width: "100%" }}
                     loading="lazy"
                   />
-                  <button
-                    onClick={() =>
-                      handleDownloadImage(
-                        api.imageUrl(projectId, v.gallery_item_id, "full"),
-                        `${slugify(card.card_name ?? "card")}-${v.dpi}dpi-${v.model}.png`,
-                      )
-                    }
-                  >
-                    Download
-                  </button>
-                  <button
-                    onClick={() =>
-                      setCompareTarget({
-                        originalUrl: api.imageUrl(projectId, v.gallery_item_id, "original"),
-                        upscaledUrl: api.imageUrl(projectId, v.gallery_item_id, "full"),
-                        label: `${card.card_name ?? "Card"} — ${v.dpi} DPI · ${v.model}`,
-                      })
-                    }
-                  >
-                    Compare
-                  </button>
-                  <button onClick={() => onRegenerate(v.gallery_item_id)}>Regen</button>
+                  <div className="thumb-buttons">
+                    <button
+                      className="btn-sm"
+                      onClick={() =>
+                        handleDownloadImage(
+                          api.imageUrl(projectId, v.gallery_item_id, "full"),
+                          `${slugify(card.card_name ?? "card")}-${v.dpi}dpi-${v.model}.png`,
+                        )
+                      }
+                    >
+                      Download
+                    </button>
+                    <button
+                      className="btn-sm"
+                      onClick={() =>
+                        setCompareTarget({
+                          originalUrl: api.imageUrl(projectId, v.gallery_item_id, "original"),
+                          upscaledUrl: api.imageUrl(projectId, v.gallery_item_id, "full"),
+                          label: `${card.card_name ?? "Card"} — ${v.dpi} DPI · ${v.model}`,
+                        })
+                      }
+                    >
+                      Compare
+                    </button>
+                    <button className="btn-sm" onClick={() => onRegenerate(v.gallery_item_id)}>
+                      Regen
+                    </button>
+                  </div>
                 </div>
               ))}
           </div>

@@ -25,50 +25,37 @@ export default function ServerStatusToast() {
 
   if (readiness.status === "ready" && showReadyToast) {
     return (
-      <div style={toastStyle}>
-        Generation server is running.
+      <div className="toast toast-ok">
+        <span className="dot" />
+        <span className="toast-body">Generation server is running.</span>
       </div>
     );
   }
 
   if (readiness.status === "error" && !dismissedError) {
     return (
-      <div style={{ ...toastStyle, background: "#4a2020", borderColor: "#a55" }}>
-        Couldn't start the local server. Try restarting the app or check the
-        logs. If it keeps happening, please{" "}
-        <a
-          href="https://github.com/dernPerkins/proxy-scaler/issues"
-          target="_blank"
-          rel="noreferrer"
-          style={{ color: "#fff" }}
-        >
-          report it on GitHub
-        </a>
-        .
-        <button
-          onClick={() => setDismissedError(true)}
-          style={{ marginLeft: 12 }}
-        >
-          Dismiss
-        </button>
+      <div className="toast toast-err">
+        <span className="dot" />
+        <div className="toast-body">
+          <strong>Couldn&apos;t start the local server.</strong>
+          <div style={{ marginTop: 2 }}>
+            Try restarting the app or check the logs. If it keeps happening, please{" "}
+            <a
+              href="https://github.com/dernPerkins/proxy-scaler/issues"
+              target="_blank"
+              rel="noreferrer"
+            >
+              report it on GitHub
+            </a>
+            .
+          </div>
+          <button className="btn-sm" style={{ marginTop: 8 }} onClick={() => setDismissedError(true)}>
+            Dismiss
+          </button>
+        </div>
       </div>
     );
   }
 
   return null;
 }
-
-const toastStyle: React.CSSProperties = {
-  position: "fixed",
-  bottom: 16,
-  right: 16,
-  maxWidth: 360,
-  padding: "10px 14px",
-  borderRadius: 6,
-  background: "#20302a",
-  border: "1px solid #4a7a5a",
-  color: "#e8e8ec",
-  fontSize: 13,
-  zIndex: 2000,
-  boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-};

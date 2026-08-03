@@ -13,10 +13,13 @@ import TasksPage from "./pages/TasksPage";
 export default function App() {
   return (
     <ProjectProvider>
-      <div style={{ fontFamily: "sans-serif", padding: 16 }}>
+      <div className="app">
         <ServerStatusToast />
         <ProjectBar />
-        <nav style={{ marginBottom: 16, display: "flex", gap: 12 }}>
+        {/* NavLink applies an `active` class on the matched route by
+            default — .tabs styles the underline off that, no manual
+            location matching needed. */}
+        <nav className="tabs">
           <NavLink to="/decklist">Decklist</NavLink>
           <NavLink to="/pdf">PDF</NavLink>
           <NavLink to="/tasks">Tasks</NavLink>

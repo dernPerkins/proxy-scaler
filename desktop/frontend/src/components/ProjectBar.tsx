@@ -17,30 +17,26 @@ export default function ProjectBar() {
   const projects = projectsQuery.data ?? [];
 
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        alignItems: "center",
-        padding: "8px 0",
-        marginBottom: 16,
-        borderBottom: "1px solid #444",
-        flexWrap: "wrap",
-      }}
-    >
-      <span>{project.isSaved ? `saved · #${project.projectId}` : "unsaved"}</span>
+    <div className="project-bar panel">
+      <span className={project.isSaved ? "chip chip-saved" : "chip"}>
+        {project.isSaved ? `Saved · #${project.projectId}` : "Unsaved"}
+      </span>
+
       <input
+        className="grow"
         value={project.projectName}
         onChange={(e) => project.setProjectName(e.target.value)}
         placeholder="Project name"
       />
-      <button onClick={project.save} disabled={project.saving}>
-        Save
+
+      <button className="btn-primary" onClick={project.save} disabled={project.saving}>
+        {project.saving ? "Saving…" : "Save"}
       </button>
       <button onClick={project.createNew}>New</button>
       <button onClick={() => setShowSaveAs((v) => !v)}>Save As…</button>
+
       {showSaveAs && (
-        <span>
+        <>
           <input
             value={saveAsName}
             onChange={(e) => setSaveAsName(e.target.value)}
@@ -57,10 +53,14 @@ export default function ProjectBar() {
           >
             Save copy
           </button>
-        </span>
+        </>
       )}
+
+      <span className="spacer" />
+
       {projects.length > 0 ? (
         <>
+          <div className="divider-v" />
           <select
             value={selectedLoadId}
             onChange={(e) => setSelectedLoadId(e.target.value ? Number(e.target.value) : "")}
@@ -79,8 +79,12 @@ export default function ProjectBar() {
             Load
           </button>
           <button
+            className="btn-danger"
             onClick={() => {
-              if (selectedLoadId !== "" && confirm("Permanently delete this project from the database?")) {
+              if (
+                selectedLoadId !== "" &&
+                confirm("Permanently delete this project from the database?")
+              ) {
                 project.remove(selectedLoadId);
                 setSelectedLoadId("");
               }
@@ -91,11 +95,12 @@ export default function ProjectBar() {
           </button>
         </>
       ) : readiness.status === "starting" ? (
-        <span>Starting local server…</span>
+        <span className="hint">Starting local server…</span>
       ) : (
-        <span>No saved projects yet — enter a name and click Save.</span>
+        <span className="hint">No saved projects yet — enter a name and click Save.</span>
       )}
-      {project.error && <span style={{ color: "#c66" }}>{project.error}</span>}
+
+      {project.error && <span className="error-text">{project.error}</span>}
     </div>
   );
 }
