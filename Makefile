@@ -67,7 +67,14 @@ sidecar: sidecar-clean
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
 	mkdir -p $(SIDECAR_RESOURCE_DIR)
-	rsync -a --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RESOURCE_DIR)/
+	# -L (dereference symlinks): PyInstaller's onedir output commonly
+	# includes versioned .dylib/.so symlinks (torch's shared-library deps
+	# in particular). Tauri's bundle.resources copier has multiple open
+	# upstream bugs around symlinks inside resource directories (e.g.
+	# tauri-apps/tauri#13219, #5831) — copying the real file content
+	# instead of preserving the symlink sidesteps that whole class of
+	# issue rather than depending on it being fixed upstream.
+	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RESOURCE_DIR)/
 	@echo "sidecar resources built: $(SIDECAR_RESOURCE_DIR)"
 
 # The real packaged-app build: compiles main.rs and (via tauri.conf.json's

@@ -66,7 +66,10 @@ Equivalent by hand:
   --workpath desktop/pyinstaller/build
 
 mkdir -p desktop/src-tauri/resources/proxy-scaler-serve
-rsync -a --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
+# -L dereferences symlinks (PyInstaller's onedir output on macOS commonly
+# includes versioned .dylib symlinks; Tauri's resource copier has open
+# upstream bugs handling those) — see the Makefile's sidecar target comment.
+rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
   desktop/src-tauri/resources/proxy-scaler-serve/
 ```
 
