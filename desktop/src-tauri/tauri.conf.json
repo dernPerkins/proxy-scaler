@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pwd && ls && cd ../frontend && npm run build"
+    "beforeBuildCommand": "cd frontend && npm run build"
   },
   "app": {
     "withGlobalTauri": true,
