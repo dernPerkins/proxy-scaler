@@ -66,7 +66,13 @@ def test_upscale_falls_back_to_cpu_after_oom(tmp_path) -> None:
         patch.object(up, "_run_inference", side_effect=run_oom_then_ok),
         patch.object(up, "_relocate_to_cpu", side_effect=relocate),
         patch("proxy_scaler.upscale._clear_device_cache"),
-        patch("proxy_scaler.upscale.to_tensor", return_value=fake_rgb),
+        # to_tensor is imported locally inside Upscaler.upscale() (see
+        # upscale.py's module docstring on lazy torch/spandrel/torchvision
+        # imports) rather than being a module-level attribute of
+        # proxy_scaler.upscale, so it must be patched at its real source —
+        # the local `from torchvision.transforms.functional import
+        # to_tensor` re-resolves this attribute fresh on every call.
+        patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
     ):
         up._device = _CudaDev()  # type: ignore[assignment]
         result = up.upscale(src)

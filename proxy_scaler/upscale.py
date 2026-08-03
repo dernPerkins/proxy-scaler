@@ -6,12 +6,23 @@ import io
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
-import torch
 from PIL import Image
-from spandrel import ImageModelDescriptor, ModelLoader
-from torchvision.transforms.functional import to_pil_image, to_tensor
+
+# torch/spandrel/torchvision are deliberately NOT imported at module scope.
+# This module is on the FastAPI server's import path (via pipeline.py, used
+# by nearly every router) — an eager import here means the whole API
+# process, including trivial DB-backed endpoints like listing projects,
+# can't even bind its port until the entire ML stack finishes loading.
+# Real-world impact: the desktop app's "local server ready" check polls
+# /api/health, so this alone determined how long the UI sat blocked before
+# a user could do anything at all, generation-related or not. Every
+# function below that actually needs these imports them locally instead.
+if TYPE_CHECKING:
+    import torch
+    from spandrel import ImageModelDescriptor
 
 
 class UpscaleModel(str, Enum):
@@ -148,6 +159,8 @@ def parse_model(value: str | UpscaleModel) -> UpscaleModel:
 
 
 def resolve_device() -> torch.device:
+    import torch
+
     if torch.cuda.is_available():
         return torch.device("cuda")
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -156,6 +169,8 @@ def resolve_device() -> torch.device:
 
 
 def _is_oom_error(exc: BaseException) -> bool:
+    import torch
+
     if isinstance(exc, torch.cuda.OutOfMemoryError):
         return True
     # MPS / older torch sometimes raise RuntimeError with this message
@@ -166,6 +181,8 @@ def _is_oom_error(exc: BaseException) -> bool:
 def _clear_device_cache(device: torch.device | None) -> None:
     if device is None:
         return
+    import torch
+
     if device.type == "cuda" and torch.cuda.is_available():
         torch.cuda.empty_cache()
     elif device.type == "mps" and hasattr(torch, "mps"):
@@ -179,6 +196,8 @@ def device_kind(device: torch.device | str | None) -> str:
     """Normalize torch device to 'gpu' | 'cpu' for gallery provenance."""
     if device is None:
         return "unknown"
+    import torch
+
     name = device.type if isinstance(device, torch.device) else str(device).lower()
     if name == "cpu":
         return "cpu"
@@ -251,6 +270,9 @@ class Upscaler:
         if self._descriptor is not None:
             return self._descriptor
 
+        import torch
+        from spandrel import ImageModelDescriptor, ModelLoader
+
         device = resolve_device()
         self._device = device
         weights = ensure_weights(self.model_id, self.scale, self.weights_dir)
@@ -285,6 +307,8 @@ class Upscaler:
 
     def _relocate_to_cpu(self) -> ImageModelDescriptor:
         """Move loaded weights to CPU after a GPU OOM (stays on CPU afterward)."""
+        import torch
+
         assert self._descriptor is not None
         old = self._device
         _clear_device_cache(old)
@@ -302,55 +326,63 @@ class Upscaler:
             return self._tiled_inference(descriptor, tensor)
         return descriptor(tensor)
 
-    @torch.inference_mode()
     def upscale(self, image: Image.Image) -> UpscaleResult:
-        descriptor = self._ensure_model()
-        assert self._device is not None
-        # Scryfall PNGs carry real per-card alpha (transparent rounded
-        # corners). The models are RGB-only, so the alpha channel is split
-        # off here and reattached to the model's output below, resized to
-        # match — preserving the card's actual corner shape instead of
-        # letting it get silently discarded.
-        alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
-        rgb = image.convert("RGB")
-        tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
+        # Equivalent to decorating with @torch.inference_mode() — kept as an
+        # explicit context manager so torch doesn't need to be importable at
+        # class-definition time (a decorator argument evaluates when this
+        # method is *defined*, i.e. at module import, which is exactly the
+        # eager-import cost this module is otherwise built to avoid).
+        import torch
+        from torchvision.transforms.functional import to_pil_image, to_tensor
 
-        try:
+        with torch.inference_mode():
+            descriptor = self._ensure_model()
+            assert self._device is not None
+            # Scryfall PNGs carry real per-card alpha (transparent rounded
+            # corners). The models are RGB-only, so the alpha channel is
+            # split off here and reattached to the model's output below,
+            # resized to match — preserving the card's actual corner shape
+            # instead of letting it get silently discarded.
+            alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
+            rgb = image.convert("RGB")
+            tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
+
             try:
-                out_gpu = self._run_inference(descriptor, tensor)
-            except Exception as exc:
-                if self._device.type == "cpu" or not _is_oom_error(exc):
-                    raise
-                print(
-                    f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
+                try:
+                    out_gpu = self._run_inference(descriptor, tensor)
+                except Exception as exc:
+                    if self._device.type == "cpu" or not _is_oom_error(exc):
+                        raise
+                    print(
+                        f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
+                    )
+                    _clear_device_cache(self._device)
+                    if self._device.type == "cuda":
+                        try:
+                            torch.cuda.synchronize(self._device)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    del tensor
+                    descriptor = self._relocate_to_cpu()
+                    tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
+                    out_gpu = self._run_inference(descriptor, tensor)
+
+                out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).cpu()
+                del out_gpu
+                out_image = to_pil_image(out_cpu)
+                if alpha is not None:
+                    resized_alpha = alpha.resize(out_image.size, Image.Resampling.LANCZOS)
+                    out_image.putalpha(resized_alpha)
+                return UpscaleResult(
+                    image=out_image,
+                    device=device_kind(self._device),
                 )
+            finally:
+                try:
+                    del tensor
+                except NameError:
+                    pass
                 _clear_device_cache(self._device)
-                if self._device.type == "cuda":
-                    try:
-                        torch.cuda.synchronize(self._device)
-                    except Exception:  # noqa: BLE001
-                        pass
-                del tensor
-                descriptor = self._relocate_to_cpu()
-                tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
-                out_gpu = self._run_inference(descriptor, tensor)
-
-            out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).cpu()
-            del out_gpu
-            out_image = to_pil_image(out_cpu)
-            if alpha is not None:
-                resized_alpha = alpha.resize(out_image.size, Image.Resampling.LANCZOS)
-                out_image.putalpha(resized_alpha)
-            return UpscaleResult(
-                image=out_image,
-                device=device_kind(self._device),
-            )
-        finally:
-            try:
-                del tensor
-            except NameError:
-                pass
-            _clear_device_cache(self._device)
 
     def _tiled_inference(
         self,
