@@ -3,6 +3,9 @@ output/
 output_smoke/
 weights/
 data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.log
 *.pyc
 __pycache__/
 .venv/

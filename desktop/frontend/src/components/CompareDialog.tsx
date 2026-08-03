@@ -33,11 +33,15 @@ export default function CompareDialog({
     >
       <div
         style={{
-          maxWidth: "90vw",
+          width: "min(85vw, 700px)",
           maxHeight: "90vh",
           background: "#1b1d22",
           padding: 16,
           borderRadius: 8,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          boxSizing: "border-box",
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -48,17 +52,32 @@ export default function CompareDialog({
             alignItems: "center",
             marginBottom: 8,
             color: "#e8e8ec",
+            flexShrink: 0,
           }}
         >
           <strong>{label}</strong>
           <button onClick={onClose}>Close</button>
         </div>
-        <div style={{ maxHeight: "80vh", maxWidth: "85vw" }}>
-          <ReactCompareSlider
-            itemOne={<ReactCompareSliderImage src={originalUrl} alt="Original" />}
-            itemTwo={<ReactCompareSliderImage src={upscaledUrl} alt="Upscaled" />}
-          />
-        </div>
+        <ReactCompareSlider
+          style={{
+            height: "min(80vh, 977px)",
+            width: "100%",
+          }}
+          itemOne={
+            <ReactCompareSliderImage
+              src={originalUrl}
+              alt="Original"
+              style={{ objectFit: "contain" }}
+            />
+          }
+          itemTwo={
+            <ReactCompareSliderImage
+              src={upscaledUrl}
+              alt="Upscaled"
+              style={{ objectFit: "contain" }}
+            />
+          }
+        />
       </div>
     </div>
   );
