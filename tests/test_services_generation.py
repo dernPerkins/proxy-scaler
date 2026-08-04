@@ -138,6 +138,7 @@ def test_enqueue_decklist_entries_skips_existing_output_file(
     existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
     (output_dir / existing_name).write_bytes(b"fake png")
 
+    notes = []
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
         model="swinir",
@@ -149,9 +150,14 @@ def test_enqueue_decklist_entries_skips_existing_output_file(
         weights_dir=tmp_path / "weights",
         project_tag=None,
         db_path=db_path,
+        on_note=notes.append,
     )
     assert queued == 0
     assert task_ids == []
+    # "Nothing to do" must be self-explanatory, not a silent no-op
+    # indistinguishable from a real bug — see the regression this guards
+    # against in services/generation.py.
+    assert any("already exist" in n for n in notes)
 
 
 def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
@@ -228,6 +234,7 @@ def test_enqueue_decklist_entries_skips_active_task_for_tagged_project(
         db_path=db_path,
     )
 
+    notes = []
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
         model="swinir",
@@ -239,9 +246,11 @@ def test_enqueue_decklist_entries_skips_active_task_for_tagged_project(
         weights_dir=tmp_path / "weights",
         project_tag=tag,
         db_path=db_path,
+        on_note=notes.append,
     )
     assert queued == 0
     assert task_ids == []
+    assert any("already queued or running" in n for n in notes)
 
 
 def test_enqueue_decklist_entries_reports_scryfall_failures(

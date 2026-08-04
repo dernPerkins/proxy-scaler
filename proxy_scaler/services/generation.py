@@ -104,6 +104,12 @@ def enqueue_decklist_entries(
     failed = 0
     task_ids: list[int] = []
     seen_keys: set[str] = set()
+    # Diagnostic counters only (don't affect enqueueing) — surfaced as a
+    # note when queued ends up at 0, so "nothing to do" is self-explanatory
+    # instead of a silent no-op indistinguishable from a real bug. See the
+    # two `continue` sites below for what each one counts.
+    skipped_existing = 0
+    skipped_active = 0
     for entry, pre in zip(entries, resolved):
         try:
             if isinstance(pre, ScryfallError):
@@ -121,6 +127,7 @@ def enqueue_decklist_entries(
                 targets_needed = []
                 for target_dpi in dpi_targets:
                     if (face.scryfall_id, face.face_index, target_dpi, model) in active:
+                        skipped_active += 1
                         continue
                     out_name = output_filename(
                         face.face_name,
@@ -131,6 +138,7 @@ def enqueue_decklist_entries(
                         target_dpi,
                     )
                     if skip_existing and (output_dir / out_name).exists():
+                        skipped_existing += 1
                         continue
                     targets_needed.append(target_dpi)
                 if not targets_needed:
@@ -160,4 +168,14 @@ def enqueue_decklist_entries(
             failed += 1
             if on_note:
                 on_note(f"FAIL [{entry.raw_line}]: {exc}")
+
+    if queued == 0 and on_note:
+        if skipped_existing:
+            on_note(
+                f"{skipped_existing} image(s) already exist in {output_dir} "
+                "(skip existing is on)."
+            )
+        if skipped_active:
+            on_note(f"{skipped_active} image(s) already queued or running.")
+
     return queued, failed, task_ids

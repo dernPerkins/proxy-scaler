@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import type { CardRow } from "../api/project";
+import { useConnection } from "../connection";
+import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
 import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
@@ -43,6 +45,13 @@ function cardToEntry(card: CardRow): DeckEntryIn {
 
 export default function PdfPage() {
   const { projectId, projectTag, projectName, cards } = useProject();
+  const readiness = useServerReadiness();
+  const connection = useConnection();
+  // See DecklistPage's identical check — generation-server unreachability
+  // used to leave this page's preview/download just silently failing with
+  // no feedback.
+  const serverUnavailable =
+    connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
   const [layout, setLayout] = useState<LayoutSettings>(DEFAULT_LAYOUT);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -53,7 +62,7 @@ export default function PdfPage() {
     queryKey: ["pdf-preview", projectTag, entries, layout],
     queryFn: () =>
       generationApi.pdfPreview({ project_tag: projectTag as string, entries, ...layout }),
-    enabled: projectTag != null && entries.length > 0,
+    enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
   });
 
   function updateLayout<K extends keyof LayoutSettings>(key: K, value: LayoutSettings[K]) {
@@ -68,7 +77,7 @@ export default function PdfPage() {
   }
 
   async function handleDownload() {
-    if (projectTag == null) return;
+    if (projectTag == null || serverUnavailable) return;
     setDownloadError(null);
     setDownloading(true);
     try {
@@ -190,13 +199,24 @@ export default function PdfPage() {
       <main className="content">
         <h2>PDF</h2>
 
+        {serverUnavailable && (
+          <p className="error-text" style={{ marginTop: 10 }}>
+            Generation server is unreachable — reconnect before generating.
+          </p>
+        )}
+
         {entries.length === 0 ? (
           <p className="hint" style={{ marginTop: 10 }}>
             No cards in this project yet — add some from the Decklist tab first.
           </p>
-        ) : previewQuery.isLoading ? (
+        ) : serverUnavailable ? null : previewQuery.isLoading ? (
           <p className="hint" style={{ marginTop: 10 }}>
             Calculating layout…
+          </p>
+        ) : previewQuery.isError ? (
+          <p className="error-text" style={{ marginTop: 10 }}>
+            Couldn&apos;t calculate layout:{" "}
+            {previewQuery.error instanceof Error ? previewQuery.error.message : String(previewQuery.error)}
           </p>
         ) : previewQuery.data ? (
           <div className="panel" style={{ padding: 14, marginTop: 10 }}>
@@ -220,7 +240,8 @@ export default function PdfPage() {
           <button
             className="btn-primary"
             onClick={handleDownload}
-            disabled={downloading || entries.length === 0}
+            disabled={downloading || entries.length === 0 || serverUnavailable}
+            title={serverUnavailable ? "Generation server is unreachable" : undefined}
           >
             {downloading ? "Generating…" : "Generate & Download PDF"}
           </button>

@@ -69,6 +69,13 @@ interface ConnectionValue {
   connect: (target: ConnectionTarget) => Promise<void>;
   /** Mid-session switch. Returns an error message, or null on success. */
   switchTo: (target: ConnectionTarget) => Promise<string | null>;
+  /**
+   * Manual re-check of the current remote host, for a "Reconnect" button
+   * rather than waiting up to HEALTH_PING_INTERVAL_MS for the next
+   * automatic ping. Returns whether it's reachable now. A no-op (returns
+   * true) outside remote mode.
+   */
+  reconnect: () => Promise<boolean>;
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
@@ -227,6 +234,21 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return null;
   }
 
+  async function reconnect(): Promise<boolean> {
+    if (mode !== "remote" || !host) return true;
+    const url = `http://${host}:${API_PORT}`;
+    const ok = await isReachable(`${url}/api/health`, REMOTE_TIMEOUT_MS);
+    if (ok) {
+      setRemoteHealthy(true);
+      queryClient.invalidateQueries({ queryKey: ["generation-status"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["worker-status"] });
+      queryClient.invalidateQueries({ queryKey: ["pdf-preview"] });
+      queryClient.invalidateQueries({ queryKey: ["models"] });
+    }
+    return ok;
+  }
+
   const value: ConnectionValue = {
     status,
     setStatus,
@@ -236,6 +258,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     remoteHealthy,
     connect,
     switchTo,
+    reconnect,
   };
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;

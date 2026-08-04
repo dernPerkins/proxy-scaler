@@ -47,13 +47,25 @@ export default function ServerSwitcher() {
       pending === "local" ? { mode: "local" } : { mode: "remote", host },
     );
 
+    setBusy(false);
     if (message) {
       setError(message);
-      setBusy(false);
       return;
     }
-    // Success: the connection change bumps the session key, which
-    // remounts this component. Deliberately no state updates after here.
+    // Success — close the dialog. This component itself doesn't remount
+    // on a switch (project data no longer needs to; see connection.tsx),
+    // so this has to be done explicitly rather than relying on unmount.
+    setPending(null);
+  }
+
+  async function handleReconnect() {
+    setBusy(true);
+    setError(null);
+    const ok = await connection.reconnect();
+    setBusy(false);
+    if (!ok) {
+      setError("Still unreachable — check that the server is running.");
+    }
   }
 
   return (
@@ -82,6 +94,24 @@ export default function ServerSwitcher() {
           {connection.host}
         </p>
       )}
+
+      {mode === "remote" && !connection.remoteHealthy && (
+        <>
+          <p className="error-text" style={{ marginTop: 4 }}>
+            Disconnected from the remote server.
+          </p>
+          <button
+            className="btn-sm btn-danger btn-block"
+            onClick={handleReconnect}
+            disabled={busy}
+            style={{ marginTop: 4 }}
+          >
+            {busy ? "Reconnecting…" : "Reconnect"}
+          </button>
+        </>
+      )}
+
+      {error && !pending && <p className="error-text" style={{ marginTop: 6 }}>{error}</p>}
 
       {pending && (
         <SwitchServerDialog

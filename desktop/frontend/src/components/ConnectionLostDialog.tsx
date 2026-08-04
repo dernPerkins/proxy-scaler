@@ -8,7 +8,8 @@ import { useProject } from "../context/ProjectContext";
 // no project to save. This component's only job is bridging the two: it
 // watches the health ping connection.tsx already runs and reacts to it.
 export default function ConnectionLostDialog() {
-  const { mode, remoteHealthy, host } = useConnection();
+  const connection = useConnection();
+  const { mode, remoteHealthy, host } = connection;
   const project = useProject();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,6 +48,18 @@ export default function ConnectionLostDialog() {
     }
   }
 
+  async function handleReconnect() {
+    setBusy(true);
+    setError(null);
+    const ok = await connection.reconnect();
+    setBusy(false);
+    if (ok) {
+      setOpen(false);
+    } else {
+      setError("Still unreachable — check that the server is running and try again.");
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={busy ? undefined : () => setOpen(false)}>
       <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
@@ -76,10 +89,13 @@ export default function ConnectionLostDialog() {
             Dismiss
           </button>
           {canSave && (
-            <button className="btn-primary" onClick={handleSave} disabled={busy}>
+            <button onClick={handleSave} disabled={busy}>
               {busy ? "Saving…" : "Try to save"}
             </button>
           )}
+          <button className="btn-primary" onClick={handleReconnect} disabled={busy}>
+            {busy ? "Reconnecting…" : "Reconnect"}
+          </button>
         </div>
       </div>
     </div>

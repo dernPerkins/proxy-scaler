@@ -6,6 +6,7 @@ import type { DeckEntryIn, GalleryItem, Task } from "../api/types";
 import CompareDialog from "../components/CompareDialog";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
+import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
@@ -58,6 +59,16 @@ export default function DecklistPage() {
   const { projectId, projectTag, settings, setSettings, cards, decklistText, setDecklistText, settingDecklistText, removeCard } =
     useProject();
   const readiness = useServerReadiness();
+  const connection = useConnection();
+  // Whether the generation server is reachable right now — remote mode
+  // has its own 30s heartbeat (connection.remoteHealthy); local mode's
+  // equivalent is "has the sidecar finished starting". Generate/PDF
+  // requests against an unreachable server used to just hang or fail
+  // silently with no feedback; this both disables the buttons and (via
+  // the mutation onError handlers below) surfaces a real error if one
+  // slips through anyway.
+  const serverUnavailable =
+    connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
 
   // Always read this from the API, never hardcode — see
   // api/generation.ts's listModels comment for the regression this
@@ -115,10 +126,11 @@ export default function DecklistPage() {
       setStatus(
         result.queued
           ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
-          : "Nothing to do — every requested image already exists.",
+          : `Nothing to do — every requested image already exists.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
       );
       invalidateStatus();
     },
+    onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
   });
 
   const generateCardMutation = useMutation({
@@ -135,6 +147,7 @@ export default function DecklistPage() {
         weights_dir: genPaths.weights_dir,
       }),
     onSuccess: invalidateStatus,
+    onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
   });
 
   const regenerateMutation = useMutation({
@@ -146,6 +159,7 @@ export default function DecklistPage() {
         weights_dir: genPaths.weights_dir,
       }),
     onSuccess: invalidateStatus,
+    onError: (err: Error) => setStatus(`Regenerate failed: ${err.message}`),
   });
 
   const [confirmClearGenerated, setConfirmClearGenerated] = useState(false);
@@ -155,6 +169,7 @@ export default function DecklistPage() {
       setConfirmClearGenerated(false);
       invalidateStatus();
     },
+    onError: (err: Error) => setStatus(`Clear failed: ${err.message}`),
   });
 
   function toggleDpi(dpi: number) {
@@ -348,12 +363,19 @@ export default function DecklistPage() {
                 <button
                   className="btn-primary"
                   onClick={() => generateAllMutation.mutate()}
-                  disabled={!cards.length || generateAllMutation.isPending}
+                  disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
+                  title={serverUnavailable ? "Generation server is unreachable" : undefined}
                 >
                   Generate upscaled images
                 </button>
               </div>
             </div>
+
+            {serverUnavailable && (
+              <p className="error-text" style={{ marginTop: 6 }}>
+                Generation server is unreachable — reconnect before generating.
+              </p>
+            )}
 
             {cards.length === 0 && (
               <p className="empty-note">
@@ -381,6 +403,7 @@ export default function DecklistPage() {
                   onRemove={() => removeCard(card.id)}
                   onGenerate={() => generateCardMutation.mutate(card)}
                   onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+                  disabled={serverUnavailable}
                 />
               );
             })}
@@ -422,8 +445,12 @@ function CardRowView(props: {
   onRemove: () => void;
   onGenerate: () => void;
   onRegenerate: (galleryItemId: number) => void;
+  /** True when the generation server is unreachable — disables
+   *  Generate/Regen (Remove/Show stay enabled since those are purely
+   *  local). */
+  disabled: boolean;
 }) {
-  const { card, faces, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate } = props;
+  const { card, faces, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate, disabled } = props;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
   const hasImages = faces.some((f) => f.variants.some((v) => v.status === "done"));
@@ -442,7 +469,7 @@ function CardRowView(props: {
               {expanded ? "Hide" : "Show"}
             </button>
           )}
-          <button className="btn-sm" onClick={onGenerate}>
+          <button className="btn-sm" onClick={onGenerate} disabled={disabled}>
             Generate
           </button>
           <button className="btn-sm btn-danger" onClick={onRemove}>
@@ -505,7 +532,11 @@ function CardRowView(props: {
                     >
                       Compare
                     </button>
-                    <button className="btn-sm" onClick={() => onRegenerate(v.galleryItemId)}>
+                    <button
+                      className="btn-sm"
+                      onClick={() => onRegenerate(v.galleryItemId)}
+                      disabled={disabled}
+                    >
                       Regen
                     </button>
                   </div>
