@@ -35,8 +35,9 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, Notify};
 
 use project_store::{
-    clear_all_projects, create_project, delete_project, get_last_project_id, get_project,
-    list_projects, remove_card, set_decklist_text, set_last_project_id, update_project,
+    add_recent_host, clear_all_projects, create_project, delete_project, get_last_project_id,
+    get_project, list_projects, list_recent_hosts, remove_card, remove_recent_host,
+    set_decklist_text, set_last_project_id, update_project,
 };
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
@@ -225,7 +226,10 @@ fn main() {
             set_decklist_text,
             remove_card,
             get_last_project_id,
-            set_last_project_id
+            set_last_project_id,
+            list_recent_hosts,
+            add_recent_host,
+            remove_recent_host
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

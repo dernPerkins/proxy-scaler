@@ -208,6 +208,27 @@ input[type="checkbox"] {
   gap: 12px;
 }
 
+/* Recent-servers list (RecentHostsList.tsx) — used below the address
+   field in both ConnectGate.tsx and SwitchServerDialog.tsx. */
+.host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.host-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.host-row-select {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .check-row {
   display: flex;
   flex-wrap: wrap;

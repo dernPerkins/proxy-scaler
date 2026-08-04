@@ -1,4 +1,5 @@
 import { useState } from "react";
+import RecentHostsList from "./RecentHostsList";
 
 export interface SwitchServerDialogProps {
   target: "local" | "remote";
@@ -10,6 +11,9 @@ export interface SwitchServerDialogProps {
   error: string | null;
   onCancel: () => void;
   onConfirm: (save: boolean, host: string) => void;
+  /** Previously-used remote servers — see connection.tsx::recentHosts. */
+  recentHosts: string[];
+  onRemoveHost: (host: string) => void;
 }
 
 // Follows CompareDialog's pattern (overlay closes on click, inner panel
@@ -25,6 +29,8 @@ export default function SwitchServerDialog({
   error,
   onCancel,
   onConfirm,
+  recentHosts,
+  onRemoveHost,
 }: SwitchServerDialogProps) {
   const [host, setHost] = useState(initialHost);
   const hostReady = target === "local" || host.trim().length > 0;
@@ -39,16 +45,34 @@ export default function SwitchServerDialog({
         </div>
 
         {target === "remote" && (
-          <label className="field" style={{ marginBottom: 14 }}>
-            <span>Server address</span>
-            <input
-              value={host}
-              autoFocus
-              disabled={busy}
-              onChange={(e) => setHost(e.target.value)}
-              placeholder="IP or name (e.g. 100.x.x.x or my-server)"
-            />
-          </label>
+          <>
+            <label className="field" style={{ marginBottom: recentHosts.length > 0 ? 8 : 14 }}>
+              <span>Server address</span>
+              <input
+                value={host}
+                autoFocus
+                disabled={busy}
+                onChange={(e) => setHost(e.target.value)}
+                placeholder="IP or name (e.g. 100.x.x.x or my-server)"
+              />
+            </label>
+            {recentHosts.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                <span className="hint" style={{ marginBottom: 4, display: "block" }}>
+                  Recent
+                </span>
+                {/* Fill-only: this dialog exists specifically to force the
+                    save-before-switching choice below, so selecting a
+                    saved host must not skip straight to switching. */}
+                <RecentHostsList
+                  hosts={recentHosts}
+                  onSelect={setHost}
+                  onRemove={onRemoveHost}
+                  disabled={busy}
+                />
+              </div>
+            )}
+          </>
         )}
 
         <p style={{ marginBottom: 6 }}>

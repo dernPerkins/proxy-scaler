@@ -57,4 +57,11 @@ export const projectApi = {
   getLastProjectId: () => invokeCommand<number | null>("get_last_project_id"),
   setLastProjectId: (projectId: number) =>
     invokeCommand<void>("set_last_project_id", { projectId }),
+
+  // Remembered remote server addresses (see connection.tsx) — not project
+  // data, but the same app_settings-backed store, so it lives here
+  // alongside the other app_settings-backed calls above.
+  listRecentHosts: () => invokeCommand<string[]>("list_recent_hosts"),
+  addRecentHost: (host: string) => invokeCommand<string[]>("add_recent_host", { host }),
+  removeRecentHost: (host: string) => invokeCommand<string[]>("remove_recent_host", { host }),
 };

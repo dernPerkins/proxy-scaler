@@ -472,3 +472,85 @@ pub fn set_last_project_id(app: AppHandle, project_id: i64) -> Result<(), String
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// --- Recent remote hosts --------------------------------------------------
+//
+// A plain list of remote server addresses the user has successfully
+// connected to, most-recent-first, so the connection screens
+// (ConnectGate.tsx / SwitchServerDialog.tsx) can offer them instead of a
+// blank text field every time. Same app_settings-backed pattern as
+// last_project_id above, just a list-shaped value instead of a single one
+// — encoded the same way dpi_targets is (join/split on a delimiter in one
+// TEXT column) rather than a second table, since this is always read/
+// written as a whole.
+
+const RECENT_HOSTS_KEY: &str = "recent_remote_hosts";
+const MAX_RECENT_HOSTS: usize = 8;
+
+fn hosts_to_text(hosts: &[String]) -> String {
+    hosts.join("\n")
+}
+
+fn hosts_from_text(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn read_recent_hosts(conn: &Connection) -> Result<Vec<String>, String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![RECENT_HOSTS_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(text.map(|t| hosts_from_text(&t)).unwrap_or_default())
+}
+
+fn write_recent_hosts(conn: &Connection, hosts: &[String]) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![RECENT_HOSTS_KEY, hosts_to_text(hosts)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_recent_hosts(app: AppHandle) -> Result<Vec<String>, String> {
+    let conn = open_db(&app)?;
+    read_recent_hosts(&conn)
+}
+
+/// Records a successful connection. Trims, de-dupes (an already-known host
+/// moves to the front rather than appearing twice), and caps at
+/// MAX_RECENT_HOSTS (oldest dropped). A blank host is a no-op — returns the
+/// list unchanged rather than erroring, since callers treat this as
+/// fire-and-forget after a connection already succeeded.
+#[tauri::command]
+pub fn add_recent_host(app: AppHandle, host: String) -> Result<Vec<String>, String> {
+    let trimmed = host.trim();
+    let conn = open_db(&app)?;
+    if trimmed.is_empty() {
+        return read_recent_hosts(&conn);
+    }
+    let mut hosts = read_recent_hosts(&conn)?;
+    hosts.retain(|h| h != trimmed);
+    hosts.insert(0, trimmed.to_string());
+    hosts.truncate(MAX_RECENT_HOSTS);
+    write_recent_hosts(&conn, &hosts)?;
+    Ok(hosts)
+}
+
+#[tauri::command]
+pub fn remove_recent_host(app: AppHandle, host: String) -> Result<Vec<String>, String> {
+    let conn = open_db(&app)?;
+    let mut hosts = read_recent_hosts(&conn)?;
+    hosts.retain(|h| h != &host);
+    write_recent_hosts(&conn, &hosts)?;
+    Ok(hosts)
+}

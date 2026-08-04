@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { projectApi } from "./api/project";
 import {
   getApiBaseUrl,
   getConnectionMode,
@@ -76,6 +77,15 @@ interface ConnectionValue {
    * true) outside remote mode.
    */
   reconnect: () => Promise<boolean>;
+  /**
+   * Remote servers successfully connected to before, most-recent-first —
+   * see project_store.rs's recent_remote_hosts. Loaded once on mount;
+   * connect()/switchTo() append to it themselves on a successful remote
+   * connection, so callers never need to call add_recent_host directly.
+   */
+  recentHosts: string[];
+  /** Removes one saved entry (e.g. a bad address) from the list above. */
+  removeRecentHost: (host: string) => Promise<void>;
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
@@ -99,6 +109,42 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<"local" | "remote" | null>(null);
   const [host, setHost] = useState("");
   const [remoteHealthy, setRemoteHealthy] = useState(true);
+  const [recentHosts, setRecentHosts] = useState<string[]>([]);
+
+  // Loaded once — a plain browser dev tab (isTauri() false) has no invoke
+  // boundary to call, so this stays empty there, matching every other
+  // Tauri-only affordance in this app.
+  useEffect(() => {
+    if (!isTauri()) return;
+    projectApi
+      .listRecentHosts()
+      .then(setRecentHosts)
+      .catch(() => {
+        // Best-effort — an empty list just means the picker shows no
+        // suggestions, not a broken app.
+      });
+  }, []);
+
+  async function removeRecentHost(hostToRemove: string): Promise<void> {
+    try {
+      setRecentHosts(await projectApi.removeRecentHost(hostToRemove));
+    } catch {
+      // Best-effort — leave the list as-is if the write failed.
+    }
+  }
+
+  // Records a successful remote connection so it shows up as a saved
+  // entry next time. Best-effort and non-blocking: called after the
+  // connection itself already succeeded, so a persistence failure here
+  // must never surface as a connection error.
+  async function rememberHost(target: ConnectionTarget): Promise<void> {
+    if (target.mode !== "remote") return;
+    try {
+      setRecentHosts(await projectApi.addRecentHost(target.host));
+    } catch {
+      // Ignored — see comment above.
+    }
+  }
 
   // Heartbeat for remote mode only — local's liveness is already implied
   // by the sidecar process this app itself spawned and watches. A remote
@@ -190,6 +236,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       }
     }
     applyTarget(target);
+    void rememberHost(target);
     setStatus({ kind: "connected" });
   }
 
@@ -217,6 +264,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     }
 
     applyTarget(target);
+    void rememberHost(target);
 
     // Project data (ProjectContext, api/project.ts) is local-only and
     // untouched by which generation server is connected — only
@@ -259,6 +307,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     connect,
     switchTo,
     reconnect,
+    recentHosts,
+    removeRecentHost,
   };
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;

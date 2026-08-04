@@ -125,6 +125,8 @@ export default function ServerSwitcher() {
             setError(null);
           }}
           onConfirm={handleConfirm}
+          recentHosts={connection.recentHosts}
+          onRemoveHost={connection.removeRecentHost}
         />
       )}
     </div>

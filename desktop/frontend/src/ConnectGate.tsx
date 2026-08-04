@@ -1,4 +1,5 @@
 import { type ReactNode } from "react";
+import RecentHostsList from "./components/RecentHostsList";
 import { useConnection } from "./connection";
 
 // First-launch Local/Remote picker, ported from the old plain-JS
@@ -16,7 +17,8 @@ import { useConnection } from "./connection";
 // Local/Remote at all. That's no longer the only way to switch, but
 // asking on a cold start is still the honest default.
 export default function ConnectGate({ children }: { children: ReactNode }) {
-  const { status, setStatus, host, setHost, connect } = useConnection();
+  const { status, setStatus, host, setHost, connect, recentHosts, removeRecentHost } =
+    useConnection();
 
   function submitRemote() {
     if (!host.trim()) return;
@@ -70,6 +72,20 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
               placeholder="IP or name (e.g. 100.x.x.x or my-server)"
             />
           </label>
+
+          {recentHosts.length > 0 && (
+            <>
+              <span className="hint" style={{ marginBottom: 4, display: "block" }}>
+                Recent
+              </span>
+              <RecentHostsList
+                hosts={recentHosts}
+                onSelect={(h) => connect({ mode: "remote", host: h })}
+                onRemove={removeRecentHost}
+              />
+            </>
+          )}
+
           <button className="btn-primary" onClick={submitRemote} disabled={!host.trim()}>
             Connect
           </button>
