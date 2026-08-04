@@ -1,4 +1,5 @@
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import ProjectBar from "./components/ProjectBar";
 import ServerStatusToast from "./components/ServerStatusToast";
 import { useConnection } from "./connection";
@@ -24,6 +25,7 @@ export default function App() {
     <ProjectProvider key={sessionKey}>
       <div className="app">
         <ServerStatusToast />
+        <ConnectionLostDialog />
         <ProjectBar />
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual

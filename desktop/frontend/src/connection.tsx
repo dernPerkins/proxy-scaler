@@ -1,6 +1,7 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  getApiBaseUrl,
   getConnectionMode,
   setApiBaseUrl,
   setConnectionMode,
@@ -11,6 +12,8 @@ import {
 import { invokeStartLocalServer, invokeStopLocalServer, isTauri } from "./tauri";
 
 const REMOTE_TIMEOUT_MS = 8000;
+const HEALTH_PING_INTERVAL_MS = 30_000;
+const HEALTH_PING_TIMEOUT_MS = 5000;
 const API_PORT = 8000;
 // Matches main.rs's fixed LOCAL_URL constant — known before the sidecar
 // even reports ready, so this can be set optimistically the instant Local
@@ -56,6 +59,14 @@ interface ConnectionValue {
   setHost: (host: string) => void;
   /** Bumped on every successful switch; used as a remount key (see App.tsx). */
   sessionKey: number;
+  /**
+   * Whether the last health ping to a remote server succeeded. Always
+   * true outside remote mode. See the 30s ping effect below — a remote
+   * server can vanish (crash, network drop, someone closing the server
+   * app) with nothing in this app noticing on its own, since every
+   * request just... stops happening once the user stops interacting.
+   */
+  remoteHealthy: boolean;
   /** First connect, from the launch picker. Drives `status`. */
   connect: (target: ConnectionTarget) => Promise<void>;
   /** Mid-session switch. Returns an error message, or null on success. */
@@ -83,6 +94,41 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<"local" | "remote" | null>(null);
   const [host, setHost] = useState("");
   const [sessionKey, setSessionKey] = useState(0);
+  const [remoteHealthy, setRemoteHealthy] = useState(true);
+
+  // Heartbeat for remote mode only — local's liveness is already implied
+  // by the sidecar process this app itself spawned and watches. A remote
+  // server has no such signal: if it stops, nothing here notices unless
+  // something actively checks, and the app would otherwise just sit there
+  // looking normal while every request silently goes nowhere.
+  useEffect(() => {
+    if (status.kind !== "connected" || mode !== "remote") {
+      setRemoteHealthy(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function ping() {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), HEALTH_PING_TIMEOUT_MS);
+      try {
+        const resp = await fetch(`${getApiBaseUrl()}/api/health`, { signal: controller.signal });
+        if (!cancelled) setRemoteHealthy(resp.ok);
+      } catch {
+        if (!cancelled) setRemoteHealthy(false);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    ping();
+    const interval = setInterval(ping, HEALTH_PING_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [status.kind, mode]);
 
   // Points the API client at a target that's already been validated.
   // Local deliberately doesn't block on readiness — the app renders
@@ -92,6 +138,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     if (target.mode === "remote") {
       setApiBaseUrl(`http://${target.host}:${API_PORT}`);
       setConnectionMode("remote");
+      // Reset explicitly rather than waiting for the next scheduled ping:
+      // both callers (connect() and switchTo()) already confirmed this
+      // target is reachable before getting here. Without this, switching
+      // away from a host that had gone unhealthy — even to a perfectly
+      // fine new one — leaves remoteHealthy stuck at its old value (the
+      // ping effect only re-runs on a local↔remote mode change, not on a
+      // remote→remote host swap) until the next 30s tick, during which
+      // ConnectionLostDialog wouldn't reopen even if the new host also
+      // turns out to be down.
+      setRemoteHealthy(true);
       // Remote must resolve the readiness gate explicitly. Every request
       // in api/client.ts awaits waitForServerReady(); if a previous local
       // session left the gate "starting" (or rejected), skipping this
@@ -172,6 +228,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     host,
     setHost,
     sessionKey,
+    remoteHealthy,
     connect,
     switchTo,
   };
