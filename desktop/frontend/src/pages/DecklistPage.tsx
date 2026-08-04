@@ -10,7 +10,14 @@ import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
-import { cardIdentity, groupByCard, buildRows, statusForPairs, type VariantStatus } from "../mergeCardStatus";
+import {
+  cardIdentity,
+  groupByCard,
+  groupByCardName,
+  buildRows,
+  statusForPairs,
+  type VariantStatus,
+} from "../mergeCardStatus";
 
 const DPI_OPTIONS = [600, 800, 1200];
 
@@ -193,6 +200,7 @@ export default function DecklistPage() {
   const tasks: Task[] = statusQuery.data?.tasks ?? [];
   const gallery: GalleryItem[] = statusQuery.data?.gallery ?? [];
   const { galleryByCard, tasksByCard } = groupByCard(gallery, tasks);
+  const { galleryByName, tasksByName } = groupByCardName(gallery, tasks);
 
   const sortedCards = sortCards(cards, sortPrimary);
 
@@ -385,7 +393,19 @@ export default function DecklistPage() {
 
             {sortedCards.map((card) => {
               const identity = localCardIdentity(card);
-              const faceGroups = buildRows(galleryByCard.get(identity) ?? [], tasksByCard.get(identity) ?? []);
+              let cardGallery = galleryByCard.get(identity) ?? [];
+              let cardTasks = tasksByCard.get(identity) ?? [];
+              if (!card.set_code || !card.collector_number) {
+                // Name-only local card: the generation server always
+                // resolves it to one concrete printing (a real set +
+                // collector_number), so it can never land in the
+                // identity bucket above — match by name instead. See
+                // mergeCardStatus.ts::groupByCardName.
+                const nameKey = card.name.toLowerCase();
+                cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
+                cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
+              }
+              const faceGroups = buildRows(cardGallery, cardTasks);
               const faces: DisplayFace[] = faceGroups.map(({ items, tasks: faceTasks }) => {
                 const source = items[0] ?? faceTasks[0];
                 return {

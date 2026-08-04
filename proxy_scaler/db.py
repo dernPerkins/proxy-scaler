@@ -493,6 +493,21 @@ def upsert_gallery_item_for_task(
     just a rename. See ARCHITECTURE.md."""
     if not task.project_tag:
         return
+    upsert_gallery_item(task.project_tag, result, db_path=db_path)
+
+
+def upsert_gallery_item(
+    project_tag: str, result: FaceResult, db_path: Path | str | None = None
+) -> None:
+    """Same upsert as upsert_gallery_item_for_task, for callers with no
+    TaskRow to read project_tag off of — specifically
+    services/generation.py's skip_existing path, which finds a face's
+    output file already on disk (so no task ever runs for it under the
+    current project_tag) and needs to register it into this project's
+    gallery anyway, or it never shows up as "done" in the UI even though
+    the image genuinely exists. A no-op if project_tag is falsy."""
+    if not project_tag:
+        return
     with connect(db_path) as conn:
         # Not a plain `ON CONFLICT` upsert: the UNIQUE constraint includes
         # face_index, which is NULL for the common single-faced-card case,
@@ -504,7 +519,7 @@ def upsert_gallery_item_for_task(
             "SELECT id FROM project_gallery_items WHERE project_tag = ? "
             "AND scryfall_id = ? AND face_index IS ? AND model = ? AND dpi = ?",
             (
-                task.project_tag,
+                project_tag,
                 result.scryfall_id,
                 result.face_index,
                 result.model,
@@ -545,7 +560,7 @@ def upsert_gallery_item_for_task(
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    task.project_tag,
+                    project_tag,
                     result.scryfall_id,
                     result.face_index,
                     result.face_name,

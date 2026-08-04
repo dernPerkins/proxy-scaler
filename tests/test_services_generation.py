@@ -160,6 +160,48 @@ def test_enqueue_decklist_entries_skips_existing_output_file(
     assert any("already exist" in n for n in notes)
 
 
+def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """A file that already exists on disk under a fresh project_tag (e.g.
+    generated in an earlier session, or copied in) has no task/gallery row
+    for *this* project_tag yet — skip_existing must register it into the
+    gallery anyway, or the UI shows "not generated yet" for an image that
+    genuinely already exists. See db.py::upsert_gallery_item."""
+    from proxy_scaler.pipeline import output_filename
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
+    (output_dir / existing_name).write_bytes(b"fake png")
+
+    tag = "proj-tag-backfill"
+    queued, failed, task_ids = generation.enqueue_decklist_entries(
+        [_entry()],
+        model="swinir",
+        dpi_targets=[800],
+        skip_existing=True,
+        tile_size=0,
+        output_dir=output_dir,
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag=tag,
+        db_path=db_path,
+    )
+    assert queued == 0
+    assert task_ids == []
+
+    items = db.list_gallery_items(tag, db_path=db_path)
+    assert len(items) == 1
+    assert items[0]["scryfall_id"] == "sol-id"
+    assert items[0]["dpi"] == 800
+    assert items[0]["model"] == "swinir"
+    assert items[0]["out_path"] == str(output_dir / existing_name)
+
+
 def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
     db_path: Path, tmp_path: Path, monkeypatch
 ) -> None:

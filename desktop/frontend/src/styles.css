@@ -298,6 +298,12 @@ button:disabled {
 .btn-block {
   width: 100%;
   justify-content: center;
+  /* Overrides the base button's white-space: nowrap — full-width buttons
+     in the narrow sidebar (e.g. "Delete all generated images & cache")
+     need to wrap onto a second line instead of overflowing past their
+     own rounded border. */
+  white-space: normal;
+  text-align: center;
 }
 
 /* ---------- app shell ---------- */

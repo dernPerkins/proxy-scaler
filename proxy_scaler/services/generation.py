@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from proxy_scaler import db
-from proxy_scaler.pipeline import output_filename
+from proxy_scaler.pipeline import FaceResult, output_filename
 from proxy_scaler.scryfall import ScryfallClient, ScryfallError, expand_faces
 
 
@@ -137,8 +137,35 @@ def enqueue_decklist_entries(
                         model,
                         target_dpi,
                     )
-                    if skip_existing and (output_dir / out_name).exists():
+                    out_path = output_dir / out_name
+                    if skip_existing and out_path.exists():
                         skipped_existing += 1
+                        # No task will ever run for this face/dpi under
+                        # the current project_tag (that's the whole point
+                        # of skipping it) — without this, the file exists
+                        # on disk but the gallery has no row for it under
+                        # this project_tag, so the UI shows "not generated
+                        # yet" for an image that's actually sitting right
+                        # there. Register it now instead of only ever
+                        # discovering it via a real task completion.
+                        db.upsert_gallery_item(
+                            project_tag,
+                            FaceResult(
+                                out_path=out_path,
+                                original_path=Path(""),
+                                scryfall_id=face.scryfall_id,
+                                face_index=face.face_index,
+                                face_name=face.face_name,
+                                card_name=face.card_name,
+                                set_code=face.set_code,
+                                collector_number=face.collector_number,
+                                png_url=face.png_url,
+                                dpi=target_dpi,
+                                model=model,
+                                face_label=face.face_label,
+                            ),
+                            db_path=db_path,
+                        )
                         continue
                     targets_needed.append(target_dpi)
                 if not targets_needed:

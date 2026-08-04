@@ -29,7 +29,11 @@ export function cardIdentity(
   scryfallId: string | null | undefined,
   nameFallback?: string | null,
 ): string {
-  if (setCode && collectorNumber) return `${setCode.toLowerCase()}/${collectorNumber}`;
+  // Both lowercased: collector numbers are usually digits, but not always
+  // (e.g. "DDG-14") — the client parses these verbatim from whatever case
+  // the user typed, while Scryfall's resolved value uses its own
+  // canonical case, which won't always agree.
+  if (setCode && collectorNumber) return `${setCode.toLowerCase()}/${collectorNumber.toLowerCase()}`;
   if (scryfallId) return scryfallId;
   if (nameFallback) return `name:${nameFallback.toLowerCase()}`;
   return "unknown";
@@ -106,6 +110,35 @@ export function groupByCard(
     tasksByCard.get(id)!.push(task);
   }
   return { galleryByCard, tasksByCard };
+}
+
+// Secondary index, by card_name alone (casefolded). Needed because a
+// name-only local card (see cardIdentity's doc comment) computes a
+// "name:x" identity, but the generation server *always* resolves a
+// name-only decklist line to one concrete printing with a real set +
+// collector_number — so its own gallery/task rows never fall into the
+// "name:x" bucket themselves; they land in a real "set/collector" bucket
+// instead, and groupByCard alone would never connect the two. Callers
+// should only consult this for a local card that itself has no set/
+// collector — matching everything by name would risk conflating two
+// different printings that happen to share a card name.
+export function groupByCardName(
+  items: GalleryItem[],
+  tasks: Task[],
+): { galleryByName: Map<string, GalleryItem[]>; tasksByName: Map<string, Task[]> } {
+  const galleryByName = new Map<string, GalleryItem[]>();
+  for (const item of items) {
+    const key = item.card_name.toLowerCase();
+    if (!galleryByName.has(key)) galleryByName.set(key, []);
+    galleryByName.get(key)!.push(item);
+  }
+  const tasksByName = new Map<string, Task[]>();
+  for (const task of tasks) {
+    const key = task.card_name.toLowerCase();
+    if (!tasksByName.has(key)) tasksByName.set(key, []);
+    tasksByName.get(key)!.push(task);
+  }
+  return { galleryByName, tasksByName };
 }
 
 export interface VariantStatus {
