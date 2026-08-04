@@ -234,7 +234,7 @@ def test_process_entries_skip_existing_uses_batched_resolve(tmp_path, monkeypatc
 def _task(tmp_path: Path, **overrides) -> TaskRow:
     kwargs = dict(
         id=1,
-        project_id=None,
+        project_tag=None,
         status="running",
         scryfall_id="sol-id",
         face_index=None,

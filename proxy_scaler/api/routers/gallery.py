@@ -7,23 +7,17 @@ from fastapi.responses import FileResponse
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
+from proxy_scaler.api.schemas import GalleryItemOut, GenerateOut, RegenerateGalleryItemIn
+from proxy_scaler.services import generation as generation_service
 
-router = APIRouter(prefix="/api/projects/{project_id}/images", tags=["images"])
+router = APIRouter(prefix="/api/gallery", tags=["gallery"])
 
 
-def _find_item(project_id: int, gallery_item_id: int) -> dict:
-    # Scoped to this project via list_gallery_items_for_project's own
-    # JOIN on project_cards.project_id — a gallery_item_id belonging to a
-    # different project simply won't show up here, so there's no
-    # cross-project leakage to guard against separately. The path values
-    # themselves are never taken from client input (only the integer id
-    # is), so there's no path-injection surface to validate either —
-    # they're always whatever this project's own DB records say.
-    items = db.list_gallery_items_for_project(project_id, db_path=get_db_path())
-    for item in items:
-        if item["id"] == gallery_item_id:
-            return item
-    raise HTTPException(status_code=404, detail="Image not found")
+def _find_item(gallery_item_id: int) -> dict:
+    item = db.get_gallery_item(gallery_item_id, db_path=get_db_path())
+    if item is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+    return item
 
 
 def _resolve_existing(path_str: str) -> Path:
@@ -33,15 +27,63 @@ def _resolve_existing(path_str: str) -> Path:
     return p
 
 
+@router.get("", response_model=list[GalleryItemOut])
+def list_gallery(project_tag: str) -> list[GalleryItemOut]:
+    items = db.list_gallery_items(project_tag, db_path=get_db_path())
+    return [
+        GalleryItemOut(
+            id=i["id"],
+            scryfall_id=i["scryfall_id"],
+            face_index=i["face_index"],
+            face_label=i["face_label"],
+            face_name=i["face_name"],
+            card_name=i["card_name"],
+            set_code=i["set_code"],
+            collector_number=i["collector_number"],
+            dpi=i["dpi"],
+            model=i["model"],
+            image_filename=i["image_filename"],
+        )
+        for i in items
+    ]
+
+
 @router.get("/{gallery_item_id}/original")
-def get_original(project_id: int, gallery_item_id: int) -> FileResponse:
-    item = _find_item(project_id, gallery_item_id)
+def get_original(gallery_item_id: int) -> FileResponse:
+    item = _find_item(gallery_item_id)
     path = _resolve_existing(item["original_path"])
     return FileResponse(path, media_type="image/png")
 
 
 @router.get("/{gallery_item_id}/full")
-def get_full(project_id: int, gallery_item_id: int) -> FileResponse:
-    item = _find_item(project_id, gallery_item_id)
+def get_full(gallery_item_id: int) -> FileResponse:
+    item = _find_item(gallery_item_id)
     path = _resolve_existing(item["out_path"])
     return FileResponse(path, media_type="image/png", filename=item["image_filename"])
+
+
+@router.post("/{gallery_item_id}/regenerate", response_model=GenerateOut)
+def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateOut:
+    """Redo one exact existing variant unchanged — its own scryfall_id/
+    png_url/model/dpi come from the stored gallery item, not the client."""
+    db_path = get_db_path()
+    item = _find_item(gallery_item_id)
+    task_ids = generation_service.enqueue_face(
+        scryfall_id=item["scryfall_id"],
+        face_index=item["face_index"],
+        face_label=item["face_label"],
+        face_name=item["face_name"],
+        card_name=item["card_name"],
+        set_code=item["set_code"],
+        collector_number=item["collector_number"],
+        png_url=item["png_url"],
+        dpi_targets=[item["dpi"]],
+        model=item["model"],
+        tile_size=body.tile_size,
+        output_dir=Path(body.output_dir),
+        cache_dir=Path(body.cache_dir),
+        weights_dir=Path(body.weights_dir),
+        project_tag=item["project_tag"],
+        db_path=db_path,
+    )
+    return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])

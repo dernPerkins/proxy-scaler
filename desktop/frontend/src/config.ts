@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 // Mutable: in a plain browser tab (no Tauri) this stays the dev default
 // below. Inside Tauri, ConnectGate overwrites it once via setApiBaseUrl
 // after resolving Local (the sidecar's own reported URL) or Remote (the
-// user-entered host) — every api/client.ts request reads the current
+// user-entered host) — every api/generation.ts request reads the current
 // value via getApiBaseUrl(), not a frozen import-time constant.
 let apiBaseUrl: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:8000";
@@ -33,7 +33,7 @@ export function setConnectionMode(mode: "local" | "remote"): void {
 // Server-readiness gate. Local mode's sidecar can take real time to
 // start (cold model-loading, disk I/O) — rather than block the whole UI
 // behind a "Connecting…" screen, ConnectGate renders the app immediately
-// and drives this gate through "starting" -> "ready"/"error". api/client.ts
+// and drives this gate through "starting" -> "ready"/"error". api/generation.ts
 // awaits waitForServerReady() before every real request, so in-flight
 // queries just wait in place (staying in their normal loading state)
 // instead of firing doomed fetches against a server that isn't up yet.

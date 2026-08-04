@@ -1,12 +1,16 @@
-"""TestClient-based tests for proxy_scaler/api/ — the FastAPI layer
-replacing Streamlit. Uses tmp_path-isolated SQLite via the same
-PROXY_SCALER_DB_PATH env var worker.py/supervisor.py already read (see
-proxy_scaler/api/deps.py::get_db_path), and mocks ScryfallClient the same
-way test_pipeline.py/test_services_generation.py do — no real network
-calls."""
+"""TestClient-based tests for proxy_scaler/api/ — the generation server's
+FastAPI layer (Scryfall resolution, download+upscale pipeline, task
+queue, gallery, PDF assembly), scoped by an opaque project_tag string
+(see ARCHITECTURE.md). Project management itself lives client-side now,
+so there's nothing project-CRUD-shaped to test here any more. Uses
+tmp_path-isolated SQLite via the same PROXY_SCALER_DB_PATH env var
+worker.py/supervisor.py already read (see proxy_scaler/api/deps.py::
+get_db_path), and mocks ScryfallClient the same way
+test_services_generation.py does — no real network calls."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +18,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from proxy_scaler import db
+from proxy_scaler.pipeline import FaceResult
 from proxy_scaler.scryfall import ScryfallClient
 
 SOL_RING_CARD = {
@@ -40,6 +45,68 @@ def client(tmp_path: Path, monkeypatch) -> TestClient:
     return TestClient(app)
 
 
+def _sol_ring_entry(**overrides) -> dict:
+    entry = {
+        "quantity": 1,
+        "name": "Sol Ring",
+        "set_code": "c21",
+        "collector_number": "263",
+        "raw_line": "1 Sol Ring (c21) 263",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _write_gallery_item(
+    tmp_path: Path, db_path: Path, project_tag: str, **task_overrides
+) -> dict:
+    """Fakes a completed task's on-disk output + gallery row the way the
+    worker normally would, without a real Scryfall/GPU round trip."""
+    img_path = tmp_path / "sol_ring.png"
+    Image.new("RGBA", (200, 280), (10, 20, 30, 255)).save(img_path, format="PNG")
+    result = FaceResult(
+        out_path=img_path,
+        original_path=img_path,
+        scryfall_id="sol-id",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+    )
+    task_kwargs = dict(
+        id=1,
+        project_tag=project_tag,
+        status="done",
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+        tile_size=0,
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        error=None,
+        created_at="2026-01-01T00:00:00Z",
+        started_at=None,
+        completed_at=None,
+    )
+    task_kwargs.update(task_overrides)
+    task = db.TaskRow(**task_kwargs)
+    db.upsert_gallery_item_for_task(task, result, db_path=db_path)
+    [item] = db.list_gallery_items(project_tag, db_path=db_path)
+    return item
+
+
 def test_health(client: TestClient) -> None:
     resp = client.get("/api/health")
     assert resp.status_code == 200
@@ -62,100 +129,47 @@ def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
         assert m["label"]
 
 
-def test_project_crud_round_trip(client: TestClient) -> None:
-    resp = client.post("/api/projects", json={"name": "My Deck"})
+def test_resolve_returns_canonical_identity(client: TestClient) -> None:
+    resp = client.post("/api/resolve", json={"entries": [_sol_ring_entry()]})
     assert resp.status_code == 200
-    created = resp.json()
-    pid = created["id"]
-    assert created["name"] == "My Deck"
+    body = resp.json()
+    assert body["failed"] == []
+    assert len(body["resolved"]) == 1
+    card = body["resolved"][0]
+    assert card["quantity"] == 1
+    assert len(card["faces"]) == 1
+    assert card["faces"][0]["scryfall_id"] == "sol-id"
+    assert card["faces"][0]["card_name"] == "Sol Ring"
 
-    resp = client.get("/api/projects")
+
+def test_resolve_empty_entries_is_a_noop(client: TestClient) -> None:
+    resp = client.post("/api/resolve", json={"entries": []})
     assert resp.status_code == 200
-    assert [p["id"] for p in resp.json()] == [pid]
+    assert resp.json() == {"resolved": [], "failed": []}
 
-    resp = client.get(f"/api/projects/{pid}")
-    assert resp.status_code == 200
-    loaded = resp.json()
-    assert loaded["name"] == "My Deck"
-    assert loaded["settings"]["model"]  # has a default
 
-    resp = client.put(
-        f"/api/projects/{pid}",
-        json={"name": "Renamed Deck", "settings": loaded["settings"]},
+def test_resolve_reports_scryfall_failures(client: TestClient, monkeypatch) -> None:
+    from proxy_scaler.scryfall import ScryfallError
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [ScryfallError("not found")]
     )
+    resp = client.post("/api/resolve", json={"entries": [_sol_ring_entry()]})
     assert resp.status_code == 200
-    assert resp.json()["name"] == "Renamed Deck"
-
-    resp = client.delete(f"/api/projects/{pid}")
-    assert resp.status_code == 204
-    resp = client.get(f"/api/projects/{pid}")
-    assert resp.status_code == 404
+    body = resp.json()
+    assert body["resolved"] == []
+    assert len(body["failed"]) == 1
+    assert "not found" in body["failed"][0]["error"]
 
 
-def test_project_not_found(client: TestClient) -> None:
-    resp = client.get("/api/projects/999")
-    assert resp.status_code == 404
-
-
-def test_clear_all_projects_requires_confirm(client: TestClient) -> None:
-    client.post("/api/projects", json={"name": "Deck"})
-    resp = client.delete("/api/projects")
-    assert resp.status_code == 400
-    resp = client.delete("/api/projects?confirm=true")
-    assert resp.status_code == 204
-    assert client.get("/api/projects").json() == []
-
-
-def test_import_decklist_adds_card_and_reimport_is_noop(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-
-    resp = client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-    assert resp.status_code == 200
-    assert resp.json() == {"added": 1, "skipped": 0, "failed": 0}
-
-    resp = client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-    assert resp.json() == {"added": 0, "skipped": 1, "failed": 0}
-
-    resp = client.get(f"/api/projects/{pid}")
-    assert resp.json()["import_decklist_text"] == "1 Sol Ring"
-
-
-def test_list_cards_empty_project(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    resp = client.get(f"/api/projects/{pid}/cards")
-    assert resp.status_code == 200
-    assert resp.json() == []
-
-
-def test_list_cards_after_import_has_no_faces_yet(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-    resp = client.get(f"/api/projects/{pid}/cards")
-    cards = resp.json()
-    assert len(cards) == 1
-    assert cards[0]["card_name"] == "Sol Ring"
-    assert cards[0]["faces"] == []
-
-
-def test_remove_card(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-    card_id = client.get(f"/api/projects/{pid}/cards").json()[0]["id"]
-    resp = client.delete(f"/api/projects/{pid}/cards/{card_id}")
-    assert resp.status_code == 204
-    assert client.get(f"/api/projects/{pid}/cards").json() == []
-
-
-def test_generate_enqueues_tasks_for_project_cards(
+def test_generate_enqueues_tasks_for_pushed_entries(
     client: TestClient, tmp_path: Path
 ) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-
     resp = client.post(
         "/api/generate",
         json={
-            "project_id": pid,
+            "project_tag": "tag-a",
+            "entries": [_sol_ring_entry()],
             "model": "swinir",
             "dpi_targets": [800],
             "skip_existing": False,
@@ -169,21 +183,24 @@ def test_generate_enqueues_tasks_for_project_cards(
     assert body["queued"] == 1
     assert len(body["task_ids"]) == 1
 
-    resp = client.get("/api/tasks", params={"project_id": pid})
+    resp = client.get("/api/tasks", params={"project_tag": "tag-a"})
     assert resp.status_code == 200
     tasks = resp.json()
     assert len(tasks) == 1
     assert tasks[0]["status"] == "pending"
     assert tasks[0]["dpi"] == 800
+    assert tasks[0]["project_tag"] == "tag-a"
+
+    # A different project_tag sees none of this project's tasks.
+    assert client.get("/api/tasks", params={"project_tag": "tag-b"}).json() == []
 
 
 def test_generate_requires_at_least_one_dpi(client: TestClient, tmp_path: Path) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
     resp = client.post(
         "/api/generate",
         json={
-            "project_id": pid,
+            "project_tag": "tag-a",
+            "entries": [_sol_ring_entry()],
             "model": "swinir",
             "dpi_targets": [],
             "output_dir": str(tmp_path / "out"),
@@ -194,89 +211,28 @@ def test_generate_requires_at_least_one_dpi(client: TestClient, tmp_path: Path) 
     assert resp.status_code == 400
 
 
-def test_regenerate_gallery_item_redoes_exact_variant(
-    client: TestClient, tmp_path: Path
-) -> None:
-    """Mirrors the old Streamlit "Regen" button: redo one exact existing
-    variant unchanged. The endpoint looks up scryfall_id/png_url/model/dpi
-    from the stored gallery item server-side — the client only ever
-    supplies a gallery_item_id (+ optional tile_size), never those
-    low-level fields."""
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-
-    img_path = tmp_path / "sol_ring.png"
-    Image.new("RGBA", (50, 70), (1, 2, 3, 255)).save(img_path, format="PNG")
-    from proxy_scaler.pipeline import FaceResult
-
-    result = FaceResult(
-        out_path=img_path,
-        original_path=img_path,
-        scryfall_id="sol-id",
-        face_index=None,
-        face_name="Sol Ring",
-        card_name="Sol Ring",
-        set_code="c21",
-        collector_number="263",
-        png_url="https://example.com/sol.png",
-        dpi=800,
-        model="swinir",
-    )
-    task = db.TaskRow(
-        id=1,
-        project_id=pid,
-        status="done",
-        scryfall_id="sol-id",
-        face_index=None,
-        face_label=None,
-        face_name="Sol Ring",
-        card_name="Sol Ring",
-        set_code="c21",
-        collector_number="263",
-        png_url="https://example.com/sol.png",
-        dpi=800,
-        model="swinir",
-        tile_size=0,
-        output_dir=str(tmp_path),
-        cache_dir=str(tmp_path),
-        weights_dir=str(tmp_path),
-        error=None,
-        created_at="2026-01-01T00:00:00Z",
-        started_at=None,
-        completed_at=None,
-    )
-    import os
-
-    db.upsert_gallery_item_for_task(task, result, db_path=os.environ["PROXY_SCALER_DB_PATH"])
-
-    cards = client.get(f"/api/projects/{pid}/cards").json()
-    gallery_item_id = cards[0]["faces"][0]["variants"][0]["gallery_item_id"]
-
-    resp = client.post(f"/api/projects/{pid}/regenerate/{gallery_item_id}", json={})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["queued"] == 1
-    assert len(body["task_ids"]) == 1
-
-    new_task = client.get(f"/api/tasks/{body['task_ids'][0]}").json()
-    assert new_task["scryfall_id"] == "sol-id"
-    assert new_task["dpi"] == 800
-    assert new_task["model"] == "swinir"
-
-
-def test_regenerate_gallery_item_not_found(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    resp = client.post(f"/api/projects/{pid}/regenerate/999", json={})
-    assert resp.status_code == 404
-
-
-def test_task_cancel(client: TestClient, tmp_path: Path) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
+def test_generate_requires_at_least_one_entry(client: TestClient, tmp_path: Path) -> None:
     resp = client.post(
         "/api/generate",
         json={
-            "project_id": pid,
+            "project_tag": "tag-a",
+            "entries": [],
+            "model": "swinir",
+            "dpi_targets": [800],
+            "output_dir": str(tmp_path / "out"),
+            "cache_dir": str(tmp_path / "cache"),
+            "weights_dir": str(tmp_path / "weights"),
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_task_cancel(client: TestClient, tmp_path: Path) -> None:
+    resp = client.post(
+        "/api/generate",
+        json={
+            "project_tag": "tag-a",
+            "entries": [_sol_ring_entry()],
             "model": "swinir",
             "dpi_targets": [800],
             "skip_existing": False,
@@ -298,8 +254,79 @@ def test_worker_status_not_running(client: TestClient) -> None:
     assert resp.json() == {"running": False}
 
 
+def test_gallery_list_empty_project(client: TestClient) -> None:
+    resp = client.get("/api/gallery", params={"project_tag": "tag-a"})
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_gallery_list_and_fetch_images(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.get("/api/gallery", params={"project_tag": "tag-a"})
+    assert resp.status_code == 200
+    listed = resp.json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == item["id"]
+    assert listed[0]["scryfall_id"] == "sol-id"
+
+    resp = client.get(f"/api/gallery/{item['id']}/full")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert len(resp.content) > 0
+
+    resp = client.get(f"/api/gallery/{item['id']}/original")
+    assert resp.status_code == 200
+
+
+def test_gallery_image_not_found(client: TestClient) -> None:
+    resp = client.get("/api/gallery/999/full")
+    assert resp.status_code == 404
+
+
+def test_regenerate_gallery_item_redoes_exact_variant(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Redo one exact existing variant unchanged. The endpoint looks up
+    scryfall_id/png_url/model/dpi from the stored gallery item
+    server-side — the client only ever supplies a gallery_item_id (+
+    tile_size/output paths), never those low-level fields."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post(
+        f"/api/gallery/{item['id']}/regenerate",
+        json={
+            "output_dir": str(tmp_path),
+            "cache_dir": str(tmp_path),
+            "weights_dir": str(tmp_path),
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["queued"] == 1
+    assert len(body["task_ids"]) == 1
+
+    new_task = client.get(f"/api/tasks/{body['task_ids'][0]}").json()
+    assert new_task["scryfall_id"] == "sol-id"
+    assert new_task["dpi"] == 800
+    assert new_task["model"] == "swinir"
+    assert new_task["project_tag"] == "tag-a"
+
+
+def test_regenerate_gallery_item_not_found(client: TestClient, tmp_path: Path) -> None:
+    resp = client.post(
+        "/api/gallery/999/regenerate",
+        json={"output_dir": str(tmp_path), "cache_dir": str(tmp_path), "weights_dir": str(tmp_path)},
+    )
+    assert resp.status_code == 404
+
+
 def _pdf_layout_body(**overrides) -> dict:
     body = dict(
+        project_tag="tag-a",
+        entries=[_sol_ring_entry()],
         page_width_mm=210.0,
         page_height_mm=297.0,
         cols=3,
@@ -310,20 +337,17 @@ def _pdf_layout_body(**overrides) -> dict:
     return body
 
 
-def test_pdf_preview_no_cards_is_400(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    resp = client.post(f"/api/projects/{pid}/pdf/preview", json=_pdf_layout_body())
+def test_pdf_preview_no_entries_is_400(client: TestClient) -> None:
+    resp = client.post("/api/pdf/preview", json=_pdf_layout_body(entries=[]))
     assert resp.status_code == 400
 
 
 def test_pdf_preview_zero_units_when_nothing_generated(client: TestClient) -> None:
-    """A card with no generated images yet contributes zero print units —
-    match_quantities's `unmatched` list is for entries that fail to
+    """An entry with no generated images yet contributes zero print units
+    — match_quantities's `unmatched` list is for entries that fail to
     resolve at all, a different case from "resolved but nothing rendered
     yet", so it's correctly empty here."""
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-    resp = client.post(f"/api/projects/{pid}/pdf/preview", json=_pdf_layout_body())
+    resp = client.post("/api/pdf/preview", json=_pdf_layout_body())
     assert resp.status_code == 200
     body = resp.json()
     assert body["units"] == 0
@@ -332,132 +356,17 @@ def test_pdf_preview_zero_units_when_nothing_generated(client: TestClient) -> No
 
 def test_pdf_generate_returns_real_pdf_file(client: TestClient, tmp_path: Path) -> None:
     """The concrete fix for the reported download bug: a real file
-    response with correct headers and non-trivial byte length, instead of
-    Streamlit's download-attribute-based st.download_button."""
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
+    response with correct headers and non-trivial byte length, instead
+    of Streamlit's download-attribute-based st.download_button."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
 
-    # Enqueue + fake a completed task's on-disk output the way the worker
-    # normally would: write a real PNG and upsert the gallery row directly.
-    img_path = tmp_path / "sol_ring.png"
-    Image.new("RGBA", (200, 280), (10, 20, 30, 255)).save(img_path, format="PNG")
-    from proxy_scaler.pipeline import FaceResult
-
-    result = FaceResult(
-        out_path=img_path,
-        original_path=img_path,
-        scryfall_id="sol-id",
-        face_index=None,
-        face_name="Sol Ring",
-        card_name="Sol Ring",
-        set_code="c21",
-        collector_number="263",
-        png_url="https://example.com/sol.png",
-        dpi=800,
-        model="swinir",
-    )
-    task = db.TaskRow(
-        id=1,
-        project_id=pid,
-        status="done",
-        scryfall_id="sol-id",
-        face_index=None,
-        face_label=None,
-        face_name="Sol Ring",
-        card_name="Sol Ring",
-        set_code="c21",
-        collector_number="263",
-        png_url="https://example.com/sol.png",
-        dpi=800,
-        model="swinir",
-        tile_size=0,
-        output_dir=str(tmp_path),
-        cache_dir=str(tmp_path),
-        weights_dir=str(tmp_path),
-        error=None,
-        created_at="2026-01-01T00:00:00Z",
-        started_at=None,
-        completed_at=None,
-    )
-    import os
-
-    db.upsert_gallery_item_for_task(task, result, db_path=os.environ["PROXY_SCALER_DB_PATH"])
-
-    resp = client.post(f"/api/projects/{pid}/pdf", json=_pdf_layout_body())
+    resp = client.post("/api/pdf", json=_pdf_layout_body(project_name="Deck"))
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert "attachment" in resp.headers["content-disposition"]
     assert "Deck.pdf" in resp.headers["content-disposition"]
     assert len(resp.content) > 100  # a real, non-trivial PDF, not an empty stub
-
-
-def test_images_original_and_full(client: TestClient, tmp_path: Path) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    client.post(f"/api/projects/{pid}/import", json={"text": "1 Sol Ring"})
-
-    img_path = tmp_path / "sol_ring.png"
-    Image.new("RGBA", (50, 70), (1, 2, 3, 255)).save(img_path, format="PNG")
-    from proxy_scaler.pipeline import FaceResult
-
-    result = FaceResult(
-        out_path=img_path,
-        original_path=img_path,
-        scryfall_id="sol-id",
-        face_index=None,
-        face_name="Sol Ring",
-        card_name="Sol Ring",
-        set_code="c21",
-        collector_number="263",
-        png_url="https://example.com/sol.png",
-        dpi=800,
-        model="swinir",
-    )
-    task = db.TaskRow(
-        id=1,
-        project_id=pid,
-        status="done",
-        scryfall_id="sol-id",
-        face_index=None,
-        face_label=None,
-        face_name="Sol Ring",
-        card_name="Sol Ring",
-        set_code="c21",
-        collector_number="263",
-        png_url="https://example.com/sol.png",
-        dpi=800,
-        model="swinir",
-        tile_size=0,
-        output_dir=str(tmp_path),
-        cache_dir=str(tmp_path),
-        weights_dir=str(tmp_path),
-        error=None,
-        created_at="2026-01-01T00:00:00Z",
-        started_at=None,
-        completed_at=None,
-    )
-    import os
-
-    db.upsert_gallery_item_for_task(task, result, db_path=os.environ["PROXY_SCALER_DB_PATH"])
-
-    cards = client.get(f"/api/projects/{pid}/cards").json()
-    variant = cards[0]["faces"][0]["variants"][0]
-    assert variant["status"] == "done"
-    gallery_item_id = variant["gallery_item_id"]
-    assert gallery_item_id is not None
-
-    resp = client.get(f"/api/projects/{pid}/images/{gallery_item_id}/full")
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "image/png"
-    assert len(resp.content) > 0
-
-    resp = client.get(f"/api/projects/{pid}/images/{gallery_item_id}/original")
-    assert resp.status_code == 200
-
-
-def test_images_not_found(client: TestClient) -> None:
-    pid = client.post("/api/projects", json={"name": "Deck"}).json()["id"]
-    resp = client.get(f"/api/projects/{pid}/images/999/full")
-    assert resp.status_code == 404
 
 
 def test_clear_generated_data(client: TestClient, tmp_path: Path) -> None:

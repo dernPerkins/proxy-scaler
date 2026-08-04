@@ -3,7 +3,7 @@
 from proxy_scaler.decklist import parse_line, parse_decklist
 from proxy_scaler.pipeline import output_filename
 from proxy_scaler.scryfall import expand_faces, _names_compatible
-from proxy_scaler.ui.decklist import _effective_tile_size
+from proxy_scaler.upscale import effective_tile_size as _effective_tile_size
 from proxy_scaler.upscale import UpscaleModel
 
 

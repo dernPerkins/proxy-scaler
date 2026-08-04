@@ -190,27 +190,11 @@ happen on Linux, on the architecture you're targeting — PyInstaller
 bundles a platform-specific runtime, so a package for a Linux server
 cannot be produced from macOS or Windows.
 
-### Streamlit UI
+### Desktop app
 
-```bash
-streamlit run app.py
-```
-
-**Tabs** (synced to the URL query string):
-
-| Tab | URL | Role |
-|-----|-----|------|
-| Decklist (default) | `?tab=decklist` | Paste list, generate, compare, regenerate |
-| PDF Generation | `?tab=pdf` | Placeholder for future PDF export |
-
-**Projects** — decklist text, settings, and gallery metadata persist in SQLite at `data/proxy_scaler.db` (created on first run; `data/*.db` is gitignored). Use the Project bar to **Save** / **Save As** / **Load** / **New** / **Delete**. Image files stay on disk under `output/` / `imgcache/`; deleting a project removes DB rows only.
-
-Sidebar (Decklist tab):
-
-- Model picker (SwinIR default)
-- Target DPI (800 default) or **Generate all DPIs**
-- **Show all DPIs in one row** — original + each DPI side-by-side
-- **Delete all generated images & cache** — clears `output/` and `imgcache/` (keeps weights); requires confirm checkbox
+The primary way to use this day to day — see `desktop/README.md` for the
+full Tauri + React client, including the Local/Remote server picker and
+how to build it.
 
 ## Double-faced cards
 

@@ -75,6 +75,31 @@ class UpscaleModel(str, Enum):
         return (2, 4)
 
 
+# Transformer/attention-heavy architectures that can OOM a ~12GB GPU on a
+# full-image forward pass — the lighter CNN-based models don't need tiling.
+# Ported from the old Streamlit UI (ui/decklist.py::_effective_tile_size)
+# when that module was deleted — real behavior, not UI-specific, so it
+# belongs here next to UpscaleModel rather than disappearing with the UI.
+HEAVY_MODELS = frozenset(
+    {
+        UpscaleModel.ILLUSTRATIONJANAI,
+        UpscaleModel.ULTRASHARP,
+        UpscaleModel.ULTRASHARP_V2,
+        UpscaleModel.HAT,
+    }
+)
+DEFAULT_TILE_SIZE = 384
+
+
+def effective_tile_size(model: UpscaleModel, tile_size_setting: int) -> int:
+    """0 (not manually set) auto-falls-back to DEFAULT_TILE_SIZE for heavy
+    models only, leaving already-working lighter models untouched. An
+    explicit non-zero setting always wins, regardless of model."""
+    if tile_size_setting > 0:
+        return tile_size_setting
+    return DEFAULT_TILE_SIZE if model in HEAVY_MODELS else 0
+
+
 @dataclass(frozen=True)
 class _WeightSpec:
     filename: str

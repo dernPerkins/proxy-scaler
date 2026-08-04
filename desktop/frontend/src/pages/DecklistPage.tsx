@@ -1,66 +1,115 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { generationApi } from "../api/generation";
+import type { CardRow } from "../api/project";
+import type { DeckEntryIn, GalleryItem, Task } from "../api/types";
 import CompareDialog from "../components/CompareDialog";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
-import type { Card, Variant } from "../api/types";
+import { cardIdentity, groupByCard, buildRows, statusForPairs, type VariantStatus } from "../mergeCardStatus";
 
 const DPI_OPTIONS = [600, 800, 1200];
 
+// Generation-machine-local filesystem paths — meaningless as portable
+// project data (a path valid on this machine means nothing against a
+// Remote host), so unlike model/dpi_targets/skip_existing/tile_size
+// these live only in this page's own state, not in project.settings.
+// See ARCHITECTURE.md.
+interface GenPaths {
+  output_dir: string;
+  cache_dir: string;
+  weights_dir: string;
+}
+
+const DEFAULT_GEN_PATHS: GenPaths = {
+  output_dir: "output",
+  cache_dir: "imgcache",
+  weights_dir: "weights",
+};
+
+function cardToEntry(card: CardRow): DeckEntryIn {
+  return {
+    quantity: card.quantity ?? 1,
+    name: card.name,
+    set_code: card.set_code,
+    collector_number: card.collector_number,
+    raw_line: card.original_import_line,
+  };
+}
+
+// A CardRow has no scryfall_id (the client never calls Scryfall — see
+// ARCHITECTURE.md), so its identity falls back to its own name when
+// there's no exact set/collector, same as the gallery/task side's
+// fallback in mergeCardStatus.ts.
+function localCardIdentity(card: CardRow): string {
+  return cardIdentity(card.set_code, card.collector_number, null, card.name);
+}
+
+interface DisplayFace {
+  faceLabel: string | null;
+  variants: VariantStatus[];
+}
+
 export default function DecklistPage() {
   const queryClient = useQueryClient();
-  const { projectId, settings, setSettings } = useProject();
+  const { projectId, projectTag, settings, setSettings, cards, decklistText, setDecklistText, settingDecklistText, removeCard } =
+    useProject();
   const readiness = useServerReadiness();
 
-  // Always read this from the API, never hardcode — see api/client.ts's
-  // listModels comment for the regression this replaced.
-  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => api.listModels() });
+  // Always read this from the API, never hardcode — see
+  // api/generation.ts's listModels comment for the regression this
+  // replaced.
+  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => generationApi.listModels() });
 
-  const [decklistText, setDecklistText] = useState("");
+  const [decklistDraft, setDecklistDraft] = useState(decklistText);
+  // Keep the draft in sync when a different project loads (or the
+  // current one reloads) — projectId, not decklistText itself, is the
+  // trigger: once a project is open, decklistText only changes via this
+  // page's own setDecklistText save, and re-syncing on every such change
+  // would stomp whatever the user is mid-typing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setDecklistDraft(decklistText), [projectId]);
   const [status, setStatus] = useState<string | null>(null);
   const [sortPrimary, setSortPrimary] = useState<"Name" | "Set" | "(none)">("Name");
   const [expandedFaces, setExpandedFaces] = useState<Set<string>>(new Set());
+  const [genPaths, setGenPaths] = useState<GenPaths>(DEFAULT_GEN_PATHS);
 
-  const cardsQuery = useQuery({
-    queryKey: ["cards", projectId],
-    queryFn: () => api.listCards(projectId as number),
-    enabled: projectId != null,
+  // Local card data (decklist text -> CardRow[]) is invoke-based and only
+  // changes on an explicit mutation — no polling needed, it can't go
+  // stale behind the user's back. Generation status (tasks + gallery) is
+  // the half that's actually live, so it keeps the old 3s poll.
+  const statusQuery = useQuery({
+    queryKey: ["generation-status", projectTag],
+    queryFn: async () => {
+      const [tasks, gallery] = await Promise.all([
+        generationApi.listTasks({ project_tag: projectTag as string }),
+        generationApi.listGallery(projectTag as string),
+      ]);
+      return { tasks, gallery };
+    },
+    enabled: projectTag != null,
     refetchInterval: 3000,
   });
 
-  const importMutation = useMutation({
-    mutationFn: (text: string) => api.importDecklist(projectId as number, text),
-    onSuccess: (result) => {
-      setStatus(
-        `Imported ${result.added} new card(s)` +
-          (result.skipped ? `, ${result.skipped} already in the list` : "") +
-          (result.failed ? `, ${result.failed} failed to resolve` : "") +
-          ".",
-      );
-      queryClient.invalidateQueries({ queryKey: ["cards", projectId] });
-    },
-  });
-
-  const removeCardMutation = useMutation({
-    mutationFn: (cardId: number) => api.removeCard(projectId as number, cardId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cards", projectId] }),
-  });
+  function invalidateStatus() {
+    queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
+  }
 
   const generateAllMutation = useMutation({
     mutationFn: () =>
-      api.generate({
-        project_id: projectId as number,
+      generationApi.generate({
+        project_tag: projectTag as string,
+        entries: cards.map(cardToEntry),
         model: settings.model,
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
-        output_dir: settings.output_dir,
-        cache_dir: settings.cache_dir,
-        weights_dir: settings.weights_dir,
+        output_dir: genPaths.output_dir,
+        cache_dir: genPaths.cache_dir,
+        weights_dir: genPaths.weights_dir,
       }),
     onSuccess: (result) => {
       setStatus(
@@ -68,40 +117,43 @@ export default function DecklistPage() {
           ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
           : "Nothing to do — every requested image already exists.",
       );
-      queryClient.invalidateQueries({ queryKey: ["cards", projectId] });
+      invalidateStatus();
     },
   });
 
   const generateCardMutation = useMutation({
-    mutationFn: (card: Card) =>
-      api.generate({
-        project_id: projectId as number,
-        card_ids: [card.id],
+    mutationFn: (card: CardRow) =>
+      generationApi.generate({
+        project_tag: projectTag as string,
+        entries: [cardToEntry(card)],
         model: settings.model,
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
-        output_dir: settings.output_dir,
-        cache_dir: settings.cache_dir,
-        weights_dir: settings.weights_dir,
+        output_dir: genPaths.output_dir,
+        cache_dir: genPaths.cache_dir,
+        weights_dir: genPaths.weights_dir,
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cards", projectId] }),
+    onSuccess: invalidateStatus,
   });
 
   const regenerateMutation = useMutation({
     mutationFn: (galleryItemId: number) =>
-      api.regenerateGalleryItem(projectId as number, galleryItemId, {
+      generationApi.regenerateGalleryItem(galleryItemId, {
         tile_size: settings.tile_size,
+        output_dir: genPaths.output_dir,
+        cache_dir: genPaths.cache_dir,
+        weights_dir: genPaths.weights_dir,
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cards", projectId] }),
+    onSuccess: invalidateStatus,
   });
 
   const [confirmClearGenerated, setConfirmClearGenerated] = useState(false);
   const clearGeneratedMutation = useMutation({
-    mutationFn: () => api.clearGeneratedData(settings.output_dir, settings.cache_dir),
+    mutationFn: () => generationApi.clearGeneratedData(genPaths.output_dir, genPaths.cache_dir),
     onSuccess: () => {
       setConfirmClearGenerated(false);
-      queryClient.invalidateQueries({ queryKey: ["cards"] });
+      invalidateStatus();
     },
   });
 
@@ -123,7 +175,10 @@ export default function DecklistPage() {
     });
   }
 
-  const cards: Card[] = cardsQuery.data ?? [];
+  const tasks: Task[] = statusQuery.data?.tasks ?? [];
+  const gallery: GalleryItem[] = statusQuery.data?.gallery ?? [];
+  const { galleryByCard, tasksByCard } = groupByCard(gallery, tasks);
+
   const sortedCards = sortCards(cards, sortPrimary);
 
   return (
@@ -191,24 +246,24 @@ export default function DecklistPage() {
           <label className="field">
             <span>Output directory</span>
             <input
-              value={settings.output_dir}
-              onChange={(e) => setSettings((s) => ({ ...s, output_dir: e.target.value }))}
+              value={genPaths.output_dir}
+              onChange={(e) => setGenPaths((p) => ({ ...p, output_dir: e.target.value }))}
             />
           </label>
 
           <label className="field">
             <span>Cache directory</span>
             <input
-              value={settings.cache_dir}
-              onChange={(e) => setSettings((s) => ({ ...s, cache_dir: e.target.value }))}
+              value={genPaths.cache_dir}
+              onChange={(e) => setGenPaths((p) => ({ ...p, cache_dir: e.target.value }))}
             />
           </label>
 
           <label className="field">
             <span>Weights directory</span>
             <input
-              value={settings.weights_dir}
-              onChange={(e) => setSettings((s) => ({ ...s, weights_dir: e.target.value }))}
+              value={genPaths.weights_dir}
+              onChange={(e) => setGenPaths((p) => ({ ...p, weights_dir: e.target.value }))}
             />
           </label>
         </div>
@@ -258,18 +313,21 @@ export default function DecklistPage() {
           <>
             <div className="import-box panel" style={{ marginTop: 10 }}>
               <textarea
-                value={decklistText}
-                onChange={(e) => setDecklistText(e.target.value)}
+                value={decklistDraft}
+                onChange={(e) => setDecklistDraft(e.target.value)}
                 rows={6}
                 style={{ width: "100%" }}
                 placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
               />
               <button
                 className="btn-primary"
-                onClick={() => importMutation.mutate(decklistText)}
-                disabled={!decklistText.trim() || importMutation.isPending}
+                onClick={() => {
+                  setDecklistText(decklistDraft);
+                  setStatus(null);
+                }}
+                disabled={decklistDraft === decklistText || settingDecklistText}
               >
-                {importMutation.isPending ? "Importing…" : "Import cards"}
+                {settingDecklistText ? "Parsing…" : "Update cards"}
               </button>
               {status && <p className="hint">{status}</p>}
             </div>
@@ -297,22 +355,35 @@ export default function DecklistPage() {
               </div>
             </div>
 
-            {cards.length === 0 && !cardsQuery.isLoading && (
-              <p className="empty-note">No cards yet — paste a decklist above and import it.</p>
+            {cards.length === 0 && (
+              <p className="empty-note">
+                No cards yet — paste a decklist above and click Update cards.
+              </p>
             )}
 
-            {sortedCards.map((card) => (
-              <CardRow
-                key={card.id}
-                card={card}
-                projectId={projectId}
-                expandedFaces={expandedFaces}
-                onToggleExpand={toggleExpanded}
-                onRemove={() => removeCardMutation.mutate(card.id)}
-                onGenerate={() => generateCardMutation.mutate(card)}
-                onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
-              />
-            ))}
+            {sortedCards.map((card) => {
+              const identity = localCardIdentity(card);
+              const faceGroups = buildRows(galleryByCard.get(identity) ?? [], tasksByCard.get(identity) ?? []);
+              const faces: DisplayFace[] = faceGroups.map(({ items, tasks: faceTasks }) => {
+                const source = items[0] ?? faceTasks[0];
+                return {
+                  faceLabel: source?.face_label ?? null,
+                  variants: statusForPairs(items, faceTasks),
+                };
+              });
+              return (
+                <CardRowView
+                  key={card.id}
+                  card={card}
+                  faces={faces}
+                  expandedFaces={expandedFaces}
+                  onToggleExpand={toggleExpanded}
+                  onRemove={() => removeCard(card.id)}
+                  onGenerate={() => generateCardMutation.mutate(card)}
+                  onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+                />
+              );
+            })}
           </>
         )}
       </main>
@@ -320,10 +391,10 @@ export default function DecklistPage() {
   );
 }
 
-function sortCards(cards: Card[], primary: "Name" | "Set" | "(none)"): Card[] {
+function sortCards(cards: CardRow[], primary: "Name" | "Set" | "(none)"): CardRow[] {
   if (primary === "(none)") return cards;
-  const key = (c: Card) =>
-    (primary === "Name" ? (c.card_name ?? "") : (c.set_code ?? "")).toLowerCase();
+  const key = (c: CardRow) =>
+    (primary === "Name" ? c.name : (c.set_code ?? "")).toLowerCase();
   return [...cards].sort((a, b) => key(a).localeCompare(key(b)));
 }
 
@@ -343,26 +414,25 @@ interface CompareTarget {
   label: string;
 }
 
-function CardRow(props: {
-  card: Card;
-  projectId: number;
+function CardRowView(props: {
+  card: CardRow;
+  faces: DisplayFace[];
   expandedFaces: Set<string>;
   onToggleExpand: (key: string) => void;
   onRemove: () => void;
   onGenerate: () => void;
   onRegenerate: (galleryItemId: number) => void;
 }) {
-  const { card, projectId, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate } =
-    props;
+  const { card, faces, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate } = props;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
-  const hasImages = card.faces.some((f) => f.variants.some((v) => v.status === "done"));
+  const hasImages = faces.some((f) => f.variants.some((v) => v.status === "done"));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
 
   return (
     <div className="card-row">
       <div className="card-main">
-        <span className="card-name">{card.card_name ?? card.original_import_line}</span>
+        <span className="card-name">{card.name}</span>
         <span className="card-meta mono">{(card.set_code ?? "—").toUpperCase()}</span>
         <span className="card-meta mono">{card.collector_number ?? "—"}</span>
         <span className="card-qty">×{card.quantity ?? 1}</span>
@@ -381,12 +451,12 @@ function CardRow(props: {
         </span>
       </div>
 
-      {card.faces.length === 0 ? (
+      {faces.length === 0 ? (
         <div className="empty-note">Not generated yet.</div>
       ) : (
-        card.faces.map((face, i) => (
+        faces.map((face, i) => (
           <div key={i} className="variants">
-            {face.face_label && <span className="variant-face">{face.face_label}</span>}
+            {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
             {face.variants.map((v) => (
               <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
                 {v.dpi} · {v.model}
@@ -397,21 +467,18 @@ function CardRow(props: {
       )}
 
       {expanded &&
-        card.faces.map((face, i) => (
+        faces.map((face, i) => (
           <div key={i} className="thumbs">
             {face.variants
-              .filter(
-                (v): v is Variant & { gallery_item_id: number } =>
-                  v.status === "done" && v.gallery_item_id != null,
-              )
+              .filter((v): v is VariantStatus & { galleryItemId: number } => v.status === "done" && v.galleryItemId != null)
               .map((v) => (
                 <div key={`${v.dpi}-${v.model}`} className="thumb">
                   <div className="thumb-label">
                     {v.dpi} DPI · {v.model}
                   </div>
                   <img
-                    src={api.imageUrl(projectId, v.gallery_item_id, "full")}
-                    alt={card.card_name ?? ""}
+                    src={generationApi.imageUrl(v.galleryItemId, "full")}
+                    alt={card.name}
                     loading="lazy"
                   />
                   <div className="thumb-buttons">
@@ -419,8 +486,8 @@ function CardRow(props: {
                       className="btn-sm"
                       onClick={() =>
                         handleDownloadImage(
-                          api.imageUrl(projectId, v.gallery_item_id, "full"),
-                          `${slugify(card.card_name ?? "card")}-${v.dpi}dpi-${v.model}.png`,
+                          generationApi.imageUrl(v.galleryItemId, "full"),
+                          `${slugify(card.name)}-${v.dpi}dpi-${v.model}.png`,
                         )
                       }
                     >
@@ -430,15 +497,15 @@ function CardRow(props: {
                       className="btn-sm"
                       onClick={() =>
                         setCompareTarget({
-                          originalUrl: api.imageUrl(projectId, v.gallery_item_id, "original"),
-                          upscaledUrl: api.imageUrl(projectId, v.gallery_item_id, "full"),
-                          label: `${card.card_name ?? "Card"} — ${v.dpi} DPI · ${v.model}`,
+                          originalUrl: generationApi.imageUrl(v.galleryItemId, "original"),
+                          upscaledUrl: generationApi.imageUrl(v.galleryItemId, "full"),
+                          label: `${card.name} — ${v.dpi} DPI · ${v.model}`,
                         })
                       }
                     >
                       Compare
                     </button>
-                    <button className="btn-sm" onClick={() => onRegenerate(v.gallery_item_id)}>
+                    <button className="btn-sm" onClick={() => onRegenerate(v.galleryItemId)}>
                       Regen
                     </button>
                   </div>

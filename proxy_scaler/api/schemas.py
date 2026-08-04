@@ -13,86 +13,56 @@ class ModelOptionOut(BaseModel):
     label: str
 
 
-class ProjectSettingsIn(BaseModel):
-    model: str
-    dpi_targets: list[int]
-    page_size: int = 6
-    skip_existing: bool = True
-    output_dir: str = ""
-    cache_dir: str = ""
-    weights_dir: str = ""
-    tile_size: int = 0
-
-
-class ProjectSummaryOut(BaseModel):
-    id: int
+class DeckEntryIn(BaseModel):
+    quantity: int = 1
     name: str
-    updated_at: str
+    set_code: str | None = None
+    collector_number: str | None = None
+    raw_line: str = ""
 
 
-class ProjectCreateIn(BaseModel):
-    name: str
-    settings: ProjectSettingsIn | None = None
+class ResolveIn(BaseModel):
+    entries: list[DeckEntryIn]
 
 
-class ProjectUpdateIn(BaseModel):
-    name: str
-    settings: ProjectSettingsIn
-
-
-class ProjectOut(BaseModel):
-    id: int
-    name: str
-    import_decklist_text: str
-    settings: ProjectSettingsIn
-    created_at: str
-    updated_at: str
-
-
-class ImportIn(BaseModel):
-    text: str
-
-
-class ImportOut(BaseModel):
-    added: int
-    skipped: int
-    failed: int
-
-
-class VariantOut(BaseModel):
-    dpi: int
-    model: str
-    status: str
-    error: str | None = None
-    gallery_item_id: int | None = None
-
-
-class FaceOut(BaseModel):
+class ResolvedFaceOut(BaseModel):
+    scryfall_id: str
     face_index: int | None
     face_label: str | None
-    face_name: str | None
-    variants: list[VariantOut]
+    face_name: str
+    card_name: str
+    set_code: str
+    collector_number: str
+    png_url: str
+    image_status: str | None = None
 
 
-class CardOut(BaseModel):
-    id: int
-    sort_order: int
-    original_import_line: str
-    quantity: int | None
-    card_name: str | None
-    set_code: str | None
-    collector_number: str | None
-    scryfall_id: str | None
-    faces: list[FaceOut]
+class ResolvedCardOut(BaseModel):
+    raw_line: str
+    quantity: int
+    faces: list[ResolvedFaceOut]
+    warnings: list[str] = []
+
+
+class ResolveFailureOut(BaseModel):
+    raw_line: str
+    error: str
+
+
+class ResolveOut(BaseModel):
+    resolved: list[ResolvedCardOut]
+    failed: list[ResolveFailureOut]
 
 
 class GenerateIn(BaseModel):
-    # Importing a decklist always requires a project (see the /import
-    # endpoint), so unlike the old Streamlit session-state model there's
-    # no longer a "generate before ever saving a project" path for card
-    # rows that exist at all — project_id is always real here.
-    project_id: int
-    card_ids: list[int] | None = None  # None/omitted = every card in the project
+    # project_tag is an opaque string the client mints per local project —
+    # purely a scoping label for tasks/gallery rows, not a foreign key
+    # (see ARCHITECTURE.md). Entries are raw/unresolved decklist lines;
+    # this endpoint resolves them against Scryfall internally as part of
+    # one collapsed resolve -> download -> upscale step per face, rather
+    # than requiring the client to resolve first via /api/resolve.
+    project_tag: str
+    entries: list[DeckEntryIn]
     model: str
     dpi_targets: list[int]
     skip_existing: bool = True
@@ -104,12 +74,16 @@ class GenerateIn(BaseModel):
 
 class RegenerateGalleryItemIn(BaseModel):
     # Redo one exact existing variant unchanged — its own scryfall_id/
-    # png_url/model/dpi come from the stored gallery item server-side
-    # (see cards.py's regenerate_gallery_item), not from the client. Only
-    # tile_size is client-supplied, since — like the old Streamlit
-    # version — it's recalculated from whatever the *current* sidebar
-    # setting is for that variant's model, not a stored per-item value.
+    # png_url/model/dpi come from the stored gallery item server-side (see
+    # gallery.py's regenerate endpoint), not from the client. tile_size is
+    # recalculated from whatever the *current* sidebar setting is for that
+    # variant's model, not a stored per-item value. output_dir/cache_dir/
+    # weights_dir are client-supplied per-request now that no project on
+    # the server holds them (see ARCHITECTURE.md).
     tile_size: int = 0
+    output_dir: str
+    cache_dir: str
+    weights_dir: str
 
 
 class GenerateOut(BaseModel):
@@ -121,7 +95,7 @@ class GenerateOut(BaseModel):
 
 class TaskOut(BaseModel):
     id: int
-    project_id: int | None
+    project_tag: str | None
     status: str
     scryfall_id: str
     face_index: int | None
@@ -142,7 +116,29 @@ class WorkerStatusOut(BaseModel):
     running: bool
 
 
+class GalleryItemOut(BaseModel):
+    id: int
+    scryfall_id: str
+    face_index: int | None
+    face_label: str | None
+    face_name: str
+    card_name: str
+    set_code: str
+    collector_number: str
+    dpi: int
+    model: str
+    image_filename: str
+
+
 class PdfLayoutIn(BaseModel):
+    # project_tag scopes which generated images to draw from; entries carry
+    # the quantities (not persisted server-side any more — see
+    # ARCHITECTURE.md) that match_quantities() needs to know how many of
+    # each printing to lay out. project_name is cosmetic only, used for the
+    # downloaded filename.
+    project_tag: str
+    entries: list[DeckEntryIn]
+    project_name: str = ""
     page_width_mm: float
     page_height_mm: float
     cols: int

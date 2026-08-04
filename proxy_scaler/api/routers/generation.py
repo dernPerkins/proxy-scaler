@@ -6,7 +6,14 @@ from fastapi import APIRouter, HTTPException
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path, get_lock_path
-from proxy_scaler.api.schemas import GenerateIn, GenerateOut, TaskOut, WorkerStatusOut
+from proxy_scaler.api.schemas import (
+    DeckEntryIn,
+    GenerateIn,
+    GenerateOut,
+    TaskOut,
+    WorkerStatusOut,
+)
+from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.services import generation as generation_service
 
 router = APIRouter(prefix="/api", tags=["generation"])
@@ -15,7 +22,7 @@ router = APIRouter(prefix="/api", tags=["generation"])
 def _task_out(t: db.TaskRow) -> TaskOut:
     return TaskOut(
         id=t.id,
-        project_id=t.project_id,
+        project_tag=t.project_tag,
         status=t.status,
         scryfall_id=t.scryfall_id,
         face_index=t.face_index,
@@ -33,21 +40,24 @@ def _task_out(t: db.TaskRow) -> TaskOut:
     )
 
 
+def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
+    return DeckEntry(
+        quantity=e.quantity,
+        name=e.name,
+        set_code=e.set_code,
+        collector_number=e.collector_number,
+        raw_line=e.raw_line or e.name,
+    )
+
+
 @router.post("/generate", response_model=GenerateOut)
 def generate(body: GenerateIn) -> GenerateOut:
     db_path = get_db_path()
     if not body.dpi_targets:
         raise HTTPException(status_code=400, detail="Select at least one target DPI.")
-
-    all_cards = db.list_project_cards(body.project_id, db_path=db_path)
-    if body.card_ids is not None:
-        wanted = set(body.card_ids)
-        cards = [c for c in all_cards if c.id in wanted]
-    else:
-        cards = all_cards
-    if not cards:
-        raise HTTPException(status_code=400, detail="No matching cards to generate.")
-    entries = [c.to_deck_entry() for c in cards]
+    if not body.entries:
+        raise HTTPException(status_code=400, detail="No cards to generate.")
+    entries = [_to_deck_entry(e) for e in body.entries]
 
     notes: list[str] = []
     queued, failed, task_ids = generation_service.enqueue_decklist_entries(
@@ -59,7 +69,7 @@ def generate(body: GenerateIn) -> GenerateOut:
         output_dir=Path(body.output_dir),
         cache_dir=Path(body.cache_dir),
         weights_dir=Path(body.weights_dir),
-        project_id=body.project_id,
+        project_tag=body.project_tag,
         on_note=notes.append,
         db_path=db_path,
     )
@@ -67,9 +77,9 @@ def generate(body: GenerateIn) -> GenerateOut:
 
 
 @router.get("/tasks", response_model=list[TaskOut])
-def list_tasks(project_id: int | None = None, status: str | None = None) -> list[TaskOut]:
+def list_tasks(project_tag: str | None = None, status: str | None = None) -> list[TaskOut]:
     statuses = [status] if status else None
-    tasks = db.list_tasks(project_id=project_id, statuses=statuses, db_path=get_db_path())
+    tasks = db.list_tasks(project_tag=project_tag, statuses=statuses, db_path=get_db_path())
     return [_task_out(t) for t in tasks]
 
 

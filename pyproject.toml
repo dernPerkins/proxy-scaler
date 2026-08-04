@@ -14,18 +14,14 @@ dependencies = [
   "torch>=2.1,<3",
   "torchvision>=0.16",
   "spandrel>=0.4",
-  # streamlit is being replaced by fastapi+uvicorn (see the desktop/
-  # Tauri+React migration plan) -- kept until proxy_scaler/ui/*.py and
-  # app.py are actually deleted at the end of that migration.
-  "streamlit>=1.28",
   "fpdf2>=2.7",
   "fastapi>=0.115",
   "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
-# Windows-only: gives supervisor.py a Job Object (KILL_ON_JOB_CLOSE) so
-# Streamlit/worker are guaranteed cleaned up even if the supervisor itself
+# Windows-only: gives supervisor.py a Job Object (KILL_ON_JOB_CLOSE) so the
+# API server/worker are guaranteed cleaned up even if the supervisor itself
 # is force-killed. Falls back to a taskkill-based best-effort without it.
 win32 = ["pywin32; sys_platform == 'win32'"]
 

@@ -1,11 +1,13 @@
-"""FastAPI application replacing the Streamlit app.py entrypoint."""
+"""FastAPI application: the generation server (Scryfall resolution,
+download+upscale pipeline, task queue, gallery, PDF assembly). Project
+management lives client-side now — see ARCHITECTURE.md."""
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from proxy_scaler.api.routers import cards, generation, images, misc, pdf, projects
+from proxy_scaler.api.routers import gallery, generation, misc, pdf, resolve
 
 app = FastAPI(title="proxy-scaler API")
 
@@ -22,8 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(misc.router)
-app.include_router(projects.router)
-app.include_router(cards.router)
 app.include_router(generation.router)
 app.include_router(pdf.router)
-app.include_router(images.router)
+app.include_router(gallery.router)
+app.include_router(resolve.router)

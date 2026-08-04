@@ -1,16 +1,19 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError } from "../api/client";
+import { generationApi, ApiError } from "../api/generation";
+import type { CardRow } from "../api/project";
 import { useProject } from "../context/ProjectContext";
 import { downloadBlob } from "../download";
-import type { PdfLayoutRequest } from "../api/types";
+import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
 
 const PAGE_PRESETS: Record<string, { width: number; height: number }> = {
   A4: { width: 210, height: 297 },
   Letter: { width: 215.9, height: 279.4 },
 };
 
-const DEFAULT_LAYOUT: PdfLayoutRequest = {
+type LayoutSettings = Omit<PdfLayoutRequest, "project_tag" | "entries" | "project_name">;
+
+const DEFAULT_LAYOUT: LayoutSettings = {
   page_width_mm: PAGE_PRESETS.A4.width,
   page_height_mm: PAGE_PRESETS.A4.height,
   cols: 3,
@@ -28,19 +31,32 @@ const DEFAULT_LAYOUT: PdfLayoutRequest = {
   preferred_model: null,
 };
 
+function cardToEntry(card: CardRow): DeckEntryIn {
+  return {
+    quantity: card.quantity ?? 1,
+    name: card.name,
+    set_code: card.set_code,
+    collector_number: card.collector_number,
+    raw_line: card.original_import_line,
+  };
+}
+
 export default function PdfPage() {
-  const { projectId, projectName } = useProject();
-  const [layout, setLayout] = useState<PdfLayoutRequest>(DEFAULT_LAYOUT);
+  const { projectId, projectTag, projectName, cards } = useProject();
+  const [layout, setLayout] = useState<LayoutSettings>(DEFAULT_LAYOUT);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
+  const entries = cards.map(cardToEntry);
+
   const previewQuery = useQuery({
-    queryKey: ["pdf-preview", projectId, layout],
-    queryFn: () => api.pdfPreview(projectId as number, layout),
-    enabled: projectId != null,
+    queryKey: ["pdf-preview", projectTag, entries, layout],
+    queryFn: () =>
+      generationApi.pdfPreview({ project_tag: projectTag as string, entries, ...layout }),
+    enabled: projectTag != null && entries.length > 0,
   });
 
-  function updateLayout<K extends keyof PdfLayoutRequest>(key: K, value: PdfLayoutRequest[K]) {
+  function updateLayout<K extends keyof LayoutSettings>(key: K, value: LayoutSettings[K]) {
     setLayout((l) => ({ ...l, [key]: value }));
   }
 
@@ -52,11 +68,16 @@ export default function PdfPage() {
   }
 
   async function handleDownload() {
-    if (projectId == null) return;
+    if (projectTag == null) return;
     setDownloadError(null);
     setDownloading(true);
     try {
-      const blob = await api.downloadPdf(projectId, layout);
+      const blob = await generationApi.downloadPdf({
+        project_tag: projectTag,
+        entries,
+        project_name: projectName,
+        ...layout,
+      });
       await downloadBlob(blob, `${projectName || "proxy-scaler"}.pdf`);
     } catch (err) {
       setDownloadError(err instanceof ApiError ? err.message : String(err));
@@ -169,7 +190,11 @@ export default function PdfPage() {
       <main className="content">
         <h2>PDF</h2>
 
-        {previewQuery.isLoading ? (
+        {entries.length === 0 ? (
+          <p className="hint" style={{ marginTop: 10 }}>
+            No cards in this project yet — add some from the Decklist tab first.
+          </p>
+        ) : previewQuery.isLoading ? (
           <p className="hint" style={{ marginTop: 10 }}>
             Calculating layout…
           </p>
@@ -192,7 +217,11 @@ export default function PdfPage() {
         ) : null}
 
         <div className="summary-row">
-          <button className="btn-primary" onClick={handleDownload} disabled={downloading}>
+          <button
+            className="btn-primary"
+            onClick={handleDownload}
+            disabled={downloading || entries.length === 0}
+          >
             {downloading ? "Generating…" : "Generate & Download PDF"}
           </button>
           {downloadError && <span className="error-text">{downloadError}</span>}

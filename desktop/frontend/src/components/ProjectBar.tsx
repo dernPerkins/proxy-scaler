@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { projectApi } from "../api/project";
 import { useProject } from "../context/ProjectContext";
 import { useServerReadiness } from "../config";
 
@@ -9,7 +9,10 @@ import { useServerReadiness } from "../config";
 export default function ProjectBar() {
   const project = useProject();
   const readiness = useServerReadiness();
-  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
+  const projectsQuery = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => projectApi.listProjects(),
+  });
   const [saveAsName, setSaveAsName] = useState("");
   const [showSaveAs, setShowSaveAs] = useState(false);
   const [selectedLoadId, setSelectedLoadId] = useState<number | "">("");

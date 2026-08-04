@@ -1,79 +1,58 @@
-// Mirrors proxy_scaler/api/schemas.py. Hand-written for now; a later
-// pass can generate these from FastAPI's OpenAPI schema
-// (openapi-typescript) so the two sides can't silently drift.
+// Mirrors proxy_scaler/api/schemas.py — the generation server's request/
+// response shapes only. Project types (mirroring the Rust project_store
+// structs) live in api/project.ts instead; see ARCHITECTURE.md for the
+// split. Hand-written for now; a later pass can generate these from
+// FastAPI's OpenAPI schema (openapi-typescript) so the two sides can't
+// silently drift.
 
 export interface ModelOption {
   value: string;
   label: string;
 }
 
-export interface ProjectSettings {
-  model: string;
-  dpi_targets: number[];
-  page_size: number;
-  skip_existing: boolean;
-  output_dir: string;
-  cache_dir: string;
-  weights_dir: string;
-  tile_size: number;
-}
-
-export interface ProjectSummary {
-  id: number;
+// What both /api/resolve, /api/generate, and /api/pdf take as their card
+// list — the client's own raw/parsed decklist entries (see
+// project.ts::CardRow), never a server-side project_id.
+export interface DeckEntryIn {
+  quantity: number;
   name: string;
-  updated_at: string;
+  set_code?: string | null;
+  collector_number?: string | null;
+  raw_line?: string;
 }
 
-export interface ProjectDetail {
-  id: number;
-  name: string;
-  import_decklist_text: string;
-  settings: ProjectSettings;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ImportResult {
-  added: number;
-  skipped: number;
-  failed: number;
-}
-
-export type TaskStatus = "pending" | "running" | "done" | "failed" | "canceled";
-
-export interface Variant {
-  dpi: number;
-  model: string;
-  status: TaskStatus;
-  error: string | null;
-  gallery_item_id: number | null;
-}
-
-export interface Face {
+export interface ResolvedFace {
+  scryfall_id: string;
   face_index: number | null;
   face_label: string | null;
-  face_name: string | null;
-  variants: Variant[];
+  face_name: string;
+  card_name: string;
+  set_code: string;
+  collector_number: string;
+  png_url: string;
+  image_status: string | null;
 }
 
-export interface Card {
-  id: number;
-  sort_order: number;
-  original_import_line: string;
-  quantity: number | null;
-  card_name: string | null;
-  set_code: string | null;
-  collector_number: string | null;
-  scryfall_id: string | null;
-  faces: Face[];
+export interface ResolvedCard {
+  raw_line: string;
+  quantity: number;
+  faces: ResolvedFace[];
+  warnings: string[];
+}
+
+export interface ResolveFailure {
+  raw_line: string;
+  error: string;
+}
+
+export interface ResolveResult {
+  resolved: ResolvedCard[];
+  failed: ResolveFailure[];
 }
 
 export interface GenerateRequest {
-  // Importing a decklist always requires a project, so unlike the old
-  // Streamlit session-state model there's no "generate before ever
-  // saving a project" path for card rows that exist at all.
-  project_id: number;
-  card_ids?: number[] | null;
+  project_tag: string;
+  entries: DeckEntryIn[];
   model: string;
   dpi_targets: number[];
   skip_existing?: boolean;
@@ -86,9 +65,14 @@ export interface GenerateRequest {
 export interface RegenerateGalleryItemRequest {
   // Redo one exact existing variant unchanged — its scryfall_id/png_url/
   // model/dpi come from the stored gallery item server-side, not from
-  // the client. Only tile_size is client-supplied (recalculated from
-  // the *current* sidebar setting for that variant's model).
+  // the client. tile_size is recalculated from the *current* sidebar
+  // setting for that variant's model. output_dir/cache_dir/weights_dir
+  // are generation-machine-local paths the server no longer has any
+  // other way to know (see ARCHITECTURE.md).
   tile_size?: number;
+  output_dir: string;
+  cache_dir: string;
+  weights_dir: string;
 }
 
 export interface GenerateResult {
@@ -98,9 +82,11 @@ export interface GenerateResult {
   notes: string[];
 }
 
+export type TaskStatus = "pending" | "running" | "done" | "failed" | "canceled";
+
 export interface Task {
   id: number;
-  project_id: number | null;
+  project_tag: string | null;
   status: TaskStatus;
   scryfall_id: string;
   face_index: number | null;
@@ -121,7 +107,24 @@ export interface WorkerStatus {
   running: boolean;
 }
 
+export interface GalleryItem {
+  id: number;
+  scryfall_id: string;
+  face_index: number | null;
+  face_label: string | null;
+  face_name: string;
+  card_name: string;
+  set_code: string;
+  collector_number: string;
+  dpi: number;
+  model: string;
+  image_filename: string;
+}
+
 export interface PdfLayoutRequest {
+  project_tag: string;
+  entries: DeckEntryIn[];
+  project_name?: string;
   page_width_mm: number;
   page_height_mm: number;
   cols: number;

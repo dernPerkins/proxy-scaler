@@ -2,7 +2,6 @@ import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import ProjectBar from "./components/ProjectBar";
 import ServerStatusToast from "./components/ServerStatusToast";
-import { useConnection } from "./connection";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
 import PdfPage from "./pages/PdfPage";
@@ -12,17 +11,14 @@ import TasksPage from "./pages/TasksPage";
 // navigation — deliberately not a route itself, matching
 // ui/projects.py::render_project_bar's old "always visible, not a tab"
 // placement.
+//
+// ProjectProvider no longer remounts on a Local/Remote switch (see
+// connection.tsx::switchTo) — project data is local-only now and
+// genuinely unaffected by which generation server is connected, so
+// there's nothing about it that a connection change needs to reset.
 export default function App() {
-  const { sessionKey } = useConnection();
-
-  // Remounting on a connection switch is load-bearing, not just tidy:
-  // ProjectContext's auto-load-latest effect has an empty dep array and
-  // runs on mount only, and its default settings read the connection mode
-  // once at init. Without this the new server's projects never load and
-  // the model default stays on the old mode's. Keyed here rather than
-  // higher up so the user stays on the tab they switched from.
   return (
-    <ProjectProvider key={sessionKey}>
+    <ProjectProvider>
       <div className="app">
         <ServerStatusToast />
         <ConnectionLostDialog />

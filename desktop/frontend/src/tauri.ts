@@ -20,6 +20,22 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && window.__TAURI__ != null;
 }
 
+// Generic invoke wrapper for app-defined commands (as opposed to the
+// specific plugin-backed ones below) — used by api/project.ts to call
+// the Rust-side local project store. Argument keys are camelCase here;
+// Tauri v2 maps them to the snake_case Rust parameter names itself (e.g.
+// `projectId` -> `project_id`), the same convention invokeSaveFile below
+// already relies on for `suggestedName` -> `suggested_name`.
+export async function invokeCommand<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  if (!window.__TAURI__) {
+    throw new Error("Not running inside Tauri");
+  }
+  return window.__TAURI__.core.invoke<T>(cmd, args);
+}
+
 export async function invokeStartLocalServer(): Promise<string> {
   if (!window.__TAURI__) {
     throw new Error("Not running inside Tauri");

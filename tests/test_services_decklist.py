@@ -15,7 +15,6 @@ from proxy_scaler.services.decklist import (
     card_identity,
     face_key_for_task,
     group_by_card,
-    sort_cards,
     status_for_pairs,
 )
 
@@ -23,7 +22,7 @@ from proxy_scaler.services.decklist import (
 def _task(**overrides) -> TaskRow:
     kwargs = dict(
         id=1,
-        project_id=None,
+        project_tag=None,
         status="pending",
         scryfall_id="sol-id",
         face_index=None,
@@ -149,37 +148,3 @@ def test_status_for_pairs_separates_distinct_dpi_model_pairs() -> None:
     ]
 
 
-def _card(id: int, **overrides):
-    from proxy_scaler.db import ProjectCardRow
-
-    kwargs = dict(
-        id=id,
-        project_id=1,
-        sort_order=id,
-        original_import_line=f"card {id}",
-        quantity=1,
-        card_name=f"Card {id}",
-        set_code="c21",
-        collector_number=str(id),
-        scryfall_id=None,
-    )
-    kwargs.update(overrides)
-    return ProjectCardRow(**kwargs)
-
-
-def test_sort_cards_by_name() -> None:
-    b = _card(1, card_name="Bolt")
-    a = _card(2, card_name="Ambush Viper")
-    assert sort_cards([b, a], "Name", "(none)", False) == [a, b]
-
-
-def test_sort_cards_descending() -> None:
-    a = _card(1, card_name="Ambush Viper")
-    b = _card(2, card_name="Bolt")
-    assert sort_cards([a, b], "Name", "(none)", True) == [b, a]
-
-
-def test_sort_cards_no_valid_fields_returns_input_order() -> None:
-    a = _card(1, card_name="Zzz")
-    b = _card(2, card_name="Aaa")
-    assert sort_cards([a, b], "(none)", "(none)", False) == [a, b]

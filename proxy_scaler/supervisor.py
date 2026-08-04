@@ -1,15 +1,11 @@
 """Process supervisor: manages the FastAPI server (proxy_scaler.api) and
 the background worker as a single managed unit.
 
-Unlike db.py::ensure_worker_running()'s deliberately-detached worker spawn
-(start_new_session=True on the worker alone, built to survive Streamlit
-dev-mode hot-reloads without losing an in-flight GPU job — a concern that
-no longer applies now that Streamlit is gone), this supervisor explicitly
-owns *both* children's lifecycle: it starts them, health-checks the API
-server, and on any shutdown trigger stops both — gracefully first
-(SIGTERM/timeout), then forcefully (SIGKILL) if needed. That's the right
-tradeoff for a headless server deployment or a packaged desktop app, where
-there's no hot-reload churn and "stop the supervisor" should actually stop
+This supervisor explicitly owns *both* children's lifecycle: it starts
+them, health-checks the API server, and on any shutdown trigger stops
+both — gracefully first (SIGTERM/timeout), then forcefully (SIGKILL) if
+needed. That's the right tradeoff for a headless server deployment or a
+packaged desktop app, where "stop the supervisor" should actually stop
 everything.
 
 Run via the `proxy-scaler-serve` console script, or

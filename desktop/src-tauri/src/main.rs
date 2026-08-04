@@ -23,6 +23,8 @@
 // Revisit if/when bundle.active flips to true for real .app/.dmg
 // packaging — this placement doesn't survive that step and needs its own
 // solution then (afterBuildCommand copying into the bundle, most likely).
+mod project_store;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,6 +33,11 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, Notify};
+
+use project_store::{
+    clear_all_projects, create_project, delete_project, get_last_project_id, get_project,
+    list_projects, remove_card, set_decklist_text, set_last_project_id, update_project,
+};
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
 const LOCAL_URL: &str = "http://127.0.0.1:8000";
@@ -208,7 +215,17 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_local_server,
             stop_local_server,
-            save_file
+            save_file,
+            create_project,
+            list_projects,
+            get_project,
+            update_project,
+            delete_project,
+            clear_all_projects,
+            set_decklist_text,
+            remove_card,
+            get_last_project_id,
+            set_last_project_id
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

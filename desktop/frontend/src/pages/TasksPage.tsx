@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { generationApi } from "../api/generation";
 import StatusBadge from "../components/StatusBadge";
 import type { Task, TaskStatus } from "../api/types";
 
@@ -12,18 +12,18 @@ export default function TasksPage() {
   // autopolling — same cadence, no server push needed at this scale.
   const tasksQuery = useQuery({
     queryKey: ["tasks"],
-    queryFn: () => api.listTasks(),
+    queryFn: () => generationApi.listTasks(),
     refetchInterval: 2000,
   });
 
   const workerQuery = useQuery({
     queryKey: ["worker-status"],
-    queryFn: () => api.workerStatus(),
+    queryFn: () => generationApi.workerStatus(),
     refetchInterval: 3000,
   });
 
   const cancelMutation = useMutation({
-    mutationFn: (taskId: number) => api.cancelTask(taskId),
+    mutationFn: (taskId: number) => generationApi.cancelTask(taskId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },

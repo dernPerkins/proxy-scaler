@@ -57,8 +57,6 @@ interface ConnectionValue {
   /** Last remote host entered, remembered so the switch dialog can prefill it. */
   host: string;
   setHost: (host: string) => void;
-  /** Bumped on every successful switch; used as a remount key (see App.tsx). */
-  sessionKey: number;
   /**
    * Whether the last health ping to a remote server succeeded. Always
    * true outside remote mode. See the 30s ping effect below — a remote
@@ -93,7 +91,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   );
   const [mode, setMode] = useState<"local" | "remote" | null>(null);
   const [host, setHost] = useState("");
-  const [sessionKey, setSessionKey] = useState(0);
   const [remoteHealthy, setRemoteHealthy] = useState(true);
 
   // Heartbeat for remote mode only — local's liveness is already implied
@@ -133,7 +130,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // Points the API client at a target that's already been validated.
   // Local deliberately doesn't block on readiness — the app renders
   // immediately and ServerStatusToast reports when the sidecar is
-  // actually up (api/client.ts's requests wait on the same gate).
+  // actually up (api/generation.ts's requests wait on the same gate).
   function applyTarget(target: ConnectionTarget) {
     if (target.mode === "remote") {
       setApiBaseUrl(`http://${target.host}:${API_PORT}`);
@@ -149,7 +146,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // turns out to be down.
       setRemoteHealthy(true);
       // Remote must resolve the readiness gate explicitly. Every request
-      // in api/client.ts awaits waitForServerReady(); if a previous local
+      // in api/generation.ts awaits waitForServerReady(); if a previous local
       // session left the gate "starting" (or rejected), skipping this
       // hangs or fails every single request against the remote host with
       // no visible cause.
@@ -214,10 +211,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
     applyTarget(target);
 
-    // Query keys carry no host discriminator, so without this the new
-    // server would be served the previous one's cached projects/cards.
-    queryClient.clear();
-    setSessionKey((k) => k + 1);
+    // Project data (ProjectContext, api/project.ts) is local-only and
+    // untouched by which generation server is connected — only
+    // generation-scoped queries can be stale against the new host, so
+    // this invalidates those specifically rather than queryClient.clear()
+    // wiping locally-cached project state right along with them, and
+    // rather than remounting ProjectProvider (which used to be the only
+    // way to force its own project list to re-fetch against the new
+    // host, back when project data lived server-side too).
+    queryClient.invalidateQueries({ queryKey: ["generation-status"] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    queryClient.invalidateQueries({ queryKey: ["worker-status"] });
+    queryClient.invalidateQueries({ queryKey: ["pdf-preview"] });
+    queryClient.invalidateQueries({ queryKey: ["models"] });
     return null;
   }
 
@@ -227,7 +233,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     mode,
     host,
     setHost,
-    sessionKey,
     remoteHealthy,
     connect,
     switchTo,

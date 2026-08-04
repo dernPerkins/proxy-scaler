@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { projectApi } from "../api/project";
 import { getConnectionMode } from "../config";
-import type { ProjectSettings } from "../api/types";
+import type { CardRow, LoadedProject, ProjectSettings } from "../api/project";
 
 // Local runs upscaling on-device, so a fast/light model is the sensible
 // default; a remote server is assumed to have real GPU headroom, so it
@@ -15,21 +15,26 @@ function getDefaultSettings(): ProjectSettings {
   return {
     model: defaultModelForMode(),
     dpi_targets: [1200],
-    page_size: 6,
     skip_existing: true,
-    output_dir: "output",
-    cache_dir: "imgcache",
-    weights_dir: "weights",
     tile_size: 0,
   };
 }
 
 interface ProjectContextValue {
   projectId: number | null;
+  /** Opaque tag passed to the generation server to scope tasks/gallery —
+   *  see ARCHITECTURE.md. Null until the project has been saved once. */
+  projectTag: string | null;
   projectName: string;
   settings: ProjectSettings;
   setSettings: (updater: ProjectSettings | ((s: ProjectSettings) => ProjectSettings)) => void;
   setProjectName: (name: string) => void;
+  decklistText: string;
+  cards: CardRow[];
+  /** Persists the decklist text locally and re-parses it into `cards`. */
+  setDecklistText: (text: string) => void;
+  settingDecklistText: boolean;
+  removeCard: (cardId: number) => void;
   isSaved: boolean;
   save: () => void;
   /** Awaitable save, for callers that must not proceed until it lands
@@ -63,17 +68,40 @@ export function useProject(): ProjectContextValue {
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState<number | null>(null);
+  const [projectTag, setProjectTag] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [settings, setSettings] = useState<ProjectSettings>(getDefaultSettings);
+  const [decklistText, setDecklistTextState] = useState("");
+  const [cards, setCards] = useState<CardRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  function applyLoaded(project: LoadedProject) {
+    setProjectId(project.id);
+    setProjectTag(project.tag);
+    setProjectName(project.name);
+    setSettings(project.settings);
+    setDecklistTextState(project.import_decklist_text);
+    setCards(project.cards);
+    setError(null);
+  }
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const name = projectName.trim();
       if (!name) throw new Error("Enter a project name before saving.");
-      return projectId != null
-        ? api.updateProject(projectId, name, settings)
-        : api.createProject(name, settings);
+      const summary =
+        projectId != null
+          ? await projectApi.updateProject(projectId, name, settings)
+          : await projectApi.createProject(name);
+      // create_project only takes a name — push this session's current
+      // settings immediately after, so a brand-new project doesn't lose
+      // whatever the user already configured in the sidebar before ever
+      // clicking Save.
+      if (projectId == null) {
+        await projectApi.updateProject(summary.id, summary.name, settings);
+      }
+      await projectApi.setLastProjectId(summary.id);
+      return summary;
     },
     onSuccess: (project) => {
       setProjectId(project.id);
@@ -86,66 +114,107 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const saveAsMutation = useMutation({
     mutationFn: async (name: string) => {
-      if (!name.trim()) throw new Error("Name required.");
-      return api.createProject(name.trim(), settings);
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Name required.");
+      const summary = await projectApi.createProject(trimmed);
+      await projectApi.updateProject(summary.id, summary.name, settings);
+      if (decklistText) {
+        await projectApi.setDecklistText(summary.id, decklistText);
+      }
+      await projectApi.setLastProjectId(summary.id);
+      return projectApi.getProject(summary.id);
     },
     onSuccess: (project) => {
-      setProjectId(project.id);
-      setProjectName(project.name);
-      setError(null);
+      applyLoaded(project);
       queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
     onError: (err: Error) => setError(err.message),
   });
 
   const loadMutation = useMutation({
-    mutationFn: (id: number) => api.getProject(id),
-    onSuccess: (project) => {
-      setProjectId(project.id);
-      setProjectName(project.name);
-      setSettings(project.settings);
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["cards", project.id] });
+    mutationFn: async (id: number) => {
+      const project = await projectApi.getProject(id);
+      await projectApi.setLastProjectId(id);
+      return project;
     },
+    onSuccess: applyLoaded,
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => api.deleteProject(id),
+    mutationFn: (id: number) => projectApi.deleteProject(id),
     onSuccess: (_data, id) => {
       if (projectId === id) {
         setProjectId(null);
+        setProjectTag(null);
         setProjectName("");
+        setDecklistTextState("");
+        setCards([]);
       }
       queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 
+  const setDecklistMutation = useMutation({
+    mutationFn: async (text: string) => {
+      if (projectId == null) throw new Error("Save the project before editing its decklist.");
+      const newCards = await projectApi.setDecklistText(projectId, text);
+      return { text, newCards };
+    },
+    onSuccess: ({ text, newCards }) => {
+      setDecklistTextState(text);
+      setCards(newCards);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const removeCardMutation = useMutation({
+    mutationFn: (cardId: number) => projectApi.removeCard(cardId),
+    onSuccess: (_data, cardId) => {
+      setCards((prev) => prev.filter((c) => c.id !== cardId));
+    },
+  });
+
   function createNew() {
     setProjectId(null);
+    setProjectTag(null);
     setProjectName("");
     setSettings(getDefaultSettings());
+    setDecklistTextState("");
+    setCards([]);
     setError(null);
   }
 
-  // Auto-load the most recently updated project on startup, matching the
-  // old Streamlit version's maybe_load_last_project() — otherwise the app
-  // always opens blank even when projects already exist. list_projects()
-  // is already ordered by updated_at DESC server-side, so the first
-  // entry is exactly "the latest project." Runs once on mount only; a
-  // project explicitly loaded/created/deleted afterward should never be
-  // silently overridden by this.
+  // Auto-load on startup: the project the user most recently touched (see
+  // set_last_project_id, called on every save/load below), falling back
+  // to the most-recently-updated project if there's no "last" pointer yet
+  // (e.g. first launch after an upgrade) or it points at a project that's
+  // since been deleted. Runs once on mount only; a project explicitly
+  // loaded/created/deleted afterward should never be silently overridden
+  // by this.
   useEffect(() => {
     let cancelled = false;
-    api
-      .listProjects()
-      .then((projects) => {
+    (async () => {
+      try {
+        const lastId = await projectApi.getLastProjectId();
+        if (cancelled) return;
+        if (lastId != null) {
+          try {
+            const project = await projectApi.getProject(lastId);
+            if (!cancelled) applyLoaded(project);
+            return;
+          } catch {
+            // Stale pointer (project deleted) — fall through to latest.
+          }
+        }
+        const projects = await projectApi.listProjects();
         if (cancelled || projects.length === 0) return;
         loadMutation.mutate(projects[0].id);
-      })
-      .catch(() => {
-        // Best-effort — if the local server failed to start,
-        // ServerStatusToast already surfaces that to the user.
-      });
+      } catch {
+        // Best-effort — if something's wrong with the local store, the
+        // project bar's empty state already communicates that.
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -154,10 +223,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const value: ProjectContextValue = {
     projectId,
+    projectTag,
     projectName,
     settings,
     setSettings,
     setProjectName,
+    decklistText,
+    cards,
+    setDecklistText: (text: string) => setDecklistMutation.mutate(text),
+    settingDecklistText: setDecklistMutation.isPending,
+    removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     isSaved: projectId != null,
     save: () => saveMutation.mutate(),
     saveAsync: async () => {

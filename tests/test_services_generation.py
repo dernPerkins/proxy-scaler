@@ -55,7 +55,7 @@ def test_enqueue_face_queues_one_task_per_dpi(db_path: Path, tmp_path: Path) -> 
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=None,
+        project_tag=None,
         db_path=db_path,
     )
     assert len(task_ids) == 2
@@ -64,16 +64,14 @@ def test_enqueue_face_queues_one_task_per_dpi(db_path: Path, tmp_path: Path) -> 
     assert all(t.status == "pending" for t in tasks)
 
 
-def test_active_task_keys_none_project_id_is_empty(db_path: Path) -> None:
+def test_active_task_keys_none_project_tag_is_empty(db_path: Path) -> None:
     assert generation.active_task_keys(None, db_path=db_path) == set()
 
 
 def test_active_task_keys_reflects_pending_and_running_only(
     db_path: Path, tmp_path: Path
 ) -> None:
-    pid = db.save_project(
-        "Test", import_decklist_text="", settings=db.ProjectSettings(), db_path=db_path
-    )
+    tag = "proj-tag-1"
     generation.enqueue_face(
         scryfall_id="sol-id",
         face_index=None,
@@ -89,10 +87,10 @@ def test_active_task_keys_reflects_pending_and_running_only(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=pid,
+        project_tag=tag,
         db_path=db_path,
     )
-    active = generation.active_task_keys(pid, db_path=db_path)
+    active = generation.active_task_keys(tag, db_path=db_path)
     assert active == {("sol-id", None, 800, "swinir")}
 
 
@@ -116,7 +114,7 @@ def test_enqueue_decklist_entries_batches_resolve_call(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=None,
+        project_tag=None,
         db_path=db_path,
     )
     # Same physical card resolved twice in one batch de-dupes to one task,
@@ -149,7 +147,7 @@ def test_enqueue_decklist_entries_skips_existing_output_file(
         output_dir=output_dir,
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=None,
+        project_tag=None,
         db_path=db_path,
     )
     assert queued == 0
@@ -181,7 +179,7 @@ def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=None,
+        project_tag=None,
         db_path=db_path,
     )
 
@@ -194,25 +192,23 @@ def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=None,
+        project_tag=None,
         db_path=db_path,
     )
-    # active_task_keys() only ever reflects a real project (project_id is
-    # None here, matching "generate before ever saving a project"), so
-    # this specific dedupe path needs a saved project to exercise for
+    # active_task_keys() only ever reflects a real project_tag (project_tag
+    # is None here, matching "generate before ever saving a project"), so
+    # this specific dedupe path needs a tagged project to exercise for
     # real — see the project-scoped variant below.
     assert queued == 1
 
 
-def test_enqueue_decklist_entries_skips_active_task_for_saved_project(
+def test_enqueue_decklist_entries_skips_active_task_for_tagged_project(
     db_path: Path, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
         ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
     )
-    pid = db.save_project(
-        "Test", import_decklist_text="", settings=db.ProjectSettings(), db_path=db_path
-    )
+    tag = "proj-tag-1"
     generation.enqueue_face(
         scryfall_id="sol-id",
         face_index=None,
@@ -228,7 +224,7 @@ def test_enqueue_decklist_entries_skips_active_task_for_saved_project(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=pid,
+        project_tag=tag,
         db_path=db_path,
     )
 
@@ -241,7 +237,7 @@ def test_enqueue_decklist_entries_skips_active_task_for_saved_project(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=pid,
+        project_tag=tag,
         db_path=db_path,
     )
     assert queued == 0
@@ -266,7 +262,7 @@ def test_enqueue_decklist_entries_reports_scryfall_failures(
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        project_id=None,
+        project_tag=None,
         db_path=db_path,
         on_note=notes.append,
     )
@@ -274,30 +270,3 @@ def test_enqueue_decklist_entries_reports_scryfall_failures(
     assert failed == 1
     assert task_ids == []
     assert any("not found" in n for n in notes)
-
-
-def test_import_entries_adds_new_card(db_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
-    )
-    pid = db.save_project(
-        "Test", import_decklist_text="", settings=db.ProjectSettings(), db_path=db_path
-    )
-    added, skipped, failed = generation.import_entries(pid, [_entry()], db_path=db_path)
-    assert (added, skipped, failed) == (1, 0, 0)
-    cards = db.list_project_cards(pid, db_path=db_path)
-    assert len(cards) == 1
-    assert cards[0].scryfall_id == "sol-id"
-
-
-def test_import_entries_reimport_is_a_safe_no_op(db_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
-    )
-    pid = db.save_project(
-        "Test", import_decklist_text="", settings=db.ProjectSettings(), db_path=db_path
-    )
-    generation.import_entries(pid, [_entry()], db_path=db_path)
-    added, skipped, failed = generation.import_entries(pid, [_entry()], db_path=db_path)
-    assert (added, skipped, failed) == (0, 1, 0)
-    assert len(db.list_project_cards(pid, db_path=db_path)) == 1

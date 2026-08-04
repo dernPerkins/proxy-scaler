@@ -12,3 +12,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tokio = { version = "1", features = ["sync", "time", "signal"] }
+# Local project store (see project_store.rs / ARCHITECTURE.md): "bundled"
+# compiles SQLite in rather than requiring a system libsqlite3-dev, which
+# matters for a from-scratch build on a machine that hasn't set one up.
+rusqlite = { version = "0.31", features = ["bundled"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }

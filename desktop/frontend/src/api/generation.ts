@@ -1,16 +1,19 @@
+// The generation server's HTTP API — Scryfall resolution, the
+// download+upscale pipeline, the task queue, the gallery of completed
+// images, and PDF assembly. Everything here is scoped by an opaque
+// project_tag string the client mints per local project (see
+// project.ts), never a server-side project id — see ARCHITECTURE.md.
 import { getApiBaseUrl, waitForServerReady } from "../config";
 import type {
-  Card,
+  DeckEntryIn,
+  GalleryItem,
   GenerateRequest,
   GenerateResult,
-  ImportResult,
   ModelOption,
   PdfLayoutRequest,
   PdfPreview,
-  ProjectDetail,
-  ProjectSettings,
-  ProjectSummary,
   RegenerateGalleryItemRequest,
+  ResolveResult,
   Task,
   WorkerStatus,
 } from "./types";
@@ -39,9 +42,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
-async function downloadPdf(projectId: number, body: PdfLayoutRequest): Promise<Blob> {
+async function downloadPdf(body: PdfLayoutRequest): Promise<Blob> {
   await waitForServerReady();
-  const resp = await fetch(`${getApiBaseUrl()}/api/projects/${projectId}/pdf`, {
+  const resp = await fetch(`${getApiBaseUrl()}/api/pdf`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -53,56 +56,32 @@ async function downloadPdf(projectId: number, body: PdfLayoutRequest): Promise<B
   return resp.blob();
 }
 
-export const api = {
+export const generationApi = {
   // The frontend must read this list, never hardcode it — a hand-typed
   // copy previously shipped here silently dropped two real models.
   // UpscaleModel (Python) is the only source of truth.
   listModels: () => request<ModelOption[]>("/api/models"),
 
-  listProjects: () => request<ProjectSummary[]>("/api/projects"),
-  createProject: (name: string, settings?: ProjectSettings) =>
-    request<ProjectSummary>("/api/projects", {
+  resolve: (entries: DeckEntryIn[]) =>
+    request<ResolveResult>("/api/resolve", {
       method: "POST",
-      body: JSON.stringify({ name, settings }),
+      body: JSON.stringify({ entries }),
     }),
-  getProject: (id: number) => request<ProjectDetail>(`/api/projects/${id}`),
-  updateProject: (id: number, name: string, settings: ProjectSettings) =>
-    request<ProjectSummary>(`/api/projects/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({ name, settings }),
-    }),
-  deleteProject: (id: number) =>
-    request<void>(`/api/projects/${id}`, { method: "DELETE" }),
-  clearAllProjects: () =>
-    request<void>("/api/projects?confirm=true", { method: "DELETE" }),
-  lastProject: () => request<{ project_id: number | null }>("/api/projects/last"),
-
-  importDecklist: (projectId: number, text: string) =>
-    request<ImportResult>(`/api/projects/${projectId}/import`, {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    }),
-  listCards: (projectId: number) => request<Card[]>(`/api/projects/${projectId}/cards`),
-  removeCard: (projectId: number, cardId: number) =>
-    request<void>(`/api/projects/${projectId}/cards/${cardId}`, { method: "DELETE" }),
 
   generate: (body: GenerateRequest) =>
     request<GenerateResult>("/api/generate", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  regenerateGalleryItem: (
-    projectId: number,
-    galleryItemId: number,
-    body: RegenerateGalleryItemRequest = {},
-  ) =>
-    request<GenerateResult>(`/api/projects/${projectId}/regenerate/${galleryItemId}`, {
+  regenerateGalleryItem: (galleryItemId: number, body: RegenerateGalleryItemRequest) =>
+    request<GenerateResult>(`/api/gallery/${galleryItemId}/regenerate`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  listTasks: (params?: { project_id?: number; status?: string }) => {
+
+  listTasks: (params?: { project_tag?: string; status?: string }) => {
     const search = new URLSearchParams();
-    if (params?.project_id != null) search.set("project_id", String(params.project_id));
+    if (params?.project_tag) search.set("project_tag", params.project_tag);
     if (params?.status) search.set("status", params.status);
     const qs = search.toString();
     return request<Task[]>(`/api/tasks${qs ? `?${qs}` : ""}`);
@@ -112,15 +91,17 @@ export const api = {
     request<{ canceled: boolean }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
   workerStatus: () => request<WorkerStatus>("/api/worker/status"),
 
-  pdfPreview: (projectId: number, body: PdfLayoutRequest) =>
-    request<PdfPreview>(`/api/projects/${projectId}/pdf/preview`, {
+  listGallery: (projectTag: string) =>
+    request<GalleryItem[]>(`/api/gallery?${new URLSearchParams({ project_tag: projectTag })}`),
+  imageUrl: (galleryItemId: number, variant: "full" | "original") =>
+    `${getApiBaseUrl()}/api/gallery/${galleryItemId}/${variant}`,
+
+  pdfPreview: (body: PdfLayoutRequest) =>
+    request<PdfPreview>("/api/pdf/preview", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   downloadPdf,
-
-  imageUrl: (projectId: number, galleryItemId: number, variant: "full" | "original") =>
-    `${getApiBaseUrl()}/api/projects/${projectId}/images/${galleryItemId}/${variant}`,
 
   clearGeneratedData: (outputDir: string, cacheDir: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {

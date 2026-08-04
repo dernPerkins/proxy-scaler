@@ -31,7 +31,7 @@ def enqueue_face(
     output_dir: Path,
     cache_dir: Path,
     weights_dir: Path,
-    project_id: int | None,
+    project_tag: str | None,
     db_path: Path | str | None = None,
 ) -> list[int]:
     """Queue one task per requested DPI for an already-resolved face (no
@@ -40,7 +40,7 @@ def enqueue_face(
     Returns the new task ids."""
     return [
         db.enqueue_task(
-            project_id,
+            project_tag,
             scryfall_id=scryfall_id,
             face_index=face_index,
             face_label=face_label,
@@ -62,16 +62,18 @@ def enqueue_face(
 
 
 def active_task_keys(
-    project_id: int | None, db_path: Path | str | None = None
+    project_tag: str | None, db_path: Path | str | None = None
 ) -> set[tuple[str, int | None, int, str]]:
     """(scryfall_id, face_index, dpi, model) keys with a pending/running
     task for this project. Enqueueing must skip these too, not just
     disk-existing files — otherwise enqueueing again before a previous
     batch finishes would queue duplicate work for an image already in
     flight."""
-    if project_id is None:
+    if project_tag is None:
         return set()
-    tasks = db.list_tasks(project_id=project_id, statuses=["pending", "running"], db_path=db_path)
+    tasks = db.list_tasks(
+        project_tag=project_tag, statuses=["pending", "running"], db_path=db_path
+    )
     return {(t.scryfall_id, t.face_index, t.dpi, t.model) for t in tasks}
 
 
@@ -85,7 +87,7 @@ def enqueue_decklist_entries(
     output_dir: Path,
     cache_dir: Path,
     weights_dir: Path,
-    project_id: int | None,
+    project_tag: str | None,
     on_note=None,
     db_path: Path | str | None = None,
 ) -> tuple[int, int, list[int]]:
@@ -97,7 +99,7 @@ def enqueue_decklist_entries(
     task_ids)."""
     client = ScryfallClient()
     resolved = client.resolve_many(entries)
-    active = active_task_keys(project_id, db_path=db_path)
+    active = active_task_keys(project_tag, db_path=db_path)
     queued = 0
     failed = 0
     task_ids: list[int] = []
@@ -149,7 +151,7 @@ def enqueue_decklist_entries(
                     output_dir=output_dir,
                     cache_dir=cache_dir,
                     weights_dir=weights_dir,
-                    project_id=project_id,
+                    project_tag=project_tag,
                     db_path=db_path,
                 )
                 task_ids.extend(new_ids)
@@ -159,35 +161,3 @@ def enqueue_decklist_entries(
             if on_note:
                 on_note(f"FAIL [{entry.raw_line}]: {exc}")
     return queued, failed, task_ids
-
-
-def import_entries(
-    project_id: int, entries: list, db_path: Path | str | None = None
-) -> tuple[int, int, int]:
-    """Resolve entries and add new cards to the project's persistent card
-    list — add_cards_to_project() skips any already present (by
-    scryfall_id, then set+collector, then name), so re-importing the same
-    text is a safe no-op rather than a duplicate. Returns
-    (added, skipped, failed)."""
-    client = ScryfallClient()
-    resolved = client.resolve_many(entries)
-    candidates: list[dict] = []
-    failed = 0
-    for entry, pre in zip(entries, resolved):
-        if isinstance(pre, ScryfallError):
-            failed += 1
-            continue
-        card, _warnings = pre
-        candidates.append(
-            {
-                "scryfall_id": card.get("id"),
-                "card_name": card.get("name"),
-                "set_code": card.get("set"),
-                "collector_number": card.get("collector_number"),
-                "quantity": entry.quantity,
-                "original_import_line": entry.raw_line,
-            }
-        )
-    added = db.add_cards_to_project(project_id, candidates, db_path=db_path)
-    skipped = len(candidates) - added
-    return added, skipped, failed

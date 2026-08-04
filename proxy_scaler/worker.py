@@ -5,10 +5,9 @@ and processes it — a single-consumer loop that enforces "one GPU / one set
 of loaded model weights at a time" by construction, not by locking.
 
 Run via `python -m proxy_scaler.worker`. Normally you don't need to start
-this yourself — the Streamlit app auto-spawns it on startup if one isn't
-already running (see db.py::ensure_worker_running), using an flock-based
-lock file so only one worker process is ever active regardless of how many
-times the app tries to (re-)spawn it.
+this yourself — `proxy_scaler.supervisor` spawns it as a managed child,
+using an flock-based lock file so only one worker process is ever active
+regardless of how many times something tries to (re-)spawn it.
 """
 
 from __future__ import annotations

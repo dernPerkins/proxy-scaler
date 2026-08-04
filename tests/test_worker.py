@@ -18,7 +18,7 @@ from proxy_scaler.worker import _process_one
 
 def _enqueue(db_path: Path, **overrides) -> int:
     kwargs = dict(
-        project_id=None,
+        project_tag=None,
         scryfall_id="sol-id",
         face_index=None,
         face_label=None,
@@ -35,7 +35,7 @@ def _enqueue(db_path: Path, **overrides) -> int:
         db_path=db_path,
     )
     kwargs.update(overrides)
-    return enqueue_task(kwargs.pop("project_id"), **kwargs)
+    return enqueue_task(kwargs.pop("project_tag"), **kwargs)
 
 
 def test_process_one_marks_task_done_on_success(tmp_path, monkeypatch) -> None:

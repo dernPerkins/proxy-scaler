@@ -11,12 +11,6 @@ from collections import defaultdict
 from proxy_scaler import db
 from proxy_scaler.pipeline import FaceResult, group_by_face
 
-_SORT_FIELDS = {
-    "Name": lambda c: (c.card_name or "").casefold(),
-    "Set": lambda c: (c.set_code or "").casefold(),
-}
-_SORT_OPTIONS = ["Name", "Set", "(none)"]
-
 
 def card_identity(
     set_code: str | None, collector_number: str | None, scryfall_id: str | None
@@ -96,12 +90,3 @@ def status_for_pairs(
             task = task_pairs[(dpi, model)]
             rows.append((dpi, model, task.status, task.error))
     return rows
-
-
-def sort_cards(
-    cards: list[db.ProjectCardRow], primary: str, secondary: str, descending: bool
-) -> list[db.ProjectCardRow]:
-    keys = [f for f in (primary, secondary) if f in _SORT_FIELDS]
-    if not keys:
-        return list(cards)
-    return sorted(cards, key=lambda c: tuple(_SORT_FIELDS[k](c) for k in keys), reverse=descending)
