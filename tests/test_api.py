@@ -381,3 +381,76 @@ def test_clear_generated_data(client: TestClient, tmp_path: Path) -> None:
     )
     assert resp.status_code == 200
     assert not (output_dir / "a.png").exists()
+
+
+def test_clear_generated_data_with_project_tag_clears_records_too(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The bug this guards against: deleting the files but leaving the
+    gallery/task rows behind, so the UI kept reporting every card as
+    already generated after "Delete all generated images & cache". A
+    still-pending task for the same project must survive, though — it
+    hasn't written a file yet, so there's nothing for the delete to have
+    invalidated."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    done_id = db.enqueue_task(
+        "tag-a",
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        db_path=db_path,
+    )
+    db.mark_task_done(done_id, db_path=db_path)
+    pending_id = db.enqueue_task(
+        "tag-a",
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=1200,
+        model="swinir",
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        db_path=db_path,
+    )
+
+    assert db.list_gallery_items("tag-a", db_path=db_path) != []
+    assert {t.id for t in db.list_tasks(project_tag="tag-a", db_path=db_path)} == {
+        done_id,
+        pending_id,
+    }
+
+    output_dir = tmp_path.parent / "out2"
+    cache_dir = tmp_path.parent / "cache2"
+    output_dir.mkdir()
+    cache_dir.mkdir()
+
+    resp = client.post(
+        "/api/generated-data/clear",
+        json={"output_dir": str(output_dir), "cache_dir": str(cache_dir), "project_tag": "tag-a"},
+    )
+    assert resp.status_code == 200
+
+    assert db.list_gallery_items("tag-a", db_path=db_path) == []
+    remaining = {t.id for t in db.list_tasks(project_tag="tag-a", db_path=db_path)}
+    assert remaining == {pending_id}
+
+    resp = client.get("/api/gallery", params={"project_tag": "tag-a"})
+    assert resp.json() == []

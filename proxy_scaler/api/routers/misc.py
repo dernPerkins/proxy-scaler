@@ -4,6 +4,8 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from proxy_scaler import db
+from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import ClearGeneratedIn, ClearGeneratedOut, ModelOptionOut
 from proxy_scaler.pipeline import clear_generated_data
 from proxy_scaler.upscale import UpscaleModel
@@ -33,4 +35,12 @@ def list_models() -> list[ModelOptionOut]:
 @router.post("/generated-data/clear", response_model=ClearGeneratedOut)
 def clear_generated(body: ClearGeneratedIn) -> ClearGeneratedOut:
     notes = clear_generated_data(Path(body.output_dir), Path(body.cache_dir))
+    if body.project_tag:
+        # The files these records point at are gone now — without this,
+        # the client keeps reporting every card as already generated
+        # (gallery rows say so directly; even without them, a completed
+        # task's own history reports "done" too — see
+        # db.py::clear_project_generation_records).
+        db.clear_project_generation_records(body.project_tag, db_path=get_db_path())
+        notes.append("cleared generation records for this project")
     return ClearGeneratedOut(notes=notes)

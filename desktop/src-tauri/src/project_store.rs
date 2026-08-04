@@ -7,6 +7,8 @@
 // `tag` column (an opaque string minted once per project and passed to
 // the generation server as `project_tag` — plain scoping, not a foreign
 // key).
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -187,6 +189,20 @@ pub struct LoadedProject {
     pub cards: Vec<CardRow>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+// Same identity scheme mergeCardStatus.ts::cardIdentity uses on the
+// frontend to match a local card to its generation-server records: exact
+// set/collector when both are given, otherwise fall back to the card
+// name — so "already have this card" means the same thing everywhere,
+// not just within this one function.
+fn card_dedup_key(set_code: Option<&str>, collector_number: Option<&str>, name: &str) -> String {
+    match (set_code, collector_number) {
+        (Some(s), Some(c)) if !s.is_empty() && !c.is_empty() => {
+            format!("{}/{}", s.to_lowercase(), c.to_lowercase())
+        }
+        _ => format!("name:{}", name.to_lowercase()),
+    }
 }
 
 fn dpi_targets_to_text(dpi_targets: &[i64]) -> String {
@@ -392,12 +408,17 @@ pub fn clear_all_projects(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Replaces this project's stored card lines with a fresh parse of `text`
-/// — the desktop-app equivalent of the old server-side "/import": parse
-/// once, persist the raw lines, no Scryfall call (that's /api/resolve's
-/// job, on demand, against the generation server).
+/// Adds new card lines from `text` to this project's existing card list —
+/// additive, like the old server-side "/import" endpoint, not a replace.
+/// A parsed entry is skipped if it already matches an existing card (or an
+/// earlier entry in this very same paste) by card_dedup_key — set_code+
+/// collector_number when both are given, name otherwise. No Scryfall call
+/// here (that's /api/resolve's job, on demand, against the generation
+/// server). import_decklist_text is still overwritten to the latest
+/// pasted text — it's just a convenience mirror of "what did I last paste
+/// into this box", not the canonical card list; project_cards is that.
 #[tauri::command]
-pub fn set_decklist_text(
+pub fn import_decklist_text(
     app: AppHandle,
     project_id: i64,
     text: String,
@@ -412,19 +433,51 @@ pub fn set_decklist_text(
         params![text, now, project_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM project_cards WHERE project_id = ?1",
-        params![project_id],
-    )
-    .map_err(|e| e.to_string())?;
-    for (i, entry) in entries.iter().enumerate() {
+
+    let mut seen_keys: HashSet<String> = HashSet::new();
+    let mut next_sort_order: i64 = 0;
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT sort_order, name, set_code, collector_number
+                 FROM project_cards WHERE project_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                let sort_order: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                let set_code: Option<String> = row.get(2)?;
+                let collector_number: Option<String> = row.get(3)?;
+                Ok((sort_order, name, set_code, collector_number))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (sort_order, name, set_code, collector_number) = row.map_err(|e| e.to_string())?;
+            seen_keys.insert(card_dedup_key(
+                set_code.as_deref(),
+                collector_number.as_deref(),
+                &name,
+            ));
+            next_sort_order = next_sort_order.max(sort_order + 1);
+        }
+    }
+
+    for entry in &entries {
+        let key = card_dedup_key(entry.set_code.as_deref(), entry.collector_number.as_deref(), &entry.name);
+        // HashSet::insert returns false when the key was already present
+        // — covers both "already an existing card" and "duplicated within
+        // this same paste" in one check.
+        if !seen_keys.insert(key) {
+            continue;
+        }
         tx.execute(
             "INSERT INTO project_cards
              (project_id, sort_order, original_import_line, quantity, name, set_code, collector_number)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 project_id,
-                i as i64,
+                next_sort_order,
                 entry.raw_line,
                 entry.quantity,
                 entry.name,
@@ -433,6 +486,7 @@ pub fn set_decklist_text(
             ],
         )
         .map_err(|e| e.to_string())?;
+        next_sort_order += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
 

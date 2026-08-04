@@ -103,10 +103,14 @@ export const generationApi = {
     }),
   downloadPdf,
 
-  clearGeneratedData: (outputDir: string, cacheDir: string) =>
+  clearGeneratedData: (outputDir: string, cacheDir: string, projectTag?: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {
       method: "POST",
-      body: JSON.stringify({ output_dir: outputDir, cache_dir: cacheDir }),
+      body: JSON.stringify({
+        output_dir: outputDir,
+        cache_dir: cacheDir,
+        project_tag: projectTag,
+      }),
     }),
 
   health: () => request<{ status: string }>("/api/health"),

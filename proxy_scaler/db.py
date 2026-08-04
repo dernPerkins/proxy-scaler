@@ -478,6 +478,36 @@ def get_gallery_item(
     return _gallery_row_to_dict(row) if row is not None else None
 
 
+def clear_project_generation_records(
+    project_tag: str, db_path: Path | str | None = None
+) -> None:
+    """Deletes this project_tag's finished generation_tasks (done/failed/
+    canceled) and all of its project_gallery_items — the DB-side half of
+    "delete all generated images & cache" (see pipeline.py::
+    clear_generated_data for the on-disk half). pending/running tasks are
+    left alone: they haven't written a file yet, so there's nothing about
+    them for the delete to have invalidated.
+
+    Both tables have to be touched, not just the gallery rows: a gallery
+    row missing for a (scryfall_id, face_index, dpi, model) pair falls back
+    to that pair's newest task's own status in the client's merge (see
+    mergeCardStatus.ts::statusForPairs), and a *completed* task's status is
+    literally "done" — so deleting only the gallery row would still leave
+    the UI reporting "done" for images that no longer exist on disk, from
+    task history alone. A no-op for a falsy project_tag, matching every
+    other project_tag-scoped write in this module."""
+    if not project_tag:
+        return
+    with connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM generation_tasks WHERE project_tag = ? "
+            "AND status NOT IN ('pending', 'running')",
+            (project_tag,),
+        )
+        conn.execute("DELETE FROM project_gallery_items WHERE project_tag = ?", (project_tag,))
+        conn.commit()
+
+
 def upsert_gallery_item_for_task(
     task: TaskRow, result: FaceResult, db_path: Path | str | None = None
 ) -> None:

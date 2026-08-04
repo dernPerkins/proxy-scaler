@@ -165,6 +165,11 @@ class PdfPreviewOut(BaseModel):
 class ClearGeneratedIn(BaseModel):
     output_dir: str
     cache_dir: str
+    # Optional so a caller with no project context yet (or a future
+    # global/all-projects clear) still works — but the client always sends
+    # its current project_tag, since otherwise the deleted files' gallery/
+    # task records survive and the UI keeps reporting them as generated.
+    project_tag: str | None = None
 
 
 class ClearGeneratedOut(BaseModel):

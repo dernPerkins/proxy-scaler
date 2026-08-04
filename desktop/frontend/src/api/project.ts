@@ -50,8 +50,11 @@ export const projectApi = {
     invokeCommand<void>("delete_project", { projectId }),
   clearAllProjects: () => invokeCommand<void>("clear_all_projects"),
 
-  setDecklistText: (projectId: number, text: string) =>
-    invokeCommand<CardRow[]>("set_decklist_text", { projectId, text }),
+  // Additive: adds any new cards parsed out of `text` to the project's
+  // existing list, deduped against what's already there (see
+  // project_store.rs::import_decklist_text) — never removes cards.
+  importDecklistText: (projectId: number, text: string) =>
+    invokeCommand<CardRow[]>("import_decklist_text", { projectId, text }),
   removeCard: (cardId: number) => invokeCommand<void>("remove_card", { cardId }),
 
   getLastProjectId: () => invokeCommand<number | null>("get_last_project_id"),

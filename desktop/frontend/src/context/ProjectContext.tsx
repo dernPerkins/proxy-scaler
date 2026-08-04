@@ -31,9 +31,12 @@ interface ProjectContextValue {
   setProjectName: (name: string) => void;
   decklistText: string;
   cards: CardRow[];
-  /** Persists the decklist text locally and re-parses it into `cards`. */
-  setDecklistText: (text: string) => void;
-  settingDecklistText: boolean;
+  /** Parses `text` and adds any new cards to `cards` — additive, never
+   *  removes an existing card (see project_store.rs::import_decklist_text).
+   *  Also remembers `text` itself as decklistText, purely as a "what did I
+   *  last paste" convenience. */
+  importDecklistText: (text: string) => void;
+  importingDecklistText: boolean;
   removeCard: (cardId: number) => void;
   isSaved: boolean;
   save: () => void;
@@ -120,7 +123,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       const summary = await projectApi.createProject(trimmed);
       await projectApi.updateProject(summary.id, summary.name, settings);
       if (decklistText) {
-        await projectApi.setDecklistText(summary.id, decklistText);
+        await projectApi.importDecklistText(summary.id, decklistText);
       }
       await projectApi.setLastProjectId(summary.id);
       return projectApi.getProject(summary.id);
@@ -155,10 +158,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  const setDecklistMutation = useMutation({
+  const importDecklistMutation = useMutation({
     mutationFn: async (text: string) => {
-      if (projectId == null) throw new Error("Save the project before editing its decklist.");
-      const newCards = await projectApi.setDecklistText(projectId, text);
+      if (projectId == null) throw new Error("Save the project before importing a decklist.");
+      const newCards = await projectApi.importDecklistText(projectId, text);
       return { text, newCards };
     },
     onSuccess: ({ text, newCards }) => {
@@ -231,8 +234,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectName,
     decklistText,
     cards,
-    setDecklistText: (text: string) => setDecklistMutation.mutate(text),
-    settingDecklistText: setDecklistMutation.isPending,
+    importDecklistText: (text: string) => importDecklistMutation.mutate(text),
+    importingDecklistText: importDecklistMutation.isPending,
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     isSaved: projectId != null,
     save: () => saveMutation.mutate(),

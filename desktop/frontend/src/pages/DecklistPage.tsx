@@ -63,8 +63,17 @@ interface DisplayFace {
 
 export default function DecklistPage() {
   const queryClient = useQueryClient();
-  const { projectId, projectTag, settings, setSettings, cards, decklistText, setDecklistText, settingDecklistText, removeCard } =
-    useProject();
+  const {
+    projectId,
+    projectTag,
+    settings,
+    setSettings,
+    cards,
+    decklistText,
+    importDecklistText,
+    importingDecklistText,
+    removeCard,
+  } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
   // Whether the generation server is reachable right now — remote mode
@@ -86,8 +95,8 @@ export default function DecklistPage() {
   // Keep the draft in sync when a different project loads (or the
   // current one reloads) — projectId, not decklistText itself, is the
   // trigger: once a project is open, decklistText only changes via this
-  // page's own setDecklistText save, and re-syncing on every such change
-  // would stomp whatever the user is mid-typing.
+  // page's own importDecklistText call, and re-syncing on every such
+  // change would stomp whatever the user is mid-typing.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => setDecklistDraft(decklistText), [projectId]);
   const [status, setStatus] = useState<string | null>(null);
@@ -171,7 +180,12 @@ export default function DecklistPage() {
 
   const [confirmClearGenerated, setConfirmClearGenerated] = useState(false);
   const clearGeneratedMutation = useMutation({
-    mutationFn: () => generationApi.clearGeneratedData(genPaths.output_dir, genPaths.cache_dir),
+    mutationFn: () =>
+      generationApi.clearGeneratedData(
+        genPaths.output_dir,
+        genPaths.cache_dir,
+        projectTag ?? undefined,
+      ),
     onSuccess: () => {
       setConfirmClearGenerated(false);
       invalidateStatus();
@@ -345,12 +359,12 @@ export default function DecklistPage() {
               <button
                 className="btn-primary"
                 onClick={() => {
-                  setDecklistText(decklistDraft);
+                  importDecklistText(decklistDraft);
                   setStatus(null);
                 }}
-                disabled={decklistDraft === decklistText || settingDecklistText}
+                disabled={!decklistDraft.trim() || importingDecklistText}
               >
-                {settingDecklistText ? "Parsing…" : "Update cards"}
+                {importingDecklistText ? "Importing…" : "Import cards"}
               </button>
               {status && <p className="hint">{status}</p>}
             </div>
@@ -387,7 +401,7 @@ export default function DecklistPage() {
 
             {cards.length === 0 && (
               <p className="empty-note">
-                No cards yet — paste a decklist above and click Update cards.
+                No cards yet — paste a decklist above and click Import cards.
               </p>
             )}
 
