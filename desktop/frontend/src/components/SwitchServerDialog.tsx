@@ -3,8 +3,6 @@ import RecentHostsList from "./RecentHostsList";
 
 export interface SwitchServerDialogProps {
   target: "local" | "remote";
-  /** Prefills the host field when switching to remote. */
-  initialHost: string;
   /** False when there's no project worth saving — hides the save option. */
   canSave: boolean;
   busy: boolean;
@@ -23,7 +21,6 @@ export interface SwitchServerDialogProps {
 // the download-attribute story.
 export default function SwitchServerDialog({
   target,
-  initialHost,
   canSave,
   busy,
   error,
@@ -32,7 +29,11 @@ export default function SwitchServerDialog({
   recentHosts,
   onRemoveHost,
 }: SwitchServerDialogProps) {
-  const [host, setHost] = useState(initialHost);
+  // Deliberately starts blank rather than prefilled with the current host
+  // (e.g. from a prior connect) — a prefilled field made clicking a recent
+  // entry that happened to match look like nothing had happened. Leaving it
+  // blank means any selection, typed or clicked, is a visible change.
+  const [host, setHost] = useState("");
   const hostReady = target === "local" || host.trim().length > 0;
 
   return (
@@ -63,11 +64,15 @@ export default function SwitchServerDialog({
                 </span>
                 {/* Fill-only: this dialog exists specifically to force the
                     save-before-switching choice below, so selecting a
-                    saved host must not skip straight to switching. */}
+                    saved host must not skip straight to switching.
+                    selectedHost highlights whichever one now matches the
+                    (blank-by-default) address field, as a clearer sign a
+                    click did something than the field alone. */}
                 <RecentHostsList
                   hosts={recentHosts}
                   onSelect={setHost}
                   onRemove={onRemoveHost}
+                  selectedHost={host}
                   disabled={busy}
                 />
               </div>

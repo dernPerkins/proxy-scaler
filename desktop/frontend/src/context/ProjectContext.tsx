@@ -105,6 +105,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: (project) => {
       setProjectId(project.id);
+      setProjectTag(project.tag);
       setProjectName(project.name);
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["projects"] });

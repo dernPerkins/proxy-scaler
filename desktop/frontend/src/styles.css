@@ -228,6 +228,11 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.host-row-select.selected {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong));
+}
 
 .check-row {
   display: flex;

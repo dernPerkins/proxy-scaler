@@ -100,6 +100,10 @@
         color: var(--text-muted);
         background: var(--surface-2);
       }
+      .starting {
+        color: var(--warn);
+        background: var(--warn-soft);
+      }
       button {
         font: inherit;
         padding: 6px 14px;
@@ -268,9 +272,16 @@
 
       function render(status) {
         running = status.running;
+        // "running" (process spawned) and "ready" (Uvicorn actually
+        // accepting connections) are genuinely different moments during
+        // startup — collapsing them into one "Running" badge is what
+        // previously told the user to go connect before the server could
+        // actually answer a request.
+        const state = !running ? "off" : status.ready ? "on" : "starting";
+        const label = { off: "Stopped", starting: "Starting…", on: "Running" }[state];
 
-        el.status.className = "badge " + (running ? "on" : "off");
-        el.status.innerHTML = '<span class="dot"></span>' + (running ? "Running" : "Stopped");
+        el.status.className = "badge " + state;
+        el.status.innerHTML = '<span class="dot"></span>' + label;
 
         el.toggle.textContent = busy
           ? "Working…"

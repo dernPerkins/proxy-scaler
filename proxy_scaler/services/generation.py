@@ -13,6 +13,7 @@ from pathlib import Path
 from proxy_scaler import db
 from proxy_scaler.pipeline import FaceResult, output_filename
 from proxy_scaler.scryfall import ScryfallClient, ScryfallError, expand_faces
+from proxy_scaler.upscale import original_cache_path
 
 
 def enqueue_face(
@@ -140,6 +141,25 @@ def enqueue_decklist_entries(
                     out_path = output_dir / out_name
                     if skip_existing and out_path.exists():
                         skipped_existing += 1
+                        # The pre-upscale cached original lives at a
+                        # deterministic path keyed only by scryfall_id/
+                        # face_index (see upscale.py::original_cache_path)
+                        # — independent of dpi/model, so it's very likely
+                        # still sitting in cache_dir from whatever earlier
+                        # run produced this output file, even though no
+                        # task ever ran for it under the *current*
+                        # project_tag. Stored unconditionally, whether or
+                        # not it currently exists: gallery.py's file-serving
+                        # route already 404s gracefully for a stored path
+                        # that isn't actually there (same as it would for
+                        # any other missing file), so there's no need for a
+                        # separate "no original" sentinel here — and if a
+                        # later regen ever writes a file to this exact
+                        # deterministic path, "Compare" starts working
+                        # without needing another gallery upsert at all.
+                        original_path = original_cache_path(
+                            cache_dir, face.scryfall_id, face.face_index
+                        )
                         # No task will ever run for this face/dpi under
                         # the current project_tag (that's the whole point
                         # of skipping it) — without this, the file exists
@@ -152,7 +172,7 @@ def enqueue_decklist_entries(
                             project_tag,
                             FaceResult(
                                 out_path=out_path,
-                                original_path=Path(""),
+                                original_path=original_path,
                                 scryfall_id=face.scryfall_id,
                                 face_index=face.face_index,
                                 face_name=face.face_name,

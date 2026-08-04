@@ -116,7 +116,6 @@ export default function ServerSwitcher() {
       {pending && (
         <SwitchServerDialog
           target={pending}
-          initialHost={connection.host}
           canSave={canSave}
           busy={busy}
           error={error}

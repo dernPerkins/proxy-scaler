@@ -169,6 +169,7 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     gallery anyway, or the UI shows "not generated yet" for an image that
     genuinely already exists. See db.py::upsert_gallery_item."""
     from proxy_scaler.pipeline import output_filename
+    from proxy_scaler.upscale import original_cache_path
 
     monkeypatch.setattr(
         ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
@@ -177,6 +178,7 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     output_dir.mkdir()
     existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
     (output_dir / existing_name).write_bytes(b"fake png")
+    cache_dir = tmp_path / "cache"
 
     tag = "proj-tag-backfill"
     queued, failed, task_ids = generation.enqueue_decklist_entries(
@@ -186,7 +188,7 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
         skip_existing=True,
         tile_size=0,
         output_dir=output_dir,
-        cache_dir=tmp_path / "cache",
+        cache_dir=cache_dir,
         weights_dir=tmp_path / "weights",
         project_tag=tag,
         db_path=db_path,
@@ -200,6 +202,54 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     assert items[0]["dpi"] == 800
     assert items[0]["model"] == "swinir"
     assert items[0]["out_path"] == str(output_dir / existing_name)
+    # No cached original actually on disk for this scryfall_id — the
+    # deterministic path is still stored (see the cache-hit variant below
+    # for why), so "Compare" 404s on request rather than the gallery row
+    # having no path recorded for it at all.
+    assert items[0]["original_path"] == str(original_cache_path(cache_dir, "sol-id", None))
+    assert not Path(items[0]["original_path"]).exists()
+
+
+def test_enqueue_decklist_entries_backfill_finds_cached_original(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Same as the no-cache-hit case above, but the pre-upscale original is
+    still sitting in cache_dir (its path is deterministic, keyed only by
+    scryfall_id/face_index — see upscale.py::original_cache_path) — the
+    backfilled gallery row must point "Compare" at it instead of leaving
+    original_path empty when it doesn't have to."""
+    from proxy_scaler.pipeline import output_filename
+    from proxy_scaler.upscale import original_cache_path
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
+    (output_dir / existing_name).write_bytes(b"fake png")
+
+    cache_dir = tmp_path / "cache"
+    cached_original = original_cache_path(cache_dir, "sol-id", None)
+    cached_original.parent.mkdir(parents=True)
+    cached_original.write_bytes(b"fake original")
+
+    tag = "proj-tag-backfill-cached"
+    generation.enqueue_decklist_entries(
+        [_entry()],
+        model="swinir",
+        dpi_targets=[800],
+        skip_existing=True,
+        tile_size=0,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        weights_dir=tmp_path / "weights",
+        project_tag=tag,
+        db_path=db_path,
+    )
+
+    [item] = db.list_gallery_items(tag, db_path=db_path)
+    assert item["original_path"] == str(cached_original)
 
 
 def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(

@@ -44,6 +44,13 @@ struct ServerState {
     transition: Mutex<()>,
     logs: Mutex<VecDeque<String>>,
     settings: Mutex<Settings>,
+    /// True only once READY_MARKER has actually been seen on stdout —
+    /// distinct from `child.is_some()` (a process merely having been
+    /// spawned). Without this, get_status()'s polling loop reports
+    /// "running" the instant the child handle exists, well before Uvicorn
+    /// is actually accepting connections, which reads to the user as the
+    /// server being up when a connection attempt would still fail.
+    ready: Mutex<bool>,
 }
 
 struct Settings {
@@ -65,7 +72,12 @@ impl Default for Settings {
 
 #[derive(Serialize)]
 struct Status {
+    /// True as soon as the process is spawned — a process existing, not
+    /// necessarily serving anything yet.
     running: bool,
+    /// True once READY_MARKER has been seen — the server is genuinely
+    /// accepting connections now, not just running. See ServerState::ready.
+    ready: bool,
     port: u16,
     allow_remote: bool,
     /// Addresses to type into the client's "Connect to a server" box.
@@ -101,6 +113,7 @@ async fn get_status(state: State<'_, ServerState>) -> Result<Status, String> {
     drop(settings);
 
     let running = state.child.lock().await.is_some();
+    let ready = *state.ready.lock().await;
     let logs = state.logs.lock().await.iter().cloned().collect();
 
     let mut addresses = vec![format!("{LOOPBACK}:{port}")];
@@ -112,6 +125,7 @@ async fn get_status(state: State<'_, ServerState>) -> Result<Status, String> {
 
     Ok(Status {
         running,
+        ready,
         port,
         allow_remote,
         addresses,
@@ -175,6 +189,11 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
 
     *guard = Some(child);
     drop(guard);
+    // Reset explicitly rather than trusting it's already false: a prior
+    // run's Terminated handler should have cleared it, but state surviving
+    // across a start/stop/start cycle incorrectly is exactly the kind of
+    // bug this field exists to prevent in the first place.
+    *state.ready.lock().await = false;
 
     {
         let mut logs = state.logs.lock().await;
@@ -182,8 +201,8 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
         logs.push_back(format!("Starting server on {host}:{port}…"));
     }
 
-    let ready = Arc::new(Notify::new());
-    let ready_signal = ready.clone();
+    let ready_notify = Arc::new(Notify::new());
+    let ready_signal = ready_notify.clone();
     let exited = state.exited.clone();
     let app_for_pump = app.clone();
 
@@ -198,6 +217,7 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
                     let text = String::from_utf8_lossy(&line).trim_end().to_string();
                     if text.contains(READY_MARKER) {
                         ready_signal.notify_one();
+                        *app_for_pump.state::<ServerState>().ready.lock().await = true;
                     }
                     if !text.is_empty() {
                         push_log(&app_for_pump.state::<ServerState>(), text).await;
@@ -218,6 +238,7 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
                     // Clear the slot so the UI reflects reality and a
                     // restart isn't blocked by a dead handle.
                     *app_for_pump.state::<ServerState>().child.lock().await = None;
+                    *app_for_pump.state::<ServerState>().ready.lock().await = false;
                     exited.notify_waiters();
                     break;
                 }
@@ -228,7 +249,7 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
 
     drop(transition);
 
-    match tokio::time::timeout(READY_TIMEOUT, ready.notified()).await {
+    match tokio::time::timeout(READY_TIMEOUT, ready_notify.notified()).await {
         Ok(()) => Ok(()),
         Err(_) => Err(
             "The server didn't report ready in time. Check the log below — if the port is \
@@ -265,6 +286,11 @@ async fn stop_sidecar(state: &ServerState) {
 #[tauri::command]
 async fn stop_server(state: State<'_, ServerState>) -> Result<(), String> {
     stop_sidecar(&state).await;
+    // Defensive: the Terminated event handler already resets this once the
+    // process actually exits, but that arrives on its own async schedule —
+    // this guarantees the UI's next poll sees "stopped" immediately rather
+    // than a stale "ready" for however long that takes to land.
+    *state.ready.lock().await = false;
     push_log(&state, "Server stopped.".to_string()).await;
     Ok(())
 }

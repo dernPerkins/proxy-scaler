@@ -29,6 +29,14 @@ export default function ProjectBar() {
         className="grow"
         value={project.projectName}
         onChange={(e) => project.setProjectName(e.target.value)}
+        onKeyDown={(e) => {
+          // save() already branches create-vs-update off projectId itself
+          // (see ProjectContext.tsx), so Enter here does exactly what
+          // clicking Save would — new project -> create, existing -> rename.
+          if (e.key === "Enter" && project.projectName.trim() && !project.saving) {
+            project.save();
+          }
+        }}
         placeholder="Project name"
       />
 
