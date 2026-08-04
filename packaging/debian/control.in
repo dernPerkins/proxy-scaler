@@ -1,0 +1,20 @@
+Package: proxy-scaler
+Version: @VERSION@
+Section: graphics
+Priority: optional
+Architecture: @ARCH@
+Maintainer: proxy-scaler maintainers <noreply@example.com>
+Depends: adduser
+Description: MTG proxy card upscaling server
+ Runs the proxy-scaler API and its generation worker as a managed pair,
+ so the proxy-scaler desktop app (or any HTTP client) can queue card
+ upscaling work against this machine's CPU or GPU.
+ .
+ The bundled runtime is self-contained — Python, PyTorch and the model
+ loader are frozen into /opt/proxy-scaler, so no system Python or pip
+ packages are required.
+ .
+ The API is UNAUTHENTICATED. The service ships bound to all interfaces
+ so it is reachable from other machines; restrict it to a trusted
+ network, or set PROXY_SCALER_SERVER_HOST=127.0.0.1 in
+ /etc/default/proxy-scaler.

@@ -100,6 +100,96 @@ python -m proxy_scaler cards.txt --model realesrnet --dpi 1200
 
 Filenames include model + DPI, e.g. `Sol_Ring-C21-263-swinir-800dpi.png`.
 
+### Server
+
+Runs the API and the generation worker together as one managed pair.
+This is what the desktop app's **Connect to a server** mode talks to, and
+what the Linux package installs as a service.
+
+```bash
+proxy-scaler-serve
+```
+
+Prints `PROXY_SCALER_READY` on stdout once healthy, then serves until
+stopped with Ctrl+C / SIGTERM.
+
+| Flag | Env var | Default | Purpose |
+|------|---------|---------|---------|
+| `--host` | `PROXY_SCALER_SERVER_HOST` | `127.0.0.1` | Bind address |
+| `--port` | `PROXY_SCALER_SERVER_PORT` | `8000` | Bind port |
+| `--data-dir` | `PROXY_SCALER_DATA_DIR` | OS per-user dir | Database, worker lock, logs |
+| `--no-stdin-shutdown` | — | off | Don't treat stdin EOF as "stop" |
+| — | `PROXY_SCALER_DB_PATH` | inside data dir | Database file |
+| — | `PROXY_SCALER_WORKER_LOCK_PATH` | inside data dir | Worker lock file |
+
+Flags win over env vars where both are set.
+
+**Accepting connections from other machines** means binding beyond
+loopback:
+
+```bash
+proxy-scaler-serve --host 0.0.0.0
+```
+
+> **There is no authentication.** Anyone who can reach the port can read
+> and write projects, and queue generation work on your GPU. Only bind
+> beyond `127.0.0.1` on a network you trust — a home LAN, or better, a
+> private overlay network like [Tailscale](https://tailscale.com), which
+> is what the desktop app's connect screen recommends.
+
+Stdin EOF is treated as a shutdown request, because that's how the
+desktop app stops its embedded server cleanly. Service managers hand a
+process `/dev/null`, which reads as immediate EOF — that case is
+detected and ignored automatically, so systemd and Docker work without
+`--no-stdin-shutdown`; the flag is there for anything that slips past
+the check.
+
+#### Server app (Windows/macOS)
+
+A small status window that runs the server for other machines to connect
+to, and minimises to the tray so it can be left running. Build it with
+`make sidecar && make server-app`, launch with `make server-app-run`.
+
+It shows whether the server is up, the address to paste into the client's
+**Connect to a server** box, and a live log. **Allow connections from
+other devices** is off by default — the server is loopback-only until you
+turn it on, because enabling it exposes an unauthenticated API to the
+network (the window says so too).
+
+Note it defaults to port 8000, the same port the desktop client's own
+local mode uses. Running both on one machine means the second one fails
+to bind; give the server app a different port if you want them
+side by side.
+
+#### Debian/Ubuntu package
+
+```bash
+sudo apt install ./proxy-scaler_0.1.0_amd64.deb
+```
+
+Installs a self-contained bundle to `/opt/proxy-scaler` (no system Python
+needed), registers a `proxy-scaler` systemd service running as its own
+unprivileged user, and starts it.
+
+| Path | Purpose |
+|------|---------|
+| `/etc/default/proxy-scaler` | Host, port, data dir — a conffile, so edits survive upgrades |
+| `/var/lib/proxy-scaler` | Database, worker lock, generated images |
+| `journalctl -u proxy-scaler` | Logs |
+
+The service binds `0.0.0.0` by default, since being reachable is the
+point of installing it — re-read the authentication warning above, and
+set `PROXY_SCALER_SERVER_HOST=127.0.0.1` then
+`systemctl restart proxy-scaler` if you'd rather it stayed local.
+
+`apt remove` keeps `/var/lib/proxy-scaler`; `apt purge` deletes it along
+with every project and generated image.
+
+**Building it** (`make sidecar && make deb`, output in `dist/`) has to
+happen on Linux, on the architecture you're targeting — PyInstaller
+bundles a platform-specific runtime, so a package for a Linux server
+cannot be produced from macOS or Windows.
+
 ### Streamlit UI
 
 ```bash

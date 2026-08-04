@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import CompareDialog from "../components/CompareDialog";
+import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
@@ -125,23 +126,16 @@ export default function DecklistPage() {
   const cards: Card[] = cardsQuery.data ?? [];
   const sortedCards = sortCards(cards, sortPrimary);
 
-  if (projectId == null) {
-    return (
-      <div>
-        <h2>Decklist</h2>
-        <p className="hint" style={{ marginTop: 8 }}>
-          {readiness.status === "starting"
-            ? "Starting local server — your last project will load automatically."
-            : "Enter a project name in the project bar above and click Save to get started."}
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="layout">
       <aside className="sidebar panel">
         <h3 style={{ marginBottom: 14 }}>Settings</h3>
+
+        {/* Above the field group, and deliberately outside the
+            no-project branch below: switching to an empty server leaves
+            projectId null, and if this lived behind that check there'd be
+            no way to switch back. */}
+        <ServerSwitcher />
 
         <div className="field-group">
           <label className="field">
@@ -254,63 +248,73 @@ export default function DecklistPage() {
       <main className="content">
         <h2>Decklist</h2>
 
-        <div className="import-box panel" style={{ marginTop: 10 }}>
-          <textarea
-            value={decklistText}
-            onChange={(e) => setDecklistText(e.target.value)}
-            rows={6}
-            style={{ width: "100%" }}
-            placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
-          />
-          <button
-            className="btn-primary"
-            onClick={() => importMutation.mutate(decklistText)}
-            disabled={!decklistText.trim() || importMutation.isPending}
-          >
-            {importMutation.isPending ? "Importing…" : "Import cards"}
-          </button>
-          {status && <p className="hint">{status}</p>}
-        </div>
+        {projectId == null ? (
+          <p className="hint" style={{ marginTop: 10 }}>
+            {readiness.status === "starting"
+              ? "Starting local server — your last project will load automatically."
+              : "Enter a project name in the project bar above and click Save to get started."}
+          </p>
+        ) : (
+          <>
+            <div className="import-box panel" style={{ marginTop: 10 }}>
+              <textarea
+                value={decklistText}
+                onChange={(e) => setDecklistText(e.target.value)}
+                rows={6}
+                style={{ width: "100%" }}
+                placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
+              />
+              <button
+                className="btn-primary"
+                onClick={() => importMutation.mutate(decklistText)}
+                disabled={!decklistText.trim() || importMutation.isPending}
+              >
+                {importMutation.isPending ? "Importing…" : "Import cards"}
+              </button>
+              {status && <p className="hint">{status}</p>}
+            </div>
 
-        <div className="decklist-head">
-          <h2>
-            Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
-          </h2>
-          <div className="decklist-actions">
-            <select
-              value={sortPrimary}
-              onChange={(e) => setSortPrimary(e.target.value as typeof sortPrimary)}
-            >
-              <option value="Name">Sort: Name</option>
-              <option value="Set">Sort: Set</option>
-              <option value="(none)">Sort: (none)</option>
-            </select>
-            <button
-              className="btn-primary"
-              onClick={() => generateAllMutation.mutate()}
-              disabled={!cards.length || generateAllMutation.isPending}
-            >
-              Generate upscaled images
-            </button>
-          </div>
-        </div>
+            <div className="decklist-head">
+              <h2>
+                Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
+              </h2>
+              <div className="decklist-actions">
+                <select
+                  value={sortPrimary}
+                  onChange={(e) => setSortPrimary(e.target.value as typeof sortPrimary)}
+                >
+                  <option value="Name">Sort: Name</option>
+                  <option value="Set">Sort: Set</option>
+                  <option value="(none)">Sort: (none)</option>
+                </select>
+                <button
+                  className="btn-primary"
+                  onClick={() => generateAllMutation.mutate()}
+                  disabled={!cards.length || generateAllMutation.isPending}
+                >
+                  Generate upscaled images
+                </button>
+              </div>
+            </div>
 
-        {cards.length === 0 && !cardsQuery.isLoading && (
-          <p className="empty-note">No cards yet — paste a decklist above and import it.</p>
+            {cards.length === 0 && !cardsQuery.isLoading && (
+              <p className="empty-note">No cards yet — paste a decklist above and import it.</p>
+            )}
+
+            {sortedCards.map((card) => (
+              <CardRow
+                key={card.id}
+                card={card}
+                projectId={projectId}
+                expandedFaces={expandedFaces}
+                onToggleExpand={toggleExpanded}
+                onRemove={() => removeCardMutation.mutate(card.id)}
+                onGenerate={() => generateCardMutation.mutate(card)}
+                onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+              />
+            ))}
+          </>
         )}
-
-        {sortedCards.map((card) => (
-          <CardRow
-            key={card.id}
-            card={card}
-            projectId={projectId}
-            expandedFaces={expandedFaces}
-            onToggleExpand={toggleExpanded}
-            onRemove={() => removeCardMutation.mutate(card.id)}
-            onGenerate={() => generateCardMutation.mutate(card)}
-            onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
-          />
-        ))}
       </main>
     </div>
   );

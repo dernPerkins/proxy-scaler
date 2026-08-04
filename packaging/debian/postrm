@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+DATA_DIR=/var/lib/proxy-scaler
+
+case "$1" in
+  purge)
+    # Deliberately only on purge, never on plain remove: this directory
+    # holds the user's projects and every generated image. `apt remove`
+    # must not destroy those.
+    rm -rf "$DATA_DIR"
+    if getent passwd proxy-scaler >/dev/null; then
+      deluser --system proxy-scaler >/dev/null 2>&1 || true
+    fi
+    ;;
+
+  remove)
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

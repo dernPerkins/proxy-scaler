@@ -1,2 +1,4 @@
 src-tauri/target/
 src-tauri/gen/
+server-app/target/
+server-app/gen/

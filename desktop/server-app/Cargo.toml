@@ -1,0 +1,16 @@
+[package]
+name = "proxy-scaler-server"
+version = "0.1.0"
+description = "Runs the proxy-scaler generation server so other machines can connect to it"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon is what lets the window minimise to the menu bar / system tray
+# instead of quitting — the whole point of a server app you leave running.
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }

@@ -14,8 +14,17 @@ RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
 SIDECAR_DEBUG_DIR := desktop/src-tauri/target/debug/proxy-scaler-serve
 SIDECAR_RELEASE_DIR := desktop/src-tauri/target/release/proxy-scaler-serve
 
+# The server app is a separate Tauri binary and finds its own copy the
+# same way, so it needs the bundle staged next to it too. Two copies on
+# disk is the accepted cost of the client keeping zero-setup local mode
+# while the server ships independently.
+SERVER_APP_DEBUG_DIR := desktop/server-app/target/debug/proxy-scaler-serve
+SERVER_APP_RELEASE_DIR := desktop/server-app/target/release/proxy-scaler-serve
+SERVER_APP_BIN := desktop/server-app/target/release/proxy-scaler-server
+
 .PHONY: help install test serve sidecar sidecar-clean \
-	build run desktop \
+	build run desktop deb \
+	server-app server-app-dev server-app-run \
 	api-dev worker-dev frontend-install frontend-dev frontend-build
 
 help:
@@ -36,6 +45,14 @@ help:
 	@echo "desktop          Run the Tauri desktop app via cargo tauri dev"
 	@echo "                 (needs frontend-dev running alongside it, and the"
 	@echo "                 sidecar resource directory in place -- see 'sidecar' above)"
+	@echo ""
+	@echo "--- server app (Windows/macOS: status window + tray) ---"
+	@echo "server-app       Build the server app (run 'make sidecar' first)"
+	@echo "server-app-run   Launch the already-built server app"
+	@echo "server-app-dev   Run the server app via cargo tauri dev"
+	@echo ""
+	@echo "--- headless server packaging (Linux only) ---"
+	@echo "deb              Build the .deb server package into dist/ (run 'make sidecar' first)"
 	@echo ""
 	@echo "--- misc ---"
 	@echo "install          Create $(VENV) and pip install -e ."
@@ -61,6 +78,7 @@ serve:
 sidecar-clean:
 	rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build
 	rm -rf $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR)
+	rm -rf $(SERVER_APP_DEBUG_DIR) $(SERVER_APP_RELEASE_DIR)
 
 # One-folder PyInstaller freeze (see desktop/pyinstaller/proxy-scaler-serve.spec
 # for why onedir, not onefile — onefile self-extracts its ~1GB+ torch bundle
@@ -75,14 +93,17 @@ sidecar: sidecar-clean
 	$(VENV)/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
-	mkdir -p $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR)
+	mkdir -p $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR) \
+		$(SERVER_APP_DEBUG_DIR) $(SERVER_APP_RELEASE_DIR)
 	# -L (dereference symlinks): PyInstaller's onedir output commonly
 	# includes versioned .dylib/.so symlinks (torch's shared-library deps
 	# in particular) — copying the real file content instead keeps this
 	# a plain, boring directory of regular files, nothing fancier needed.
 	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_DEBUG_DIR)/
 	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RELEASE_DIR)/
-	@echo "sidecar placed: $(SIDECAR_DEBUG_DIR) and $(SIDECAR_RELEASE_DIR)"
+	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_DEBUG_DIR)/
+	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_RELEASE_DIR)/
+	@echo "sidecar placed for the client and the server app (debug + release)"
 
 # The real packaged-app build: compiles main.rs and (via tauri.conf.json's
 # beforeBuildCommand) rebuilds the frontend automatically. Does NOT
@@ -93,6 +114,26 @@ build:
 
 run:
 	./$(RELEASE_BIN)
+
+# The server app: a status window that runs the generation server for
+# other machines to connect to, and lives in the tray. Same sidecar
+# staging story as the client, so 'make sidecar' covers both.
+server-app:
+	cd desktop/server-app && cargo tauri build
+
+server-app-run:
+	./$(SERVER_APP_BIN)
+
+server-app-dev:
+	cd desktop/server-app && cargo tauri dev
+
+# Headless server package for Linux. Consumes the same PyInstaller onedir
+# bundle 'sidecar' produces, so run that first. PyInstaller output is
+# platform-specific: this only produces a working package when built on
+# Linux, on the architecture you're targeting — it cannot be built from
+# macOS. See packaging/build-deb.sh for the staging details.
+deb:
+	./packaging/build-deb.sh
 
 # Tauri dev mode: Rust auto-rebuilds/relaunches on change, and the window
 # loads Vite's dev server (devUrl in tauri.conf.json) for frontend HMR.

@@ -32,6 +32,10 @@ interface ProjectContextValue {
   setProjectName: (name: string) => void;
   isSaved: boolean;
   save: () => void;
+  /** Awaitable save, for callers that must not proceed until it lands
+   *  (the connection switcher saves before resetting the whole UI).
+   *  Rejects on failure so the caller can abort. */
+  saveAsync: () => Promise<void>;
   saveAs: (name: string) => void;
   createNew: () => void;
   load: (id: number) => void;
@@ -156,6 +160,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectName,
     isSaved: projectId != null,
     save: () => saveMutation.mutate(),
+    saveAsync: async () => {
+      await saveMutation.mutateAsync();
+    },
     saveAs: (name: string) => saveAsMutation.mutate(name),
     createNew,
     load: (id: number) => loadMutation.mutate(id),

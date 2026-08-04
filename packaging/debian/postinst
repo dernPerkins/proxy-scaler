@@ -1,0 +1,51 @@
+#!/bin/sh
+set -e
+
+DATA_DIR=/var/lib/proxy-scaler
+SVC_USER=proxy-scaler
+
+case "$1" in
+  configure)
+    if ! getent passwd "$SVC_USER" >/dev/null; then
+      adduser --system --group --no-create-home \
+              --home "$DATA_DIR" \
+              --gecos "proxy-scaler server" \
+              "$SVC_USER" >/dev/null
+    fi
+
+    mkdir -p "$DATA_DIR"
+    chown -R "$SVC_USER":"$SVC_USER" "$DATA_DIR"
+    chmod 750 "$DATA_DIR"
+
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      systemctl enable proxy-scaler.service >/dev/null 2>&1 || true
+      # restart rather than start: on an upgrade this picks up the new
+      # binary, and on a fresh install it's equivalent to start.
+      systemctl restart proxy-scaler.service >/dev/null 2>&1 || true
+    fi
+
+    cat <<'EOF'
+
+proxy-scaler is installed and the service is running.
+
+  Connect the desktop app with "Connect to a server" and this machine's
+  address on port 8000.
+
+  WARNING: the API has no authentication. It is bound to all interfaces
+  by default, so anyone who can reach port 8000 can read and write
+  projects and queue generation work on this machine. Restrict it to a
+  trusted network, or set PROXY_SCALER_SERVER_HOST=127.0.0.1 in
+  /etc/default/proxy-scaler and run: systemctl restart proxy-scaler
+
+  Config: /etc/default/proxy-scaler
+  Data:   /var/lib/proxy-scaler
+  Logs:   journalctl -u proxy-scaler
+
+EOF
+    ;;
+
+  abort-upgrade | abort-remove | abort-deconfigure) ;;
+esac
+
+exit 0

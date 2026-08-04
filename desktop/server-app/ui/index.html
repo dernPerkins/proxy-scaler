@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Proxy Scaler Server</title>
+    <style>
+      /* Deliberately a single self-contained file: this window is a status
+         readout with four controls, and a whole Vite/React build for it
+         would cost more to maintain than it returns. Tokens mirror the
+         client's styles.css so the two apps look related. */
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f6f8;
+        --surface: #fff;
+        --surface-2: #f1f1f4;
+        --border: #e2e2e7;
+        --border-strong: #cbcbd3;
+        --text: #1b1b1f;
+        --text-muted: #6c6c78;
+        --accent: #4f46e5;
+        --accent-hover: #4338ca;
+        --ok: #15703f;
+        --ok-soft: #e4f4ea;
+        --err: #a52820;
+        --err-soft: #fbe8e6;
+        --warn: #7a5d10;
+        --warn-soft: #fbf1d8;
+        --radius: 6px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #151519;
+          --surface: #1d1d23;
+          --surface-2: #25252d;
+          --border: #32323c;
+          --border-strong: #45454f;
+          --text: #ececf1;
+          --text-muted: #a2a2af;
+          --accent: #7d75f0;
+          --accent-hover: #8f88f5;
+          --ok: #58d68d;
+          --ok-soft: #13301e;
+          --err: #f6918a;
+          --err-soft: #391613;
+          --warn: #e6cd7c;
+          --warn-soft: #302810;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        color: var(--text);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 16px;
+      }
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
+        margin-bottom: 14px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12.5px;
+        font-weight: 500;
+        padding: 3px 10px;
+        border-radius: 999px;
+      }
+      .badge .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .on {
+        color: var(--ok);
+        background: var(--ok-soft);
+      }
+      .off {
+        color: var(--text-muted);
+        background: var(--surface-2);
+      }
+      button {
+        font: inherit;
+        padding: 6px 14px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: var(--surface-2);
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+      }
+      label.field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        font-size: 12px;
+        font-weight: 550;
+        color: var(--text-muted);
+      }
+      input[type="number"] {
+        font: inherit;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: 6px 9px;
+        width: 110px;
+      }
+      label.check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+      }
+      input[type="checkbox"] {
+        accent-color: var(--accent);
+        width: 15px;
+        height: 15px;
+        margin: 0;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin: 8px 0 0;
+      }
+      .warn {
+        font-size: 12px;
+        color: var(--warn);
+        background: var(--warn-soft);
+        border-radius: var(--radius);
+        padding: 8px 10px;
+        margin-top: 10px;
+      }
+      .error {
+        font-size: 12.5px;
+        color: var(--err);
+        background: var(--err-soft);
+        border-radius: var(--radius);
+        padding: 8px 10px;
+        margin-top: 10px;
+      }
+      .addr {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        background: var(--surface-2);
+        border-radius: var(--radius);
+        padding: 7px 10px;
+        margin-top: 6px;
+        user-select: all;
+      }
+      #log {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: var(--text-muted);
+        background: var(--surface-2);
+        border-radius: var(--radius);
+        padding: 10px;
+        height: 190px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Proxy Scaler Server</h1>
+
+    <div class="panel">
+      <div class="row">
+        <span id="status" class="badge off"><span class="dot"></span>Stopped</span>
+        <span style="flex: 1"></span>
+        <button id="toggle" class="primary">Start server</button>
+      </div>
+      <div id="error" class="error" hidden></div>
+    </div>
+
+    <div class="panel">
+      <div class="row" style="align-items: flex-end">
+        <label class="field">
+          Port
+          <input id="port" type="number" min="1" max="65535" value="8000" />
+        </label>
+      </div>
+      <label class="check" style="margin-top: 12px">
+        <input id="allowRemote" type="checkbox" />
+        Allow connections from other devices
+      </label>
+      <div id="remoteWarning" class="warn" hidden>
+        This server has <strong>no authentication</strong>. Anyone who can reach this port can
+        read and write projects and queue generation work on this machine. Only enable this on a
+        network you trust.
+      </div>
+      <p class="hint">Settings can only be changed while the server is stopped.</p>
+    </div>
+
+    <div class="panel">
+      <strong style="font-size: 13px">Connect from the desktop app</strong>
+      <p class="hint">Choose “Connect to a server” and enter:</p>
+      <div id="addresses"></div>
+    </div>
+
+    <div class="panel">
+      <strong style="font-size: 13px">Log</strong>
+      <div id="log" style="margin-top: 8px"></div>
+    </div>
+
+    <script>
+      const invoke = window.__TAURI__.core.invoke;
+
+      const el = {
+        status: document.getElementById("status"),
+        toggle: document.getElementById("toggle"),
+        error: document.getElementById("error"),
+        port: document.getElementById("port"),
+        allowRemote: document.getElementById("allowRemote"),
+        remoteWarning: document.getElementById("remoteWarning"),
+        addresses: document.getElementById("addresses"),
+        log: document.getElementById("log"),
+      };
+
+      let running = false;
+      let busy = false;
+      // While the user is mid-edit, polled values must not clobber the
+      // inputs from under them.
+      let editing = false;
+
+      function showError(message) {
+        el.error.textContent = message;
+        el.error.hidden = !message;
+      }
+
+      function render(status) {
+        running = status.running;
+
+        el.status.className = "badge " + (running ? "on" : "off");
+        el.status.innerHTML = '<span class="dot"></span>' + (running ? "Running" : "Stopped");
+
+        el.toggle.textContent = busy
+          ? "Working…"
+          : running
+            ? "Stop server"
+            : "Start server";
+        el.toggle.disabled = busy;
+        el.toggle.className = running ? "" : "primary";
+
+        if (!editing) {
+          el.port.value = status.port;
+          el.allowRemote.checked = status.allow_remote;
+        }
+        el.port.disabled = running || busy;
+        el.allowRemote.disabled = running || busy;
+        el.remoteWarning.hidden = !el.allowRemote.checked;
+
+        el.addresses.innerHTML = "";
+        for (const addr of status.addresses) {
+          const div = document.createElement("div");
+          div.className = "addr";
+          div.textContent = addr;
+          el.addresses.appendChild(div);
+        }
+
+        const atBottom = el.log.scrollTop + el.log.clientHeight >= el.log.scrollHeight - 20;
+        el.log.textContent = status.logs.join("\n");
+        if (atBottom) el.log.scrollTop = el.log.scrollHeight;
+      }
+
+      async function refresh() {
+        try {
+          render(await invoke("get_status"));
+        } catch (err) {
+          showError(String(err));
+        }
+      }
+
+      async function applySettings() {
+        await invoke("set_settings", {
+          port: Number(el.port.value) || 8000,
+          allowRemote: el.allowRemote.checked,
+        });
+      }
+
+      for (const input of [el.port, el.allowRemote]) {
+        input.addEventListener("focus", () => (editing = true));
+        input.addEventListener("change", async () => {
+          editing = false;
+          showError("");
+          try {
+            await applySettings();
+          } catch (err) {
+            showError(String(err));
+          }
+          refresh();
+        });
+      }
+
+      el.toggle.addEventListener("click", async () => {
+        busy = true;
+        showError("");
+        refresh();
+        try {
+          if (running) {
+            await invoke("stop_server");
+          } else {
+            await applySettings();
+            await invoke("start_server");
+          }
+        } catch (err) {
+          showError(String(err));
+        } finally {
+          busy = false;
+          refresh();
+        }
+      });
+
+      refresh();
+      setInterval(refresh, 1000);
+    </script>
+  </body>
+</html>

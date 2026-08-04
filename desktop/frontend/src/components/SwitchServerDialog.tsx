@@ -1,0 +1,87 @@
+import { useState } from "react";
+
+export interface SwitchServerDialogProps {
+  target: "local" | "remote";
+  /** Prefills the host field when switching to remote. */
+  initialHost: string;
+  /** False when there's no project worth saving — hides the save option. */
+  canSave: boolean;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: (save: boolean, host: string) => void;
+}
+
+// Follows CompareDialog's pattern (overlay closes on click, inner panel
+// stops propagation) rather than a native confirm(). Deliberate: native
+// dialog behaviour inside Tauri's WKWebView is exactly the class of thing
+// this app has already been bitten by twice — see main.rs::save_file for
+// the download-attribute story.
+export default function SwitchServerDialog({
+  target,
+  initialHost,
+  canSave,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: SwitchServerDialogProps) {
+  const [host, setHost] = useState(initialHost);
+  const hostReady = target === "local" || host.trim().length > 0;
+
+  return (
+    <div className="modal-overlay" onClick={busy ? undefined : onCancel}>
+      <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">
+            {target === "local" ? "Switch to this device" : "Switch to a remote server"}
+          </span>
+        </div>
+
+        {target === "remote" && (
+          <label className="field" style={{ marginBottom: 14 }}>
+            <span>Server address</span>
+            <input
+              value={host}
+              autoFocus
+              disabled={busy}
+              onChange={(e) => setHost(e.target.value)}
+              placeholder="IP or name (e.g. 100.x.x.x or my-server)"
+            />
+          </label>
+        )}
+
+        <p style={{ marginBottom: 6 }}>
+          Would you like to save the project before switching?
+        </p>
+        <p className="hint" style={{ marginBottom: 16 }}>
+          Switching will cause a reset of the UI.
+        </p>
+
+        {error && (
+          <p className="error-text" style={{ marginBottom: 12 }}>
+            {error}
+          </p>
+        )}
+
+        <div className="modal-actions">
+          <button onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button onClick={() => onConfirm(false, host.trim())} disabled={busy || !hostReady}>
+            {busy ? "Switching…" : "Switch without saving"}
+          </button>
+          {canSave && (
+            <button
+              className="btn-primary"
+              onClick={() => onConfirm(true, host.trim())}
+              disabled={busy || !hostReady}
+            >
+              Save &amp; switch
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -27,6 +27,17 @@ export async function invokeStartLocalServer(): Promise<string> {
   return window.__TAURI__.core.invoke<string>("start_local_server");
 }
 
+// Stops the local sidecar without exiting the app (see
+// main.rs::stop_local_server) — used when switching to a remote server so
+// the local worker stops holding memory for a server nobody's using.
+// A no-op if nothing is running.
+export async function invokeStopLocalServer(): Promise<void> {
+  if (!window.__TAURI__) {
+    throw new Error("Not running inside Tauri");
+  }
+  await window.__TAURI__.core.invoke<void>("stop_local_server");
+}
+
 // Native "Save As" dialog + write to disk (see main.rs::save_file).
 // Confirmed by real testing that the HTML `download` attribute isn't
 // reliably honored by Tauri's webview on macOS — see downloadBlob in

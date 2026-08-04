@@ -19,6 +19,7 @@ PyInstaller) into the desktop app's local-mode sidecar binary.
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import subprocess
@@ -226,12 +227,43 @@ def _terminate(proc: subprocess.Popen, *, grace_s: float = SHUTDOWN_GRACE_S) -> 
         pass
 
 
+def _stdin_can_trigger_shutdown() -> bool:
+    """Whether stdin is something a launcher could actually write a
+    shutdown line to.
+
+    systemd and `docker run` (without -i) hand a service /dev/null, which
+    reads as instant EOF — and `_watch_stdin` below treats EOF as a
+    shutdown request. Left ungated, a headless deployment would stop
+    itself the moment it finished starting. Tauri's sidecar gives us a
+    real pipe, so that path (the one the shutdown protocol exists for)
+    still works.
+    """
+    stdin = sys.stdin
+    if stdin is None:
+        return False
+    try:
+        if stdin.closed:
+            return False
+        fd = stdin.fileno()
+    except (ValueError, OSError):
+        return False
+    if os.name != "posix":
+        return True
+    try:
+        # /dev/null is a character device; pipes and regular files report
+        # st_rdev 0, so this only matches the actual null device.
+        return os.fstat(fd).st_rdev != os.stat(os.devnull).st_rdev
+    except OSError:
+        return True
+
+
 def main(
     *,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     db_path: Path | str | None = None,
     worker_lock_path: Path | str | None = None,
+    watch_stdin: bool = True,
 ) -> int:
     """Start the API server + the worker as managed children, block until
     shutdown, then stop both cleanly. Returns a process exit code."""
@@ -305,7 +337,10 @@ def main(
             pass
         shutdown_event.set()
 
-    threading.Thread(target=_watch_stdin, daemon=True).start()
+    if watch_stdin and _stdin_can_trigger_shutdown():
+        threading.Thread(target=_watch_stdin, daemon=True).start()
+    else:
+        print("stdin shutdown trigger disabled; use SIGTERM/SIGINT to stop.")
 
     exit_code = 0
     try:
@@ -314,7 +349,7 @@ def main(
             sys.stdout.flush()
         else:
             print(
-                "Streamlit did not become healthy in time; shutting down.",
+                "API server did not become healthy in time; shutting down.",
                 file=sys.stderr,
             )
             exit_code = 1
@@ -344,19 +379,85 @@ def main(
     return exit_code
 
 
-def cli_main() -> int:
+def cli_main(argv: list[str] | None = None) -> int:
     """Entry point for both invocation paths — the `proxy-scaler-serve`
     console script (setuptools calls this directly, `__name__` is never
     "__main__" in that path) and `python -m proxy_scaler.supervisor`.
-    Reads the same env var overrides (unset -> default) either way, so a
-    test harness or launcher can run this as an isolated process without
-    needing a CLI arg parser here — same convention as worker.py's own
-    env var overrides."""
+
+    Every setting can come from a flag *or* an env var, flag winning. The
+    env vars predate the flags and are still the only channel the Tauri
+    sidecar and the test harness use (the integration fixture spawns this
+    as a bare subprocess with a prepared environment), so they remain
+    fully supported rather than deprecated.
+    """
+    parser = argparse.ArgumentParser(
+        prog="proxy-scaler-serve",
+        description=(
+            "Run the proxy-scaler API server and its generation worker as a "
+            "managed pair. Prints " + READY_MARKER + " on stdout once healthy."
+        ),
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=(
+            "Address to bind (default 127.0.0.1, i.e. this machine only). "
+            "Use 0.0.0.0 to accept connections from other devices — note "
+            "the API is UNAUTHENTICATED, so only do that on a network you "
+            "trust, such as a Tailscale tailnet or a home LAN."
+        ),
+    )
+    parser.add_argument("--port", type=int, default=None, help="Port to bind (default 8000).")
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help=(
+            "Directory for the database, worker lock and logs. Defaults to "
+            "an OS-conventional per-user directory."
+        ),
+    )
+    parser.add_argument(
+        "--no-stdin-shutdown",
+        action="store_true",
+        help=(
+            "Don't treat stdin EOF as a shutdown request. Auto-detected for "
+            "/dev/null, so service managers rarely need this explicitly."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    host = args.host or os.environ.get("PROXY_SCALER_SERVER_HOST", DEFAULT_HOST)
+    port = args.port or int(os.environ.get("PROXY_SCALER_SERVER_PORT", DEFAULT_PORT))
+    db_path = os.environ.get("PROXY_SCALER_DB_PATH") or None
+    worker_lock_path = os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None
+
+    data_dir = args.data_dir or os.environ.get(db.DATA_DIR_ENV_VAR)
+    if data_dir:
+        # Exported so the API/worker children inherit it — they resolve
+        # their own defaults at import time, in their own processes.
+        os.environ[db.DATA_DIR_ENV_VAR] = str(data_dir)
+        root = Path(data_dir).expanduser()
+        root.mkdir(parents=True, exist_ok=True)
+        # db.py's module constants were already resolved at import, which
+        # for a --data-dir passed on the command line is too late — so
+        # derive the concrete paths here instead of relying on them.
+        db_path = db_path or str(root / "proxy_scaler.db")
+        worker_lock_path = worker_lock_path or str(root / "worker.lock")
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"NOTE: binding {host} — the API has no authentication, so anyone "
+            "who can reach this port can read and write projects and queue "
+            "generation work. Keep it on a trusted network.",
+            file=sys.stderr,
+        )
+
     return main(
-        host=os.environ.get("PROXY_SCALER_SERVER_HOST", DEFAULT_HOST),
-        port=int(os.environ.get("PROXY_SCALER_SERVER_PORT", DEFAULT_PORT)),
-        db_path=os.environ.get("PROXY_SCALER_DB_PATH") or None,
-        worker_lock_path=os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None,
+        host=host,
+        port=port,
+        db_path=db_path,
+        worker_lock_path=worker_lock_path,
+        watch_stdin=not args.no_stdin_shutdown,
     )
 
 

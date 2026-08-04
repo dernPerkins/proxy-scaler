@@ -40,6 +40,15 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(12);
 struct SidecarState {
     child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
     exited: Arc<Notify>,
+    /// Serializes start against stop. `stop_sidecar` deliberately takes
+    /// the child out of `child` and releases that lock *before* waiting
+    /// out its shutdown grace period, so without this a start arriving
+    /// during those seconds would see an empty slot and spawn a second
+    /// supervisor onto port 8000 while the first is still letting go of
+    /// it. Only reachable now that the frontend can stop and restart the
+    /// server mid-session (the Local/Remote toggle) — previously stop
+    /// only ever ran on the way out of the process.
+    transition: Mutex<()>,
 }
 
 #[tauri::command]
@@ -47,6 +56,11 @@ async fn start_local_server(
     app: AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<String, String> {
+    // Held across the spawn only, then dropped before the readiness wait
+    // below — a stop arriving mid-startup should be able to proceed
+    // rather than block behind a 90s timeout.
+    let transition = state.transition.lock().await;
+
     let mut guard = state.child.lock().await;
     if guard.is_some() {
         // Idempotent — fine if the frontend calls this more than once
@@ -96,10 +110,24 @@ async fn start_local_server(
         }
     });
 
+    drop(transition);
+
     match tokio::time::timeout(Duration::from_secs(90), ready.notified()).await {
         Ok(()) => Ok(LOCAL_URL.to_string()),
         Err(_) => Err("proxy-scaler-serve did not become ready within 90s".to_string()),
     }
+}
+
+/// Stops the local server without exiting the app — used by the
+/// Local/Remote toggle, which shuts the sidecar down before pointing the
+/// frontend at a remote host so the worker stops holding RAM/GPU for a
+/// server nobody is talking to any more. Safe to call when nothing is
+/// running (`stop_sidecar` no-ops on an empty slot), and a later
+/// `start_local_server` spawns a genuinely fresh process.
+#[tauri::command]
+async fn stop_local_server(state: State<'_, SidecarState>) -> Result<(), String> {
+    stop_sidecar(&state).await;
+    Ok(())
 }
 
 /// Native "Save As" dialog + write to disk — replaces the browser
@@ -138,6 +166,10 @@ async fn save_file(app: AppHandle, suggested_name: String, data: Vec<u8>) -> Res
 /// underneath it — the same failure mode the Python test suite already
 /// caught once for a bare `proc.kill()` in its own test harness.
 async fn stop_sidecar(state: &SidecarState) {
+    // Held for the whole shutdown, grace period included — see
+    // SidecarState::transition for the double-spawn this prevents.
+    let _transition = state.transition.lock().await;
+
     let mut guard = state.child.lock().await;
     let Some(mut child) = guard.take() else {
         return;
@@ -173,7 +205,11 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())
-        .invoke_handler(tauri::generate_handler![start_local_server, save_file])
+        .invoke_handler(tauri::generate_handler![
+            start_local_server,
+            stop_local_server,
+            save_file
+        ])
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

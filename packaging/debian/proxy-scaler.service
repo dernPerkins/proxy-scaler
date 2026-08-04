@@ -1,0 +1,37 @@
+[Unit]
+Description=proxy-scaler generation server
+Documentation=https://github.com/dernPerkins/proxy-scaler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxy-scaler
+Group=proxy-scaler
+
+# Host/port/data dir live here so they survive package upgrades — the
+# unit itself is not a conffile, /etc/default/proxy-scaler is.
+EnvironmentFile=-/etc/default/proxy-scaler
+WorkingDirectory=/var/lib/proxy-scaler
+
+# --no-stdin-shutdown is belt and braces: the supervisor already detects
+# that systemd hands it /dev/null (which reads as instant EOF, and EOF
+# means "shut down" for the desktop app's embedded server) and ignores
+# it, but being explicit here means a service that never mysteriously
+# stops itself a second after starting.
+ExecStart=/opt/proxy-scaler/proxy-scaler-serve --no-stdin-shutdown
+
+Restart=on-failure
+RestartSec=5
+
+# The supervisor forwards SIGTERM to its API and worker children and
+# waits on each — give it room to do that before systemd escalates.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# Model weights and generated images can be large; don't let a big job
+# get OOM-killed ahead of less important processes.
+OOMScoreAdjust=-100
+
+[Install]
+WantedBy=multi-user.target

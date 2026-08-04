@@ -214,6 +214,36 @@ input[type="checkbox"] {
   gap: 6px 14px;
 }
 
+/* Two-state toggle (Local/Remote server). Buttons rather than a select:
+   the choice is a mode the app is *in*, and a segmented control shows the
+   current state without being opened. */
+.segmented {
+  display: flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.segmented button {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  padding: 6px 8px;
+}
+.segmented button + button {
+  border-left: 1px solid var(--border-strong);
+}
+.segmented button.active {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 550;
+}
+.segmented button.active:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
 button {
   padding: 6px 12px;
   border-radius: var(--radius);
@@ -677,6 +707,16 @@ tbody tr:last-child td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.modal-sm {
+  width: min(90vw, 420px);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 /* ---------- toast ---------- */

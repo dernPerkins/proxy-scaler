@@ -1,0 +1,7 @@
+#!/bin/sh
+# Thin wrapper so the frozen bundle is on PATH. The real executable has
+# to be invoked from inside /opt/proxy-scaler — PyInstaller's onedir
+# layout resolves its _internal/ tree relative to the binary, and the
+# supervisor re-invokes *itself* with --role to spawn its children, so
+# the path it sees must be the real one rather than a symlink target.
+exec /opt/proxy-scaler/proxy-scaler-serve "$@"

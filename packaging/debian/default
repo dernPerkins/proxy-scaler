@@ -1,0 +1,16 @@
+# Configuration for the proxy-scaler service.
+# This file is a dpkg conffile — your edits survive package upgrades.
+
+# Bind address. 0.0.0.0 accepts connections from other machines, which is
+# the point of installing the server, but note the API has NO
+# AUTHENTICATION: anyone who can reach this port can read and write
+# projects and queue generation work on this machine's GPU.
+#
+# Keep it on a trusted network, or set 127.0.0.1 to make the server
+# local-only.
+PROXY_SCALER_SERVER_HOST=0.0.0.0
+
+PROXY_SCALER_SERVER_PORT=8000
+
+# Database, worker lock and logs.
+PROXY_SCALER_DATA_DIR=/var/lib/proxy-scaler

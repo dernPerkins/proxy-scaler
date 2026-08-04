@@ -1,6 +1,7 @@
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import ProjectBar from "./components/ProjectBar";
 import ServerStatusToast from "./components/ServerStatusToast";
+import { useConnection } from "./connection";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
 import PdfPage from "./pages/PdfPage";
@@ -11,8 +12,16 @@ import TasksPage from "./pages/TasksPage";
 // ui/projects.py::render_project_bar's old "always visible, not a tab"
 // placement.
 export default function App() {
+  const { sessionKey } = useConnection();
+
+  // Remounting on a connection switch is load-bearing, not just tidy:
+  // ProjectContext's auto-load-latest effect has an empty dep array and
+  // runs on mount only, and its default settings read the connection mode
+  // once at init. Without this the new server's projects never load and
+  // the model default stays on the old mode's. Keyed here rather than
+  // higher up so the user stays on the tab they switched from.
   return (
-    <ProjectProvider>
+    <ProjectProvider key={sessionKey}>
       <div className="app">
         <ServerStatusToast />
         <ProjectBar />

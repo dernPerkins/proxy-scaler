@@ -23,11 +23,20 @@ if TYPE_CHECKING:
 _IS_FROZEN = bool(getattr(sys, "frozen", False))
 
 
+DATA_DIR_ENV_VAR = "PROXY_SCALER_DATA_DIR"
+
+
 def default_data_dir() -> Path:
     """Stable, OS-conventional per-user data directory. Used as the
     default DB/lock/log location below when frozen, and reused by
     supervisor.py as the frozen sidecar's working directory (so relative
     output/cache/weights paths land somewhere persistent too).
+
+    $PROXY_SCALER_DATA_DIR overrides it outright. That's what a packaged
+    server deployment uses — the .deb points it at /var/lib/proxy-scaler,
+    since a system service has no business writing under the invoking
+    user's home directory (and, for a plain non-editable `pip install`,
+    the dev fallback below would otherwise resolve inside site-packages).
 
     Deliberately NOT derived from __file__/sys.executable: for a frozen
     PyInstaller onefile build those resolve inside a temp extraction
@@ -36,6 +45,9 @@ def default_data_dir() -> Path:
     cwd, generated images left at their relative default paths) silently
     vanished on every app restart, even though everything worked fine
     within a single running session."""
+    override = os.environ.get(DATA_DIR_ENV_VAR)
+    if override:
+        return Path(override).expanduser()
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "proxy-scaler"
     if sys.platform == "win32":
@@ -45,14 +57,16 @@ def default_data_dir() -> Path:
     return Path(base) / "proxy-scaler"
 
 
-if _IS_FROZEN:
-    DEFAULT_DB_PATH = default_data_dir() / "proxy_scaler.db"
-    WORKER_LOCK_FILE = default_data_dir() / "worker.lock"
-    WORKER_LOG_FILE = default_data_dir() / "worker.log"
+# An explicit data dir wins even when not frozen, so a headless install
+# can be pointed somewhere sane without having to be a frozen build.
+if _IS_FROZEN or os.environ.get(DATA_DIR_ENV_VAR):
+    _DATA_ROOT = default_data_dir()
 else:
-    DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "proxy_scaler.db"
-    WORKER_LOCK_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.lock"
-    WORKER_LOG_FILE = Path(__file__).resolve().parents[1] / "data" / "worker.log"
+    _DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+
+DEFAULT_DB_PATH = _DATA_ROOT / "proxy_scaler.db"
+WORKER_LOCK_FILE = _DATA_ROOT / "worker.lock"
+WORKER_LOG_FILE = _DATA_ROOT / "worker.log"
 
 # Abandoned_Air_Temple-TLA-263-swinir-600dpi.png
 # Name-SET-COLLECTOR-front-swinir-800dpi.png  (collector may contain hyphens)
