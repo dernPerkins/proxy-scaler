@@ -168,19 +168,34 @@ sudo apt install ./proxy-scaler_0.1.0_amd64.deb
 ```
 
 Installs a self-contained bundle to `/opt/proxy-scaler` (no system Python
-needed), registers a `proxy-scaler` systemd service running as its own
-unprivileged user, and starts it.
+needed) and puts `proxy-scaler-serve` on `PATH`. It does **not** start
+anything automatically — this is a CLI tool by default, not an always-on
+service:
+
+```bash
+proxy-scaler-serve --port 8000
+```
+
+If you'd rather it ran persistently in the background instead, a
+`proxy-scaler` systemd service (running as its own unprivileged user) is
+installed but left disabled — opt in explicitly:
+
+```bash
+sudo systemctl enable --now proxy-scaler
+```
 
 | Path | Purpose |
 |------|---------|
-| `/etc/default/proxy-scaler` | Host, port, data dir — a conffile, so edits survive upgrades |
-| `/var/lib/proxy-scaler` | Database, worker lock, generated images |
-| `journalctl -u proxy-scaler` | Logs |
+| `/etc/default/proxy-scaler` | Host, port, data dir for the systemd service — a conffile, so edits survive upgrades. Not consulted when running `proxy-scaler-serve` directly; use its own flags/env vars for that (see the Server section above) |
+| `/var/lib/proxy-scaler` | Database, worker lock, generated images (service mode only) |
+| `journalctl -u proxy-scaler` | Logs (service mode only) |
 
-The service binds `0.0.0.0` by default, since being reachable is the
-point of installing it — re-read the authentication warning above, and
-set `PROXY_SCALER_SERVER_HOST=127.0.0.1` then
-`systemctl restart proxy-scaler` if you'd rather it stayed local.
+The service, if you enable it, binds `0.0.0.0` by default — re-read the
+authentication warning above, and set `PROXY_SCALER_SERVER_HOST=127.0.0.1`
+in `/etc/default/proxy-scaler` then `systemctl restart proxy-scaler` if
+you'd rather it stayed local. Upgrading the package (`apt install` over
+an existing install) restarts the service automatically *only if you'd
+already enabled it* — a fresh install never auto-starts anything.
 
 `apt remove` keeps `/var/lib/proxy-scaler`; `apt purge` deletes it along
 with every project and generated image.
