@@ -29,7 +29,13 @@ import requests
 from . import db
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8000
+# Deliberately not 8000/8080/8888/9000/etc — those collide with a long list
+# of common dev-server and homelab-tool defaults (Django/http-server,
+# Jupyter, PHP-FPM/Portainer, various proxies) that are plausibly already
+# running on the same box or Tailscale tailnet as this. 13207 is just
+# M-T-G (13th, 20th, 7th letters) — memorable, and nobody else is squatting
+# on it.
+DEFAULT_PORT = 13207
 HEALTH_TIMEOUT_S = 60.0
 HEALTH_POLL_INTERVAL_S = 0.5
 SHUTDOWN_GRACE_S = 10.0
@@ -418,7 +424,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             "warning as --host applies."
         ),
     )
-    parser.add_argument("--port", type=int, default=None, help="Port to bind (default 8000).")
+    parser.add_argument("--port", type=int, default=None, help="Port to bind (default 13207).")
     parser.add_argument(
         "--data-dir",
         default=None,

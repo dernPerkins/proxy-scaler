@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 // user-entered host) — every api/generation.ts request reads the current
 // value via getApiBaseUrl(), not a frozen import-time constant.
 let apiBaseUrl: string =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:8000";
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:13207";
 
 export function getApiBaseUrl(): string {
   return apiBaseUrl;

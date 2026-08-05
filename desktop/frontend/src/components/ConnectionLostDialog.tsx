@@ -9,7 +9,7 @@ import { useProject } from "../context/ProjectContext";
 // watches the health ping connection.tsx already runs and reacts to it.
 export default function ConnectionLostDialog() {
   const connection = useConnection();
-  const { mode, remoteHealthy, host } = connection;
+  const { mode, remoteHealthy, host, port } = connection;
   const project = useProject();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -67,8 +67,8 @@ export default function ConnectionLostDialog() {
           <span className="modal-title">Lost connection to the server</span>
         </div>
         <p style={{ marginBottom: 6 }}>
-          Can&apos;t reach {host || "the remote server"} anymore — it may have stopped, or your
-          network dropped.
+          Can&apos;t reach {host ? `${host}:${port}` : "the remote server"} anymore — it may have
+          stopped, or your network dropped.
         </p>
         <p className="hint" style={{ marginBottom: 16 }}>
           {remoteHealthy

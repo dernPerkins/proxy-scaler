@@ -17,12 +17,12 @@ import { useConnection } from "./connection";
 // Local/Remote at all. That's no longer the only way to switch, but
 // asking on a cold start is still the honest default.
 export default function ConnectGate({ children }: { children: ReactNode }) {
-  const { status, setStatus, host, setHost, connect, recentHosts, removeRecentHost } =
+  const { status, setStatus, host, setHost, port, setPort, connect, recentHosts, removeRecentHost } =
     useConnection();
 
   function submitRemote() {
     if (!host.trim()) return;
-    connect({ mode: "remote", host: host.trim() });
+    connect({ mode: "remote", host: host.trim(), port });
   }
 
   function backToPicker() {
@@ -63,15 +63,26 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
             </a>{" "}
             for connecting to your remote server.
           </p>
-          <label className="field" style={{ marginBottom: 12 }}>
-            <span>Server address</span>
-            <input
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitRemote()}
-              placeholder="IP or name (e.g. 100.x.x.x or my-server)"
-            />
-          </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <label className="field" style={{ flex: 1 }}>
+              <span>Server address</span>
+              <input
+                value={host}
+                onChange={(e) => setHost(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submitRemote()}
+                placeholder="IP or name (e.g. 100.x.x.x or my-server)"
+              />
+            </label>
+            <label className="field" style={{ width: 90 }}>
+              <span>Port</span>
+              <input
+                type="number"
+                value={port}
+                onChange={(e) => setPort(Number(e.target.value) || 0)}
+                onKeyDown={(e) => e.key === "Enter" && submitRemote()}
+              />
+            </label>
+          </div>
 
           {recentHosts.length > 0 && (
             <>
@@ -80,7 +91,7 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
               </span>
               <RecentHostsList
                 hosts={recentHosts}
-                onSelect={(h) => connect({ mode: "remote", host: h })}
+                onSelect={(entry) => connect({ mode: "remote", host: entry.host, port: entry.port })}
                 onRemove={removeRecentHost}
               />
             </>

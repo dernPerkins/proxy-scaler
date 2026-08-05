@@ -117,13 +117,19 @@ stopped with Ctrl+C / SIGTERM.
 |------|---------|---------|---------|
 | `--host` | `PROXY_SCALER_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `--bind-all` | — | off | Shorthand for `--host 0.0.0.0` — overrides `--host`/the env var if either is also set |
-| `--port` | `PROXY_SCALER_SERVER_PORT` | `8000` | Bind port |
+| `--port` | `PROXY_SCALER_SERVER_PORT` | `13207` | Bind port |
 | `--data-dir` | `PROXY_SCALER_DATA_DIR` | OS per-user dir | Database, worker lock, logs |
 | `--no-stdin-shutdown` | — | off | Don't treat stdin EOF as "stop" |
 | — | `PROXY_SCALER_DB_PATH` | inside data dir | Database file |
 | — | `PROXY_SCALER_WORKER_LOCK_PATH` | inside data dir | Worker lock file |
 
 Flags win over env vars where both are set.
+
+The default port, `13207`, is just **M-T-G** spelled out by letter
+position (13th, 20th, 7th) — picked to dodge the usual
+`8000`/`8080`/`8888`/`9000`/etc collisions with other dev tools or
+self-hosted services that might already be running on the same box or
+Tailscale tailnet.
 
 **Accepting connections from other machines** means binding beyond
 loopback:
@@ -165,7 +171,7 @@ other devices** is off by default — the server is loopback-only until you
 turn it on, because enabling it exposes an unauthenticated API to the
 network (the window says so too).
 
-Note it defaults to port 8000, the same port the desktop client's own
+Note it defaults to port 13207, the same port the desktop client's own
 local mode uses. Running both on one machine means the second one fails
 to bind; give the server app a different port if you want them
 side by side.
@@ -182,7 +188,7 @@ anything automatically — this is a CLI tool by default, not an always-on
 service:
 
 ```bash
-proxy-scaler-serve --port 8000
+proxy-scaler-serve --port 13207
 ```
 
 If you'd rather it ran persistently in the background instead, a

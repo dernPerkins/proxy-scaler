@@ -187,7 +187,7 @@ def running_supervisor(tmp_path: Path):
     started. Yields a _RunningSupervisor; always cleans up via SIGTERM
     even if the test already stopped it a different way (double-stop is a
     no-op — see _shutdown's poll() check)."""
-    port = 8000 + (os.getpid() % 1000)  # avoid clashing with a real default-port instance
+    port = supervisor.DEFAULT_PORT + (os.getpid() % 1000)  # avoid clashing with a real default-port instance
     db_path = tmp_path / "test.db"
     lock_path = tmp_path / "worker.lock"
     log_path = tmp_path / "supervisor.log"

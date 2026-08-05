@@ -61,7 +61,10 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            port: 8000,
+            // Matches supervisor.py's DEFAULT_PORT (13207 — M-T-G by letter
+            // position, picked to dodge the usual 8000/8080/8888/9000/etc
+            // collisions).
+            port: 13207,
             // Off by default. The API has no authentication, so becoming
             // reachable from the network is a decision the user makes,
             // not something that happens by opening the app.
@@ -253,7 +256,7 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
         Ok(()) => Ok(()),
         Err(_) => Err(
             "The server didn't report ready in time. Check the log below — if the port is \
-             already in use (the desktop app's own local server uses 8000 too), pick a \
+             already in use (the desktop app's own local server uses 13207 too), pick a \
              different one."
                 .into(),
         ),

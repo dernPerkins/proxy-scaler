@@ -165,7 +165,7 @@ def test_headless_launch_survives_devnull_stdin(tmp_path) -> None:
     start is slow and the bug this covers fires immediately."""
     env = dict(os.environ)
     env["PROXY_SCALER_SERVER_HOST"] = "127.0.0.1"
-    env["PROXY_SCALER_SERVER_PORT"] = str(8000 + (os.getpid() % 1000) + 1)
+    env["PROXY_SCALER_SERVER_PORT"] = str(supervisor.DEFAULT_PORT + (os.getpid() % 1000) + 1)
     env["PROXY_SCALER_DB_PATH"] = str(tmp_path / "test.db")
     env["PROXY_SCALER_WORKER_LOCK_PATH"] = str(tmp_path / "worker.lock")
 

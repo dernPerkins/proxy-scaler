@@ -10,7 +10,10 @@
 # local-only.
 PROXY_SCALER_SERVER_HOST=0.0.0.0
 
-PROXY_SCALER_SERVER_PORT=8000
+# 13207 is the same default proxy-scaler-serve uses on its own (M-T-G by
+# letter position — 13th, 20th, 7th — picked to dodge the usual
+# 8000/8080/8888/9000/etc collisions with other things on the network).
+PROXY_SCALER_SERVER_PORT=13207
 
 # Database, worker lock and logs.
 PROXY_SCALER_DATA_DIR=/var/lib/proxy-scaler

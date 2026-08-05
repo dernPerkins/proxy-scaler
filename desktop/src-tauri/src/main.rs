@@ -41,7 +41,9 @@ use project_store::{
 };
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
-const LOCAL_URL: &str = "http://127.0.0.1:8000";
+// Matches supervisor.py's DEFAULT_PORT (13207 — M-T-G by letter position,
+// picked to dodge the usual 8000/8080/8888/9000/etc collisions).
+const LOCAL_URL: &str = "http://127.0.0.1:13207";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(12);
 
 #[derive(Default)]
@@ -52,7 +54,7 @@ struct SidecarState {
     /// the child out of `child` and releases that lock *before* waiting
     /// out its shutdown grace period, so without this a start arriving
     /// during those seconds would see an empty slot and spawn a second
-    /// supervisor onto port 8000 while the first is still letting go of
+    /// supervisor onto port 13207 while the first is still letting go of
     /// it. Only reachable now that the frontend can stop and restart the
     /// server mid-session (the Local/Remote toggle) — previously stop
     /// only ever ran on the way out of the process.

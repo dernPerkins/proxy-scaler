@@ -529,8 +529,8 @@ pub fn set_last_project_id(app: AppHandle, project_id: i64) -> Result<(), String
 
 // --- Recent remote hosts --------------------------------------------------
 //
-// A plain list of remote server addresses the user has successfully
-// connected to, most-recent-first, so the connection screens
+// A plain list of remote server address+port pairs the user has
+// successfully connected to, most-recent-first, so the connection screens
 // (ConnectGate.tsx / SwitchServerDialog.tsx) can offer them instead of a
 // blank text field every time. Same app_settings-backed pattern as
 // last_project_id above, just a list-shaped value instead of a single one
@@ -540,19 +540,58 @@ pub fn set_last_project_id(app: AppHandle, project_id: i64) -> Result<(), String
 
 const RECENT_HOSTS_KEY: &str = "recent_remote_hosts";
 const MAX_RECENT_HOSTS: usize = 8;
+// Matches supervisor.py's DEFAULT_PORT and connection.tsx's own default —
+// what a bare `proxy-scaler-serve` binds to. Used as the port for entries
+// saved before this field existed (see hosts_from_text's fallback below).
+// (13207 is M-T-G by letter position — 13th, 20th, 7th — chosen to dodge
+// the usual 8000/8080/8888/9000/etc collisions.)
+const DEFAULT_REMOTE_PORT: u16 = 13207;
 
-fn hosts_to_text(hosts: &[String]) -> String {
-    hosts.join("\n")
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentHost {
+    pub host: String,
+    pub port: u16,
 }
 
-fn hosts_from_text(text: &str) -> Vec<String> {
+// "|" rather than ":" as the delimiter: an IPv6 literal or a bracketed
+// address can itself contain colons, and this keeps parsing a plain split
+// instead of something that has to reason about that.
+fn hosts_to_text(hosts: &[RecentHost]) -> String {
+    hosts
+        .iter()
+        .map(|h| format!("{}|{}", h.host, h.port))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn hosts_from_text(text: &str) -> Vec<RecentHost> {
     text.lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            match line.rsplit_once('|') {
+                Some((host, port)) => {
+                    let host = host.trim();
+                    if host.is_empty() {
+                        return None;
+                    }
+                    let port = port.trim().parse::<u16>().unwrap_or(DEFAULT_REMOTE_PORT);
+                    Some(RecentHost { host: host.to_string(), port })
+                }
+                // Pre-port-support entries: the whole line is just the
+                // host, so fall back to the server's own default port.
+                None => Some(RecentHost {
+                    host: line.to_string(),
+                    port: DEFAULT_REMOTE_PORT,
+                }),
+            }
+        })
         .collect()
 }
 
-fn read_recent_hosts(conn: &Connection) -> Result<Vec<String>, String> {
+fn read_recent_hosts(conn: &Connection) -> Result<Vec<RecentHost>, String> {
     let text: Option<String> = conn
         .query_row(
             "SELECT value FROM app_settings WHERE key = ?1",
@@ -564,7 +603,7 @@ fn read_recent_hosts(conn: &Connection) -> Result<Vec<String>, String> {
     Ok(text.map(|t| hosts_from_text(&t)).unwrap_or_default())
 }
 
-fn write_recent_hosts(conn: &Connection, hosts: &[String]) -> Result<(), String> {
+fn write_recent_hosts(conn: &Connection, hosts: &[RecentHost]) -> Result<(), String> {
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -575,36 +614,41 @@ fn write_recent_hosts(conn: &Connection, hosts: &[String]) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn list_recent_hosts(app: AppHandle) -> Result<Vec<String>, String> {
+pub fn list_recent_hosts(app: AppHandle) -> Result<Vec<RecentHost>, String> {
     let conn = open_db(&app)?;
     read_recent_hosts(&conn)
 }
 
-/// Records a successful connection. Trims, de-dupes (an already-known host
-/// moves to the front rather than appearing twice), and caps at
-/// MAX_RECENT_HOSTS (oldest dropped). A blank host is a no-op — returns the
-/// list unchanged rather than erroring, since callers treat this as
-/// fire-and-forget after a connection already succeeded.
+/// Records a successful connection. Trims, de-dupes on the (host, port)
+/// pair (an already-known pair moves to the front rather than appearing
+/// twice — a different port for the same host is treated as a distinct
+/// entry, since that's a genuinely different server to reconnect to), and
+/// caps at MAX_RECENT_HOSTS (oldest dropped). A blank host is a no-op —
+/// returns the list unchanged rather than erroring, since callers treat
+/// this as fire-and-forget after a connection already succeeded.
 #[tauri::command]
-pub fn add_recent_host(app: AppHandle, host: String) -> Result<Vec<String>, String> {
+pub fn add_recent_host(app: AppHandle, host: String, port: u16) -> Result<Vec<RecentHost>, String> {
     let trimmed = host.trim();
     let conn = open_db(&app)?;
     if trimmed.is_empty() {
         return read_recent_hosts(&conn);
     }
     let mut hosts = read_recent_hosts(&conn)?;
-    hosts.retain(|h| h != trimmed);
-    hosts.insert(0, trimmed.to_string());
+    hosts.retain(|h| !(h.host == trimmed && h.port == port));
+    hosts.insert(
+        0,
+        RecentHost { host: trimmed.to_string(), port },
+    );
     hosts.truncate(MAX_RECENT_HOSTS);
     write_recent_hosts(&conn, &hosts)?;
     Ok(hosts)
 }
 
 #[tauri::command]
-pub fn remove_recent_host(app: AppHandle, host: String) -> Result<Vec<String>, String> {
+pub fn remove_recent_host(app: AppHandle, host: String, port: u16) -> Result<Vec<RecentHost>, String> {
     let conn = open_db(&app)?;
     let mut hosts = read_recent_hosts(&conn)?;
-    hosts.retain(|h| h != &host);
+    hosts.retain(|h| !(h.host == host && h.port == port));
     write_recent_hosts(&conn, &hosts)?;
     Ok(hosts)
 }

@@ -28,7 +28,7 @@ export default function ServerSwitcher() {
     setPending(target);
   }
 
-  async function handleConfirm(save: boolean, host: string) {
+  async function handleConfirm(save: boolean, host: string, port: number) {
     if (!pending) return;
     setBusy(true);
     setError(null);
@@ -44,7 +44,7 @@ export default function ServerSwitcher() {
     }
 
     const message = await connection.switchTo(
-      pending === "local" ? { mode: "local" } : { mode: "remote", host },
+      pending === "local" ? { mode: "local" } : { mode: "remote", host, port },
     );
 
     setBusy(false);
@@ -91,7 +91,7 @@ export default function ServerSwitcher() {
       </div>
       {mode === "remote" && connection.host && (
         <p className="hint mono" style={{ wordBreak: "break-all" }}>
-          {connection.host}
+          {connection.host}:{connection.port}
         </p>
       )}
 

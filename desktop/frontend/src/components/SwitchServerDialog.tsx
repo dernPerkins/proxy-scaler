@@ -1,4 +1,6 @@
 import { useState } from "react";
+import type { RecentHost } from "../api/project";
+import { DEFAULT_REMOTE_PORT } from "../connection";
 import RecentHostsList from "./RecentHostsList";
 
 export interface SwitchServerDialogProps {
@@ -8,10 +10,10 @@ export interface SwitchServerDialogProps {
   busy: boolean;
   error: string | null;
   onCancel: () => void;
-  onConfirm: (save: boolean, host: string) => void;
+  onConfirm: (save: boolean, host: string, port: number) => void;
   /** Previously-used remote servers — see connection.tsx::recentHosts. */
-  recentHosts: string[];
-  onRemoveHost: (host: string) => void;
+  recentHosts: RecentHost[];
+  onRemoveHost: (entry: RecentHost) => void;
 }
 
 // Follows CompareDialog's pattern (overlay closes on click, inner panel
@@ -34,7 +36,8 @@ export default function SwitchServerDialog({
   // entry that happened to match look like nothing had happened. Leaving it
   // blank means any selection, typed or clicked, is a visible change.
   const [host, setHost] = useState("");
-  const hostReady = target === "local" || host.trim().length > 0;
+  const [port, setPort] = useState(DEFAULT_REMOTE_PORT);
+  const hostReady = target === "local" || (host.trim().length > 0 && port > 0);
 
   return (
     <div className="modal-overlay" onClick={busy ? undefined : onCancel}>
@@ -47,16 +50,27 @@ export default function SwitchServerDialog({
 
         {target === "remote" && (
           <>
-            <label className="field" style={{ marginBottom: recentHosts.length > 0 ? 8 : 14 }}>
-              <span>Server address</span>
-              <input
-                value={host}
-                autoFocus
-                disabled={busy}
-                onChange={(e) => setHost(e.target.value)}
-                placeholder="IP or name (e.g. 100.x.x.x or my-server)"
-              />
-            </label>
+            <div style={{ display: "flex", gap: 8, marginBottom: recentHosts.length > 0 ? 8 : 14 }}>
+              <label className="field" style={{ flex: 1 }}>
+                <span>Server address</span>
+                <input
+                  value={host}
+                  autoFocus
+                  disabled={busy}
+                  onChange={(e) => setHost(e.target.value)}
+                  placeholder="IP or name (e.g. 100.x.x.x or my-server)"
+                />
+              </label>
+              <label className="field" style={{ width: 90 }}>
+                <span>Port</span>
+                <input
+                  type="number"
+                  value={port}
+                  disabled={busy}
+                  onChange={(e) => setPort(Number(e.target.value) || 0)}
+                />
+              </label>
+            </div>
             {recentHosts.length > 0 && (
               <div style={{ marginBottom: 14 }}>
                 <span className="hint" style={{ marginBottom: 4, display: "block" }}>
@@ -65,14 +79,17 @@ export default function SwitchServerDialog({
                 {/* Fill-only: this dialog exists specifically to force the
                     save-before-switching choice below, so selecting a
                     saved host must not skip straight to switching.
-                    selectedHost highlights whichever one now matches the
+                    `selected` highlights whichever one now matches the
                     (blank-by-default) address field, as a clearer sign a
                     click did something than the field alone. */}
                 <RecentHostsList
                   hosts={recentHosts}
-                  onSelect={setHost}
+                  onSelect={(entry) => {
+                    setHost(entry.host);
+                    setPort(entry.port);
+                  }}
                   onRemove={onRemoveHost}
-                  selectedHost={host}
+                  selected={{ host, port }}
                   disabled={busy}
                 />
               </div>
@@ -97,13 +114,13 @@ export default function SwitchServerDialog({
           <button onClick={onCancel} disabled={busy}>
             Cancel
           </button>
-          <button onClick={() => onConfirm(false, host.trim())} disabled={busy || !hostReady}>
+          <button onClick={() => onConfirm(false, host.trim(), port)} disabled={busy || !hostReady}>
             {busy ? "Switching…" : "Switch without saving"}
           </button>
           {canSave && (
             <button
               className="btn-primary"
-              onClick={() => onConfirm(true, host.trim())}
+              onClick={() => onConfirm(true, host.trim(), port)}
               disabled={busy || !hostReady}
             >
               Save &amp; switch

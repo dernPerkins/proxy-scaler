@@ -28,6 +28,11 @@ export interface CardRow {
   collector_number: string | null;
 }
 
+export interface RecentHost {
+  host: string;
+  port: number;
+}
+
 export interface LoadedProject {
   id: number;
   tag: string;
@@ -61,10 +66,12 @@ export const projectApi = {
   setLastProjectId: (projectId: number) =>
     invokeCommand<void>("set_last_project_id", { projectId }),
 
-  // Remembered remote server addresses (see connection.tsx) — not project
-  // data, but the same app_settings-backed store, so it lives here
+  // Remembered remote server address+port pairs (see connection.tsx) — not
+  // project data, but the same app_settings-backed store, so it lives here
   // alongside the other app_settings-backed calls above.
-  listRecentHosts: () => invokeCommand<string[]>("list_recent_hosts"),
-  addRecentHost: (host: string) => invokeCommand<string[]>("add_recent_host", { host }),
-  removeRecentHost: (host: string) => invokeCommand<string[]>("remove_recent_host", { host }),
+  listRecentHosts: () => invokeCommand<RecentHost[]>("list_recent_hosts"),
+  addRecentHost: (host: string, port: number) =>
+    invokeCommand<RecentHost[]>("add_recent_host", { host, port }),
+  removeRecentHost: (host: string, port: number) =>
+    invokeCommand<RecentHost[]>("remove_recent_host", { host, port }),
 };
