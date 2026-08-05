@@ -81,6 +81,22 @@ def test_flags_win_over_env_vars(recorded_main, monkeypatch) -> None:
     assert recorded_main.kwargs["port"] == 9000
 
 
+def test_bind_all_forces_host_to_0_0_0_0(recorded_main) -> None:
+    supervisor.cli_main(["--bind-all"])
+    assert recorded_main.kwargs["host"] == "0.0.0.0"
+
+
+def test_bind_all_overrides_explicit_host(recorded_main) -> None:
+    supervisor.cli_main(["--host", "127.0.0.1", "--bind-all"])
+    assert recorded_main.kwargs["host"] == "0.0.0.0"
+
+
+def test_bind_all_overrides_env_var(recorded_main, monkeypatch) -> None:
+    monkeypatch.setenv("PROXY_SCALER_SERVER_HOST", "127.0.0.1")
+    supervisor.cli_main(["--bind-all"])
+    assert recorded_main.kwargs["host"] == "0.0.0.0"
+
+
 def test_data_dir_flag_derives_concrete_paths(recorded_main, tmp_path) -> None:
     """--data-dir has to produce explicit db/lock paths rather than lean on
     db.py's module constants: those are resolved at import time, which is

@@ -403,6 +403,21 @@ def cli_main(argv: list[str] | None = None) -> int:
             "trust, such as a Tailscale tailnet or a home LAN."
         ),
     )
+    parser.add_argument(
+        "--bind-all",
+        action="store_true",
+        help=(
+            "Shorthand for --host 0.0.0.0 — overrides --host and "
+            "PROXY_SCALER_SERVER_HOST if either is also set. Exists because "
+            "typing your own hostname instead is a real trap: on Debian in "
+            "particular, a machine's own hostname commonly resolves via "
+            "/etc/hosts to 127.0.1.1, which is still loopback-only — "
+            "binding to it silently stays local-only, with no error to "
+            "signal that connecting from another machine (e.g. over "
+            "Tailscale) was never going to work. Same authentication "
+            "warning as --host applies."
+        ),
+    )
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default 8000).")
     parser.add_argument(
         "--data-dir",
@@ -422,7 +437,15 @@ def cli_main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    host = args.host or os.environ.get("PROXY_SCALER_SERVER_HOST", DEFAULT_HOST)
+    if args.bind_all:
+        if args.host:
+            print(
+                f"NOTE: --bind-all overrides --host {args.host!r}; binding 0.0.0.0 instead.",
+                file=sys.stderr,
+            )
+        host = "0.0.0.0"
+    else:
+        host = args.host or os.environ.get("PROXY_SCALER_SERVER_HOST", DEFAULT_HOST)
     port = args.port or int(os.environ.get("PROXY_SCALER_SERVER_PORT", DEFAULT_PORT))
     db_path = os.environ.get("PROXY_SCALER_DB_PATH") or None
     worker_lock_path = os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None

@@ -116,6 +116,7 @@ stopped with Ctrl+C / SIGTERM.
 | Flag | Env var | Default | Purpose |
 |------|---------|---------|---------|
 | `--host` | `PROXY_SCALER_SERVER_HOST` | `127.0.0.1` | Bind address |
+| `--bind-all` | — | off | Shorthand for `--host 0.0.0.0` — overrides `--host`/the env var if either is also set |
 | `--port` | `PROXY_SCALER_SERVER_PORT` | `8000` | Bind port |
 | `--data-dir` | `PROXY_SCALER_DATA_DIR` | OS per-user dir | Database, worker lock, logs |
 | `--no-stdin-shutdown` | — | off | Don't treat stdin EOF as "stop" |
@@ -129,7 +130,15 @@ loopback:
 
 ```bash
 proxy-scaler-serve --host 0.0.0.0
+# or, equivalently:
+proxy-scaler-serve --bind-all
 ```
+
+`--bind-all` exists because typing your own hostname instead is a real
+trap: on Debian in particular, a machine's own hostname commonly resolves
+via `/etc/hosts` to `127.0.1.1`, which is still loopback-only — binding to
+it silently stays local-only, with no error to signal that connecting from
+another machine (e.g. over Tailscale) was never going to work.
 
 > **There is no authentication.** Anyone who can reach the port can read
 > and write projects, and queue generation work on your GPU. Only bind
