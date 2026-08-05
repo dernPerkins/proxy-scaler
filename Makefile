@@ -2,6 +2,18 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python3
 PIP := $(VENV)/bin/pip
 RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
+
+# Shared by every artifact 'release' produces, so all three filenames stay
+# in lockstep — the two tauri.conf.json files (client, server-app) happen
+# to carry the same "0.1.0" today, but nothing enforces that; if they ever
+# drift, this is the one that wins for naming purposes.
+PKG_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+# dpkg-specific (amd64, not x86_64) purely for consistency with the .deb's
+# own filename — these tarballs aren't Debian packages themselves, this
+# just keeps all three artifact names readable side by side in dist/.
+PKG_ARCH := $(shell dpkg --print-architecture 2>/dev/null || uname -m)
+CLIENT_ARCHIVE := dist/proxy-scaler-client_$(PKG_VERSION)_linux-$(PKG_ARCH).tar.gz
+SERVER_APP_ARCHIVE := dist/proxy-scaler-server-app_$(PKG_VERSION)_linux-$(PKG_ARCH).tar.gz
 # Placed as a sibling of the compiled binary in *both* target profiles —
 # main.rs finds it via std::env::current_exe()'s own directory at runtime,
 # not through Tauri's bundle.resources/externalBin mechanisms (see
@@ -25,6 +37,7 @@ SERVER_APP_BIN := desktop/server-app/target/release/proxy-scaler-server
 .PHONY: help install test serve sidecar sidecar-clean \
 	build run desktop deb \
 	server-app server-app-dev server-app-run \
+	release release-client-archive release-server-app-archive \
 	api-dev worker-dev frontend-install frontend-dev frontend-build
 
 help:
@@ -53,6 +66,13 @@ help:
 	@echo ""
 	@echo "--- headless server packaging (Linux only) ---"
 	@echo "deb              Build the .deb server package into dist/ (run 'make sidecar' first)"
+	@echo ""
+	@echo "--- everything at once, ready to upload (Linux only) ---"
+	@echo "release          sidecar + client + server-app + deb, all landing in dist/ --"
+	@echo "                 this is what you want for a GitHub release. Client/server-app"
+	@echo "                 come out as .tar.gz (binary + its sidecar folder), since"
+	@echo "                 Tauri's own installer bundling (.dmg/.msi/.AppImage) isn't"
+	@echo "                 wired up in this repo yet -- see tauri.conf.json's bundle.active"
 	@echo ""
 	@echo "--- misc ---"
 	@echo "install          Create $(VENV) and pip install -e ."
@@ -134,6 +154,34 @@ server-app-dev:
 # macOS. See packaging/build-deb.sh for the staging details.
 deb:
 	./packaging/build-deb.sh
+
+# One command, everything upload-ready in dist/. sidecar listed first and
+# explicitly (rather than left implicit via the other three's own prereqs)
+# so it's guaranteed to run exactly once, before any of them, even though
+# 'deb' itself deliberately has no sidecar prerequisite of its own (see its
+# comment above) — that's still true for a standalone 'make deb', this
+# just orders around it here. Not safe under `make -j`: relies on plain
+# left-to-right prerequisite ordering, which parallel make doesn't honor.
+release: sidecar release-client-archive release-server-app-archive deb
+	@echo ""
+	@echo "release artifacts:"
+	@ls -1 dist/
+
+# Client binary + its sidecar folder, tarred together the same way you'd
+# hand someone the whole target/release/ directory — there's no installer
+# bundle to produce instead (bundle.active is off, see tauri.conf.json).
+release-client-archive: sidecar build
+	mkdir -p dist
+	tar czf $(CLIENT_ARCHIVE) -C desktop/src-tauri/target/release \
+		proxy-scaler-spike proxy-scaler-serve
+	@echo "built: $(CLIENT_ARCHIVE)"
+
+# Same idea as release-client-archive, for the status-window server app.
+release-server-app-archive: sidecar server-app
+	mkdir -p dist
+	tar czf $(SERVER_APP_ARCHIVE) -C desktop/server-app/target/release \
+		proxy-scaler-server proxy-scaler-serve
+	@echo "built: $(SERVER_APP_ARCHIVE)"
 
 # Tauri dev mode: Rust auto-rebuilds/relaunches on change, and the window
 # loads Vite's dev server (devUrl in tauri.conf.json) for frontend HMR.
