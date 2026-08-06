@@ -235,6 +235,7 @@ export default function DecklistPage() {
             <select
               value={settings.model}
               onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
+              disabled={modelsQuery.isLoading || modelsQuery.isError}
             >
               {(modelsQuery.data ?? []).map((m) => (
                 <option key={m.value} value={m.value}>
@@ -243,6 +244,25 @@ export default function DecklistPage() {
               ))}
             </select>
           </label>
+          {/* Without this, a stuck/failed local-server start (or any other
+              listModels() failure) rendered as a silently empty dropdown —
+              indistinguishable from "there really are no models" — since
+              the .map() above just produces zero <option>s either way. */}
+          {modelsQuery.isLoading && (
+            <p className="hint">
+              {readiness.status === "starting"
+                ? "Waiting for the local server to start…"
+                : "Loading models…"}
+            </p>
+          )}
+          {modelsQuery.isError && (
+            <p className="error-text">
+              Couldn't load models:{" "}
+              {modelsQuery.error instanceof Error
+                ? modelsQuery.error.message
+                : String(modelsQuery.error)}
+            </p>
+          )}
 
           <div className="field">
             <span>Target DPI</span>

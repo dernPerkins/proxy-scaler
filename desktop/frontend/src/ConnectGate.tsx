@@ -34,85 +34,87 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="gate">
-      <h1>Proxy Scaler</h1>
-      <p className="gate-sub">Where should generation run?</p>
+    <div className="gate-screen">
+      <div className="gate">
+        <h1>Proxy Scaler</h1>
+        <p className="gate-sub">Where should generation run?</p>
 
-      {status.kind === "picker" && (
-        <>
-          <button className="gate-option" onClick={() => connect({ mode: "local" })}>
-            <strong>Use this device</strong>
-            <span>Runs everything locally — no setup needed.</span>
-          </button>
-          <button className="gate-option" onClick={() => setStatus({ kind: "remote-form" })}>
-            <strong>Connect to a server</strong>
-            <span>Point this app at a proxy-scaler server running elsewhere.</span>
-          </button>
-        </>
-      )}
+        {status.kind === "picker" && (
+          <>
+            <button className="gate-option" onClick={() => connect({ mode: "local" })}>
+              <strong>Use this device</strong>
+              <span>Runs everything locally — no setup needed.</span>
+            </button>
+            <button className="gate-option" onClick={() => setStatus({ kind: "remote-form" })}>
+              <strong>Connect to a server</strong>
+              <span>Point this app at a proxy-scaler server running elsewhere.</span>
+            </button>
+          </>
+        )}
 
-      {status.kind === "remote-form" && (
-        <>
-          <button className="btn-sm gate-back" onClick={backToPicker}>
-            &larr; Back
-          </button>
-          <p className="hint" style={{ marginBottom: 12 }}>
-            We recommend a tool like{" "}
-            <a href="https://tailscale.com" target="_blank" rel="noreferrer">
-              Tailscale
-            </a>{" "}
-            for connecting to your remote server.
-          </p>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <label className="field" style={{ flex: 1 }}>
-              <span>Server address</span>
-              <input
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitRemote()}
-                placeholder="IP or name (e.g. 100.x.x.x or my-server)"
-              />
-            </label>
-            <label className="field" style={{ width: 90 }}>
-              <span>Port</span>
-              <input
-                type="number"
-                value={port}
-                onChange={(e) => setPort(Number(e.target.value) || 0)}
-                onKeyDown={(e) => e.key === "Enter" && submitRemote()}
-              />
-            </label>
-          </div>
+        {status.kind === "remote-form" && (
+          <>
+            <button className="btn-sm gate-back" onClick={backToPicker}>
+              &larr; Back
+            </button>
+            <p className="hint" style={{ marginBottom: 12 }}>
+              We recommend a tool like{" "}
+              <a href="https://tailscale.com" target="_blank" rel="noreferrer">
+                Tailscale
+              </a>{" "}
+              for connecting to your remote server.
+            </p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <label className="field" style={{ flex: 1 }}>
+                <span>Server address</span>
+                <input
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submitRemote()}
+                  placeholder="IP or name (e.g. 100.x.x.x or my-server)"
+                />
+              </label>
+              <label className="field" style={{ width: 90 }}>
+                <span>Port</span>
+                <input
+                  type="number"
+                  value={port}
+                  onChange={(e) => setPort(Number(e.target.value) || 0)}
+                  onKeyDown={(e) => e.key === "Enter" && submitRemote()}
+                />
+              </label>
+            </div>
 
-          {recentHosts.length > 0 && (
-            <>
-              <span className="hint" style={{ marginBottom: 4, display: "block" }}>
-                Recent
-              </span>
-              <RecentHostsList
-                hosts={recentHosts}
-                onSelect={(entry) => connect({ mode: "remote", host: entry.host, port: entry.port })}
-                onRemove={removeRecentHost}
-              />
-            </>
-          )}
+            {recentHosts.length > 0 && (
+              <>
+                <span className="hint" style={{ marginBottom: 4, display: "block" }}>
+                  Recent
+                </span>
+                <RecentHostsList
+                  hosts={recentHosts}
+                  onSelect={(entry) => connect({ mode: "remote", host: entry.host, port: entry.port })}
+                  onRemove={removeRecentHost}
+                />
+              </>
+            )}
 
-          <button className="btn-primary" onClick={submitRemote} disabled={!host.trim()}>
-            Connect
-          </button>
-        </>
-      )}
+            <button className="btn-primary" onClick={submitRemote} disabled={!host.trim()}>
+              Connect
+            </button>
+          </>
+        )}
 
-      {status.kind === "connecting" && <p className="hint">Connecting…</p>}
+        {status.kind === "connecting" && <p className="hint">Connecting…</p>}
 
-      {status.kind === "error" && (
-        <>
-          <p className="error-text" style={{ marginBottom: 12 }}>
-            {status.message}
-          </p>
-          <button onClick={backToPicker}>Change server</button>
-        </>
-      )}
+        {status.kind === "error" && (
+          <>
+            <p className="error-text" style={{ marginBottom: 12 }}>
+              {status.message}
+            </p>
+            <button onClick={backToPicker}>Change server</button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
