@@ -2,6 +2,19 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python3
 PIP := $(VENV)/bin/pip
 RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
+# api-dev runs uvicorn directly against the ASGI app, bypassing
+# supervisor.py's own CLI (and PROXY_SCALER_SERVER_PORT/HOST) entirely —
+# so it needs its own overrides rather than inheriting either of those.
+# PORT matches supervisor.py's DEFAULT_PORT so the plain `make api-dev`
+# case still lines up with what the frontend/desktop app expect by
+# default. HOST mirrors --host; BIND_ALL mirrors --bind-all (see
+# supervisor.py) for testing from another machine over Tailscale — same
+# "the API is UNAUTHENTICATED" caveat applies here as it does there.
+PORT ?= 13207
+HOST ?= 127.0.0.1
+ifdef BIND_ALL
+HOST := 0.0.0.0
+endif
 
 # Shared by every artifact 'release' produces, so all three filenames stay
 # in lockstep — the two tauri.conf.json files (client, server-app) happen
@@ -38,7 +51,7 @@ SERVER_APP_BIN := desktop/server-app/target/release/proxy-scaler-server
 	build run desktop deb \
 	server-app server-app-dev server-app-run \
 	release release-client-archive release-server-app-archive \
-	api-dev worker-dev frontend-install frontend-dev frontend-build
+	init-db api-dev worker-dev frontend-install frontend-dev frontend-build
 
 help:
 	@echo "--- packaged app (no hot reload -- this is the real build) ---"
@@ -50,6 +63,10 @@ help:
 	@echo ""
 	@echo "--- fast dev loop (hot reload -- no Tauri, no PyInstaller) ---"
 	@echo "api-dev          Run the API server with uvicorn --reload"
+	@echo "                 (PORT=9001 make api-dev to override, default $(PORT);"
+	@echo "                 BIND_ALL=1 make api-dev to bind 0.0.0.0 for remote testing"
+	@echo "                 over Tailscale -- UNAUTHENTICATED, same caveat as"
+	@echo "                 supervisor.py's --bind-all)"
 	@echo "worker-dev       Run the background worker"
 	@echo "frontend-dev     Run the Vite dev server -- open the printed localhost URL"
 	@echo "                 in a plain browser tab; run all three of these together"
@@ -192,10 +209,21 @@ desktop:
 
 # --- fast dev loop: no Tauri, no PyInstaller, everything hot-reloads ---
 
-api-dev:
-	$(VENV)/bin/uvicorn proxy_scaler.api:app --reload
+# db.init_db() (schema creation + _migrate's old-shape cleanup) is normally
+# only run once by supervisor.py before it spawns the API/worker as
+# children. api-dev/worker-dev bypass the supervisor entirely, so without
+# this they'd silently run against whatever schema happens to already be
+# on disk — a real gap: a data/proxy_scaler.db predating a migration (e.g.
+# the project_tag reshape) breaks with "no such column" instead of
+# self-healing. Idempotent and cheap, so unconditional on every dev-loop
+# start costs nothing.
+init-db:
+	$(PYTHON) -c "from proxy_scaler import db; db.init_db()"
 
-worker-dev:
+api-dev: init-db
+	$(VENV)/bin/uvicorn proxy_scaler.api:app --reload --host $(HOST) --port $(PORT)
+
+worker-dev: init-db
 	$(VENV)/bin/python -m proxy_scaler.worker
 
 frontend-install:

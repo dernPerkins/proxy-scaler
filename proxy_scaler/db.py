@@ -1,7 +1,14 @@
 """SQLite persistence for the generation server: the task queue and the
 gallery of completed images. Project management (decklist text, project
 CRUD, settings) lives in the desktop app itself now, not here — see
-ARCHITECTURE.md."""
+ARCHITECTURE.md.
+
+Schema changes are applied as ordered, non-destructive migrations tracked
+via PRAGMA user_version — see _MIGRATIONS and _migrate() below. Call
+init_db() before using a database; supervisor.main() already does this on
+every server start, so this only matters for code that talks to the
+database without going through the supervisor (see connect()'s
+SchemaVersionMismatch)."""
 
 from __future__ import annotations
 
@@ -13,7 +20,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from .decklist import DeckEntry
 
@@ -89,6 +96,12 @@ _OUTPUT_SUFFIX_RE = re.compile(
 # about generation work, scoped by an opaque `project_tag` string the
 # client mints and includes on every request — not a foreign key to
 # anything, since this process has no idea projects exist.
+#
+# This is only ever the *current, latest* shape — used directly for a
+# brand new database, and re-applied defensively (CREATE TABLE/INDEX IF
+# NOT EXISTS, a no-op once already current) after migrations run on an
+# existing one. It is NOT where upgrade logic for an existing database
+# lives — that's _MIGRATIONS/_migrate() below.
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -210,8 +223,11 @@ class TaskRow:
         )
 
 
-def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
-    path = Path(db_path) if db_path else DEFAULT_DB_PATH
+def _raw_connect(path: Path) -> sqlite3.Connection:
+    """Opens a connection with no schema-version assumptions. Used only by
+    init_db()/the migration runner, which must be able to operate on a
+    database that isn't at SCHEMA_VERSION yet. Everything else should use
+    connect(), which adds the version guard below."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -224,27 +240,91 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     return conn
 
 
+class SchemaVersionMismatch(RuntimeError):
+    """Raised by connect() when a database's PRAGMA user_version doesn't
+    match SCHEMA_VERSION — i.e. something opened it without ever calling
+    init_db() first. supervisor.main() already calls init_db() once,
+    before spawning the API/worker children, on every server start — so
+    this should only ever fire for a caller that bypasses the supervisor
+    entirely."""
+
+
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
+    path = Path(db_path) if db_path else DEFAULT_DB_PATH
+    conn = _raw_connect(path)
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version != SCHEMA_VERSION:
+        conn.close()
+        raise SchemaVersionMismatch(
+            f"{path} is at schema version {version}, expected "
+            f"{SCHEMA_VERSION}. Call proxy_scaler.db.init_db() first — "
+            "supervisor.main() already does this on every server start."
+        )
+    return conn
+
+
 def init_db(db_path: Path | str | None = None) -> Path:
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
-    with connect(path) as conn:
-        # Drop stale/incompatible tables *before* creating the current
-        # schema, not after — see _migrate's docstring.
+    # _raw_connect, not connect(): this is the one place allowed to open a
+    # database that isn't at SCHEMA_VERSION yet — it's the code that fixes
+    # that, not a caller that should be turned away by the version guard.
+    conn = _raw_connect(path)
+    try:
         _migrate(conn)
-        conn.executescript(_SCHEMA)
-        conn.commit()
+    finally:
+        conn.close()
     return path
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Deliberate clean break, not a data migration: the pre-split combined
-    schema had projects/project_cards/app_settings tables (now owned by
-    the desktop app itself, see ARCHITECTURE.md) and generation_tasks/
-    project_gallery_items keyed by integer project_id/card_id foreign keys
-    (now a plain project_tag string, no FK at all). Detects either shape
-    and drops it so _SCHEMA's CREATE TABLE IF NOT EXISTS actually takes
-    effect with the new columns, instead of silently no-op'ing against an
-    old-shaped table left behind by a pre-split database file. A no-op on
-    a database that never had the old shape (e.g. every test fixture)."""
+@dataclass(frozen=True)
+class Migration:
+    """One schema step. `apply` runs inside a transaction the runner in
+    _migrate() has already opened (BEGIN IMMEDIATE) — use conn.execute()
+    per statement inside it, never conn.executescript() (which issues an
+    implicit COMMIT first and would break the atomicity of "schema change
+    + PRAGMA user_version bump" the runner depends on). The common case is
+    a plain `conn.execute("ALTER TABLE ... ADD COLUMN ...")`; for anything
+    ALTER TABLE can't express (dropping/retyping a column, adding a NOT
+    NULL column with no usable default), use _rebuild_table() below."""
+
+    version: int
+    description: str
+    apply: Callable[[sqlite3.Connection], None]
+
+
+def _rebuild_table(
+    conn: sqlite3.Connection,
+    table: str,
+    create_sql: str,
+    copy_columns: Sequence[str],
+) -> None:
+    """Standard SQLite "new shape, copy, drop, rename" pattern, for schema
+    changes plain ALTER TABLE ADD COLUMN can't express. Must be called
+    inside an already-open migration transaction (see Migration.apply).
+    Caller is responsible for re-creating any indexes on `table`
+    afterward — RENAME doesn't carry them across."""
+    conn.execute(f"ALTER TABLE {table} RENAME TO {table}__old")
+    conn.execute(create_sql)
+    cols = ", ".join(copy_columns)
+    conn.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {table}__old")
+    conn.execute(f"DROP TABLE {table}__old")
+
+
+def _migration_001_drop_legacy_project_schema(conn: sqlite3.Connection) -> None:
+    """The pre-split combined schema had projects/project_cards/
+    app_settings tables (now owned by the desktop app itself, see
+    ARCHITECTURE.md) and generation_tasks/project_gallery_items keyed by
+    integer project_id/card_id foreign keys (now a plain project_tag
+    string, no FK at all). Detects either shape and drops it rather than
+    migrating it forward: project_tag is an opaque client-minted string
+    with no relationship to the old integer ids, so there's no real data
+    to carry across — generation_tasks rows are just re-enqueuable work,
+    and project_gallery_items rows just index PNGs still on disk
+    (recoverable via scan_gallery_from_output()). A no-op against a
+    database that's already past this shape — e.g. one that already went
+    through this exact drop under the old, unversioned _migrate() this
+    file used to have, before it tracked PRAGMA user_version at all —
+    since every branch below is gated on still finding the old shape."""
     tables = {
         row[0]
         for row in conn.execute(
@@ -274,6 +354,86 @@ def _migrate(conn: sqlite3.Connection) -> None:
         }
         if "project_tag" not in cols:
             conn.execute("DROP TABLE IF EXISTS project_gallery_items")
+
+
+# Ordered oldest-to-newest. _migrate() below walks this list and applies
+# whichever steps are newer than a database's current PRAGMA user_version,
+# one at a time in order — so a database several versions behind replays
+# every intervening step, not just a jump straight to the latest shape.
+_MIGRATIONS: list[Migration] = [
+    Migration(
+        1,
+        "drop pre-split projects/project_cards/app_settings and any "
+        "generation_tasks/project_gallery_items rows shaped before the "
+        "project_tag reshape",
+        _migration_001_drop_legacy_project_schema,
+    ),
+]
+SCHEMA_VERSION = 1  # kept in sync with _MIGRATIONS[-1].version
+assert _MIGRATIONS[-1].version == SCHEMA_VERSION
+
+# Tables from every schema shape this database has ever had — legacy ones
+# included — so _migrate()'s "is this a genuinely fresh database" check
+# below can't mistake a partially-legacy file for a brand new one.
+_KNOWN_TABLES = frozenset(
+    {
+        "generation_tasks",
+        "project_gallery_items",
+        "projects",
+        "project_cards",
+        "app_settings",
+    }
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Brings a database from whatever schema version it's currently at up
+    to SCHEMA_VERSION, by running each not-yet-applied step in
+    _MIGRATIONS in order — one at a time, each inside its own transaction
+    (schema change + PRAGMA user_version bump committed together), so a
+    crash mid-run leaves the database at a valid, fully-applied
+    intermediate version rather than one where the schema changed but the
+    version wasn't recorded. A genuinely fresh database (none of
+    _KNOWN_TABLES exist yet) skips straight to _SCHEMA at the latest
+    version instead of replaying history it never had. Safe and cheap to
+    call on every process start (see init_db()) — a no-op once already
+    current."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+    if not (tables & _KNOWN_TABLES):
+        conn.executescript(_SCHEMA)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
+        return
+
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    # Autocommit mode so the explicit BEGIN IMMEDIATE/COMMIT/ROLLBACK below
+    # doesn't fight sqlite3's own implicit transaction handling around DML
+    # — the standard idiom for getting anything other than a plain
+    # deferred BEGIN out of the sqlite3 module.
+    conn.isolation_level = None
+    for migration in _MIGRATIONS:
+        if migration.version <= current_version:
+            continue
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            migration.apply(conn)
+            conn.execute(f"PRAGMA user_version = {migration.version}")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+
+    # Defensive catch-all: pick up any IF NOT EXISTS table/index a
+    # migration step didn't itself create. A no-op once already current.
+    conn.executescript(_SCHEMA)
+    conn.commit()
 
 
 def enqueue_task(

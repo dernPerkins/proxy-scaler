@@ -115,6 +115,12 @@ reason this migration is a reshape rather than a rewrite:
   the `card_id` foreign key, which became a plain `project_tag TEXT`
   column — a small, mechanical schema change.
 
+This transition is now formally tracked as migration 1 in `db.py`'s
+versioned schema-migration system (`_MIGRATIONS`, applied via
+`PRAGMA user_version`) rather than untracked ad hoc shape-detection —
+see the module docstring in `proxy_scaler/db.py` for how later schema
+changes are meant to build on it non-destructively.
+
 ## The resolve → generate flow
 
 Project management makes zero external network calls — all Scryfall

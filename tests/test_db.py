@@ -6,10 +6,12 @@ here — there's nothing to test on the Python side for that any more."""
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from proxy_scaler import db as db_module
 from proxy_scaler.db import (
     TaskRow,
     acquire_worker_lock,
@@ -288,3 +290,171 @@ def test_worker_lock_prevents_double_acquire(tmp_path: Path) -> None:
 
     release_worker_lock(fd)
     assert is_worker_running(lock_path) is False
+
+
+# --- Schema versioning / migrations ----------------------------------
+
+
+def test_init_db_fresh_db_stamps_latest_version(tmp_path: Path) -> None:
+    path = tmp_path / "fresh.db"
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_init_db_bridges_already_current_unversioned_db(tmp_path: Path) -> None:
+    """A database already reshaped by the pre-versioning _migrate() (real
+    users, including this project's own dev DB) has project_tag columns
+    and no `projects` table, but PRAGMA user_version was never set
+    (implicit 0). init_db() must recognize it's already at the current
+    shape and just stamp the version -- not rerun migration 1's drops
+    against data that's already there."""
+    path = tmp_path / "bridge.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(db_module._SCHEMA)
+    conn.execute(
+        """
+        INSERT INTO generation_tasks (
+            project_tag, scryfall_id, face_name, card_name, set_code,
+            collector_number, png_url, dpi, model, output_dir, cache_dir,
+            weights_dir, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
+            "https://example.com/sol.png", 800, "swinir", "/tmp/out",
+            "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO project_gallery_items (
+            project_tag, scryfall_id, model, dpi, image_filename,
+            out_path, original_path, png_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tag-a", "sol-id", "swinir", 800, "sol.png",
+            "/tmp/out/sol.png", "/tmp/cache/sol.png",
+            "https://example.com/sol.png",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+        assert conn.execute("SELECT COUNT(*) FROM generation_tasks").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM project_gallery_items").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_init_db_migrates_legacy_pre_reshape_db(tmp_path: Path) -> None:
+    """A genuinely old-shape database (pre client/generation split) gets
+    its legacy tables dropped and generation_tasks rebuilt with the
+    current project_tag shape, same as the old ad hoc _migrate() did."""
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE project_cards (id INTEGER PRIMARY KEY, project_id INTEGER);
+        CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE generation_tasks (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER,
+            status TEXT
+        );
+        """
+    )
+    conn.execute("INSERT INTO projects (id, name) VALUES (1, 'Old Project')")
+    conn.execute("INSERT INTO project_cards (id, project_id) VALUES (1, 1)")
+    conn.execute("INSERT INTO app_settings (key, value) VALUES ('k', 'v')")
+    conn.execute(
+        "INSERT INTO generation_tasks (id, project_id, status) VALUES (1, 1, 'done')"
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "projects" not in tables
+        assert "project_cards" not in tables
+        assert "app_settings" not in tables
+        assert "generation_tasks" in tables
+
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(generation_tasks)").fetchall()
+        }
+        assert "project_tag" in cols
+
+        assert conn.execute("SELECT COUNT(*) FROM generation_tasks").fetchone()[0] == 0
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_init_db_is_idempotent(db_path: Path) -> None:
+    tid = _enqueue_sol_ring(db_path)
+
+    init_db(db_path)
+    init_db(db_path)
+
+    task = get_task(tid, db_path=db_path)
+    assert task is not None
+    assert task.id == tid
+
+
+def test_connect_raises_on_stale_schema(tmp_path: Path) -> None:
+    path = tmp_path / "stale.db"
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA user_version = 0")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(db_module.SchemaVersionMismatch):
+        db_module.connect(path)
+
+
+def test_migration_runner_applies_steps_in_order_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[int] = []
+    fake_migrations = [
+        db_module.Migration(1, "fake v1", lambda conn: calls.append(1)),
+        db_module.Migration(2, "fake v2", lambda conn: calls.append(2)),
+    ]
+    monkeypatch.setattr(db_module, "_MIGRATIONS", fake_migrations)
+    monkeypatch.setattr(db_module, "SCHEMA_VERSION", 2)
+
+    path = tmp_path / "runner.db"
+    conn = db_module._raw_connect(path)
+    conn.executescript(db_module._SCHEMA)  # seed a known table so it's
+    conn.commit()                          # treated as existing, not fresh
+    db_module._migrate(conn)
+    conn.close()
+    assert calls == [1, 2]
+
+    calls.clear()
+    conn = db_module._raw_connect(path)
+    db_module._migrate(conn)
+    conn.close()
+    assert calls == []
