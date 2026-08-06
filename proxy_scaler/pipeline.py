@@ -33,6 +33,7 @@ from .upscale import (
     UpscaleModel,
     Upscaler,
     cache_path,
+    effective_tile_size,
     load_or_upscale,
     original_cache_path,
     parse_model,
@@ -253,12 +254,19 @@ def _upscalers_for_targets(
     weights_dir: Path,
     tile_size: int = 0,
 ) -> dict[int, Upscaler]:
-    """Build unique Upscaler instances keyed by native scale."""
+    """Build unique Upscaler instances keyed by native scale.
+
+    tile_size is the raw client value (0 = "auto") — resolved here via
+    effective_tile_size() rather than passed straight through, so a
+    memory-hungry model (UltraSharpV2, HAT, IllustrationJaNai) still gets
+    tiled by default even when nothing explicit was set. This is the one
+    choke point every generation path (process_entries,
+    _regenerate_face_from_card/process_task, regenerate_face_multi) funnels
+    through, so resolving it here covers all of them."""
     needed = {native_scale_for_dpi(d, model_id) for d in dpi_targets}
+    tile = effective_tile_size(model_id, tile_size)
     return {
-        scale: Upscaler(
-            model=model_id, scale=scale, weights_dir=weights_dir, tile=tile_size
-        )
+        scale: Upscaler(model=model_id, scale=scale, weights_dir=weights_dir, tile=tile)
         for scale in sorted(needed)
     }
 
@@ -514,9 +522,12 @@ def process_entries(
     (used by the UI's independent checkboxes) and takes priority over the
     single-`dpi`/`all_dpis` combo (used by the CLI's --dpi/--all-dpis flags).
 
-    `tile_size` (0 = disabled) processes each face in overlapping tiles
-    instead of one full-image forward pass — needed to keep memory-hungry
-    transformer models (HAT, DAT-based) within a GPU's VRAM budget.
+    `tile_size` processes each face in overlapping tiles instead of one
+    full-image forward pass — needed to keep memory-hungry transformer
+    models (HAT, DAT-based) within a GPU's VRAM budget. 0 means "auto":
+    see effective_tile_size() / _upscalers_for_targets() — off for light
+    models, a sane default tile size for heavy ones. An explicit non-zero
+    value always wins over that default.
     """
     result = PipelineResult()
     if not entries:

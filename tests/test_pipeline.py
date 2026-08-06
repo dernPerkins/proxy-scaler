@@ -10,6 +10,7 @@ from PIL import Image
 from proxy_scaler.db import TaskRow
 from proxy_scaler.pipeline import (
     FaceResult,
+    _upscalers_for_targets,
     expected_face_result,
     face_group_key,
     group_by_face,
@@ -18,6 +19,7 @@ from proxy_scaler.pipeline import (
     regenerate_face_multi,
 )
 from proxy_scaler.scryfall import ScryfallClient
+from proxy_scaler.upscale import DEFAULT_TILE_SIZE, UpscaleModel
 
 
 def _face(
@@ -316,3 +318,23 @@ def test_expected_face_result_matches_process_task_output(tmp_path, monkeypatch)
     assert expected.device == actual.device
     assert expected.dpi == actual.dpi
     assert expected.model == actual.model
+
+
+def test_upscalers_for_targets_auto_tiles_heavy_models(tmp_path: Path) -> None:
+    """Regression test: tile_size=0 ("auto" from the client) must still
+    resolve to a real tile size for memory-hungry models like UltraSharpV2
+    -- this is the actual choke point every generation path builds its
+    Upscaler instances through, so a bug here silently disables tiling for
+    every call site at once (previously effective_tile_size() existed but
+    nothing called it, so heavy models OOM'd on GPU under "auto")."""
+    heavy = _upscalers_for_targets(UpscaleModel.ULTRASHARP_V2, [800], tmp_path, tile_size=0)
+    [upscaler] = heavy.values()
+    assert upscaler.tile == DEFAULT_TILE_SIZE
+
+    light = _upscalers_for_targets(UpscaleModel.SWINIR, [800], tmp_path, tile_size=0)
+    [upscaler] = light.values()
+    assert upscaler.tile == 0
+
+    explicit = _upscalers_for_targets(UpscaleModel.SWINIR, [800], tmp_path, tile_size=128)
+    [upscaler] = explicit.values()
+    assert upscaler.tile == 128
