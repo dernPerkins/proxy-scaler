@@ -50,6 +50,19 @@ export function setGpuAvailable(available: boolean): void {
   gpuAvailable = available;
 }
 
+// Called at the start of every applyTarget() — connection.tsx's probe is
+// fire-and-forget, so without this a *new* connection's "not known yet"
+// window would silently show the *previous* server's answer instead
+// (e.g. Local's "no GPU" bleeding into the first moment of a freshly
+// connected Remote box, until its own probe — which pays torch's full
+// cold-import cost on its first call, a real multi-second wait — gets
+// around to overwriting it). Resetting to null here means that gap
+// always falls back to the honest mode-based guess instead of a stale,
+// wrong-server answer.
+export function clearGpuAvailable(): void {
+  gpuAvailable = null;
+}
+
 // Server-readiness gate. Local mode's sidecar can take real time to
 // start (cold model-loading, disk I/O) — rather than block the whole UI
 // behind a "Connecting…" screen, ConnectGate renders the app immediately

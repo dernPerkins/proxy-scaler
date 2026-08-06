@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "./api/generation";
 import { projectApi, type RecentHost } from "./api/project";
 import {
+  clearGpuAvailable,
   getApiBaseUrl,
   getConnectionMode,
   setApiBaseUrl,
@@ -215,6 +216,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // immediately and ServerStatusToast reports when the sidecar is
   // actually up (api/generation.ts's requests wait on the same gate).
   function applyTarget(target: ConnectionTarget) {
+    // Every target switch starts from "GPU status unknown" — see
+    // clearGpuAvailable's own comment for why leaving the previous
+    // server's answer in place until the new probe resolves is actively
+    // wrong, not just stale.
+    clearGpuAvailable();
+
     if (target.mode === "remote") {
       setApiBaseUrl(`http://${target.host}:${target.port}`);
       setConnectionMode("remote");
