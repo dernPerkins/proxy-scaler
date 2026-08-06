@@ -10,7 +10,9 @@ from PIL import Image
 from proxy_scaler.db import TaskRow
 from proxy_scaler.pipeline import (
     FaceResult,
+    _THUMB_TARGET_BYTES,
     _upscalers_for_targets,
+    ensure_original_thumbnail,
     expected_face_result,
     face_group_key,
     group_by_face,
@@ -19,7 +21,7 @@ from proxy_scaler.pipeline import (
     regenerate_face_multi,
 )
 from proxy_scaler.scryfall import ScryfallClient
-from proxy_scaler.upscale import DEFAULT_TILE_SIZE, UpscaleModel
+from proxy_scaler.upscale import DEFAULT_TILE_SIZE, UpscaleModel, original_thumb_path
 
 
 def _face(
@@ -318,6 +320,48 @@ def test_expected_face_result_matches_process_task_output(tmp_path, monkeypatch)
     assert expected.device == actual.device
     assert expected.dpi == actual.dpi
     assert expected.model == actual.model
+
+
+def _write_fake_original(tmp_path: Path, *, size: tuple[int, int] = (600, 840)) -> Path:
+    path = tmp_path / "originals" / "sol-id_single.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", size, (200, 30, 30, 255)).save(path, format="PNG")
+    return path
+
+
+def test_ensure_original_thumbnail_generates_under_target_size(tmp_path: Path) -> None:
+    original = _write_fake_original(tmp_path)
+    thumb = ensure_original_thumbnail(original)
+    assert thumb is not None
+    assert thumb == original_thumb_path(original)
+    assert thumb.is_file()
+    assert thumb.stat().st_size <= _THUMB_TARGET_BYTES
+
+
+def test_ensure_original_thumbnail_is_self_healing(tmp_path: Path) -> None:
+    """Covers the real gap this exists for: an original cached via the
+    services/generation.py skip_existing fast path (which stores
+    original_path without ever touching the file) never goes through the
+    eager _regenerate_face_from_card hook -- this lazy accessor is what
+    backfills it on first actual need."""
+    original = _write_fake_original(tmp_path)
+    assert not original_thumb_path(original).is_file()
+
+    thumb = ensure_original_thumbnail(original)
+    assert thumb is not None
+    assert thumb.is_file()
+
+    # Idempotent: calling again reuses the existing file rather than
+    # erroring or silently regenerating.
+    mtime = thumb.stat().st_mtime
+    again = ensure_original_thumbnail(original)
+    assert again == thumb
+    assert thumb.stat().st_mtime == mtime
+
+
+def test_ensure_original_thumbnail_missing_original_returns_none(tmp_path: Path) -> None:
+    missing = tmp_path / "originals" / "nope_single.png"
+    assert ensure_original_thumbnail(missing) is None
 
 
 def test_upscalers_for_targets_auto_tiles_heavy_models(tmp_path: Path) -> None:

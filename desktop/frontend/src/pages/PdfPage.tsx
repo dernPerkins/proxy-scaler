@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import type { CardRow } from "../api/project";
+import PdfPagePreview from "../components/PdfPagePreview";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
@@ -65,6 +66,16 @@ export default function PdfPage() {
     enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
   });
 
+  // Page-1-only visual layout preview — separate query/endpoint from the
+  // numeric one above (see api/types.ts's PdfPagePreview comment for why
+  // they're kept distinct). Same enabled-gating as previewQuery.
+  const pagePreviewQuery = useQuery({
+    queryKey: ["pdf-page-preview", projectTag, entries, layout],
+    queryFn: () =>
+      generationApi.pdfPagePreview({ project_tag: projectTag as string, entries, ...layout }),
+    enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
+  });
+
   function updateLayout<K extends keyof LayoutSettings>(key: K, value: LayoutSettings[K]) {
     setLayout((l) => ({ ...l, [key]: value }));
   }
@@ -76,18 +87,18 @@ export default function PdfPage() {
     }
   }
 
-  async function handleDownload() {
+  async function handleDownload(method: "fpdf2" | "html") {
     if (projectTag == null || serverUnavailable) return;
     setDownloadError(null);
     setDownloading(true);
     try {
-      const blob = await generationApi.downloadPdf({
-        project_tag: projectTag,
-        entries,
-        project_name: projectName,
-        ...layout,
-      });
-      await downloadBlob(blob, `${projectName || "proxy-scaler"}.pdf`);
+      const body = { project_tag: projectTag, entries, project_name: projectName, ...layout };
+      const blob =
+        method === "html"
+          ? await generationApi.downloadPdfHtml(body)
+          : await generationApi.downloadPdf(body);
+      const suffix = method === "html" ? "-html" : "";
+      await downloadBlob(blob, `${projectName || "proxy-scaler"}${suffix}.pdf`);
     } catch (err) {
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -236,14 +247,42 @@ export default function PdfPage() {
           </div>
         ) : null}
 
+        {!serverUnavailable && entries.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            {pagePreviewQuery.isLoading ? (
+              <p className="hint">Loading page preview…</p>
+            ) : pagePreviewQuery.isError ? (
+              <p className="error-text">
+                Couldn&apos;t load page preview:{" "}
+                {pagePreviewQuery.error instanceof Error
+                  ? pagePreviewQuery.error.message
+                  : String(pagePreviewQuery.error)}
+              </p>
+            ) : pagePreviewQuery.data && pagePreviewQuery.data.slots.length > 0 ? (
+              <PdfPagePreview preview={pagePreviewQuery.data} />
+            ) : null}
+          </div>
+        )}
+
         <div className="summary-row">
           <button
             className="btn-primary"
-            onClick={handleDownload}
+            onClick={() => handleDownload("fpdf2")}
             disabled={downloading || entries.length === 0 || serverUnavailable}
             title={serverUnavailable ? "Generation server is unreachable" : undefined}
           >
             {downloading ? "Generating…" : "Generate & Download PDF"}
+          </button>
+          {/* Alternate HTML->PDF pipeline via WeasyPrint, for comparing
+              output quality against the default fpdf2 method above — see
+              pdf_html.py. 503s with a clear message when the connected
+              server doesn't have the optional html-pdf extra installed. */}
+          <button
+            onClick={() => handleDownload("html")}
+            disabled={downloading || entries.length === 0 || serverUnavailable}
+            title={serverUnavailable ? "Generation server is unreachable" : undefined}
+          >
+            {downloading ? "Generating…" : "Download PDF (HTML/WeasyPrint)"}
           </button>
           {downloadError && <span className="error-text">{downloadError}</span>}
         </div>

@@ -156,3 +156,29 @@ export interface PdfPreview {
   unmatched: string[];
   page_count: number;
 }
+
+// Mirrors PdfPageSlotOut/PdfPagePreviewOut — a distinct, page-1-only
+// visual layout preview (geometry + small embedded thumbnails), not to
+// be confused with the numbers-only PdfPreview above.
+export interface PdfPageSlot {
+  card_name: string;
+  face_label: string | null;
+  model: string | null;
+  dpi: number | null;
+  thumbnail_data_url: string | null;
+}
+
+export interface PdfPagePreview {
+  page_w_mm: number;
+  page_h_mm: number;
+  cols: number;
+  rows: number;
+  margin_x_mm: number;
+  margin_y_mm: number;
+  cell_w_mm: number;
+  cell_h_mm: number;
+  bled_card_w_mm: number;
+  bled_card_h_mm: number;
+  page_count: number;
+  slots: PdfPageSlot[];
+}

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import re
 import shutil
+import sys
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -36,6 +38,7 @@ from .upscale import (
     effective_tile_size,
     load_or_upscale,
     original_cache_path,
+    original_thumb_path,
     parse_model,
     read_cache_device,
 )
@@ -200,6 +203,58 @@ def _save_original(
     return path
 
 
+_THUMB_MAX_DIM = 220  # px, longest side — does most of the size-reduction work
+_THUMB_TARGET_BYTES = 50_000
+_THUMB_QUALITY_STEPS = (85, 70, 55, 40)  # last is the floor, always accepted
+
+
+def _generate_original_thumbnail(original_path: Path, thumb_path: Path) -> None:
+    """Small JPEG preview thumbnail from a cached original PNG, for the PDF
+    layout preview only — not print-quality. Plain white-background
+    RGBA->RGB flatten, deliberately NOT pdf_layout.flatten_corner_alpha:
+    this tile is shown on its own in the UI, not composited against a
+    printed page background, so the rounded-corner artifact that helper
+    exists for doesn't apply here, and skipping it keeps this cheap since
+    it runs on every fresh download."""
+    with Image.open(original_path) as img:
+        img = img.convert("RGBA")
+        w, h = img.size
+        scale = _THUMB_MAX_DIM / max(w, h)
+        img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+
+    thumb_path.parent.mkdir(parents=True, exist_ok=True)
+    for quality in _THUMB_QUALITY_STEPS:
+        buf = io.BytesIO()
+        bg.save(buf, format="JPEG", quality=quality)
+        data = buf.getvalue()
+        if len(data) <= _THUMB_TARGET_BYTES or quality == _THUMB_QUALITY_STEPS[-1]:
+            thumb_path.write_bytes(data)
+            return
+
+
+def ensure_original_thumbnail(original_path: Path) -> Path | None:
+    """Self-healing: return the thumbnail path for `original_path`,
+    generating it on demand if missing — covers both a fresh download (see
+    the eager call in _regenerate_face_from_card below) and an original
+    that predates this feature or was cached via the skip_existing fast
+    path in services/generation.py (which stores original_path without
+    ever touching the file). Returns None if `original_path` itself isn't
+    on disk — mirrors gallery.py's _resolve_existing tolerant-missing-file
+    idiom; the caller treats this as a missing/blank slot, not a crash."""
+    if not original_path.is_file():
+        return None
+    thumb_path = original_thumb_path(original_path)
+    if not thumb_path.is_file():
+        try:
+            _generate_original_thumbnail(original_path, thumb_path)
+        except Exception as exc:  # noqa: BLE001 — best-effort, never break real generation
+            print(f"Failed to generate thumbnail for {original_path}: {exc}", file=sys.stderr)
+            return None
+    return thumb_path
+
+
 def _resize_to_dpi(image: Image.Image, dpi: int) -> Image.Image:
     target = target_pixels(dpi)
     if image.size == target:
@@ -328,6 +383,7 @@ def _regenerate_face_from_card(
     original_path = _save_original(
         png_bytes, cache_dir, face.scryfall_id, face.face_index
     )
+    ensure_original_thumbnail(original_path)  # best-effort; fails soft internally
 
     raw_by_scale: dict[int, Image.Image] = {}
     device_by_scale: dict[int, str] = {}

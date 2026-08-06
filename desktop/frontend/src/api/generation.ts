@@ -12,6 +12,7 @@ import type {
   GenerateResult,
   ModelOption,
   PdfLayoutRequest,
+  PdfPagePreview,
   PdfPreview,
   RegenerateGalleryItemRequest,
   ResolveResult,
@@ -46,6 +47,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function downloadPdf(body: PdfLayoutRequest): Promise<Blob> {
   await waitForServerReady();
   const resp = await fetch(`${getApiBaseUrl()}/api/pdf`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const detail = await resp.text();
+    throw new ApiError(resp.status, detail || resp.statusText);
+  }
+  return resp.blob();
+}
+
+// Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — 503s
+// with a clear message (surfaced via ApiError) when the server doesn't
+// have the optional html-pdf extra installed.
+async function downloadPdfHtml(body: PdfLayoutRequest): Promise<Blob> {
+  await waitForServerReady();
+  const resp = await fetch(`${getApiBaseUrl()}/api/pdf/html`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -110,7 +128,13 @@ export const generationApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  pdfPagePreview: (body: PdfLayoutRequest) =>
+    request<PdfPagePreview>("/api/pdf/preview/page", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   downloadPdf,
+  downloadPdfHtml,
 
   clearGeneratedData: (outputDir: string, cacheDir: string, projectTag?: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {

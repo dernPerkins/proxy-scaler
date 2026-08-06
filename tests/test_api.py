@@ -392,6 +392,68 @@ def test_pdf_generate_returns_real_pdf_file(client: TestClient, tmp_path: Path) 
     assert len(resp.content) > 100  # a real, non-trivial PDF, not an empty stub
 
 
+def test_pdf_preview_page_no_entries_is_400(client: TestClient) -> None:
+    resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(entries=[]))
+    assert resp.status_code == 400
+
+
+def test_pdf_preview_page_returns_page_one_with_thumbnail(
+    client: TestClient, tmp_path: Path
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(cols=3, rows=3))
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["cols"] == 3
+    assert body["rows"] == 3
+    assert body["page_count"] == 1
+    [slot] = body["slots"]
+    assert slot["card_name"] == "Sol Ring"
+    assert slot["thumbnail_data_url"] is not None
+    assert slot["thumbnail_data_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_pdf_preview_page_empty_when_nothing_generated(client: TestClient) -> None:
+    resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["page_count"] == 0
+    assert body["slots"] == []
+
+
+def test_pdf_html_returns_real_pdf_file(client: TestClient, tmp_path: Path) -> None:
+    pytest.importorskip("weasyprint")
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf/html", json=_pdf_layout_body(project_name="Deck"))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert "Deck-html.pdf" in resp.headers["content-disposition"]
+    assert len(resp.content) > 100
+
+
+def test_pdf_html_503_when_weasyprint_unavailable(client: TestClient, tmp_path: Path) -> None:
+    from proxy_scaler.pdf_html import WeasyPrintUnavailable
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    # Patched where the route resolves it (`from ... import build_pdf_html`
+    # binds a new name in routers.pdf's own namespace) — patching
+    # proxy_scaler.pdf_html.build_pdf_html instead wouldn't affect the
+    # already-imported reference the route actually calls.
+    with patch(
+        "proxy_scaler.api.routers.pdf.build_pdf_html",
+        side_effect=WeasyPrintUnavailable("nope"),
+    ):
+        resp = client.post("/api/pdf/html", json=_pdf_layout_body())
+    assert resp.status_code == 503
+
+
 def test_clear_generated_data(client: TestClient, tmp_path: Path) -> None:
     output_dir = tmp_path / "out"
     cache_dir = tmp_path / "cache"

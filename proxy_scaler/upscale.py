@@ -466,6 +466,15 @@ def original_cache_path(
     return cache_dir / "originals" / f"{scryfall_id}_{face_part}.png"
 
 
+def original_thumb_path(original_path: Path) -> Path:
+    """Sibling small-JPEG preview thumbnail for a cached original PNG —
+    originals/<id>_<face>.png -> originals/<id>_<face>_thumb.jpg. Derived,
+    not stored: same convention as original_cache_path/cache_path
+    themselves (see pipeline.py::ensure_original_thumbnail for the
+    generate-on-demand side of this)."""
+    return original_path.with_name(original_path.stem + "_thumb.jpg")
+
+
 def cache_device_path(cache_png: Path) -> Path:
     """Sidecar file recording whether a cached upscale ran on gpu or cpu."""
     return Path(str(cache_png) + ".device")

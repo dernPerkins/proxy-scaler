@@ -166,6 +166,35 @@ class PdfPreviewOut(BaseModel):
     page_count: int
 
 
+class PdfPageSlotOut(BaseModel):
+    card_name: str
+    face_label: str | None = None
+    model: str | None = None
+    dpi: int | None = None
+    thumbnail_data_url: str | None = None  # "data:image/jpeg;base64,..."; None if unavailable
+
+
+class PdfPagePreviewOut(BaseModel):
+    """Page-1-only visual layout preview — distinct from PdfPreviewOut
+    (that one's a settled, numbers-only summary; this one carries the
+    actual geometry + small thumbnails the frontend renders as a CSS
+    grid). See proxy_scaler/pdf_layout.py::PageLayout for what these
+    fields mean."""
+
+    page_w_mm: float
+    page_h_mm: float
+    cols: int
+    rows: int
+    margin_x_mm: float
+    margin_y_mm: float
+    cell_w_mm: float
+    cell_h_mm: float
+    bled_card_w_mm: float
+    bled_card_h_mm: float
+    page_count: int
+    slots: list[PdfPageSlotOut]
+
+
 class ClearGeneratedIn(BaseModel):
     output_dir: str
     cache_dir: str

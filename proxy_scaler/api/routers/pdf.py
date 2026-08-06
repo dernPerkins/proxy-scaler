@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
 import re
 
 from fastapi import APIRouter, HTTPException, Response
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
-from proxy_scaler.api.schemas import DeckEntryIn, PdfLayoutIn, PdfPreviewOut
+from proxy_scaler.api.schemas import (
+    DeckEntryIn,
+    PdfLayoutIn,
+    PdfPagePreviewOut,
+    PdfPageSlotOut,
+    PdfPreviewOut,
+)
 from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.pdf_layout import (
     PageLayout,
@@ -16,7 +23,8 @@ from proxy_scaler.pdf_layout import (
     paginate,
     resolve_page_layout,
 )
-from proxy_scaler.pipeline import FaceResult
+from proxy_scaler.pdf_html import WeasyPrintUnavailable, build_pdf_html
+from proxy_scaler.pipeline import FaceResult, ensure_original_thumbnail
 
 router = APIRouter(prefix="/api/pdf", tags=["pdf"])
 
@@ -74,6 +82,49 @@ def preview(body: PdfLayoutIn) -> PdfPreviewOut:
     return PdfPreviewOut(units=total_units, unmatched=unmatched, page_count=len(pages))
 
 
+@router.post("/preview/page", response_model=PdfPagePreviewOut)
+def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
+    """Page-1-only visual layout preview: small (<=~50KB) thumbnails of
+    each slot's *original* card art, base64-embedded directly in this one
+    response — page-1-only bounds the payload to at most cols*rows
+    thumbnails, which is trivially small, and avoids needing a dedicated
+    file-serving route (FaceResult carries no gallery_item_id to route
+    through gallery.py's existing /full,/original endpoints)."""
+    layout, pages, _unmatched = _prepare(body)
+    first_page = pages[0] if pages else []
+    slots: list[PdfPageSlotOut] = []
+    for face in first_page:
+        thumb_path = ensure_original_thumbnail(face.original_path)
+        data_url = (
+            "data:image/jpeg;base64," + base64.b64encode(thumb_path.read_bytes()).decode("ascii")
+            if thumb_path is not None
+            else None
+        )
+        slots.append(
+            PdfPageSlotOut(
+                card_name=face.card_name,
+                face_label=face.face_label,
+                model=face.model,
+                dpi=face.dpi,
+                thumbnail_data_url=data_url,
+            )
+        )
+    return PdfPagePreviewOut(
+        page_w_mm=layout.page_w_mm,
+        page_h_mm=layout.page_h_mm,
+        cols=layout.cols,
+        rows=layout.rows,
+        margin_x_mm=layout.margin_x_mm,
+        margin_y_mm=layout.margin_y_mm,
+        cell_w_mm=layout.cell_w_mm,
+        cell_h_mm=layout.cell_h_mm,
+        bled_card_w_mm=layout.bled_card_w_mm,
+        bled_card_h_mm=layout.bled_card_h_mm,
+        page_count=len(pages),
+        slots=slots,
+    )
+
+
 @router.post("")
 def generate_pdf(body: PdfLayoutIn) -> Response:
     """Returns the PDF as a real file response — the concrete fix for
@@ -90,6 +141,27 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
         show_cut_lines=body.show_cut_lines,
     )
     filename = f"{_slugify(body.project_name or body.project_tag)}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/html")
+def generate_pdf_html(body: PdfLayoutIn) -> Response:
+    """Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — a
+    second rendering path for comparing against the default fpdf2 one
+    above. 503s with a clear message rather than crashing when weasyprint
+    isn't installed on this server (see pyproject.toml's html-pdf extra)."""
+    layout, pages, _unmatched = _prepare(body)
+    if not pages:
+        raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
+    try:
+        pdf_bytes = build_pdf_html(pages, layout=layout, export_dpi=body.export_dpi)
+    except WeasyPrintUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    filename = f"{_slugify(body.project_name or body.project_tag)}-html.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
