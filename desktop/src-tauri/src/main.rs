@@ -41,9 +41,17 @@ use project_store::{
 };
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
-// Matches supervisor.py's DEFAULT_PORT (13207 — M-T-G by letter position,
-// picked to dodge the usual 8000/8080/8888/9000/etc collisions).
-const LOCAL_URL: &str = "http://127.0.0.1:13207";
+// The single source of truth for the local sidecar's port: passed to it
+// explicitly as --port below, rather than assumed to match whatever
+// supervisor.py's own DEFAULT_PORT happens to be baked in as. Those two
+// used to just have to agree by convention — a real bug, not a
+// hypothetical one: bumping DEFAULT_PORT in the Python source without
+// re-freezing the sidecar (`make sidecar`) left an already-built app
+// pointed at the new port while its embedded binary still listened on
+// the old one, so the server visibly "started" but every API call
+// silently failed to connect. 13207 itself is M-T-G by letter position —
+// picked to dodge the usual 8000/8080/8888/9000/etc collisions.
+const LOCAL_PORT: u16 = 13207;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(12);
 
 #[derive(Default)]
@@ -75,7 +83,7 @@ async fn start_local_server(
     if guard.is_some() {
         // Idempotent — fine if the frontend calls this more than once
         // (e.g. retrying after a slow first paint).
-        return Ok(LOCAL_URL.to_string());
+        return Ok(local_url());
     }
 
     let exe_name = format!("proxy-scaler-serve{}", std::env::consts::EXE_SUFFIX);
@@ -85,9 +93,17 @@ async fn start_local_server(
         .ok_or_else(|| "current executable has no parent directory".to_string())?
         .to_path_buf();
     let exe_path = exe_dir.join("proxy-scaler-serve").join(exe_name);
+    // Bound separately rather than inlined: an array literal mixing
+    // `&'static str` and `&String` relies on coercion to unify, which is
+    // needless risk for a build we can't check locally (same pitfall
+    // server-app/src/main.rs's own spawn call already avoids this way).
+    let port_arg = LOCAL_PORT.to_string();
     let (mut rx, child) = app
         .shell()
         .command(exe_path)
+        // Explicit, not assumed: see LOCAL_PORT's own comment above for
+        // the exact bug this prevents.
+        .args(["--port", port_arg.as_str()])
         .spawn()
         .map_err(|e| format!("failed to spawn local server: {e}"))?;
     *guard = Some(child);
@@ -123,9 +139,13 @@ async fn start_local_server(
     drop(transition);
 
     match tokio::time::timeout(Duration::from_secs(90), ready.notified()).await {
-        Ok(()) => Ok(LOCAL_URL.to_string()),
+        Ok(()) => Ok(local_url()),
         Err(_) => Err("proxy-scaler-serve did not become ready within 90s".to_string()),
     }
+}
+
+fn local_url() -> String {
+    format!("http://127.0.0.1:{LOCAL_PORT}")
 }
 
 /// Stops the local server without exiting the app — used by the
