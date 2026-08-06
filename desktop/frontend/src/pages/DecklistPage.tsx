@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import type { CardRow } from "../api/project";
-import type { DeckEntryIn, GalleryItem, Task } from "../api/types";
+import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
 import CompareDialog from "../components/CompareDialog";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
@@ -20,6 +20,32 @@ import {
 } from "../mergeCardStatus";
 
 const DPI_OPTIONS = [600, 800, 1200];
+
+// Purely presentational grouping of the "Upscale model" dropdown — the
+// API's own flat list (proxy_scaler/upscale.py's UpscaleModel enum order)
+// is unchanged, and so is whatever settings.model already holds; this
+// only reorders/annotates how the options are *displayed*. Recommended
+// entries are pinned in this exact order with a short device hint
+// appended to their label; everything else keeps the API's own order
+// under "Extra".
+const RECOMMENDED_MODELS: { value: string; suffix: string }[] = [
+  { value: "ultrasharp_v2", suffix: " (on GPU)" },
+  { value: "realesrgan_anime_fast", suffix: " (on CPU)" },
+];
+
+function groupModelOptions(models: ModelOption[]): {
+  recommended: ModelOption[];
+  extra: ModelOption[];
+} {
+  const byValue = new Map(models.map((m) => [m.value, m]));
+  const recommended = RECOMMENDED_MODELS.flatMap(({ value, suffix }) => {
+    const m = byValue.get(value);
+    return m ? [{ value: m.value, label: m.label + suffix }] : [];
+  });
+  const recommendedValues = new Set(RECOMMENDED_MODELS.map((r) => r.value));
+  const extra = models.filter((m) => !recommendedValues.has(m.value));
+  return { recommended, extra };
+}
 
 // Generation-machine-local filesystem paths — meaningless as portable
 // project data (a path valid on this machine means nothing against a
@@ -237,11 +263,31 @@ export default function DecklistPage() {
               onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
               disabled={modelsQuery.isLoading || modelsQuery.isError}
             >
-              {(modelsQuery.data ?? []).map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
+              {(() => {
+                const { recommended, extra } = groupModelOptions(modelsQuery.data ?? []);
+                return (
+                  <>
+                    {recommended.length > 0 && (
+                      <optgroup label="Recommended">
+                        {recommended.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {extra.length > 0 && (
+                      <optgroup label="Extra">
+                        {extra.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </>
+                );
+              })()}
             </select>
           </label>
           {/* Without this, a stuck/failed local-server start (or any other
