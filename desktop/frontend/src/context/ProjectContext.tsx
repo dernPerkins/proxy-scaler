@@ -1,19 +1,25 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
-import { getConnectionMode } from "../config";
+import { getConnectionMode, getGpuAvailable } from "../config";
 import type { CardRow, LoadedProject, ProjectSettings } from "../api/project";
 
-// Local runs upscaling on-device, so a fast/light model is the sensible
-// default; a remote server is assumed to have real GPU headroom, so it
-// defaults to the higher-quality (slower) model instead.
-function defaultModelForMode(): string {
+// Prefers the real answer from connection.tsx's /api/device probe
+// (fired once per connect()/switchTo(), see config.ts::gpuAvailable) —
+// neither Local nor Remote implies anything about the actual hardware
+// behind the connected server. Falls back to the old mode-based guess
+// only while that probe hasn't answered yet (or failed): local runs
+// on-device, so a fast/light model is the safer default; a remote
+// server is assumed to have real GPU headroom.
+function recommendedDefaultModel(): string {
+  const gpu = getGpuAvailable();
+  if (gpu !== null) return gpu ? "ultrasharp_v2" : "realesrgan_anime_fast";
   return getConnectionMode() === "local" ? "realesrgan_anime_fast" : "ultrasharp_v2";
 }
 
 function getDefaultSettings(): ProjectSettings {
   return {
-    model: defaultModelForMode(),
+    model: recommendedDefaultModel(),
     dpi_targets: [1200],
     skip_existing: true,
     tile_size: 0,

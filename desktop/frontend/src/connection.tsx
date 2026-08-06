@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { generationApi } from "./api/generation";
 import { projectApi, type RecentHost } from "./api/project";
 import {
   getApiBaseUrl,
   getConnectionMode,
   setApiBaseUrl,
   setConnectionMode,
+  setGpuAvailable,
   setServerError,
   setServerReady,
   setServerStarting,
@@ -159,6 +161,21 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Best-effort, fire-and-forget — see ProjectContext.tsx's
+  // recommendedDefaultModel(), the only consumer of gpuAvailable. Only
+  // ever called after setServerReady() (both call sites below), so this
+  // can't race /api/health or anything else on the startup path. A
+  // failure here (torch not importable, a slow/CPU-only box that errors,
+  // network hiccup) just leaves gpuAvailable at null forever for this
+  // connection — recommendedDefaultModel() already treats null as "fall
+  // back to the mode-based guess," so there's nothing to recover here.
+  function probeGpu(): void {
+    generationApi
+      .getDevice()
+      .then((d) => setGpuAvailable(d.kind === "gpu"))
+      .catch(() => {});
+  }
+
   // Heartbeat for remote mode only — local's liveness is already implied
   // by the sidecar process this app itself spawned and watches. A remote
   // server has no such signal: if it stops, nothing here notices unless
@@ -217,6 +234,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // hangs or fails every single request against the remote host with
       // no visible cause.
       setServerReady();
+      probeGpu();
       setMode("remote");
       setHost(target.host);
       setPort(target.port);
@@ -231,6 +249,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       .then((url) => {
         setApiBaseUrl(url);
         setServerReady();
+        probeGpu();
       })
       .catch((err) => {
         setServerError(err instanceof Error ? err.message : String(err));

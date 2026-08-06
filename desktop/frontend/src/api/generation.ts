@@ -6,6 +6,7 @@
 import { getApiBaseUrl, waitForServerReady } from "../config";
 import type {
   DeckEntryIn,
+  Device,
   GalleryItem,
   GenerateRequest,
   GenerateResult,
@@ -61,6 +62,14 @@ export const generationApi = {
   // copy previously shipped here silently dropped two real models.
   // UpscaleModel (Python) is the only source of truth.
   listModels: () => request<ModelOption[]>("/api/models"),
+
+  // Whether the connected server has a real GPU — see connection.tsx's
+  // fire-and-forget probe, which is the only caller. Never call this
+  // before the server's readiness gate has already resolved (request()
+  // waits on it, but the whole point of resolve_device() living outside
+  // /api/health on the Python side is that nothing should route through
+  // this until the server is already known to be up).
+  getDevice: () => request<Device>("/api/device"),
 
   resolve: (entries: DeckEntryIn[]) =>
     request<ResolveResult>("/api/resolve", {

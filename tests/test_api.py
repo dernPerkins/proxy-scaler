@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,6 +128,28 @@ def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
     assert len(models) == len(list(UpscaleModel))
     for m in models:
         assert m["label"]
+
+
+def test_device_reports_gpu_when_cuda_available(client: TestClient) -> None:
+    # Patched at torch's own module, not proxy_scaler.upscale.torch...:
+    # resolve_device() imports torch locally inside its function body
+    # (see upscale.py's module docstring on why), so the name only
+    # exists at torch's real defining module by the time this runs — see
+    # tests/test_oom.py for the same gotcha with torchvision's to_tensor.
+    with patch("torch.cuda.is_available", return_value=True):
+        resp = client.get("/api/device")
+    assert resp.status_code == 200
+    assert resp.json() == {"kind": "gpu"}
+
+
+def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        patch("torch.backends.mps.is_available", return_value=False),
+    ):
+        resp = client.get("/api/device")
+    assert resp.status_code == 200
+    assert resp.json() == {"kind": "cpu"}
 
 
 def test_resolve_returns_canonical_identity(client: TestClient) -> None:

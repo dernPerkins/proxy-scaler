@@ -13,6 +13,10 @@ class ModelOptionOut(BaseModel):
     label: str
 
 
+class DeviceOut(BaseModel):
+    kind: str  # "gpu" | "cpu" — see upscale.py's device_kind()
+
+
 class DeckEntryIn(BaseModel):
     quantity: int = 1
     name: str

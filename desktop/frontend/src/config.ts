@@ -17,9 +17,12 @@ export function setApiBaseUrl(url: string): void {
 }
 
 // Set once by ConnectGate alongside setApiBaseUrl, right after Local/Remote
-// is resolved. Used to pick a sensible default upscale model per mode (see
-// ProjectContext.tsx) — local runs on-device, so a fast/light model is the
-// better default; a remote server is assumed to have real GPU headroom.
+// is resolved. Used as a fallback signal for the default upscale model
+// (see ProjectContext.tsx::recommendedDefaultModel()) when the actual
+// gpuAvailable probe below hasn't answered yet — local runs on-device, so
+// a fast/light model is assumed the safer default; remote is assumed to
+// have real GPU headroom. Both are just guesses; gpuAvailable is the real
+// answer once it arrives.
 let connectionMode: "local" | "remote" | null = null;
 
 export function getConnectionMode(): "local" | "remote" | null {
@@ -28,6 +31,23 @@ export function getConnectionMode(): "local" | "remote" | null {
 
 export function setConnectionMode(mode: "local" | "remote"): void {
   connectionMode = mode;
+}
+
+// Set by connection.tsx's fire-and-forget /api/device probe, fired once
+// per successful connect()/switchTo() — so this always reflects whichever
+// server is currently active, re-probed fresh on every Local<->Remote
+// switch. null means "not known yet" (probe still in flight, or this
+// connection never triggered one, e.g. before the first connect
+// completes) — callers should treat null as "fall back to the
+// connectionMode-based guess above," never as "assume CPU."
+let gpuAvailable: boolean | null = null;
+
+export function getGpuAvailable(): boolean | null {
+  return gpuAvailable;
+}
+
+export function setGpuAvailable(available: boolean): void {
+  gpuAvailable = available;
 }
 
 // Server-readiness gate. Local mode's sidecar can take real time to

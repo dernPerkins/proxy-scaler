@@ -10,6 +10,15 @@ export interface ModelOption {
   label: string;
 }
 
+// Mirrors DeviceOut — whether the connected server has a real GPU (CUDA
+// or Apple MPS) to upscale on, used to pick a sensible default model
+// instead of guessing from Local-vs-Remote mode alone. See
+// connection.tsx's device probe and ProjectContext.tsx's
+// recommendedDefaultModel().
+export interface Device {
+  kind: "gpu" | "cpu";
+}
+
 // What both /api/resolve, /api/generate, and /api/pdf take as their card
 // list — the client's own raw/parsed decklist entries (see
 // project.ts::CardRow), never a server-side project_id.
