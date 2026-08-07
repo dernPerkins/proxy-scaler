@@ -67,8 +67,14 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
   const gridX1 = xs[xs.length - 1];
   const gridY0 = ys[0];
   const gridY1 = ys[ys.length - 1];
-  const outerWidthPx = OUTER_LINE_WIDTH_MM * scale;
-  const markWidthPx = ((preview.guide_width_pt / 72) * MM_PER_IN) * scale;
+  // Real print widths (0.1mm / a fraction of a point) are effectively
+  // hairlines even before scaling down to a ~360px on-screen panel —
+  // sub-pixel CSS widths get anti-aliased into near-invisibility (or
+  // rounded to 0) by the browser, unlike a physical print device.
+  // Clamped to a visible minimum here; the actual PDF output is
+  // unaffected, this only touches the on-screen approximation.
+  const outerWidthPx = Math.max(1, OUTER_LINE_WIDTH_MM * scale);
+  const markWidthPx = Math.max(1, ((preview.guide_width_pt / 72) * MM_PER_IN) * scale);
   const markLenMm = preview.guide_length_mm;
 
   const lines: ReactNode[] = [];
