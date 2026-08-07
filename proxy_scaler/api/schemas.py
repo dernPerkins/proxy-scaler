@@ -191,6 +191,10 @@ class PdfPagePreviewOut(BaseModel):
     cell_h_mm: float
     bled_card_w_mm: float
     bled_card_h_mm: float
+    bleed_mm: float
+    guide_width_pt: float
+    guide_length_mm: float
+    show_cut_lines: bool
     page_count: int
     slots: list[PdfPageSlotOut]
 

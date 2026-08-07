@@ -179,6 +179,10 @@ export interface PdfPagePreview {
   cell_h_mm: number;
   bled_card_w_mm: number;
   bled_card_h_mm: number;
+  bleed_mm: number;
+  guide_width_pt: number;
+  guide_length_mm: number;
+  show_cut_lines: boolean;
   page_count: number;
   slots: PdfPageSlot[];
 }

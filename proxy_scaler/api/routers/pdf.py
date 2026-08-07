@@ -120,6 +120,10 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         cell_h_mm=layout.cell_h_mm,
         bled_card_w_mm=layout.bled_card_w_mm,
         bled_card_h_mm=layout.bled_card_h_mm,
+        bleed_mm=layout.bleed_mm,
+        guide_width_pt=layout.guide_width_pt,
+        guide_length_mm=layout.guide_length_mm,
+        show_cut_lines=body.show_cut_lines,
         page_count=len(pages),
         slots=slots,
     )
