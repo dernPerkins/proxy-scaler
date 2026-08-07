@@ -187,6 +187,48 @@ export default function PdfPage() {
             />
           </label>
 
+          <div style={{ display: "flex", gap: 10 }}>
+            <label className="field">
+              <span>Spacing X (mm)</span>
+              <input
+                type="number"
+                step={0.1}
+                value={layout.spacing_x_mm}
+                onChange={(e) => updateLayout("spacing_x_mm", Number(e.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Spacing Y (mm)</span>
+              <input
+                type="number"
+                step={0.1}
+                value={layout.spacing_y_mm}
+                onChange={(e) => updateLayout("spacing_y_mm", Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <label className="field">
+              <span>Offset X (mm)</span>
+              <input
+                type="number"
+                step={0.1}
+                value={layout.offset_x_mm}
+                onChange={(e) => updateLayout("offset_x_mm", Number(e.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Offset Y (mm)</span>
+              <input
+                type="number"
+                step={0.1}
+                value={layout.offset_y_mm}
+                onChange={(e) => updateLayout("offset_y_mm", Number(e.target.value))}
+              />
+            </label>
+          </div>
+
           <label className="field">
             <span>Export DPI</span>
             <input
@@ -204,6 +246,29 @@ export default function PdfPage() {
             />
             Show cut lines
           </label>
+
+          {layout.show_cut_lines && (
+            <div style={{ display: "flex", gap: 10 }}>
+              <label className="field">
+                <span>Guide width (pt)</span>
+                <input
+                  type="number"
+                  step={0.05}
+                  value={layout.guide_width_pt}
+                  onChange={(e) => updateLayout("guide_width_pt", Number(e.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span>Guide length (mm)</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={layout.guide_length_mm}
+                  onChange={(e) => updateLayout("guide_length_mm", Number(e.target.value))}
+                />
+              </label>
+            </div>
+          )}
         </div>
       </aside>
 
