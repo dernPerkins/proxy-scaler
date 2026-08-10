@@ -402,56 +402,43 @@ def _rounded_rect_rgba(w: int, h: int, radius: int) -> Image.Image:
     return img
 
 
-def test_write_dpi_variant_flattens_corners_before_resizing(tmp_path: Path) -> None:
-    """Regression guard for the corner-smearing bug: this generation-time
-    resize (the one that produces the actual out_path PNG every PDF
-    pipeline later reads) must flatten rounded-corner alpha to opaque
-    BEFORE resizing to the target DPI, not after or never -- resizing an
-    RGBA image while its corners are still transparent lets LANCZOS blend
-    transparent RGB into the opaque body at the boundary, baking a visible
-    smear directly into the saved file. This is a separate call site from
-    (and was missed by) the export-time fix in pdf_layout.py::build_pdf --
-    that fix can't undo damage already baked into out_path by the time it
-    opens the file. Verified by call order, matching that fix's own test."""
-    import proxy_scaler.pipeline as pipeline_module
+def test_write_dpi_variant_preserves_transparent_corners(tmp_path: Path) -> None:
+    """Generation must NOT flatten/bleed the rounded corners -- that is a
+    print-time concern owned by the PDF pipelines
+    (pdf_layout.flatten_corner_alpha, applied per export). A previous
+    version called it here, which replicated edge pixels across every
+    corner of the stored PNG: a visible smear in the saved file,
+    irreversible, and wrong for anyone downloading the image directly.
+    The written variant should stay a faithful upscale of the source art,
+    transparent corners intact."""
+    from proxy_scaler.pipeline import _write_dpi_variant
     from proxy_scaler.scryfall import CardFaceImage
 
-    call_order: list[str] = []
-    real_flatten = pipeline_module.flatten_corner_alpha
-    real_resize = pipeline_module._resize_to_dpi
+    face = CardFaceImage(
+        scryfall_id="abc",
+        card_name="Test Card",
+        face_name="Test Card",
+        set_code="tst",
+        collector_number="1",
+        png_url="",
+        face_index=None,
+    )
+    result = _write_dpi_variant(
+        face=face,
+        raw=_rounded_rect_rgba(100, 100, 15),
+        original_path=tmp_path / "original.png",
+        output_dir=tmp_path / "out",
+        model_id=UpscaleModel.SWINIR,
+        dpi=1200,  # differs from raw's native size, forcing the resize path
+        native_scale=4,
+    )
 
-    def spy_flatten(*args, **kwargs):
-        call_order.append("flatten")
-        return real_flatten(*args, **kwargs)
-
-    def spy_resize(*args, **kwargs):
-        call_order.append("resize")
-        return real_resize(*args, **kwargs)
-
-    pipeline_module.flatten_corner_alpha = spy_flatten
-    pipeline_module._resize_to_dpi = spy_resize
-    try:
-        face = CardFaceImage(
-            scryfall_id="abc",
-            card_name="Test Card",
-            face_name="Test Card",
-            set_code="tst",
-            collector_number="1",
-            png_url="",
-            face_index=None,
-        )
-        result = pipeline_module._write_dpi_variant(
-            face=face,
-            raw=_rounded_rect_rgba(100, 100, 15),
-            original_path=tmp_path / "original.png",
-            output_dir=tmp_path / "out",
-            model_id=UpscaleModel.SWINIR,
-            dpi=1200,  # differs from raw's native size, forcing the resize path
-            native_scale=4,
-        )
-    finally:
-        pipeline_module.flatten_corner_alpha = real_flatten
-        pipeline_module._resize_to_dpi = real_resize
-
-    assert call_order[:2] == ["flatten", "resize"]
     assert result.out_path.is_file()
+    with Image.open(result.out_path) as written:
+        assert written.mode == "RGBA", "alpha channel must survive generation"
+        alpha = written.getchannel("A")
+        w, h = written.size
+        # Every corner keeps its transparent arc; the extreme corner pixel
+        # is the deepest part of the cutout.
+        for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            assert alpha.getpixel((x, y)) == 0, f"corner ({x},{y}) was flattened to opaque"

@@ -14,7 +14,7 @@ from fpdf import FPDF
 from PIL import Image
 
 from .decklist import DeckEntry
-from .pipeline import FaceResult, _resize_to_dpi, flatten_corner_alpha, group_by_face
+from .pipeline import FaceResult, _resize_to_dpi, group_by_face
 
 MM_PER_IN = 25.4
 
@@ -185,6 +185,66 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
         for y in ys:
             pdf.line(x - layout.guide_length_mm, y, x + layout.guide_length_mm, y)
             pdf.line(x, y - layout.guide_length_mm, x, y + layout.guide_length_mm)
+
+
+def _replicate_top_left_corner(img: Image.Image, r: int) -> None:
+    """Mutates `img` in place: fills the (0,0)-(r,r) square by stretching
+    the opaque column at x=r horizontally across each of the first r rows."""
+    for y in range(r):
+        src = img.crop((r, y, r + 1, y + 1))
+        row_fill = src.resize((r, 1), Image.Resampling.NEAREST)
+        img.paste(row_fill, (0, y))
+
+
+def flatten_corner_alpha(
+    image: Image.Image,
+    *,
+    probe_frac: float = 0.12,
+    alpha_threshold: int = 250,
+) -> Image.Image:
+    """Flatten the 4 small rounded-corner alpha arcs to fully opaque.
+
+    Physical proxy printing prints a full opaque rectangle then rounds the
+    physical paper corners afterward with a punch tool — so the print should
+    have zero transparent/unprinted regions. For each corner: crop a small
+    probe square, reorient it to the canonical top-left case via a
+    self-inverse transpose, measure the transparent bbox from the alpha
+    channel, replicate-fill it, transpose back, and paste in place.
+
+    Strictly an export-time step: it belongs to the PDF pipelines only,
+    never to generation. The replicated pixels are a visible smear when
+    viewed as an image rather than composited onto a print sheet, and
+    baking them into the stored PNG is irreversible — see
+    pipeline.py::_write_dpi_variant, which deliberately does not call this.
+    """
+    img = image.convert("RGBA")
+    w, h = img.size
+    probe = max(4, round(min(w, h) * probe_frac))
+
+    corners = [
+        (None, (0, 0)),
+        (Image.Transpose.FLIP_LEFT_RIGHT, (w - probe, 0)),
+        (Image.Transpose.FLIP_TOP_BOTTOM, (0, h - probe)),
+        (Image.Transpose.ROTATE_180, (w - probe, h - probe)),
+    ]
+    for transpose_op, (px, py) in corners:
+        patch = img.crop((px, py, px + probe, py + probe))
+        # transpose_op may be Image.Transpose.FLIP_LEFT_RIGHT, whose IntEnum
+        # value is 0 (falsy) — must check "is not None", not truthiness, or
+        # that specific transpose silently gets skipped.
+        oriented = patch.transpose(transpose_op) if transpose_op is not None else patch
+        alpha = oriented.getchannel("A")
+        mask = alpha.point(lambda p: 255 if p < alpha_threshold else 0)
+        bbox = mask.getbbox()
+        if bbox is None:
+            continue
+        r = min(probe - 1, max(bbox[2], bbox[3]) + 1)
+        if r <= 0:
+            continue
+        _replicate_top_left_corner(oriented, r)
+        result = oriented.transpose(transpose_op) if transpose_op is not None else oriented
+        img.paste(result, (px, py))
+    return img
 
 
 def add_bleed(image: Image.Image, *, dpi: int, bleed_mm: float = BLEED_MM) -> Image.Image:

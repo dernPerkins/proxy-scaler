@@ -211,7 +211,7 @@ _THUMB_QUALITY_STEPS = (85, 70, 55, 40)  # last is the floor, always accepted
 def _generate_original_thumbnail(original_path: Path, thumb_path: Path) -> None:
     """Small JPEG preview thumbnail from a cached original PNG, for the PDF
     layout preview only — not print-quality. Plain white-background
-    RGBA->RGB flatten, deliberately NOT this module's own flatten_corner_alpha:
+    RGBA->RGB flatten, deliberately NOT pdf_layout.flatten_corner_alpha:
     this tile is shown on its own in the UI, not composited against a
     printed page background, so the rounded-corner artifact that helper
     exists for doesn't apply here, and skipping it keeps this cheap since
@@ -262,65 +262,6 @@ def _resize_to_dpi(image: Image.Image, dpi: int) -> Image.Image:
     return image.resize(target, Image.Resampling.LANCZOS)
 
 
-def _replicate_top_left_corner(img: Image.Image, r: int) -> None:
-    """Mutates `img` in place: fills the (0,0)-(r,r) square by stretching
-    the opaque column at x=r horizontally across each of the first r rows."""
-    for y in range(r):
-        src = img.crop((r, y, r + 1, y + 1))
-        row_fill = src.resize((r, 1), Image.Resampling.NEAREST)
-        img.paste(row_fill, (0, y))
-
-
-def flatten_corner_alpha(
-    image: Image.Image,
-    *,
-    probe_frac: float = 0.12,
-    alpha_threshold: int = 250,
-) -> Image.Image:
-    """Flatten the 4 small rounded-corner alpha arcs to fully opaque.
-
-    Physical proxy printing prints a full opaque rectangle then rounds the
-    physical paper corners afterward with a punch tool — so the print should
-    have zero transparent/unprinted regions. For each corner: crop a small
-    probe square, reorient it to the canonical top-left case via a
-    self-inverse transpose, measure the transparent bbox from the alpha
-    channel, replicate-fill it, transpose back, and paste in place.
-
-    Lives here rather than in pdf_layout.py (which imports it back) because
-    _write_dpi_variant below needs it at generation time, before any PDF
-    pipeline ever runs — pdf_layout.py already imports from this module, so
-    the reverse direction would be circular.
-    """
-    img = image.convert("RGBA")
-    w, h = img.size
-    probe = max(4, round(min(w, h) * probe_frac))
-
-    corners = [
-        (None, (0, 0)),
-        (Image.Transpose.FLIP_LEFT_RIGHT, (w - probe, 0)),
-        (Image.Transpose.FLIP_TOP_BOTTOM, (0, h - probe)),
-        (Image.Transpose.ROTATE_180, (w - probe, h - probe)),
-    ]
-    for transpose_op, (px, py) in corners:
-        patch = img.crop((px, py, px + probe, py + probe))
-        # transpose_op may be Image.Transpose.FLIP_LEFT_RIGHT, whose IntEnum
-        # value is 0 (falsy) — must check "is not None", not truthiness, or
-        # that specific transpose silently gets skipped.
-        oriented = patch.transpose(transpose_op) if transpose_op is not None else patch
-        alpha = oriented.getchannel("A")
-        mask = alpha.point(lambda p: 255 if p < alpha_threshold else 0)
-        bbox = mask.getbbox()
-        if bbox is None:
-            continue
-        r = min(probe - 1, max(bbox[2], bbox[3]) + 1)
-        if r <= 0:
-            continue
-        _replicate_top_left_corner(oriented, r)
-        result = oriented.transpose(transpose_op) if transpose_op is not None else oriented
-        img.paste(result, (px, py))
-    return img
-
-
 def _write_dpi_variant(
     *,
     face: CardFaceImage,
@@ -342,16 +283,15 @@ def _write_dpi_variant(
     )
     out_path = output_dir / out_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Flatten rounded-corner alpha to opaque BEFORE resizing to the target
-    # DPI — resizing an RGBA image while its corners are still transparent
-    # lets LANCZOS blend transparent RGB into the opaque body at the
-    # boundary (alpha fringing), baking a visible smear directly into the
-    # saved out_path PNG. This must happen here, at generation time: the
-    # equivalent flatten-before-resize fix in pdf_layout.py::build_pdf only
-    # covers its own *export-time* resize (when export_dpi != face.dpi) and
-    # can't undo damage already baked into the file by the time it opens it.
-    flattened = flatten_corner_alpha(raw)
-    sized = _resize_to_dpi(flattened, dpi)
+    # Deliberately no corner-flatten/bleed here. The generated PNG is a
+    # faithful upscale of the source art and keeps its transparent rounded
+    # corners; flattening them to opaque is a *printing* concern (physical
+    # proxies print a full rectangle and get punched round afterwards) and
+    # belongs only in the PDF pipelines, which apply it per export via
+    # pdf_layout.flatten_corner_alpha/add_bleed. Doing it here once baked
+    # a visible replicated-pixel smear into every corner of the saved file
+    # -- irreversible, and wrong for anyone downloading the PNG directly.
+    sized = _resize_to_dpi(raw, dpi)
     sized.save(out_path, format="PNG")
     return FaceResult(
         out_path=out_path,
