@@ -526,16 +526,7 @@ function slugify(name: string): string {
 }
 
 async function handleDownloadImage(url: string, filename: string): Promise<void> {
-  await runDownload(filename, async () => {
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      // Previously fetch()'s own promise resolving was treated as success
-      // even on a 404/500 -- resp.blob() on an error body still "works",
-      // silently saving an HTML/JSON error page as if it were the image.
-      throw new Error(`Failed to fetch image (${resp.status} ${resp.statusText})`);
-    }
-    return resp.blob();
-  });
+  await runDownload(filename, { url });
 }
 
 interface CompareTarget {

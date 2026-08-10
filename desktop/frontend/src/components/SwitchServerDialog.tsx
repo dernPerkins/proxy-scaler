@@ -19,7 +19,7 @@ export interface SwitchServerDialogProps {
 // Follows CompareDialog's pattern (overlay closes on click, inner panel
 // stops propagation) rather than a native confirm(). Deliberate: native
 // dialog behaviour inside Tauri's WKWebView is exactly the class of thing
-// this app has already been bitten by twice — see main.rs::save_file for
+// this app has already been bitten by twice — see main.rs::download_to_file for
 // the download-attribute story.
 export default function SwitchServerDialog({
   target,

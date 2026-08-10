@@ -44,37 +44,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
-async function downloadPdf(body: PdfLayoutRequest): Promise<Blob> {
-  await waitForServerReady();
-  const resp = await fetch(`${getApiBaseUrl()}/api/pdf`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const detail = await resp.text();
-    throw new ApiError(resp.status, detail || resp.statusText);
-  }
-  return resp.blob();
-}
-
-// Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — 503s
-// with a clear message (surfaced via ApiError) when the server doesn't
-// have the optional html-pdf extra installed.
-async function downloadPdfHtml(body: PdfLayoutRequest): Promise<Blob> {
-  await waitForServerReady();
-  const resp = await fetch(`${getApiBaseUrl()}/api/pdf/html`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const detail = await resp.text();
-    throw new ApiError(resp.status, detail || resp.statusText);
-  }
-  return resp.blob();
-}
-
 export const generationApi = {
   // The frontend must read this list, never hardcode it — a hand-typed
   // copy previously shipped here silently dropped two real models.
@@ -133,8 +102,14 @@ export const generationApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  downloadPdf,
-  downloadPdfHtml,
+  // PDF generation is a POST that streams the finished file back. These
+  // expose the URL rather than fetching it, so downloads can be run
+  // entirely in Rust (see download.ts::runDownload) — the finished PDF is
+  // exactly the kind of large payload that must not transit the webview.
+  pdfUrl: () => `${getApiBaseUrl()}/api/pdf`,
+  // Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — 503s
+  // when the server doesn't have the optional html-pdf extra installed.
+  pdfHtmlUrl: () => `${getApiBaseUrl()}/api/pdf/html`,
 
   clearGeneratedData: (outputDir: string, cacheDir: string, projectTag?: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {

@@ -24,7 +24,7 @@ export function isTauri(): boolean {
 // specific plugin-backed ones below) — used by api/project.ts to call
 // the Rust-side local project store. Argument keys are camelCase here;
 // Tauri v2 maps them to the snake_case Rust parameter names itself (e.g.
-// `projectId` -> `project_id`), the same convention invokeSaveFile below
+// `projectId` -> `project_id`), the same convention invokeDownloadToFile below
 // already relies on for `suggestedName` -> `suggested_name`.
 export async function invokeCommand<T>(
   cmd: string,
@@ -54,17 +54,26 @@ export async function invokeStopLocalServer(): Promise<void> {
   await window.__TAURI__.core.invoke<void>("stop_local_server");
 }
 
-// Native "Save As" dialog + write to disk (see main.rs::save_file).
-// Confirmed by real testing that the HTML `download` attribute isn't
-// reliably honored by Tauri's webview on macOS — see saveBlob in
-// download.ts for the full story and the plain-browser fallback.
+// Native "Save As" dialog, then Rust fetches the URL and writes it to
+// disk (see main.rs::download_to_file). Only a URL crosses the IPC
+// boundary — deliberately not the bytes: the previous version passed
+// `Array.from(uint8array)`, which turned a 15-25MB image into a
+// multi-million-element JS array for Tauri to JSON-serialize, and that
+// was the actual cause of downloads hanging for minutes or failing
+// outright on larger files. Pass `body` to issue a JSON POST (the PDF
+// routes) instead of a GET.
 // Returns false if the user canceled the save dialog (not an error).
-export async function invokeSaveFile(suggestedName: string, bytes: Uint8Array): Promise<boolean> {
+export async function invokeDownloadToFile(
+  url: string,
+  suggestedName: string,
+  body?: unknown,
+): Promise<boolean> {
   if (!window.__TAURI__) {
     throw new Error("Not running inside Tauri");
   }
-  return window.__TAURI__.core.invoke<boolean>("save_file", {
+  return window.__TAURI__.core.invoke<boolean>("download_to_file", {
+    url,
     suggestedName,
-    data: Array.from(bytes),
+    body: body === undefined ? null : JSON.stringify(body),
   });
 }

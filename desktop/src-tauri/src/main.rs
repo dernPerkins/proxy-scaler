@@ -160,20 +160,41 @@ async fn stop_local_server(state: State<'_, SidecarState>) -> Result<(), String>
     Ok(())
 }
 
-/// Native "Save As" dialog + write to disk — replaces the browser
+/// Native "Save As" dialog + fetch-and-write — replaces the browser
 /// `<a download>` pattern for image/PDF downloads. Confirmed by real
 /// testing that the HTML `download` attribute isn't reliably honored by
 /// Tauri's webview on macOS (WKWebView): an image link just navigated to
 /// a larger view of the image instead of saving it, and a PDF blob link
-/// did nothing at all. The frontend already has the bytes in hand (via
-/// its own `fetch()`, which works fine) — this command only handles the
-/// save-to-disk half, so there's no need for an HTTP client on the Rust
-/// side.
+/// did nothing at all.
+///
+/// The HTTP request happens *here*, not in the webview, and that split is
+/// the whole point. The previous shape of this command took the bytes as
+/// a `Vec<u8>` parameter, which meant the frontend had to hand a whole
+/// image across the IPC boundary: `Array.from(uint8array)` expanded a
+/// 15-25MB PNG (real sizes for this app's 1200 DPI output) into a JS
+/// array of 15-25 *million* numbers, which Tauri then JSON-serialized to
+/// ~60-100MB of `"255,17,3,..."` text for serde to parse back into bytes
+/// on this side. That read to a user as a multi-minute hang, an app that
+/// "crashed with no error," or an intermittent failure that tracked file
+/// size (a ~1MB Scryfall original usually squeaked through; a 1200 DPI
+/// upscale did not). The pre-Streamlit-migration build never hit any of
+/// this because `st.download_button(data=path.read_bytes())` sent bytes
+/// straight from disk to the browser — they never transited the UI layer
+/// at all. Doing the GET/POST in Rust restores that property: bytes go
+/// server -> Rust -> disk, and the webview only ever passes a URL.
+///
+/// `body` selects the method: None issues a GET (image downloads), Some
+/// sends it as a JSON POST body (PDF generation, which is a POST route).
 ///
 /// Returns Ok(true) if saved, Ok(false) if the user canceled the dialog
 /// (not an error case — the frontend should just no-op on false).
 #[tauri::command]
-async fn save_file(app: AppHandle, suggested_name: String, data: Vec<u8>) -> Result<bool, String> {
+async fn download_to_file(
+    app: AppHandle,
+    url: String,
+    body: Option<String>,
+    suggested_name: String,
+) -> Result<bool, String> {
     // blocking_save_file() parks its calling thread on rx.recv() until the
     // native dialog resolves (tauri-plugin-dialog's own blocking_fn!
     // macro) — fine for a one-off call, but this command runs on Tauri's
@@ -201,7 +222,35 @@ async fn save_file(app: AppHandle, suggested_name: String, data: Vec<u8>) -> Res
         return Ok(false);
     };
     let path = file_path.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, data).map_err(|e| e.to_string())?;
+
+    // Dialog first, then the transfer — so the user picks a location
+    // immediately instead of waiting on a download that may take a while,
+    // and a cancel costs no network traffic at all.
+    let client = reqwest::Client::new();
+    let request = match body {
+        Some(json) => client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(json),
+        None => client.get(&url),
+    };
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        // Keep the server's own message — /api/pdf/html returns a 503 with
+        // actionable text when the optional WeasyPrint extra is missing.
+        let detail = response.text().await.unwrap_or_default();
+        return Err(if detail.is_empty() {
+            format!("Server returned {status}")
+        } else {
+            format!("Server returned {status}: {detail}")
+        });
+    }
+    // Buffering the whole body is fine on this side of the boundary --
+    // 25MB is unremarkable for Rust, and it was only ever a problem when
+    // it had to survive JSON serialization through the webview IPC.
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -259,7 +308,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_local_server,
             stop_local_server,
-            save_file,
+            download_to_file,
             create_project,
             list_projects,
             get_project,

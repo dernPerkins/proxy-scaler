@@ -94,9 +94,10 @@ export default function PdfPage() {
     try {
       const body = { project_tag: projectTag, entries, project_name: projectName, ...layout };
       const suffix = method === "html" ? "-html" : "";
-      await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, () =>
-        method === "html" ? generationApi.downloadPdfHtml(body) : generationApi.downloadPdf(body),
-      );
+      await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, {
+        url: method === "html" ? generationApi.pdfHtmlUrl() : generationApi.pdfUrl(),
+        body,
+      });
     } catch (err) {
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
