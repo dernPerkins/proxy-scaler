@@ -9,7 +9,7 @@ import StatusBadge from "../components/StatusBadge";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
-import { downloadBlob } from "../download";
+import { runDownload, useDownloadStatus } from "../download";
 import {
   cardIdentity,
   groupByCard,
@@ -526,9 +526,16 @@ function slugify(name: string): string {
 }
 
 async function handleDownloadImage(url: string, filename: string): Promise<void> {
-  const resp = await fetch(url);
-  const blob = await resp.blob();
-  await downloadBlob(blob, filename);
+  await runDownload(filename, async () => {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      // Previously fetch()'s own promise resolving was treated as success
+      // even on a 404/500 -- resp.blob() on an error body still "works",
+      // silently saving an HTML/JSON error page as if it were the image.
+      throw new Error(`Failed to fetch image (${resp.status} ${resp.statusText})`);
+    }
+    return resp.blob();
+  });
 }
 
 interface CompareTarget {
@@ -555,6 +562,22 @@ function CardRowView(props: {
   const expanded = expandedFaces.has(rowKey);
   const hasImages = faces.some((f) => f.variants.some((v) => v.status === "done"));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  // Global single-flight lock (see download.ts::runDownload) -- disables
+  // every Download button on the page the instant any one download
+  // starts, not just once its file is ready. Without this, a slow fetch
+  // gave zero feedback and a second click just launched another
+  // unprotected download that looked like the first one "did nothing."
+  const downloadStatus = useDownloadStatus();
+
+  async function download(url: string, filename: string) {
+    setDownloadError(null);
+    try {
+      await handleDownloadImage(url, filename);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   return (
     <div className="card-row">
@@ -620,14 +643,15 @@ function CardRowView(props: {
                   <div className="thumb-buttons">
                     <button
                       className="btn-sm"
+                      disabled={downloadStatus != null}
                       onClick={() =>
-                        handleDownloadImage(
+                        download(
                           generationApi.imageUrl(originalSource.galleryItemId, "original"),
                           `${slugify(card.name)}-original.png`,
                         )
                       }
                     >
-                      Download
+                      {downloadStatus ? "Downloading…" : "Download"}
                     </button>
                   </div>
                 </div>
@@ -645,14 +669,15 @@ function CardRowView(props: {
                   <div className="thumb-buttons">
                     <button
                       className="btn-sm"
+                      disabled={downloadStatus != null}
                       onClick={() =>
-                        handleDownloadImage(
+                        download(
                           generationApi.imageUrl(v.galleryItemId, "full"),
                           `${slugify(card.name)}-${v.dpi}dpi-${v.model}.png`,
                         )
                       }
                     >
-                      Download
+                      {downloadStatus ? "Downloading…" : "Download"}
                     </button>
                     <button
                       className="btn-sm"
@@ -679,6 +704,12 @@ function CardRowView(props: {
             </div>
           );
         })}
+
+      {downloadError && (
+        <p className="error-text">
+          Download failed: {downloadError}
+        </p>
+      )}
 
       {compareTarget && (
         <CompareDialog

@@ -56,7 +56,7 @@ export async function invokeStopLocalServer(): Promise<void> {
 
 // Native "Save As" dialog + write to disk (see main.rs::save_file).
 // Confirmed by real testing that the HTML `download` attribute isn't
-// reliably honored by Tauri's webview on macOS — see downloadBlob in
+// reliably honored by Tauri's webview on macOS — see saveBlob in
 // download.ts for the full story and the plain-browser fallback.
 // Returns false if the user canceled the save dialog (not an error).
 export async function invokeSaveFile(suggestedName: string, bytes: Uint8Array): Promise<boolean> {

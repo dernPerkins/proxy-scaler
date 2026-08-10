@@ -6,7 +6,7 @@ import PdfPagePreview from "../components/PdfPagePreview";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
-import { downloadBlob } from "../download";
+import { runDownload } from "../download";
 import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
 
 const PAGE_PRESETS: Record<string, { width: number; height: number }> = {
@@ -93,12 +93,10 @@ export default function PdfPage() {
     setDownloading(true);
     try {
       const body = { project_tag: projectTag, entries, project_name: projectName, ...layout };
-      const blob =
-        method === "html"
-          ? await generationApi.downloadPdfHtml(body)
-          : await generationApi.downloadPdf(body);
       const suffix = method === "html" ? "-html" : "";
-      await downloadBlob(blob, `${projectName || "proxy-scaler"}${suffix}.pdf`);
+      await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, () =>
+        method === "html" ? generationApi.downloadPdfHtml(body) : generationApi.downloadPdf(body),
+      );
     } catch (err) {
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
