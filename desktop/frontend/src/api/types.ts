@@ -155,6 +155,10 @@ export interface PdfPreview {
   units: number;
   unmatched: string[];
   page_count: number;
+  // Cards with no generated image at the selected Preferred DPI. They are
+  // excluded from the sheet rather than printed at another resolution, so
+  // this must be shown — otherwise they silently disappear.
+  missing_at_dpi: string[];
 }
 
 // Mirrors PdfPageSlotOut/PdfPagePreviewOut — a distinct, page-1-only

@@ -94,6 +94,11 @@ class FaceResult:
     face_label: str | None = None
     native_scale: int = 4
     device: str = "unknown"  # "gpu" | "cpu" | "unknown"
+    # ISO-8601 UTC, from project_gallery_items.created_at — when this image
+    # was last produced. None for a freshly-built result that hasn't been
+    # persisted yet, and for gallery rows predating db migration 002.
+    # pdf_layout._pick_dpi_variant treats None as older than any timestamp.
+    created_at: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -128,6 +133,7 @@ class FaceResult:
             face_label=data.get("face_label"),
             native_scale=int(data.get("native_scale", data.get("scale", 4))),
             device=device,
+            created_at=data.get("created_at"),
         )
 
 

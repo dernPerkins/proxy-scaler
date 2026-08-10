@@ -306,27 +306,68 @@ class PrintUnit:
     face_key: str
     quantity: int
     best: FaceResult  # chosen image variant for this face (see _pick_dpi_variant)
-    dpi_fallback: bool = False  # True if preferred_dpi was requested but unavailable
+    # Retained for callers that inspect it, but always False now that a face
+    # with no image at the requested DPI is excluded and reported instead of
+    # being silently printed at another resolution.
+    dpi_fallback: bool = False
+
+
+def _describe_face(face: FaceResult) -> str:
+    """Human-readable identification for error reporting — the print/PDF
+    surface is where a user finds out something never generated, so this
+    names the card the way they'd recognise it rather than exposing an
+    internal face_group_key."""
+    name = face.card_name or face.face_name or "Unknown card"
+    if face.face_label:
+        name = f"{name} ({face.face_label})"
+    if face.set_code and face.collector_number:
+        return f"{name} [{face.set_code.upper()} {face.collector_number}]"
+    return name
+
+
+def _recency_key(item: FaceResult) -> tuple[int, str]:
+    """Sort key for "most recently produced wins". created_at is None on
+    gallery rows written before db migration 002 added the column; those
+    sort below anything timestamped rather than being dropped, so a
+    regenerated image beats an undated one."""
+    return (0, "") if item.created_at is None else (1, item.created_at)
 
 
 def _pick_dpi_variant(
     face_items: list[FaceResult],
     preferred_dpi: int | None,
     preferred_model: str | None = None,
-) -> tuple[FaceResult, bool]:
-    """Pick the source image for a face-group: an exact (preferred_dpi,
-    preferred_model) match if both are given and available, else the
-    preferred DPI under any model, else the highest available DPI. Returns
-    (chosen, fell_back)."""
-    if preferred_dpi is not None and preferred_model is not None:
-        for item in face_items:
-            if item.dpi == preferred_dpi and item.model == preferred_model:
-                return item, False
+) -> tuple[FaceResult | None, bool]:
+    """Pick the source image for a face-group.
+
+    With `preferred_dpi` set, only that DPI is eligible — a face with no
+    image at it returns (None, True) and the caller drops it from the print
+    run and reports it, rather than silently substituting a different DPI.
+    Mixing resolutions across one sheet isn't a useful default: it prints
+    visibly inconsistent cards and hides the fact that something never
+    generated. Within the eligible set, `preferred_model` wins if present,
+    otherwise the most recently produced image does.
+
+    With `preferred_dpi` unset every variant is eligible, and the highest
+    DPI wins (ties broken by recency) — "give me the best I have".
+
+    Returns (chosen, unavailable_at_preferred_dpi).
+    """
     if preferred_dpi is not None:
-        for item in face_items:
-            if item.dpi == preferred_dpi:
-                return item, False
-    return max(face_items, key=lambda x: x.dpi), preferred_dpi is not None
+        at_dpi = [item for item in face_items if item.dpi == preferred_dpi]
+        if not at_dpi:
+            return None, True
+        if preferred_model is not None:
+            matching = [item for item in at_dpi if item.model == preferred_model]
+            if matching:
+                return max(matching, key=_recency_key), False
+        return max(at_dpi, key=_recency_key), False
+
+    if preferred_model is not None:
+        matching = [item for item in face_items if item.model == preferred_model]
+        if matching:
+            return max(matching, key=lambda x: (x.dpi, _recency_key(x))), False
+    return max(face_items, key=lambda x: (x.dpi, _recency_key(x))), False
 
 
 def match_quantities(
@@ -348,18 +389,28 @@ def match_quantities(
     Unmatched groups default to quantity=1 and are returned separately for a
     UI warning — never silently dropped.
 
-    `preferred_dpi`, when given, selects that generated DPI variant as the
-    source image per face-group; a group missing that variant falls back to
-    its highest available DPI (flagged via PrintUnit.dpi_fallback).
-    `preferred_model`, when also given, is used as a tiebreak so a face
-    generated under multiple models picks the matching one at that DPI.
+    `preferred_dpi`, when given, is a hard filter: only images at that DPI
+    are printable, and any face without one is excluded from the run and
+    returned in the third element for the caller to surface as an error —
+    never substituted with a different resolution. `preferred_model`, when
+    given, wins among the eligible images; otherwise the most recently
+    produced one does. See _pick_dpi_variant.
+
+    Returns (units, unmatched, missing_at_dpi).
     """
     units: list[PrintUnit] = []
     unmatched: list[str] = []
+    missing_at_dpi: list[str] = []
 
     for key, face_items in group_by_face(gallery):
         rep = face_items[0]
-        best, dpi_fallback = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
+        best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
+        if best is None:
+            # No image at the requested DPI. Reported to the caller and left
+            # out of the print run entirely — never substituted with another
+            # resolution (see _pick_dpi_variant).
+            missing_at_dpi.append(_describe_face(rep))
+            continue
         set_code = (rep.set_code or "").lower() or None
         collector = rep.collector_number
         card_name = (rep.card_name or rep.face_name or "").casefold()
@@ -392,17 +443,15 @@ def match_quantities(
 
         if matched:
             units.append(
-                PrintUnit(
-                    face_key=key, quantity=matched_qty, best=best, dpi_fallback=dpi_fallback
-                )
+                PrintUnit(face_key=key, quantity=matched_qty, best=best, dpi_fallback=unavailable)
             )
         else:
             unmatched.append(key)
             units.append(
-                PrintUnit(face_key=key, quantity=1, best=best, dpi_fallback=dpi_fallback)
+                PrintUnit(face_key=key, quantity=1, best=best, dpi_fallback=unavailable)
             )
 
-    return units, unmatched
+    return units, unmatched, missing_at_dpi
 
 
 def expand_print_slots(units: list[PrintUnit]) -> list[FaceResult]:

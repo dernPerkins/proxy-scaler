@@ -44,14 +44,16 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
     )
 
 
-def _prepare(body: PdfLayoutIn) -> tuple[PageLayout, list[list[FaceResult]], list[str]]:
+def _prepare(
+    body: PdfLayoutIn,
+) -> tuple[PageLayout, list[list[FaceResult]], list[str], list[str]]:
     if not body.entries:
         raise HTTPException(status_code=400, detail="No cards to print.")
     db_path = get_db_path()
     raw_items = db.list_gallery_items(body.project_tag, db_path=db_path)
     items = [FaceResult.from_dict(d) for d in raw_items]
     entries = [_to_deck_entry(e) for e in body.entries]
-    units, unmatched = match_quantities(
+    units, unmatched, missing_at_dpi = match_quantities(
         entries,
         items,
         preferred_dpi=body.preferred_dpi,
@@ -72,14 +74,19 @@ def _prepare(body: PdfLayoutIn) -> tuple[PageLayout, list[list[FaceResult]], lis
     )
     slots = expand_print_slots(units)
     pages = paginate(slots, layout.cards_per_page)
-    return layout, pages, unmatched
+    return layout, pages, unmatched, missing_at_dpi
 
 
 @router.post("/preview", response_model=PdfPreviewOut)
 def preview(body: PdfLayoutIn) -> PdfPreviewOut:
-    _layout, pages, unmatched = _prepare(body)
+    _layout, pages, unmatched, missing_at_dpi = _prepare(body)
     total_units = sum(len(p) for p in pages)
-    return PdfPreviewOut(units=total_units, unmatched=unmatched, page_count=len(pages))
+    return PdfPreviewOut(
+        units=total_units,
+        unmatched=unmatched,
+        page_count=len(pages),
+        missing_at_dpi=missing_at_dpi,
+    )
 
 
 @router.post("/preview/page", response_model=PdfPagePreviewOut)
@@ -90,7 +97,7 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
     thumbnails, which is trivially small, and avoids needing a dedicated
     file-serving route (FaceResult carries no gallery_item_id to route
     through gallery.py's existing /full,/original endpoints)."""
-    layout, pages, _unmatched = _prepare(body)
+    layout, pages, _unmatched, _missing = _prepare(body)
     first_page = pages[0] if pages else []
     slots: list[PdfPageSlotOut] = []
     for face in first_page:
@@ -135,7 +142,7 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
     st.download_button silently doing nothing inside Tauri's webview
     (a known WKWebView gap around the HTML download attribute). A client
     fetch() -> blob() -> <a download> click has none of that gap."""
-    layout, pages, _unmatched = _prepare(body)
+    layout, pages, _unmatched, _missing = _prepare(body)
     if not pages:
         raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
     pdf_bytes = build_pdf(
@@ -158,7 +165,7 @@ def generate_pdf_html(body: PdfLayoutIn) -> Response:
     second rendering path for comparing against the default fpdf2 one
     above. 503s with a clear message rather than crashing when weasyprint
     isn't installed on this server (see pyproject.toml's html-pdf extra)."""
-    layout, pages, _unmatched = _prepare(body)
+    layout, pages, _unmatched, _missing = _prepare(body)
     if not pages:
         raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
     try:

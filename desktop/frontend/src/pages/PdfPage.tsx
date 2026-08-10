@@ -4,6 +4,7 @@ import { generationApi, ApiError } from "../api/generation";
 import type { CardRow } from "../api/project";
 import NumberInput from "../components/NumberInput";
 import PdfPagePreview from "../components/PdfPagePreview";
+import { DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
@@ -59,6 +60,14 @@ export default function PdfPage() {
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const entries = cards.map(cardToEntry);
+
+  // Populates the "Preferred model" picker. Same source as the Decklist
+  // tab's generation-model dropdown, but used here to choose which
+  // already-generated variant to print, not what to generate.
+  const modelsQuery = useQuery({
+    queryKey: ["models"],
+    queryFn: () => generationApi.listModels(),
+  });
 
   const previewQuery = useQuery({
     queryKey: ["pdf-preview", projectTag, entries, layout],
@@ -120,7 +129,59 @@ export default function PdfPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Layout</h3>
+        <h3 style={{ marginBottom: 14 }}>Source images</h3>
+
+        {/* Which already-generated variant to print for each card. These
+            only select among existing images — they never trigger
+            generation. A card with no match at the chosen model/DPI falls
+            back to its highest available DPI (see
+            pdf_layout.py::_pick_dpi_variant); a card with no generated
+            image at all is reported under "not matched" below. */}
+        <div className="field-group">
+          <label className="field">
+            <span>Preferred model</span>
+            <select
+              value={layout.preferred_model ?? ""}
+              disabled={modelsQuery.isLoading || modelsQuery.isError}
+              onChange={(e) => updateLayout("preferred_model", e.target.value || null)}
+            >
+              <option value="">Any (highest DPI available)</option>
+              {(modelsQuery.data ?? []).map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Preferred DPI</span>
+            <select
+              value={layout.preferred_dpi ?? ""}
+              onChange={(e) =>
+                updateLayout("preferred_dpi", e.target.value ? Number(e.target.value) : null)
+              }
+            >
+              <option value="">Any (highest available)</option>
+              {DPI_OPTIONS.map((dpi) => (
+                <option key={dpi} value={dpi}>
+                  {dpi}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {modelsQuery.isError && (
+          <p className="error-text">
+            Couldn&apos;t load the model list:{" "}
+            {modelsQuery.error instanceof Error
+              ? modelsQuery.error.message
+              : String(modelsQuery.error)}
+          </p>
+        )}
+
+        <h3 style={{ margin: "18px 0 14px" }}>Layout</h3>
 
         <div className="field-group">
           <label className="field">
@@ -296,6 +357,25 @@ export default function PdfPage() {
                   </li>
                 ))}
               </ul>
+            )}
+            {previewQuery.data.missing_at_dpi.length > 0 && (
+              <>
+                <p className="error-text" style={{ marginTop: 10 }}>
+                  <strong>
+                    {previewQuery.data.missing_at_dpi.length} card(s) have no image at{" "}
+                    {layout.preferred_dpi} DPI
+                  </strong>{" "}
+                  and are left out of this PDF — generate them at that DPI, or set
+                  Preferred DPI to &ldquo;Any&rdquo;.
+                </p>
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                  {previewQuery.data.missing_at_dpi.map((name, i) => (
+                    <li key={i} className="error-text">
+                      {name}
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </div>
         ) : null}

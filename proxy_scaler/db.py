@@ -152,6 +152,10 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
     out_path TEXT NOT NULL,
     original_path TEXT NOT NULL,
     png_url TEXT NOT NULL,
+    -- Set on every insert AND refreshed on re-generation (see
+    -- upsert_gallery_item): "when was this image last produced", which is
+    -- what the PDF tab's most-recent-wins variant pick means by recency.
+    created_at TEXT,
     UNIQUE (project_tag, scryfall_id, face_index, model, dpi)
 );
 
@@ -356,6 +360,39 @@ def _migration_001_drop_legacy_project_schema(conn: sqlite3.Connection) -> None:
             conn.execute("DROP TABLE IF EXISTS project_gallery_items")
 
 
+def _migration_002_add_gallery_created_at(conn: sqlite3.Connection) -> None:
+    """Add project_gallery_items.created_at, used by the PDF tab to break
+    ties toward the most recently produced image at a given DPI.
+
+    Nullable with no backfill on purpose: rows written before this column
+    existed have no honest timestamp available (the table never recorded
+    one), and inventing `now` for all of them would make every pre-existing
+    image look equally-and-most-recently generated. Selection treats a NULL
+    as "older than anything timestamped" (see pdf_layout._pick_dpi_variant),
+    so old rows lose ties to freshly regenerated ones — which is the
+    intended reading. Guarded so re-running against an already-migrated
+    database is a no-op rather than a duplicate-column error.
+
+    Also a no-op when the table is absent: migration 001 drops a
+    pre-reshape project_gallery_items outright, and _migrate()'s trailing
+    _SCHEMA pass then recreates it already carrying this column, so there
+    is nothing here to alter."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "project_gallery_items" not in tables:
+        return
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(project_gallery_items)").fetchall()
+    }
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE project_gallery_items ADD COLUMN created_at TEXT")
+
+
 # Ordered oldest-to-newest. _migrate() below walks this list and applies
 # whichever steps are newer than a database's current PRAGMA user_version,
 # one at a time in order — so a database several versions behind replays
@@ -368,8 +405,14 @@ _MIGRATIONS: list[Migration] = [
         "project_tag reshape",
         _migration_001_drop_legacy_project_schema,
     ),
+    Migration(
+        2,
+        "add project_gallery_items.created_at for most-recent-wins PDF "
+        "variant selection",
+        _migration_002_add_gallery_created_at,
+    ),
 ]
-SCHEMA_VERSION = 1  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 2  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -604,6 +647,9 @@ def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
         "native_scale": int(g["native_scale"] or 4),
         "device": g["device"] if "device" in g.keys() else "unknown",
         "image_filename": g["image_filename"],
+        # Absent on rows written before migration 002; None is meaningful
+        # (treated as oldest) rather than an error case.
+        "created_at": g["created_at"] if "created_at" in g.keys() else None,
     }
 
 
@@ -728,6 +774,10 @@ def upsert_gallery_item(
             str(result.out_path),
             str(result.original_path),
             result.png_url,
+            # Refreshed on update too, not just insert: an upsert here means
+            # the image was just (re)generated, and "most recently produced"
+            # is exactly what the PDF variant pick needs to see.
+            _utc_now(),
         )
         if existing is not None:
             conn.execute(
@@ -735,7 +785,7 @@ def upsert_gallery_item(
                 UPDATE project_gallery_items SET
                     face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
                     face_label = ?, native_scale = ?, device = ?, image_filename = ?,
-                    out_path = ?, original_path = ?, png_url = ?
+                    out_path = ?, original_path = ?, png_url = ?, created_at = ?
                 WHERE id = ?
                 """,
                 (*values, int(existing["id"])),
@@ -746,8 +796,9 @@ def upsert_gallery_item(
                 INSERT INTO project_gallery_items (
                     project_tag, scryfall_id, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
-                    device, image_filename, out_path, original_path, png_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    device, image_filename, out_path, original_path, png_url,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_tag,
@@ -766,6 +817,7 @@ def upsert_gallery_item(
                     str(result.out_path),
                     str(result.original_path),
                     result.png_url,
+                    values[-1],  # same timestamp as the UPDATE branch above
                 ),
             )
         conn.commit()

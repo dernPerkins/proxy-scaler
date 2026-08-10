@@ -164,6 +164,11 @@ class PdfPreviewOut(BaseModel):
     units: int
     unmatched: list[str]
     page_count: int
+    # Cards with no generated image at the requested preferred_dpi. These
+    # are excluded from the print run rather than substituted at another
+    # resolution, so the UI must surface them as an error — otherwise they
+    # would silently vanish from the sheet.
+    missing_at_dpi: list[str] = []
 
 
 class PdfPageSlotOut(BaseModel):

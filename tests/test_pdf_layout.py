@@ -308,7 +308,7 @@ def test_match_quantities_exact_printing() -> None:
     entries = [
         DeckEntry(quantity=3, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, unmatched = match_quantities(entries, gallery)
+    units, unmatched, _missing = match_quantities(entries, gallery)
     assert unmatched == []
     assert len(units) == 1
     assert units[0].quantity == 3
@@ -322,7 +322,7 @@ def test_match_quantities_dfc_both_faces_get_quantity() -> None:
         _face("dfc-id", 1, "Bahamut, Warden of Light", name, "fin", "376", 800, face_label="back"),
     ]
     entries = [DeckEntry(quantity=2, name=name, set_code="fin", collector_number="376")]
-    units, unmatched = match_quantities(entries, gallery)
+    units, unmatched, _missing = match_quantities(entries, gallery)
     assert unmatched == []
     assert len(units) == 2
     assert all(u.quantity == 2 for u in units)
@@ -331,7 +331,7 @@ def test_match_quantities_dfc_both_faces_get_quantity() -> None:
 def test_match_quantities_name_fallback() -> None:
     gallery = [_face("x-id", None, "Lightning Bolt", "Lightning Bolt", "lea", "161", 800)]
     entries = [DeckEntry(quantity=4, name="Lightning Bolt")]
-    units, unmatched = match_quantities(entries, gallery)
+    units, unmatched, _missing = match_quantities(entries, gallery)
     assert unmatched == []
     assert units[0].quantity == 4
 
@@ -351,7 +351,7 @@ def test_match_quantities_exact_printing_entry_not_double_counted_by_name_fallba
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
         DeckEntry(quantity=1, name="Sol Ring"),
     ]
-    units, unmatched = match_quantities(entries, gallery)
+    units, unmatched, _missing = match_quantities(entries, gallery)
     assert unmatched == []
     assert len(units) == 2
     assert all(u.quantity == 1 for u in units)
@@ -359,7 +359,7 @@ def test_match_quantities_exact_printing_entry_not_double_counted_by_name_fallba
 
 def test_match_quantities_unmatched_defaults_to_one() -> None:
     gallery = [_face("y-id", None, "Counterspell", "Counterspell", "lea", "55", 800)]
-    units, unmatched = match_quantities([], gallery)
+    units, unmatched, _missing = match_quantities([], gallery)
     assert len(unmatched) == 1
     assert units[0].quantity == 1
 
@@ -373,7 +373,7 @@ def test_match_quantities_picks_highest_dpi() -> None:
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _ = match_quantities(entries, gallery)
+    units, _, _missing = match_quantities(entries, gallery)
     assert units[0].best.dpi == 1200
     assert units[0].dpi_fallback is False
 
@@ -387,7 +387,7 @@ def test_match_quantities_preferred_dpi_used_when_available() -> None:
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _ = match_quantities(entries, gallery, preferred_dpi=800)
+    units, _, _missing = match_quantities(entries, gallery, preferred_dpi=800)
     assert units[0].best.dpi == 800
     assert units[0].dpi_fallback is False
 
@@ -409,12 +409,12 @@ def test_match_quantities_preferred_model_used_when_available() -> None:
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _ = match_quantities(
+    units, _, _missing = match_quantities(
         entries, gallery, preferred_dpi=800, preferred_model="ultrasharp_v2"
     )
     assert units[0].best.model == "ultrasharp_v2"
 
-    units_hat, _ = match_quantities(
+    units_hat, _, _ = match_quantities(
         entries, gallery, preferred_dpi=800, preferred_model="hat"
     )
     assert units_hat[0].best.model == "hat"
@@ -440,13 +440,17 @@ def test_match_quantities_no_duplicate_units_across_models() -> None:
     entries = [
         DeckEntry(quantity=3, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, unmatched = match_quantities(entries, gallery)
+    units, unmatched, _missing = match_quantities(entries, gallery)
     assert unmatched == []
     assert len(units) == 1
     assert units[0].quantity == 3
 
 
-def test_match_quantities_preferred_dpi_falls_back_when_missing() -> None:
+def test_match_quantities_preferred_dpi_excludes_and_reports_when_missing() -> None:
+    """A preferred DPI is a hard filter, not a preference: a card with no
+    image at it must be left out of the print run and reported, never
+    silently substituted at another resolution (which would print visibly
+    inconsistent cards and hide that something never generated)."""
     gallery = [
         _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 600),
         _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
@@ -454,9 +458,67 @@ def test_match_quantities_preferred_dpi_falls_back_when_missing() -> None:
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _ = match_quantities(entries, gallery, preferred_dpi=1200)
-    assert units[0].best.dpi == 800  # highest available, since 1200 wasn't generated
-    assert units[0].dpi_fallback is True
+    units, _unmatched, missing = match_quantities(entries, gallery, preferred_dpi=1200)
+
+    assert units == []
+    assert missing == ["Sol Ring [C21 263]"]
+
+
+def test_match_quantities_preferred_dpi_picks_most_recent_at_that_dpi() -> None:
+    """Within the requested DPI and absent a model preference, the most
+    recently produced image wins — regenerating a card is how a user says
+    "use this one now"."""
+    older = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="swinir")
+    newer = _face(
+        "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2"
+    )
+    older.created_at = "2026-01-01T00:00:00+00:00"
+    newer.created_at = "2026-08-01T00:00:00+00:00"
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+
+    units, _unmatched, missing = match_quantities([*entries], [older, newer], preferred_dpi=800)
+    assert missing == []
+    assert units[0].best.model == "ultrasharp_v2"
+
+    # Order of the gallery list must not decide it.
+    units, _unmatched, _missing = match_quantities([*entries], [newer, older], preferred_dpi=800)
+    assert units[0].best.model == "ultrasharp_v2"
+
+
+def test_match_quantities_untimestamped_rows_lose_to_timestamped() -> None:
+    """Rows predating the created_at column (db migration 002) carry None.
+    They must sort as oldest rather than winning ties by accident, so a
+    freshly regenerated image beats a legacy one."""
+    legacy = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="swinir")
+    fresh = _face(
+        "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2"
+    )
+    fresh.created_at = "2026-08-01T00:00:00+00:00"
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, _unmatched, _missing = match_quantities(entries, [legacy, fresh], preferred_dpi=800)
+    assert units[0].best.model == "ultrasharp_v2"
+
+
+def test_match_quantities_preferred_model_beats_recency_at_that_dpi() -> None:
+    """An explicit model choice outranks recency — otherwise picking a model
+    would appear to do nothing whenever a different one was generated later."""
+    chosen = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="swinir")
+    newer_other = _face(
+        "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2"
+    )
+    chosen.created_at = "2026-01-01T00:00:00+00:00"
+    newer_other.created_at = "2026-08-01T00:00:00+00:00"
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, _unmatched, _missing = match_quantities(
+        entries, [chosen, newer_other], preferred_dpi=800, preferred_model="swinir"
+    )
+    assert units[0].best.model == "swinir"
 
 
 # --- Expansion / pagination ------------------------------------------------

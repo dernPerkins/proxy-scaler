@@ -6,6 +6,7 @@ import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
 import CompareDialog from "../components/CompareDialog";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
+import { DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
@@ -18,8 +19,6 @@ import {
   statusForPairs,
   type VariantStatus,
 } from "../mergeCardStatus";
-
-const DPI_OPTIONS = [600, 800, 1200];
 
 // Purely presentational grouping of the "Upscale model" dropdown — the
 // API's own flat list (proxy_scaler/upscale.py's UpscaleModel enum order)
