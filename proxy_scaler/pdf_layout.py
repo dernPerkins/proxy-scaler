@@ -187,13 +187,32 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
             pdf.line(x, y - layout.guide_length_mm, x, y + layout.guide_length_mm)
 
 
-def _replicate_top_left_corner(img: Image.Image, r: int) -> None:
-    """Mutates `img` in place: fills the (0,0)-(r,r) square by stretching
-    the opaque column at x=r horizontally across each of the first r rows."""
-    for y in range(r):
-        src = img.crop((r, y, r + 1, y + 1))
-        row_fill = src.resize((r, 1), Image.Resampling.NEAREST)
-        img.paste(row_fill, (0, y))
+def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -> None:
+    """Mutates `img` in place: for each of the first r rows, fill only that
+    row's leading *transparent* run with the colour of the first opaque
+    pixel it runs into.
+
+    Per-row and transparency-aware on purpose. A previous version stretched
+    one fixed column (x=r) across the full width of every row in the r×r
+    square, which overwrote opaque card art that happened to fall inside
+    that square — the rounded arc only covers part of it — and painted the
+    result as horizontal bands. That was visible in the PDF as smeared
+    streaks running out of every card corner. Only genuinely transparent
+    pixels should ever be touched here.
+    """
+    px = img.load()
+    w, h = img.size
+    for y in range(min(r, h)):
+        # Scan the full row, not just the first r pixels: when the probe
+        # window is narrower than the corner radius there is no opaque
+        # pixel within r, and stopping early would leave the corner
+        # transparent (add_bleed would then drop it to black).
+        x0 = next((x for x in range(w) if px[x, y][3] >= alpha_threshold), None)
+        if not x0:  # row fully opaque already (x0 == 0), or no opaque pixel found
+            continue
+        red, green, blue, _ = px[x0, y]
+        for x in range(x0):
+            px[x, y] = (red, green, blue, 255)
 
 
 def flatten_corner_alpha(
@@ -241,7 +260,7 @@ def flatten_corner_alpha(
         r = min(probe - 1, max(bbox[2], bbox[3]) + 1)
         if r <= 0:
             continue
-        _replicate_top_left_corner(oriented, r)
+        _replicate_top_left_corner(oriented, r, alpha_threshold)
         result = oriented.transpose(transpose_op) if transpose_op is not None else oriented
         img.paste(result, (px, py))
     return img

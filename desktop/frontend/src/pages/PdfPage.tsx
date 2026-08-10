@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import type { CardRow } from "../api/project";
+import NumberInput from "../components/NumberInput";
 import PdfPagePreview from "../components/PdfPagePreview";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
@@ -139,18 +140,16 @@ export default function PdfPage() {
           <div style={{ display: "flex", gap: 10 }}>
             <label className="field">
               <span>Width (mm)</span>
-              <input
-                type="number"
+              <NumberInput
                 value={layout.page_width_mm}
-                onChange={(e) => updateLayout("page_width_mm", Number(e.target.value))}
+                onChange={(v) => updateLayout("page_width_mm", v)}
               />
             </label>
             <label className="field">
               <span>Height (mm)</span>
-              <input
-                type="number"
+              <NumberInput
                 value={layout.page_height_mm}
-                onChange={(e) => updateLayout("page_height_mm", Number(e.target.value))}
+                onChange={(v) => updateLayout("page_height_mm", v)}
               />
             </label>
           </div>
@@ -158,51 +157,46 @@ export default function PdfPage() {
           <div style={{ display: "flex", gap: 10 }}>
             <label className="field">
               <span>Columns</span>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 value={layout.cols}
-                onChange={(e) => updateLayout("cols", Number(e.target.value))}
+                onChange={(v) => updateLayout("cols", v)}
               />
             </label>
             <label className="field">
               <span>Rows</span>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 value={layout.rows}
-                onChange={(e) => updateLayout("rows", Number(e.target.value))}
+                onChange={(v) => updateLayout("rows", v)}
               />
             </label>
           </div>
 
           <label className="field">
             <span>Bleed (mm)</span>
-            <input
-              type="number"
+            <NumberInput
               step={0.1}
               value={layout.bleed_mm}
-              onChange={(e) => updateLayout("bleed_mm", Number(e.target.value))}
+              onChange={(v) => updateLayout("bleed_mm", v)}
             />
           </label>
 
           <div style={{ display: "flex", gap: 10 }}>
             <label className="field">
               <span>Spacing X (mm)</span>
-              <input
-                type="number"
+              <NumberInput
                 step={0.1}
                 value={layout.spacing_x_mm}
-                onChange={(e) => updateLayout("spacing_x_mm", Number(e.target.value))}
+                onChange={(v) => updateLayout("spacing_x_mm", v)}
               />
             </label>
             <label className="field">
               <span>Spacing Y (mm)</span>
-              <input
-                type="number"
+              <NumberInput
                 step={0.1}
                 value={layout.spacing_y_mm}
-                onChange={(e) => updateLayout("spacing_y_mm", Number(e.target.value))}
+                onChange={(v) => updateLayout("spacing_y_mm", v)}
               />
             </label>
           </div>
@@ -210,30 +204,27 @@ export default function PdfPage() {
           <div style={{ display: "flex", gap: 10 }}>
             <label className="field">
               <span>Offset X (mm)</span>
-              <input
-                type="number"
+              <NumberInput
                 step={0.1}
                 value={layout.offset_x_mm}
-                onChange={(e) => updateLayout("offset_x_mm", Number(e.target.value))}
+                onChange={(v) => updateLayout("offset_x_mm", v)}
               />
             </label>
             <label className="field">
               <span>Offset Y (mm)</span>
-              <input
-                type="number"
+              <NumberInput
                 step={0.1}
                 value={layout.offset_y_mm}
-                onChange={(e) => updateLayout("offset_y_mm", Number(e.target.value))}
+                onChange={(v) => updateLayout("offset_y_mm", v)}
               />
             </label>
           </div>
 
           <label className="field">
             <span>Export DPI</span>
-            <input
-              type="number"
+            <NumberInput
               value={layout.export_dpi}
-              onChange={(e) => updateLayout("export_dpi", Number(e.target.value))}
+              onChange={(v) => updateLayout("export_dpi", v)}
             />
           </label>
 
@@ -250,20 +241,18 @@ export default function PdfPage() {
             <div style={{ display: "flex", gap: 10 }}>
               <label className="field">
                 <span>Guide width (pt)</span>
-                <input
-                  type="number"
+                <NumberInput
                   step={0.05}
                   value={layout.guide_width_pt}
-                  onChange={(e) => updateLayout("guide_width_pt", Number(e.target.value))}
+                  onChange={(v) => updateLayout("guide_width_pt", v)}
                 />
               </label>
               <label className="field">
                 <span>Guide length (mm)</span>
-                <input
-                  type="number"
+                <NumberInput
                   step={0.1}
                   value={layout.guide_length_mm}
-                  onChange={(e) => updateLayout("guide_length_mm", Number(e.target.value))}
+                  onChange={(v) => updateLayout("guide_length_mm", v)}
                 />
               </label>
             </div>

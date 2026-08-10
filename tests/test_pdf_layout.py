@@ -529,3 +529,35 @@ def test_build_pdf_export_dpi_resizes_source(tmp_path) -> None:
     small = build_pdf(pages, layout=layout, export_dpi=800, show_cut_lines=False)
     large = build_pdf(pages, layout=layout, export_dpi=1200, show_cut_lines=False)
     assert len(large) > len(small)
+
+
+def test_flatten_corner_alpha_only_touches_transparent_pixels() -> None:
+    """flatten_corner_alpha must fill the transparent rounded-corner arc and
+    nothing else. A previous version stretched one fixed column across the
+    full width of every row in the r x r corner square, which overwrote the
+    opaque card art sharing that square and rendered it as horizontal bands
+    -- visible in the PDF as smears running out of every card corner."""
+    # Radius must stay inside the probe window (probe_frac=0.12 of the
+    # short edge = 24px here); real cards are ~5% of their width, so this
+    # mirrors them. A radius wider than the probe leaves the patch with no
+    # opaque pixel to sample at all.
+    img = _rounded_rect_rgba(200, 280, 15)
+    before = list(img.convert("RGB").getdata())
+    before_alpha = list(img.getchannel("A").getdata())
+
+    flattened = flatten_corner_alpha(img)
+    after = list(flattened.convert("RGB").getdata())
+
+    assert flattened.size == img.size
+    overwritten = [
+        i
+        for i, (was, now, alpha) in enumerate(zip(before, after, before_alpha))
+        if alpha >= 250 and was != now
+    ]
+    assert not overwritten, f"{len(overwritten)} opaque pixels were overwritten"
+
+    # ...and the corners really did become opaque.
+    alpha = flattened.getchannel("A")
+    w, h = flattened.size
+    for xy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        assert alpha.getpixel(xy) == 255, f"corner {xy} left transparent"
