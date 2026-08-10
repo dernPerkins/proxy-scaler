@@ -382,3 +382,76 @@ def test_upscalers_for_targets_auto_tiles_heavy_models(tmp_path: Path) -> None:
     explicit = _upscalers_for_targets(UpscaleModel.SWINIR, [800], tmp_path, tile_size=128)
     [upscaler] = explicit.values()
     assert upscaler.tile == 128
+
+
+def _rounded_rect_rgba(w: int, h: int, radius: int) -> Image.Image:
+    """Realistic rounded-rect alpha: a quarter-circle cutout at all 4
+    corners, matching real Scryfall/upscaled card geometry -- same fixture
+    shape as test_pdf_layout.py's/test_pdf_html.py's own helper."""
+    img = Image.new("RGBA", (w, h), (10, 20, 30, 255))
+    px = img.load()
+    corners = [(0, 0), (w - radius, 0), (0, h - radius), (w - radius, h - radius)]
+    for cx, cy in corners:
+        for dy in range(radius):
+            for dx in range(radius):
+                ax = dx if cx == 0 else radius - 1 - dx
+                ay = dy if cy == 0 else radius - 1 - dy
+                center_dx, center_dy = radius - ax, radius - ay
+                if center_dx * center_dx + center_dy * center_dy > radius * radius:
+                    px[cx + dx, cy + dy] = (0, 0, 0, 0)
+    return img
+
+
+def test_write_dpi_variant_flattens_corners_before_resizing(tmp_path: Path) -> None:
+    """Regression guard for the corner-smearing bug: this generation-time
+    resize (the one that produces the actual out_path PNG every PDF
+    pipeline later reads) must flatten rounded-corner alpha to opaque
+    BEFORE resizing to the target DPI, not after or never -- resizing an
+    RGBA image while its corners are still transparent lets LANCZOS blend
+    transparent RGB into the opaque body at the boundary, baking a visible
+    smear directly into the saved file. This is a separate call site from
+    (and was missed by) the export-time fix in pdf_layout.py::build_pdf --
+    that fix can't undo damage already baked into out_path by the time it
+    opens the file. Verified by call order, matching that fix's own test."""
+    import proxy_scaler.pipeline as pipeline_module
+    from proxy_scaler.scryfall import CardFaceImage
+
+    call_order: list[str] = []
+    real_flatten = pipeline_module.flatten_corner_alpha
+    real_resize = pipeline_module._resize_to_dpi
+
+    def spy_flatten(*args, **kwargs):
+        call_order.append("flatten")
+        return real_flatten(*args, **kwargs)
+
+    def spy_resize(*args, **kwargs):
+        call_order.append("resize")
+        return real_resize(*args, **kwargs)
+
+    pipeline_module.flatten_corner_alpha = spy_flatten
+    pipeline_module._resize_to_dpi = spy_resize
+    try:
+        face = CardFaceImage(
+            scryfall_id="abc",
+            card_name="Test Card",
+            face_name="Test Card",
+            set_code="tst",
+            collector_number="1",
+            png_url="",
+            face_index=None,
+        )
+        result = pipeline_module._write_dpi_variant(
+            face=face,
+            raw=_rounded_rect_rgba(100, 100, 15),
+            original_path=tmp_path / "original.png",
+            output_dir=tmp_path / "out",
+            model_id=UpscaleModel.SWINIR,
+            dpi=1200,  # differs from raw's native size, forcing the resize path
+            native_scale=4,
+        )
+    finally:
+        pipeline_module.flatten_corner_alpha = real_flatten
+        pipeline_module._resize_to_dpi = real_resize
+
+    assert call_order[:2] == ["flatten", "resize"]
+    assert result.out_path.is_file()

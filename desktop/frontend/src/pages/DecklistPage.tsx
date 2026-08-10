@@ -594,11 +594,45 @@ function CardRowView(props: {
       )}
 
       {expanded &&
-        faces.map((face, i) => (
-          <div key={i} className="thumbs">
-            {face.variants
-              .filter((v): v is VariantStatus & { galleryItemId: number } => v.status === "done" && v.galleryItemId != null)
-              .map((v) => (
+        faces.map((face, i) => {
+          const doneVariants = face.variants.filter(
+            (v): v is VariantStatus & { galleryItemId: number } =>
+              v.status === "done" && v.galleryItemId != null,
+          );
+          // The original (pre-upscale) source image is shared across
+          // every DPI/model variant of this face — keyed server-side by
+          // scryfall_id/face_index only (see original_cache_path in
+          // upscale.py), not by model/dpi — so any one "done" variant's
+          // gallery_item_id resolves to the same underlying file via
+          // GET /api/gallery/{id}/original. Shown once per face, not
+          // once per variant.
+          const originalSource = doneVariants[0];
+          return (
+            <div key={i} className="thumbs">
+              {originalSource && (
+                <div className="thumb">
+                  <div className="thumb-label">Original</div>
+                  <img
+                    src={generationApi.imageUrl(originalSource.galleryItemId, "original")}
+                    alt={card.name}
+                    loading="lazy"
+                  />
+                  <div className="thumb-buttons">
+                    <button
+                      className="btn-sm"
+                      onClick={() =>
+                        handleDownloadImage(
+                          generationApi.imageUrl(originalSource.galleryItemId, "original"),
+                          `${slugify(card.name)}-original.png`,
+                        )
+                      }
+                    >
+                      Download
+                    </button>
+                  </div>
+                </div>
+              )}
+              {doneVariants.map((v) => (
                 <div key={`${v.dpi}-${v.model}`} className="thumb">
                   <div className="thumb-label">
                     {v.dpi} DPI · {v.model}
@@ -642,8 +676,9 @@ function CardRowView(props: {
                   </div>
                 </div>
               ))}
-          </div>
-        ))}
+            </div>
+          );
+        })}
 
       {compareTarget && (
         <CompareDialog

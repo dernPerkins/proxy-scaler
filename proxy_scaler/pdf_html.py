@@ -16,8 +16,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from .pdf_layout import PageLayout, add_bleed
-from .pipeline import FaceResult
+from .pdf_layout import PageLayout, add_bleed, flatten_corner_alpha
+from .pipeline import FaceResult, _resize_to_dpi
 
 
 class WeasyPrintUnavailable(RuntimeError):
@@ -99,8 +99,21 @@ def build_pdf_html(
             for face in page:
                 if face.out_path in image_uri_by_out_path:
                     continue
-                with Image.open(face.out_path) as img:
-                    bled = add_bleed(img, dpi=export_dpi, bleed_mm=layout.bleed_mm)
+                # Flatten the rounded-corner alpha to opaque BEFORE any
+                # resize — resizing while corners are still transparent
+                # lets the resample filter blend the transparent region's
+                # RGB into the opaque body right at the boundary (alpha
+                # fringing), baking in a visible smear at every corner.
+                # This exact bug already got fixed once in build_pdf
+                # (pdf_layout.py) — mirrored here rather than skipped,
+                # since add_bleed()'s own internal flatten happens too
+                # late if a resize sits between opening the file and
+                # calling it.
+                with Image.open(face.out_path) as raw:
+                    img = flatten_corner_alpha(raw.convert("RGBA"))
+                if export_dpi != face.dpi:
+                    img = _resize_to_dpi(img, export_dpi)
+                bled = add_bleed(img, dpi=export_dpi, bleed_mm=layout.bleed_mm)
                 dest = tmp_path / f"{face.out_path.stem}_bled.png"
                 bled.save(dest)
                 image_uri_by_out_path[face.out_path] = dest.resolve().as_uri()

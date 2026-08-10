@@ -174,7 +174,28 @@ async fn stop_local_server(state: State<'_, SidecarState>) -> Result<(), String>
 /// (not an error case — the frontend should just no-op on false).
 #[tauri::command]
 async fn save_file(app: AppHandle, suggested_name: String, data: Vec<u8>) -> Result<bool, String> {
-    let chosen = app.dialog().file().set_file_name(&suggested_name).blocking_save_file();
+    // blocking_save_file() parks its calling thread on rx.recv() until the
+    // native dialog resolves (tauri-plugin-dialog's own blocking_fn!
+    // macro) — fine for a one-off call, but this command runs on Tauri's
+    // shared async runtime, whose worker pool is small (CPU-core-sized)
+    // and also backs every other async command in this file
+    // (start_local_server, stop_local_server). Two downloads overlapping
+    // before either dialog is dismissed — trivially easy to trigger, no
+    // deliberate misuse required — is enough to exhaust that pool, after
+    // which *no* async command can be scheduled at all: not more
+    // downloads, not the Local/Remote server toggle. No error surfaces
+    // either, since nothing ever runs to produce one — invoke() promises
+    // on the JS side just never resolve, which is exactly what read like
+    // "the app crashed with no error" and downloads "sitting in a weird
+    // loop." spawn_blocking runs the dialog wait on Tokio's separate,
+    // much larger dedicated blocking-thread pool instead, so the shared
+    // async pool is never at risk regardless of how many downloads
+    // overlap.
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_file_name(&suggested_name).blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     let Some(file_path) = chosen else {
         return Ok(false);
