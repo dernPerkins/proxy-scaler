@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import html as html_escape
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
 
-from .pdf_layout import PageLayout, add_bleed, flatten_corner_alpha
+from .pdf_layout import PageLayout, add_bleed, flatten_corner_alpha, unique_image_count
 from .pipeline import FaceResult, _resize_to_dpi
 
 
@@ -70,12 +71,21 @@ def build_html_document(
 
 
 def build_pdf_html(
-    pages: list[list[FaceResult]], *, layout: PageLayout, export_dpi: int
+    pages: list[list[FaceResult]],
+    *,
+    layout: PageLayout,
+    export_dpi: int,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> bytes:
     """Render `pages` to PDF bytes via WeasyPrint, using full-resolution
     images (not the small PDF-preview thumbnails — this is a real
     print-quality comparison, not a fast on-screen preview). Raises
-    WeasyPrintUnavailable if weasyprint isn't installed on this server."""
+    WeasyPrintUnavailable if weasyprint isn't installed on this server.
+
+    `on_progress(completed, total)` fires once per unique image, matching
+    build_pdf's contract (see pdf_layout.build_pdf) so both pipelines can
+    drive the same progress UI. May raise to abort the build.
+    """
     try:
         from weasyprint import HTML  # lazy: optional extra, same convention as upscale.py's lazy torch import
     except ImportError as exc:
@@ -95,6 +105,7 @@ def build_pdf_html(
     with tempfile.TemporaryDirectory(prefix="proxy-scaler-html-pdf-") as tmp_dir:
         tmp_path = Path(tmp_dir)
         image_uri_by_out_path: dict[Path, str] = {}
+        total_images = unique_image_count(pages)
         for page in pages:
             for face in page:
                 if face.out_path in image_uri_by_out_path:
@@ -117,6 +128,8 @@ def build_pdf_html(
                 dest = tmp_path / f"{face.out_path.stem}_bled.png"
                 bled.save(dest)
                 image_uri_by_out_path[face.out_path] = dest.resolve().as_uri()
+                if on_progress is not None:
+                    on_progress(len(image_uri_by_out_path), total_images)
 
         document = build_html_document(
             pages, layout=layout, image_uri_by_out_path=image_uri_by_out_path

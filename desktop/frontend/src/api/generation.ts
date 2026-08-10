@@ -11,6 +11,9 @@ import type {
   GenerateRequest,
   GenerateResult,
   ModelOption,
+  PdfJobRequest,
+  PdfJobStarted,
+  PdfJobStatus,
   PdfLayoutRequest,
   PdfPagePreview,
   PdfPreview,
@@ -110,6 +113,21 @@ export const generationApi = {
   // Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — 503s
   // when the server doesn't have the optional html-pdf extra installed.
   pdfHtmlUrl: () => `${getApiBaseUrl()}/api/pdf/html`,
+
+  // --- Render jobs ---
+  // Rendering costs ~0.7s per unique card image server-side, so the UI
+  // starts a job and polls it rather than blocking on one long POST with
+  // nothing to show. The finished PDF is fetched from a plain GET, which
+  // is what lets Rust download it without the bytes entering the webview.
+  startPdfJob: (body: PdfJobRequest) =>
+    request<PdfJobStarted>("/api/pdf/jobs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  pdfJobStatus: (jobId: string) => request<PdfJobStatus>(`/api/pdf/jobs/${jobId}`),
+  cancelPdfJob: (jobId: string) =>
+    request<void>(`/api/pdf/jobs/${jobId}/cancel`, { method: "POST" }),
+  pdfJobResultUrl: (jobId: string) => `${getApiBaseUrl()}/api/pdf/jobs/${jobId}/result`,
 
   clearGeneratedData: (outputDir: string, cacheDir: string, projectTag?: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {

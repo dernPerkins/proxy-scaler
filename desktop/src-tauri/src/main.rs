@@ -28,7 +28,7 @@ mod project_store;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -160,41 +160,37 @@ async fn stop_local_server(state: State<'_, SidecarState>) -> Result<(), String>
     Ok(())
 }
 
-/// Native "Save As" dialog + fetch-and-write — replaces the browser
-/// `<a download>` pattern for image/PDF downloads. Confirmed by real
-/// testing that the HTML `download` attribute isn't reliably honored by
-/// Tauri's webview on macOS (WKWebView): an image link just navigated to
-/// a larger view of the image instead of saving it, and a PDF blob link
-/// did nothing at all.
+/// How often a running transfer reports back to the UI. A 100MB PDF
+/// arrives in thousands of chunks; emitting an event per chunk would
+/// flood the webview's IPC with far more updates than a progress bar can
+/// use. Throttled by both time and volume so slow links still tick
+/// visibly and fast ones don't spam.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+const PROGRESS_BYTES: u64 = 512 * 1024;
+
+/// Ids of downloads the user has asked to abort. A set rather than a
+/// single flag so a cancel can never land on the wrong transfer: the id
+/// is minted per download by the frontend and echoed in every event.
+#[derive(Default)]
+struct DownloadCancel(Mutex<std::collections::HashSet<String>>);
+
+#[derive(Clone, serde::Serialize)]
+struct DownloadProgress {
+    id: String,
+    downloaded: u64,
+    /// None when the server sends no content-length — the UI falls back
+    /// to an indeterminate bar rather than inventing a denominator.
+    total: Option<u64>,
+}
+
+/// Native "Save As" dialog, returning the chosen path (None = canceled).
 ///
-/// The HTTP request happens *here*, not in the webview, and that split is
-/// the whole point. The previous shape of this command took the bytes as
-/// a `Vec<u8>` parameter, which meant the frontend had to hand a whole
-/// image across the IPC boundary: `Array.from(uint8array)` expanded a
-/// 15-25MB PNG (real sizes for this app's 1200 DPI output) into a JS
-/// array of 15-25 *million* numbers, which Tauri then JSON-serialized to
-/// ~60-100MB of `"255,17,3,..."` text for serde to parse back into bytes
-/// on this side. That read to a user as a multi-minute hang, an app that
-/// "crashed with no error," or an intermittent failure that tracked file
-/// size (a ~1MB Scryfall original usually squeaked through; a 1200 DPI
-/// upscale did not). The pre-Streamlit-migration build never hit any of
-/// this because `st.download_button(data=path.read_bytes())` sent bytes
-/// straight from disk to the browser — they never transited the UI layer
-/// at all. Doing the GET/POST in Rust restores that property: bytes go
-/// server -> Rust -> disk, and the webview only ever passes a URL.
-///
-/// `body` selects the method: None issues a GET (image downloads), Some
-/// sends it as a JSON POST body (PDF generation, which is a POST route).
-///
-/// Returns Ok(true) if saved, Ok(false) if the user canceled the dialog
-/// (not an error case — the frontend should just no-op on false).
+/// Split out from the transfer below so the caller can ask *first* and
+/// then do slow work: a PDF render takes tens of seconds server-side, and
+/// interrupting the user with a file dialog after that wait — rather than
+/// letting them choose up front and walk away — is the worse trade.
 #[tauri::command]
-async fn download_to_file(
-    app: AppHandle,
-    url: String,
-    body: Option<String>,
-    suggested_name: String,
-) -> Result<bool, String> {
+async fn pick_save_path(app: AppHandle, suggested_name: String) -> Result<Option<String>, String> {
     // blocking_save_file() parks its calling thread on rx.recv() until the
     // native dialog resolves (tauri-plugin-dialog's own blocking_fn!
     // macro) — fine for a one-off call, but this command runs on Tauri's
@@ -219,13 +215,50 @@ async fn download_to_file(
     .map_err(|e| e.to_string())?;
 
     let Some(file_path) = chosen else {
-        return Ok(false);
+        return Ok(None);
     };
     let path = file_path.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
 
-    // Dialog first, then the transfer — so the user picks a location
-    // immediately instead of waiting on a download that may take a while,
-    // and a cancel costs no network traffic at all.
+/// Fetch `url` straight to `path`, emitting `download-progress` as it
+/// goes. Returns Ok(false) if the user canceled mid-transfer.
+///
+/// The HTTP request happens *here*, not in the webview, and that split is
+/// the whole point. An earlier shape of this command took the bytes as a
+/// `Vec<u8>` parameter, which meant the frontend had to hand a whole
+/// image across the IPC boundary: `Array.from(uint8array)` expanded a
+/// 15-25MB PNG (real sizes for this app's 1200 DPI output) into a JS
+/// array of 15-25 *million* numbers, which Tauri then JSON-serialized to
+/// ~60-100MB of `"255,17,3,..."` text for serde to parse back into bytes
+/// on this side. That read to a user as a multi-minute hang, an app that
+/// "crashed with no error," or an intermittent failure that tracked file
+/// size (a ~1MB Scryfall original usually squeaked through; a 1200 DPI
+/// upscale did not). The pre-Streamlit-migration build never hit any of
+/// this because `st.download_button(data=path.read_bytes())` sent bytes
+/// straight from disk to the browser — they never transited the UI layer
+/// at all. Doing the GET/POST in Rust restores that property: bytes go
+/// server -> Rust -> disk, and the webview only ever passes a URL.
+///
+/// Streams chunk-by-chunk rather than buffering the whole body: a real
+/// print sheet is ~100MB, and holding that in memory just to write it out
+/// afterwards would also mean no progress could be reported until the
+/// very end.
+///
+/// `body` selects the method: None issues a GET (image downloads, and the
+/// finished-PDF fetch), Some sends it as a JSON POST body.
+#[tauri::command]
+async fn download_to_path(
+    app: AppHandle,
+    cancels: State<'_, DownloadCancel>,
+    url: String,
+    body: Option<String>,
+    path: String,
+    download_id: String,
+) -> Result<bool, String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+
     let client = reqwest::Client::new();
     let request = match body {
         Some(json) => client
@@ -246,12 +279,59 @@ async fn download_to_file(
             format!("Server returned {status}: {detail}")
         });
     }
-    // Buffering the whole body is fine on this side of the boundary --
-    // 25MB is unremarkable for Rust, and it was only ever a problem when
-    // it had to survive JSON serialization through the webview IPC.
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+
+    let total = response.content_length();
+    let dest = std::path::PathBuf::from(&path);
+    let mut file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    let mut last_emit_bytes: u64 = 0;
+    let mut stream = response.bytes_stream();
+
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgress { id: download_id.clone(), downloaded: 0, total },
+    );
+
+    while let Some(chunk) = stream.next().await {
+        if cancels.0.lock().await.remove(&download_id) {
+            // Drop the handle before removing, or Windows refuses to
+            // delete a file that still has an open writer.
+            drop(file);
+            let _ = std::fs::remove_file(&dest);
+            return Ok(false);
+        }
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+
+        if last_emit.elapsed() >= PROGRESS_INTERVAL
+            || downloaded - last_emit_bytes >= PROGRESS_BYTES
+        {
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress { id: download_id.clone(), downloaded, total },
+            );
+            last_emit = std::time::Instant::now();
+            last_emit_bytes = downloaded;
+        }
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    // Always land on a final 100% event — the throttle above can otherwise
+    // swallow the last chunk and leave the bar short of full.
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgress { id: download_id, downloaded, total },
+    );
     Ok(true)
+}
+
+/// Ask an in-flight transfer to stop. Recorded even if it arrives before
+/// the transfer starts reading chunks, so an immediate cancel isn't lost.
+#[tauri::command]
+async fn cancel_download(cancels: State<'_, DownloadCancel>, download_id: String) -> Result<(), String> {
+    cancels.0.lock().await.insert(download_id);
+    Ok(())
 }
 
 /// Graceful-then-forceful sidecar shutdown, mirroring supervisor.py's own
@@ -305,10 +385,13 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())
+        .manage(DownloadCancel::default())
         .invoke_handler(tauri::generate_handler![
             start_local_server,
             stop_local_server,
-            download_to_file,
+            pick_save_path,
+            download_to_path,
+            cancel_download,
             create_project,
             list_projects,
             get_project,

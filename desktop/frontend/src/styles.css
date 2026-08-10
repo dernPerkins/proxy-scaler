@@ -763,6 +763,40 @@ tbody tr:last-child td {
   margin-top: 4px;
 }
 
+/* ---------- progress bar ---------- */
+
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 6px 0 2px;
+}
+.progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  /* Smooths the gap between updates — server progress ticks about once a
+     second per card image, transfer progress is throttled to ~120ms. */
+  transition: width 200ms ease-out;
+}
+/* No honest denominator (a render that hasn't reported yet, or a response
+   with no content-length): sweep instead of pretending to know a value. */
+.progress-indeterminate .progress-fill {
+  width: 35%;
+  transition: none;
+  animation: progress-sweep 1.1s ease-in-out infinite;
+}
+@keyframes progress-sweep {
+  0% {
+    margin-left: -35%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
 /* ---------- toast ---------- */
 
 .toast {

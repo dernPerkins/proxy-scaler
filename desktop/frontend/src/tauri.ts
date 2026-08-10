@@ -8,6 +8,15 @@ interface TauriGlobal {
   core: {
     invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
   };
+  // Rust-to-frontend events. Permitted by the `core:default` set already
+  // listed in src-tauri/capabilities/default.json — no extra capability
+  // needed. `listen` resolves to its own unlisten function.
+  event: {
+    listen: <T = unknown>(
+      event: string,
+      handler: (e: { payload: T }) => void,
+    ) => Promise<() => void>;
+  };
 }
 
 declare global {
@@ -54,26 +63,61 @@ export async function invokeStopLocalServer(): Promise<void> {
   await window.__TAURI__.core.invoke<void>("stop_local_server");
 }
 
-// Native "Save As" dialog, then Rust fetches the URL and writes it to
-// disk (see main.rs::download_to_file). Only a URL crosses the IPC
-// boundary — deliberately not the bytes: the previous version passed
-// `Array.from(uint8array)`, which turned a 15-25MB image into a
-// multi-million-element JS array for Tauri to JSON-serialize, and that
-// was the actual cause of downloads hanging for minutes or failing
-// outright on larger files. Pass `body` to issue a JSON POST (the PDF
-// routes) instead of a GET.
-// Returns false if the user canceled the save dialog (not an error).
-export async function invokeDownloadToFile(
-  url: string,
-  suggestedName: string,
-  body?: unknown,
-): Promise<boolean> {
+// Native "Save As" dialog. Returns null if the user canceled.
+// Separate from the transfer below so a caller can ask where to save
+// *before* starting slow work (a PDF render runs tens of seconds
+// server-side) rather than interrupting with a dialog once it's done.
+export async function invokePickSavePath(suggestedName: string): Promise<string | null> {
   if (!window.__TAURI__) {
     throw new Error("Not running inside Tauri");
   }
-  return window.__TAURI__.core.invoke<boolean>("download_to_file", {
-    url,
-    suggestedName,
-    body: body === undefined ? null : JSON.stringify(body),
+  return window.__TAURI__.core.invoke<string | null>("pick_save_path", { suggestedName });
+}
+
+// Rust fetches the URL and streams it to `path` (see
+// main.rs::download_to_path), reporting via `download-progress` events.
+// Only a URL crosses the IPC boundary — deliberately not the bytes: an
+// earlier version passed `Array.from(uint8array)`, which turned a 15-25MB
+// image into a multi-million-element JS array for Tauri to
+// JSON-serialize, and that was the actual cause of downloads hanging for
+// minutes or failing outright on larger files. Pass `body` to issue a
+// JSON POST instead of a GET.
+// Returns false if the transfer was canceled (not an error).
+export async function invokeDownloadToPath(args: {
+  url: string;
+  path: string;
+  downloadId: string;
+  body?: unknown;
+}): Promise<boolean> {
+  if (!window.__TAURI__) {
+    throw new Error("Not running inside Tauri");
+  }
+  return window.__TAURI__.core.invoke<boolean>("download_to_path", {
+    url: args.url,
+    path: args.path,
+    downloadId: args.downloadId,
+    body: args.body === undefined ? null : JSON.stringify(args.body),
   });
+}
+
+export async function invokeCancelDownload(downloadId: string): Promise<void> {
+  if (!window.__TAURI__) return;
+  await window.__TAURI__.core.invoke<void>("cancel_download", { downloadId });
+}
+
+export interface DownloadProgressEvent {
+  id: string;
+  downloaded: number;
+  total: number | null;
+}
+
+/** Subscribe to Rust's transfer progress. Resolves to an unlisten fn. */
+export async function listenDownloadProgress(
+  handler: (e: DownloadProgressEvent) => void,
+): Promise<() => void> {
+  if (!window.__TAURI__) return () => {};
+  return window.__TAURI__.event.listen<DownloadProgressEvent>(
+    "download-progress",
+    (e) => handler(e.payload),
+  );
 }

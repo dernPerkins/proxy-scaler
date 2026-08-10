@@ -11,6 +11,7 @@ test_services_generation.py does — no real network calls."""
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from proxy_scaler import db
+from proxy_scaler import pdf_jobs
 from proxy_scaler.pipeline import FaceResult
 from proxy_scaler.scryfall import ScryfallClient
 
@@ -539,3 +541,101 @@ def test_clear_generated_data_with_project_tag_clears_records_too(
 
     resp = client.get("/api/gallery", params={"project_tag": "tag-a"})
     assert resp.json() == []
+
+
+# --- PDF render jobs -------------------------------------------------------
+
+
+def _await_pdf_job(client: TestClient, job_id: str, *, timeout_s: float = 20.0) -> dict:
+    """Poll a render job to a terminal state. The render runs on its own
+    thread, so tests have to wait the way the real client does."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/pdf/jobs/{job_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        if body["status"] != "rendering":
+            return body
+        time.sleep(0.02)
+    raise AssertionError(f"PDF job {job_id} never finished")
+
+
+def test_pdf_job_lifecycle_start_poll_fetch(client: TestClient, tmp_path: Path) -> None:
+    """The full path the desktop client drives: start a job, poll it to
+    done, then fetch the bytes from a plain GET (which is what lets Rust
+    download it without the PDF ever entering the webview)."""
+    pdf_jobs._reset_for_tests()
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf/jobs", json=_pdf_layout_body(project_name="Deck"))
+    assert resp.status_code == 202
+    started = resp.json()
+    job_id = started["job_id"]
+    assert started["total"] == 1  # one unique source image
+
+    final = _await_pdf_job(client, job_id)
+    assert final["status"] == "done"
+    assert final["completed"] == final["total"] == 1
+    assert final["error"] is None
+
+    resp = client.get(f"/api/pdf/jobs/{job_id}/result")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert "Deck.pdf" in resp.headers["content-disposition"]
+    assert resp.content.startswith(b"%PDF")
+
+    # Evicted on fetch — its bytes must not stay pinned in memory.
+    assert client.get(f"/api/pdf/jobs/{job_id}").status_code == 404
+    assert client.get(f"/api/pdf/jobs/{job_id}/result").status_code == 404
+
+
+def test_pdf_job_validation_errors_surface_on_start(client: TestClient) -> None:
+    """_prepare runs synchronously in the start handler, so an unprintable
+    request fails immediately rather than becoming a job the user waits on
+    only to watch it fail."""
+    pdf_jobs._reset_for_tests()
+    assert client.post("/api/pdf/jobs", json=_pdf_layout_body(entries=[])).status_code == 400
+    # Nothing generated for this tag -> no pages -> still a start-time 400.
+    assert client.post("/api/pdf/jobs", json=_pdf_layout_body()).status_code == 400
+    assert pdf_jobs.active_count() == 0
+
+
+def test_pdf_job_result_409s_before_the_render_finishes(client: TestClient) -> None:
+    """A client that races ahead of `done` gets a clear 409, and crucially
+    the job is left intact rather than evicted."""
+    pdf_jobs._reset_for_tests()
+    job = pdf_jobs.create_job(filename="deck.pdf", total=3)
+    resp = client.get(f"/api/pdf/jobs/{job.id}/result")
+    assert resp.status_code == 409
+    assert pdf_jobs.get(job.id) is not None
+
+
+def test_pdf_job_refuses_a_second_concurrent_render(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Each finished job pins a whole PDF in memory until fetched, so only
+    one render is allowed in flight. Needs a genuinely printable request,
+    since _prepare's own validation runs first and would 400 instead."""
+    pdf_jobs._reset_for_tests()
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    pdf_jobs.create_job(filename="busy.pdf", total=1)  # stands in for a live render
+    resp = client.post("/api/pdf/jobs", json=_pdf_layout_body())
+    assert resp.status_code == 409
+
+
+def test_pdf_job_cancel_marks_it_canceled(client: TestClient) -> None:
+    pdf_jobs._reset_for_tests()
+    job = pdf_jobs.create_job(filename="deck.pdf", total=5)
+
+    assert client.post(f"/api/pdf/jobs/{job.id}/cancel").status_code == 204
+    assert pdf_jobs.is_cancel_requested(job.id) is True
+
+    assert client.post("/api/pdf/jobs/nope/cancel").status_code == 404
+
+
+def test_pdf_job_status_404s_for_unknown_id(client: TestClient) -> None:
+    pdf_jobs._reset_for_tests()
+    assert client.get("/api/pdf/jobs/nope").status_code == 404

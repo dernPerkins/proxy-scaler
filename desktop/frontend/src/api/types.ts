@@ -151,6 +151,26 @@ export interface PdfLayoutRequest {
   preferred_model?: string | null;
 }
 
+// Mirrors PdfJobIn/PdfJobOut/PdfJobStatusOut. A render job exists because
+// building a sheet costs ~0.7s per unique card image, so the client needs
+// something to poll instead of one long opaque POST.
+export type PdfRenderMethod = "fpdf2" | "html";
+
+export type PdfJobRequest = PdfLayoutRequest & { method?: PdfRenderMethod };
+
+export interface PdfJobStarted {
+  job_id: string;
+  /** Unique source images to process — the progress bar's denominator. */
+  total: number;
+}
+
+export interface PdfJobStatus {
+  status: "rendering" | "done" | "failed" | "canceled";
+  completed: number;
+  total: number;
+  error: string | null;
+}
+
 export interface PdfPreview {
   units: number;
   unmatched: string[];

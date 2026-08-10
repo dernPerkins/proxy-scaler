@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import re
+import threading
 
 from fastapi import APIRouter, HTTPException, Response
 
@@ -9,12 +10,17 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
     DeckEntryIn,
+    PdfJobIn,
+    PdfJobOut,
+    PdfJobStatusOut,
     PdfLayoutIn,
     PdfPagePreviewOut,
     PdfPageSlotOut,
     PdfPreviewOut,
 )
 from proxy_scaler.decklist import DeckEntry
+from proxy_scaler import pdf_jobs
+from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler.pdf_layout import (
     PageLayout,
     build_pdf,
@@ -22,6 +28,7 @@ from proxy_scaler.pdf_layout import (
     match_quantities,
     paginate,
     resolve_page_layout,
+    unique_image_count,
 )
 from proxy_scaler.pdf_html import WeasyPrintUnavailable, build_pdf_html
 from proxy_scaler.pipeline import FaceResult, ensure_original_thumbnail
@@ -173,6 +180,115 @@ def generate_pdf_html(body: PdfLayoutIn) -> Response:
     except WeasyPrintUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     filename = f"{_slugify(body.project_name or body.project_tag)}-html.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# --- Render jobs -----------------------------------------------------------
+#
+# The synchronous routes above stay as they are (CLI/scripted callers, and
+# the existing API tests). The desktop client uses the job routes below
+# instead: rendering a sheet costs ~0.7s per unique image, so a real deck
+# spends tens of seconds before any bytes exist to send, and a single
+# blocking POST leaves the UI with nothing to show for it. Here the render
+# runs on its own thread and the client polls (completed, total).
+
+
+def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfJobIn) -> None:
+    """Render thread body. Owns the job's terminal state: every exit path
+    (success, cancel, failure) marks the job, or the client would poll a
+    "rendering" job forever."""
+
+    def on_progress(completed: int, _total: int) -> None:
+        if pdf_jobs.is_cancel_requested(job_id):
+            raise PdfRenderCanceled()
+        pdf_jobs.set_progress(job_id, completed)
+
+    try:
+        render = build_pdf_html if body.method == "html" else build_pdf
+        kwargs = {} if body.method == "html" else {"show_cut_lines": body.show_cut_lines}
+        pdf_bytes = render(
+            pages,
+            layout=layout,
+            export_dpi=body.export_dpi,
+            on_progress=on_progress,
+            **kwargs,
+        )
+        pdf_jobs.finish(job_id, pdf_bytes)
+    except PdfRenderCanceled:
+        pdf_jobs.mark_canceled(job_id)
+    except Exception as exc:  # noqa: BLE001 — must reach the client as a status
+        pdf_jobs.fail(job_id, str(exc))
+
+
+@router.post("/jobs", response_model=PdfJobOut, status_code=202)
+def start_pdf_job(body: PdfJobIn) -> PdfJobOut:
+    """Start a background render and return its id.
+
+    _prepare() runs synchronously here on purpose: it's cheap (a DB read
+    plus matching) and it's what raises the 400s for an empty/unprintable
+    request, so those still land on this call rather than surfacing much
+    later as a failed job the user has already started waiting on.
+    """
+    layout, pages, _unmatched, _missing = _prepare(body)
+    if not pages:
+        raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
+    # One render at a time: each finished job pins a whole PDF in memory
+    # until it's fetched, and the client single-flights downloads anyway.
+    if pdf_jobs.active_count() > 0:
+        raise HTTPException(
+            status_code=409, detail="A PDF is already being generated — wait for it to finish."
+        )
+
+    suffix = "-html" if body.method == "html" else ""
+    filename = f"{_slugify(body.project_name or body.project_tag)}{suffix}.pdf"
+    job = pdf_jobs.create_job(filename=filename, total=unique_image_count(pages))
+    threading.Thread(
+        target=_run_render,
+        args=(job.id,),
+        kwargs={"pages": pages, "layout": layout, "body": body},
+        daemon=True,
+    ).start()
+    return PdfJobOut(job_id=job.id, total=job.total)
+
+
+@router.get("/jobs/{job_id}", response_model=PdfJobStatusOut)
+def pdf_job_status(job_id: str) -> PdfJobStatusOut:
+    job = pdf_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired PDF job.")
+    return PdfJobStatusOut(
+        status=job.status, completed=job.completed, total=job.total, error=job.error
+    )
+
+
+@router.post("/jobs/{job_id}/cancel", status_code=204)
+def cancel_pdf_job(job_id: str) -> Response:
+    if not pdf_jobs.request_cancel(job_id):
+        raise HTTPException(status_code=404, detail="Unknown or expired PDF job.")
+    return Response(status_code=204)
+
+
+@router.get("/jobs/{job_id}/result")
+def pdf_job_result(job_id: str) -> Response:
+    """Hand over a finished render's bytes, evicting the job as it goes —
+    this is a plain GET so the desktop client can point Rust's downloader
+    straight at it (see main.rs), keeping a large PDF out of the webview.
+    """
+    job = pdf_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired PDF job.")
+    if job.status != pdf_jobs.DONE:
+        raise HTTPException(
+            status_code=409, detail=f"PDF job is not ready (status: {job.status})."
+        )
+    result = pdf_jobs.pop_result(job_id)
+    if result is None:  # raced another fetch between the check and the pop
+        raise HTTPException(status_code=404, detail="Unknown or expired PDF job.")
+    filename, pdf_bytes = result
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

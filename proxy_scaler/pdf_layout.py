@@ -7,6 +7,7 @@ separation used elsewhere in this codebase.
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -469,12 +470,24 @@ def paginate(slots: list[FaceResult], per_page: int) -> list[list[FaceResult]]:
     return [slots[i : i + per_page] for i in range(0, len(slots), per_page)]
 
 
+def unique_image_count(pages: list[list[FaceResult]]) -> int:
+    """How many source images build_pdf will actually process.
+
+    The per-image work is cached per out_path, so this — not the number of
+    print slots — is the real unit of progress: a card printed eight times
+    costs one decode/resize/bleed/encode and seven near-free placements.
+    Exposed so a caller can size a progress bar before starting the build.
+    """
+    return len({face.out_path for page in pages for face in page})
+
+
 def build_pdf(
     pages: list[list[FaceResult]],
     *,
     layout: PageLayout,
     export_dpi: int,
     show_cut_lines: bool = True,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> bytes:
     """Render pages of card slots into a print-ready PDF, in memory.
 
@@ -485,6 +498,13 @@ def build_pdf(
     resized to `export_dpi`'s pixel density before bleed is added, so e.g. a
     1200 DPI generated source can still be exported into an 800 DPI PDF for
     a smaller file.
+
+    `on_progress(completed, total)` fires once per *unique* image, right
+    after that image's expensive work lands in the cache — see
+    unique_image_count for why that's the honest unit. It may raise to
+    abort the build (pdf_jobs.PdfRenderCanceled does exactly that for a
+    user-requested cancel); nothing here catches it, so the exception
+    unwinds to the caller with no partial PDF produced.
     """
     # Pre-oriented tuple — always pass orientation="portrait" to fpdf2 here,
     # since FPDF._set_orientation() swaps w_pt/h_pt for any non-portrait
@@ -495,6 +515,7 @@ def build_pdf(
     pdf.set_margins(0, 0, 0)
 
     cache: dict[Path, bytes] = {}
+    total_images = unique_image_count(pages)
     for page_slots in pages:
         pdf.add_page()
         for idx, face in enumerate(page_slots):
@@ -520,6 +541,8 @@ def build_pdf(
                 bled.save(buf, format="JPEG", quality=_JPEG_QUALITY)
                 jpeg_bytes = buf.getvalue()
                 cache[face.out_path] = jpeg_bytes
+                if on_progress is not None:
+                    on_progress(len(cache), total_images)
             # Fresh BytesIO per call — fpdf2's fast DCTDecode passthrough
             # path re-reads from position 0 each time, but a shared object
             # across repeated copies of the same card is an easy footgun to

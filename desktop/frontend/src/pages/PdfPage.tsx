@@ -8,8 +8,17 @@ import { DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
-import { runDownload } from "../download";
-import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
+import {
+  DownloadCanceled,
+  runDownload,
+  setDownloadCancel,
+  setDownloadPhase,
+} from "../download";
+import type { DeckEntryIn, PdfLayoutRequest, PdfRenderMethod } from "../api/types";
+
+// Render progress ticks about once a second per card image, so a
+// sub-second poll keeps the bar responsive without hammering the server.
+const POLL_INTERVAL_MS = 400;
 
 const PAGE_PRESETS: Record<string, { width: number; height: number }> = {
   A4: { width: 210, height: 297 },
@@ -97,18 +106,57 @@ export default function PdfPage() {
     }
   }
 
-  async function handleDownload(method: "fpdf2" | "html") {
+  /**
+   * Ask where to save, render server-side while reporting progress, then
+   * stream the finished PDF to that path.
+   *
+   * The render is a polled background job rather than one blocking POST:
+   * it costs ~0.7s per unique card image, so a real deck spends tens of
+   * seconds before any bytes exist and the UI would otherwise sit inert.
+   * runDownload takes the save-location prompt first and calls this back
+   * for the URL, so the user can choose up front and walk away instead of
+   * being interrupted by a dialog once the render finally lands.
+   */
+  async function handleDownload(method: PdfRenderMethod) {
     if (projectTag == null || serverUnavailable) return;
     setDownloadError(null);
     setDownloading(true);
+    const suffix = method === "html" ? "-html" : "";
     try {
-      const body = { project_tag: projectTag, entries, project_name: projectName, ...layout };
-      const suffix = method === "html" ? "-html" : "";
-      await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, {
-        url: method === "html" ? generationApi.pdfHtmlUrl() : generationApi.pdfUrl(),
-        body,
+      await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, async () => {
+        const body = {
+          project_tag: projectTag,
+          entries,
+          project_name: projectName,
+          ...layout,
+          method,
+        };
+        const started = await generationApi.startPdfJob(body);
+        setDownloadPhase({ kind: "rendering", completed: 0, total: started.total });
+        setDownloadCancel(() => {
+          void generationApi.cancelPdfJob(started.job_id);
+        });
+
+        for (;;) {
+          const status = await generationApi.pdfJobStatus(started.job_id);
+          if (status.status === "done") break;
+          if (status.status === "canceled") throw new DownloadCanceled();
+          if (status.status === "failed") {
+            throw new Error(status.error || "PDF render failed.");
+          }
+          setDownloadPhase({
+            kind: "rendering",
+            completed: status.completed,
+            total: status.total,
+          });
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        }
+        // A plain GET, so Rust can stream it straight to disk.
+        return { url: generationApi.pdfJobResultUrl(started.job_id) };
       });
     } catch (err) {
+      // Cancelling is a normal outcome, not something to show as an error.
+      if (err instanceof DownloadCanceled) return;
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setDownloading(false);
@@ -133,10 +181,11 @@ export default function PdfPage() {
 
         {/* Which already-generated variant to print for each card. These
             only select among existing images — they never trigger
-            generation. A card with no match at the chosen model/DPI falls
-            back to its highest available DPI (see
-            pdf_layout.py::_pick_dpi_variant); a card with no generated
-            image at all is reported under "not matched" below. */}
+            generation. Preferred DPI is a hard filter: a card with no
+            image at it is left out and listed below, not substituted at
+            another resolution. Within that DPI the preferred model wins,
+            else the most recently generated image (see
+            pdf_layout.py::_pick_dpi_variant). */}
         <div className="field-group">
           <label className="field">
             <span>Preferred model</span>

@@ -23,7 +23,9 @@ from proxy_scaler.pdf_layout import (
     match_quantities,
     paginate,
     resolve_page_layout,
+    unique_image_count,
 )
+from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler.pipeline import FaceResult
 
 
@@ -623,3 +625,71 @@ def test_flatten_corner_alpha_only_touches_transparent_pixels() -> None:
     w, h = flattened.size
     for xy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
         assert alpha.getpixel(xy) == 255, f"corner {xy} left transparent"
+
+
+# --- Render progress -------------------------------------------------------
+
+
+def _pdf_source_face(tmp_path: Path, name: str, dpi: int = 800) -> FaceResult:
+    """A FaceResult backed by a real (tiny) PNG on disk, so build_pdf can
+    actually decode/resize/encode it."""
+    path = tmp_path / f"{name}.png"
+    _rounded_rect_rgba(60, 84, 8).save(path, format="PNG")
+    return FaceResult(
+        out_path=path,
+        original_path=path,
+        scryfall_id=name,
+        face_index=None,
+        face_name=name,
+        card_name=name,
+        set_code="tst",
+        collector_number="1",
+        png_url="",
+        dpi=dpi,
+    )
+
+
+def test_build_pdf_reports_progress_once_per_unique_image(tmp_path: Path) -> None:
+    """Progress is measured in unique source images, not print slots: the
+    per-image decode/resize/bleed/encode is cached per out_path, so a card
+    printed several times costs one unit of real work and the rest are
+    near-free placements. A slot-based count would stall the bar on
+    duplicates and overstate the remaining work."""
+    a = _pdf_source_face(tmp_path, "a")
+    b = _pdf_source_face(tmp_path, "b")
+    # 5 slots, 2 unique images (a appears three times).
+    pages = [[a, b, a], [a]]
+    layout = _a4_portrait_layout(cols=3, rows=1)
+
+    calls: list[tuple[int, int]] = []
+    build_pdf(pages, layout=layout, export_dpi=800, on_progress=lambda c, t: calls.append((c, t)))
+
+    assert calls == [(1, 2), (2, 2)]
+    assert unique_image_count(pages) == 2
+
+
+def test_build_pdf_progress_is_optional(tmp_path: Path) -> None:
+    """Omitting on_progress must keep the CLI/test call shape working."""
+    pages = [[_pdf_source_face(tmp_path, "solo")]]
+    pdf_bytes = build_pdf(pages, layout=_a4_portrait_layout(cols=1, rows=1), export_dpi=800)
+    assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_build_pdf_progress_callback_can_abort_the_build(tmp_path: Path) -> None:
+    """Cancellation rides out through the callback rather than a flag
+    build_pdf has to poll — so the render function stays unaware that jobs
+    exist. Nothing catches it here: the exception reaches the caller and no
+    partial PDF is produced."""
+    pages = [[_pdf_source_face(tmp_path, "a"), _pdf_source_face(tmp_path, "b")]]
+
+    def stop_after_first(completed: int, _total: int) -> None:
+        if completed >= 1:
+            raise PdfRenderCanceled()
+
+    with pytest.raises(PdfRenderCanceled):
+        build_pdf(
+            pages,
+            layout=_a4_portrait_layout(cols=2, rows=1),
+            export_dpi=800,
+            on_progress=stop_after_first,
+        )
