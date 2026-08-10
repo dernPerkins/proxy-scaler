@@ -5,5 +5,16 @@
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Proxy Scaler connects to your generation server on the local network or Tailscale (Remote mode) to fetch card art and upscaled images.</string>
+  <!-- Remote mode talks plain HTTP (no TLS) to a user-supplied LAN/Tailscale
+       host:port; ATS blocks that outright by default, silently (no
+       System Settings entry, no prompt, unlike the Local Network Privacy
+       permission above). NSAllowsLocalNetworking exempts local-network/
+       IP-literal hosts specifically, without weakening ATS for any other
+       internet connections this app makes (e.g. Scryfall's HTTPS API). -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
 </dict>
 </plist>
