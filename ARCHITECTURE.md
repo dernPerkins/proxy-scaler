@@ -4,6 +4,11 @@ Living document — re-read this before touching anything architecture-level,
 and update it in the same change that shifts the architecture. Out of date
 docs are worse than no docs; keep this current or delete the section.
 
+This is the implementation-level reference: diagrams, endpoint/command
+inventories, and data-flow detail. Domain vocabulary lives in
+[`CONTEXT.md`](./CONTEXT.md); hard-to-reverse architectural decisions and
+their rationale live in [`docs/adr/`](./docs/adr/).
+
 ## Status
 
 **Target architecture below has landed in code, unverified by a real
@@ -19,33 +24,13 @@ log` if this document and the code ever disagree — the code wins.
 
 ## The core split
 
-Two independent concerns used to live in one Python FastAPI process with
-one SQLite database. They're being pulled apart because project data
-(your decklists, your settings) has no reason to live on a Remote
-generation server you don't control, while generation (Scryfall lookups,
-downloads, GPU upscaling) genuinely needs compute/network a client
-machine may not have:
+See [`CONTEXT.md`](./CONTEXT.md) for the Project / Generation server /
+`project_tag` vocabulary, and [ADR-0001](./docs/adr/0001-split-project-and-generation-concerns.md)
+for why the split happened and what it costs to reverse.
 
-- **Project management** — project CRUD, decklist text, the (unresolved)
-  card list, per-project generation preferences. Always local to the
-  machine running the desktop client, regardless of where generation
-  happens. Native Rust, in-process in the Tauri app — not a spawned
-  process, not a network call.
-- **Generation** — Scryfall resolution, the download+upscale pipeline,
-  the task queue, generated images, PDF assembly. Runs wherever the
-  user's Local/Remote toggle points: the embedded sidecar on this
-  machine, or a Remote host (their own machine via the server app, or a
-  Linux box via the `.deb`).
-
-These two only ever talk to each other via a `project_tag` — an opaque
-UUID the client mints once per local project and includes on every
-generation request, purely for scoping/filtering ("list tasks for this
-project"). It is deliberately not a foreign key into anything; the
-generation side doesn't know or care that a `projects` table exists.
-This mirrors what `generation_tasks.project_id` already was before the
-split (nullable, never joined, already-soft) — the split just makes that
-looseness the *only* relationship, instead of an accident of a shared
-database.
+`generation_tasks.project_id` was already nullable and never joined
+before the split — the split just makes that looseness the *only*
+relationship, instead of an accident of a shared database.
 
 ## Process diagram
 
@@ -217,10 +202,9 @@ string, not a database relationship.
 
 ## A concrete consequence worth knowing
 
-Project management (create a project, edit a decklist, save) now works
-identically whether or not any generation server is reachable — including
-while a configured Remote host is down. This is why the "connection
-lost" dialog (`components/ConnectionLostDialog.tsx`) only concerns
-in-flight generation work, not project data: losing the thing your
-project lived on used to mean losing your edits, and now it structurally
-can't, because project data was never there to begin with.
+See [ADR-0001](./docs/adr/0001-split-project-and-generation-concerns.md)'s
+Consequences section. This is why the "connection lost" dialog
+(`components/ConnectionLostDialog.tsx`) only concerns in-flight
+generation work, not project data: losing the thing your project lived
+on used to mean losing your edits, and now it structurally can't,
+because project data was never there to begin with.
