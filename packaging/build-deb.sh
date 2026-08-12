@@ -18,12 +18,14 @@ BUNDLE="$ROOT/desktop/pyinstaller/dist/proxy-scaler-serve"
 OUT_DIR="$ROOT/dist"
 # Staging needs a filesystem with real Unix permissions: dpkg-deb refuses
 # to build from a DEBIAN directory looser than 0775, and on a mount that
-# ignores chmod (a repo living on NTFS/exFAT, a shared VM folder, some
-# WSL setups) every directory reads as 0777 and the build simply can't
-# succeed. Point PROXY_SCALER_DEB_STAGE at somewhere like /tmp in that
-# case — nothing about the resulting package depends on where it was
-# assembled.
-STAGE_ROOT="${PROXY_SCALER_DEB_STAGE:-$ROOT/build/deb}"
+# ignores chmod (a repo checkout on NTFS/exFAT via FUSE, a shared VM
+# folder, some WSL setups) every directory reads as 0777 and the build
+# simply can't succeed — regardless of what this script chmods it to.
+# Defaulting to a /tmp-based path sidesteps that outright: nothing about
+# the resulting package depends on where it was assembled, and $ROOT
+# itself is exactly the kind of checkout that's likely to be on such a
+# mount. Set PROXY_SCALER_DEB_STAGE to override.
+STAGE_ROOT="${PROXY_SCALER_DEB_STAGE:-${TMPDIR:-/tmp}/proxy-scaler-deb-stage}"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/pyproject.toml" | head -1)"
 ARCH="$(dpkg --print-architecture)"
