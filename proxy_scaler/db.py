@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     error TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    total_faces INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status
@@ -156,6 +157,10 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
     -- upsert_gallery_item): "when was this image last produced", which is
     -- what the PDF tab's most-recent-wins variant pick means by recency.
     created_at TEXT,
+    -- How many physical faces this card has (see scryfall.CardFaceImage) —
+    -- lets pdf_layout.match_quantities notice a DFC missing its other face
+    -- without a live Scryfall call. NULL for rows predating migration 003.
+    total_faces INTEGER,
     UNIQUE (project_tag, scryfall_id, face_index, model, dpi)
 );
 
@@ -199,6 +204,7 @@ class TaskRow:
     created_at: str
     started_at: str | None
     completed_at: str | None
+    total_faces: int | None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> TaskRow:
@@ -224,6 +230,7 @@ class TaskRow:
             created_at=row["created_at"],
             started_at=row["started_at"],
             completed_at=row["completed_at"],
+            total_faces=row["total_faces"],
         )
 
 
@@ -393,6 +400,47 @@ def _migration_002_add_gallery_created_at(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE project_gallery_items ADD COLUMN created_at TEXT")
 
 
+def _migration_003_add_total_faces(conn: sqlite3.Connection) -> None:
+    """Add total_faces to generation_tasks and project_gallery_items — how
+    many physical faces a card has (see scryfall.CardFaceImage), captured
+    once at enqueue time (the only point all of a card's faces are seen
+    together) and carried alongside the other denormalized identity fields
+    already on these rows. Lets the PDF tab's DFC-completeness check (a
+    face that was never generated at all leaves no row to notice is
+    missing) read this straight off whichever face *did* generate, instead
+    of the PDF tab needing its own live Scryfall call.
+
+    Nullable with no backfill, same reasoning as migration 002's
+    created_at: rows written before this column existed have no honest
+    value to give it, and pdf_layout.match_quantities already treats None
+    as "unknown, don't verify" rather than "single-faced". Guarded/no-op
+    the same way too."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "generation_tasks" in tables:
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(generation_tasks)").fetchall()
+        }
+        if "total_faces" not in cols:
+            conn.execute("ALTER TABLE generation_tasks ADD COLUMN total_faces INTEGER")
+    if "project_gallery_items" in tables:
+        cols = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(project_gallery_items)"
+            ).fetchall()
+        }
+        if "total_faces" not in cols:
+            conn.execute(
+                "ALTER TABLE project_gallery_items ADD COLUMN total_faces INTEGER"
+            )
+
+
 # Ordered oldest-to-newest. _migrate() below walks this list and applies
 # whichever steps are newer than a database's current PRAGMA user_version,
 # one at a time in order — so a database several versions behind replays
@@ -411,8 +459,14 @@ _MIGRATIONS: list[Migration] = [
         "variant selection",
         _migration_002_add_gallery_created_at,
     ),
+    Migration(
+        3,
+        "add total_faces to generation_tasks and project_gallery_items for "
+        "DFC-completeness checks without a live Scryfall call",
+        _migration_003_add_total_faces,
+    ),
 ]
-SCHEMA_VERSION = 2  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 3  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -496,6 +550,7 @@ def enqueue_task(
     cache_dir: str,
     weights_dir: str,
     tile_size: int = 0,
+    total_faces: int | None = None,
     db_path: Path | str | None = None,
 ) -> int:
     """Add one (face, dpi, model) unit of generation work to the queue,
@@ -508,8 +563,8 @@ def enqueue_task(
                 project_tag, status, scryfall_id, face_index, face_label,
                 face_name, card_name, set_code, collector_number, png_url,
                 dpi, model, tile_size, output_dir, cache_dir, weights_dir,
-                created_at
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, total_faces
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
@@ -528,6 +583,7 @@ def enqueue_task(
                 cache_dir,
                 weights_dir,
                 now,
+                total_faces,
             ),
         )
         conn.commit()
@@ -650,6 +706,9 @@ def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
         # Absent on rows written before migration 002; None is meaningful
         # (treated as oldest) rather than an error case.
         "created_at": g["created_at"] if "created_at" in g.keys() else None,
+        # Absent on rows written before migration 003; None means "unknown,
+        # don't verify DFC completeness" (see pdf_layout.match_quantities).
+        "total_faces": g["total_faces"] if "total_faces" in g.keys() else None,
     }
 
 
@@ -778,6 +837,7 @@ def upsert_gallery_item(
             # the image was just (re)generated, and "most recently produced"
             # is exactly what the PDF variant pick needs to see.
             _utc_now(),
+            result.total_faces,
         )
         if existing is not None:
             conn.execute(
@@ -785,7 +845,8 @@ def upsert_gallery_item(
                 UPDATE project_gallery_items SET
                     face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
                     face_label = ?, native_scale = ?, device = ?, image_filename = ?,
-                    out_path = ?, original_path = ?, png_url = ?, created_at = ?
+                    out_path = ?, original_path = ?, png_url = ?, created_at = ?,
+                    total_faces = ?
                 WHERE id = ?
                 """,
                 (*values, int(existing["id"])),
@@ -797,8 +858,8 @@ def upsert_gallery_item(
                     project_tag, scryfall_id, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
                     device, image_filename, out_path, original_path, png_url,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, total_faces
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_tag,
@@ -817,7 +878,8 @@ def upsert_gallery_item(
                     str(result.out_path),
                     str(result.original_path),
                     result.png_url,
-                    values[-1],  # same timestamp as the UPDATE branch above
+                    values[-2],  # same timestamp as the UPDATE branch above
+                    values[-1],  # total_faces
                 ),
             )
         conn.commit()

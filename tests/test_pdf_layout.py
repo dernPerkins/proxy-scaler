@@ -53,6 +53,7 @@ def _face(
     *,
     model: str = "swinir",
     face_label: str | None = None,
+    total_faces: int | None = None,
 ) -> FaceResult:
     return FaceResult(
         out_path=Path(f"/o/{scryfall_id}-{face_index}-{dpi}.png"),
@@ -67,6 +68,7 @@ def _face(
         dpi=dpi,
         model=model,
         face_label=face_label,
+        total_faces=total_faces,
     )
 
 
@@ -377,21 +379,19 @@ def test_match_quantities_entry_with_no_image_is_missing() -> None:
     assert "Sol Ring" in missing[0]
 
 
-def test_match_quantities_dfc_partial_generation_reported_when_expected_faces_known() -> None:
-    """Only the front face was ever generated — expected_faces=2 lets the
-    caller know the back face was never attempted (the gallery alone can't
-    tell), so the entry is reported even though its front face prints."""
+def test_match_quantities_dfc_partial_generation_reported_when_total_faces_known() -> None:
+    """Only the front face was ever generated — its own total_faces=2 (set
+    at generation time from Scryfall's card data, see db migration 003)
+    lets match_quantities know the back face was never attempted, so the
+    entry is reported even though its front face prints."""
     name = "Delver of Secrets // Insectile Aberration"
-    gallery = [_face("dfc-id", 0, "Delver of Secrets", name, "isd", "51", 800, face_label="front")]
-    entries = [
-        DeckEntry(
-            quantity=1,
-            name=name,
-            set_code="isd",
-            collector_number="51",
-            expected_faces=2,
+    gallery = [
+        _face(
+            "dfc-id", 0, "Delver of Secrets", name, "isd", "51", 800,
+            face_label="front", total_faces=2,
         )
     ]
+    entries = [DeckEntry(quantity=1, name=name, set_code="isd", collector_number="51")]
     units, missing, _missing_at_dpi = match_quantities(entries, gallery)
     assert len(units) == 1
     assert units[0].quantity == 1
@@ -399,9 +399,10 @@ def test_match_quantities_dfc_partial_generation_reported_when_expected_faces_kn
     assert "1 of 2 faces generated" in missing[0]
 
 
-def test_match_quantities_dfc_partial_generation_ignored_when_expected_faces_unknown() -> None:
-    """Same as above, but expected_faces is None (unresolved / offline) —
-    degrades to the lenient any-match-counts behavior rather than guessing."""
+def test_match_quantities_dfc_partial_generation_ignored_when_total_faces_unknown() -> None:
+    """Same as above, but the matched face's total_faces is None (a row
+    predating migration 003) — degrades to the lenient any-match-counts
+    behavior rather than guessing."""
     name = "Delver of Secrets // Insectile Aberration"
     gallery = [_face("dfc-id", 0, "Delver of Secrets", name, "isd", "51", 800, face_label="front")]
     entries = [DeckEntry(quantity=1, name=name, set_code="isd", collector_number="51")]

@@ -33,6 +33,7 @@ def enqueue_face(
     cache_dir: Path,
     weights_dir: Path,
     project_tag: str | None,
+    total_faces: int | None = None,
     db_path: Path | str | None = None,
 ) -> list[int]:
     """Queue one task per requested DPI for an already-resolved face (no
@@ -56,6 +57,7 @@ def enqueue_face(
             output_dir=str(output_dir),
             cache_dir=str(cache_dir),
             weights_dir=str(weights_dir),
+            total_faces=total_faces,
             db_path=db_path,
         )
         for dpi in dpi_targets
@@ -183,6 +185,7 @@ def enqueue_decklist_entries(
                                 dpi=target_dpi,
                                 model=model,
                                 face_label=face.face_label,
+                                total_faces=face.total_faces,
                             ),
                             db_path=db_path,
                         )
@@ -207,6 +210,7 @@ def enqueue_decklist_entries(
                     cache_dir=cache_dir,
                     weights_dir=weights_dir,
                     project_tag=project_tag,
+                    total_faces=face.total_faces,
                     db_path=db_path,
                 )
                 task_ids.extend(new_ids)

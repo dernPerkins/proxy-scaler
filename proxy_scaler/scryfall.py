@@ -28,6 +28,12 @@ class CardFaceImage:
     png_url: str
     face_index: int | None  # None = single-faced; 0/1 = DFC front/back
     image_status: str | None = None
+    # How many faces this printing actually has an image for (usually 2 for
+    # DFC/transform, 1 otherwise — but Scryfall occasionally lacks a PNG for
+    # one face, and expand_faces() already excludes that face below, so this
+    # reflects "printable faces", not a layout assumption). None only for a
+    # CardFaceImage built somewhere other than expand_faces().
+    total_faces: int | None = None
 
     @property
     def is_dfc_face(self) -> bool:
@@ -268,6 +274,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     ]
 
     if per_face_images:
+        total_faces = len(per_face_images)
         results: list[CardFaceImage] = []
         for i, face in per_face_images:
             results.append(
@@ -280,6 +287,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
                     png_url=face["image_uris"]["png"],
                     face_index=i,
                     image_status=image_status,
+                    total_faces=total_faces,
                 )
             )
         return results
@@ -301,6 +309,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
             png_url=png,
             face_index=None,
             image_status=image_status,
+            total_faces=1,
         )
     ]
 

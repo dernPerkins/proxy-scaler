@@ -66,6 +66,7 @@ def _fake_task(project_tag: str | None, **overrides) -> TaskRow:
         created_at="2026-01-01T00:00:00Z",
         started_at=None,
         completed_at=None,
+        total_faces=None,
     )
     kwargs.update(overrides)
     return TaskRow(**kwargs)
@@ -177,6 +178,27 @@ def test_enqueue_and_claim_task(db_path: Path) -> None:
 
     # Nothing else pending — a second claim finds nothing.
     assert claim_next_task(db_path=db_path) is None
+
+
+def test_enqueue_task_round_trips_total_faces(db_path: Path) -> None:
+    """total_faces (captured once at enqueue time from Scryfall's card
+    data — see db migration 003) survives the INSERT and comes back intact
+    via both list_tasks() and claim_next_task(), so process_task() has it
+    without ever calling Scryfall itself."""
+    tid = _enqueue_sol_ring(db_path, total_faces=2)
+    [pending] = list_tasks(db_path=db_path)
+    assert pending.id == tid
+    assert pending.total_faces == 2
+
+    claimed = claim_next_task(db_path=db_path)
+    assert claimed is not None
+    assert claimed.total_faces == 2
+
+    # Unset stays None rather than defaulting to "single-faced".
+    _enqueue_sol_ring(db_path, collector_number="9")
+    assert {t.total_faces for t in list_tasks(db_path=db_path) if t.collector_number == "9"} == {
+        None
+    }
 
 
 def test_claim_returns_oldest_pending_first(db_path: Path) -> None:
@@ -406,6 +428,113 @@ def test_init_db_migrates_legacy_pre_reshape_db(tmp_path: Path) -> None:
 
         assert conn.execute("SELECT COUNT(*) FROM generation_tasks").fetchone()[0] == 0
         assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_migration_003_adds_total_faces_to_existing_rows_as_null(tmp_path: Path) -> None:
+    """A database at the version-2 shape (created_at exists, total_faces
+    doesn't) gets total_faces added to both tables on upgrade, nullable
+    with no backfill — existing rows predate the column and have no honest
+    value to give it (same reasoning as migration 002's created_at)."""
+    path = tmp_path / "v2.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE generation_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_tag TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            scryfall_id TEXT NOT NULL,
+            face_index INTEGER,
+            face_label TEXT,
+            face_name TEXT NOT NULL,
+            card_name TEXT NOT NULL,
+            set_code TEXT NOT NULL,
+            collector_number TEXT NOT NULL,
+            png_url TEXT NOT NULL,
+            dpi INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            tile_size INTEGER NOT NULL DEFAULT 0,
+            output_dir TEXT NOT NULL,
+            cache_dir TEXT NOT NULL,
+            weights_dir TEXT NOT NULL,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        CREATE TABLE project_gallery_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_tag TEXT NOT NULL,
+            scryfall_id TEXT NOT NULL,
+            face_index INTEGER,
+            face_name TEXT,
+            card_name TEXT,
+            set_code TEXT,
+            collector_number TEXT,
+            face_label TEXT,
+            model TEXT NOT NULL,
+            dpi INTEGER NOT NULL,
+            native_scale INTEGER NOT NULL DEFAULT 4,
+            device TEXT NOT NULL DEFAULT 'unknown',
+            image_filename TEXT NOT NULL,
+            out_path TEXT NOT NULL,
+            original_path TEXT NOT NULL,
+            png_url TEXT NOT NULL,
+            created_at TEXT,
+            UNIQUE (project_tag, scryfall_id, face_index, model, dpi)
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO generation_tasks (
+            project_tag, scryfall_id, face_name, card_name, set_code,
+            collector_number, png_url, dpi, model, output_dir, cache_dir,
+            weights_dir, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
+            "https://example.com/sol.png", 800, "swinir", "/tmp/out",
+            "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO project_gallery_items (
+            project_tag, scryfall_id, model, dpi, image_filename,
+            out_path, original_path, png_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tag-a", "sol-id", "swinir", 800, "sol.png",
+            "/tmp/out/sol.png", "/tmp/cache/sol.png",
+            "https://example.com/sol.png",
+        ),
+    )
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+        task_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_tasks)")}
+        gallery_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(project_gallery_items)")
+        }
+        assert "total_faces" in task_cols
+        assert "total_faces" in gallery_cols
+
+        task_row = conn.execute("SELECT * FROM generation_tasks").fetchone()
+        gallery_row = conn.execute("SELECT * FROM project_gallery_items").fetchone()
+        assert task_row["total_faces"] is None
+        assert gallery_row["total_faces"] is None
     finally:
         conn.close()
 

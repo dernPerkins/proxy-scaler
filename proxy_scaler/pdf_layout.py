@@ -409,14 +409,15 @@ def match_quantities(
 
     Conversely, an entry matching zero gallery face-groups genuinely has no
     image and is reported in `missing` — that's the case worth surfacing as
-    an error, since it usually means the card was never generated. When the
-    entry's `expected_faces` is known (populated by resolving against
-    Scryfall — see api/routers/resolve.py), a multi-face entry (DFC/
-    transform) that matched *some* but not all of its faces is reported too:
-    the gallery alone can't tell a face was never attempted, since there's
-    no row to notice is "wrong" — only a `expected_faces` count from
-    Scryfall reveals that. `expected_faces=None` skips this check entirely
-    (e.g. offline), matching the old lenient any-match-counts behavior.
+    an error, since it usually means the card was never generated. A
+    multi-face entry (DFC/transform) that matched *some* but not all of its
+    faces is reported too: whichever face group DID match carries its own
+    `total_faces` (captured once at generation time from Scryfall's card
+    data — see FaceResult.total_faces / db migration 003), so a front face
+    generated with no back face anywhere in the gallery is visible without
+    this function ever calling Scryfall itself. `total_faces=None` (rows
+    predating that migration) skips this check entirely for that entry,
+    matching the old lenient any-match-counts behavior.
 
     `preferred_dpi`, when given, is a hard filter: only images at that DPI
     are printable, and any face without one is excluded from the run and
@@ -430,6 +431,11 @@ def match_quantities(
     units: list[PrintUnit] = []
     missing_at_dpi: list[str] = []
     matched_face_counts = [0] * len(entries)
+    # How many faces each entry's card actually has, learned from whichever
+    # matched gallery group(s) happen to know it (see FaceResult.total_faces
+    # / db migration 003) — None until a matched group with a known value is
+    # seen, same "unknown, don't verify" meaning as on the row itself.
+    expected_faces_by_entry: list[int | None] = [None] * len(entries)
 
     for key, face_items in group_by_face(gallery):
         rep = face_items[0]
@@ -476,13 +482,15 @@ def match_quantities(
             )
             for i in matched_indices:
                 matched_face_counts[i] += 1
+                if rep.total_faces is not None:
+                    expected_faces_by_entry[i] = rep.total_faces
         # else: no current decklist entry wants this printing any more —
         # silently excluded from the print run, not reported.
 
     missing: list[str] = []
     for i, entry in enumerate(entries):
         matched = matched_face_counts[i]
-        expected = entry.expected_faces
+        expected = expected_faces_by_entry[i]
         if matched == 0 or (expected is not None and matched < expected):
             missing.append(_describe_entry(entry, matched, expected))
 

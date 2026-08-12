@@ -102,6 +102,7 @@ def _write_gallery_item(
         created_at="2026-01-01T00:00:00Z",
         started_at=None,
         completed_at=None,
+        total_faces=None,
     )
     task_kwargs.update(task_overrides)
     task = db.TaskRow(**task_kwargs)

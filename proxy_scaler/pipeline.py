@@ -99,6 +99,10 @@ class FaceResult:
     # persisted yet, and for gallery rows predating db migration 002.
     # pdf_layout._pick_dpi_variant treats None as older than any timestamp.
     created_at: str | None = None
+    # How many physical faces this card has (see scryfall.CardFaceImage).
+    # None for gallery rows predating db migration 003 — pdf_layout.
+    # match_quantities treats that the same as "unknown, don't verify".
+    total_faces: int | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -134,6 +138,7 @@ class FaceResult:
             native_scale=int(data.get("native_scale", data.get("scale", 4))),
             device=device,
             created_at=data.get("created_at"),
+            total_faces=data.get("total_faces"),
         )
 
 
@@ -312,6 +317,7 @@ def _write_dpi_variant(
         dpi=dpi,
         model=model_id.value,
         face_label=face.face_label,
+        total_faces=face.total_faces,
         native_scale=native_scale,
         device=device,
     )
@@ -456,6 +462,7 @@ def regenerate_face_multi(
         collector_number=item.collector_number,
         png_url=item.png_url,
         face_index=item.face_index,
+        total_faces=item.total_faces,
     )
     return _regenerate_face_from_card(
         face,
@@ -488,6 +495,7 @@ def process_task(
         collector_number=task.collector_number,
         png_url=task.png_url,
         face_index=task.face_index,
+        total_faces=task.total_faces,
     )
     results = _regenerate_face_from_card(
         face,
@@ -539,6 +547,7 @@ def expected_face_result(task: TaskRow) -> FaceResult:
         dpi=task.dpi,
         model=task.model,
         face_label=task.face_label,
+        total_faces=task.total_faces,
         native_scale=native,
         device=read_cache_device(cached),
     )
@@ -709,6 +718,7 @@ def process_entries(
                             dpi=target_dpi,
                             model=model_id.value,
                             face_label=face.face_label,
+                            total_faces=face.total_faces,
                             native_scale=native,
                             device=read_cache_device(cached),
                         )

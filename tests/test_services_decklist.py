@@ -42,6 +42,7 @@ def _task(**overrides) -> TaskRow:
         created_at="2026-01-01T00:00:00Z",
         started_at=None,
         completed_at=None,
+        total_faces=None,
     )
     kwargs.update(overrides)
     return TaskRow(**kwargs)

@@ -64,6 +64,35 @@ def test_enqueue_face_queues_one_task_per_dpi(db_path: Path, tmp_path: Path) -> 
     assert all(t.status == "pending" for t in tasks)
 
 
+def test_enqueue_face_passes_total_faces_through_to_task(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """total_faces isn't recomputed by enqueue_task — it's whatever the
+    caller already knows from expand_faces() at resolve time (see
+    enqueue_decklist_entries below), just carried onto the row."""
+    generation.enqueue_face(
+        scryfall_id="dfc-id",
+        face_index=0,
+        face_label="front",
+        face_name="Delver of Secrets",
+        card_name="Delver of Secrets // Insectile Aberration",
+        set_code="isd",
+        collector_number="51",
+        png_url="https://example.com/delver.png",
+        dpi_targets=[800],
+        model="swinir",
+        tile_size=0,
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag=None,
+        total_faces=2,
+        db_path=db_path,
+    )
+    [task] = db.list_tasks(db_path=db_path)
+    assert task.total_faces == 2
+
+
 def test_active_task_keys_none_project_tag_is_empty(db_path: Path) -> None:
     assert generation.active_task_keys(None, db_path=db_path) == set()
 
@@ -123,6 +152,10 @@ def test_enqueue_decklist_entries_batches_resolve_call(
     assert queued == 1
     assert failed == 0
     assert len(task_ids) == 1
+    # SOL_RING_CARD has no card_faces, so expand_faces() reports exactly
+    # one printable face — captured onto the task at enqueue time.
+    [task] = db.list_tasks(db_path=db_path)
+    assert task.total_faces == 1
 
 
 def test_enqueue_decklist_entries_skips_existing_output_file(
@@ -202,6 +235,9 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     assert items[0]["dpi"] == 800
     assert items[0]["model"] == "swinir"
     assert items[0]["out_path"] == str(output_dir / existing_name)
+    # The skip_existing branch registers the gallery row directly (no
+    # task involved), still carrying total_faces from expand_faces().
+    assert items[0]["total_faces"] == 1
     # No cached original actually on disk for this scryfall_id — the
     # deterministic path is still stored (see the cache-hit variant below
     # for why), so "Compare" 404s on request rather than the gallery row

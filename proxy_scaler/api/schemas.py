@@ -25,11 +25,6 @@ class DeckEntryIn(BaseModel):
     set_code: str | None = None
     collector_number: str | None = None
     raw_line: str = ""
-    # Physical face count for this printing (2 for DFC/transform, 1
-    # otherwise), when the client already knows it from a prior /resolve
-    # call. None means unknown — the PDF tab's DFC-completeness check is
-    # skipped for that entry rather than guessing.
-    expected_faces: int | None = None
 
 
 class ResolveIn(BaseModel):
@@ -169,11 +164,11 @@ class PdfLayoutIn(BaseModel):
 
 class PdfPreviewOut(BaseModel):
     units: int
-    # Decklist entries with no generated image at all, or (when the client
-    # supplied expected_faces) a DFC entry missing one or more of its
-    # faces. Does NOT include gallery images that simply have no matching
-    # decklist entry any more — those are silently left out of the print
-    # run, not reported as an error.
+    # Decklist entries with no generated image at all, or a DFC entry
+    # missing one or more of its faces (known from whichever face did
+    # generate — see FaceResult.total_faces). Does NOT include gallery
+    # images that simply have no matching decklist entry any more — those
+    # are silently left out of the print run, not reported as an error.
     missing: list[str]
     page_count: int
     # Cards with no generated image at the requested preferred_dpi. These

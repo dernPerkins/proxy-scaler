@@ -84,6 +84,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         cache_dir=Path(body.cache_dir),
         weights_dir=Path(body.weights_dir),
         project_tag=item["project_tag"],
+        total_faces=item["total_faces"],
         db_path=db_path,
     )
     return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])

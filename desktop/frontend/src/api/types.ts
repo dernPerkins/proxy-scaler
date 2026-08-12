@@ -28,11 +28,6 @@ export interface DeckEntryIn {
   set_code?: string | null;
   collector_number?: string | null;
   raw_line?: string;
-  // Physical face count for this printing (2 for DFC/transform, 1
-  // otherwise), when known from a prior /api/resolve call. Omitted/null
-  // means unknown — the PDF tab's DFC-completeness check is skipped for
-  // that entry rather than guessing.
-  expected_faces?: number | null;
 }
 
 export interface ResolvedFace {
@@ -178,10 +173,10 @@ export interface PdfJobStatus {
 
 export interface PdfPreview {
   units: number;
-  // Decklist entries with no generated image at all, or (when the request
-  // supplied expected_faces) a DFC entry missing one or more of its faces.
-  // Does NOT include gallery images with no matching decklist entry any
-  // more — those are silently left out of the print run, not an error.
+  // Decklist entries with no generated image at all, or a DFC entry
+  // missing one or more of its faces. Does NOT include gallery images
+  // with no matching decklist entry any more — those are silently left
+  // out of the print run, not an error.
   missing: string[];
   page_count: number;
   // Cards with no generated image at the selected Preferred DPI. They are

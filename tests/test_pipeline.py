@@ -258,6 +258,7 @@ def _task(tmp_path: Path, **overrides) -> TaskRow:
         created_at="2026-01-01T00:00:00Z",
         started_at=None,
         completed_at=None,
+        total_faces=2,
     )
     kwargs.update(overrides)
     return TaskRow(**kwargs)
@@ -299,6 +300,9 @@ def test_process_task_writes_face_result(tmp_path, monkeypatch) -> None:
     assert result.out_path.is_file()
     assert result.original_path.is_file()
     assert result.device == "gpu"
+    # Carried through from the task row (set at enqueue time from Scryfall's
+    # card data), not recomputed — see db migration 003.
+    assert result.total_faces == 2
 
 
 def test_expected_face_result_matches_process_task_output(tmp_path, monkeypatch) -> None:
@@ -317,6 +321,7 @@ def test_expected_face_result_matches_process_task_output(tmp_path, monkeypatch)
     assert expected.out_path == actual.out_path
     assert expected.original_path == actual.original_path
     assert expected.native_scale == actual.native_scale
+    assert expected.total_faces == actual.total_faces == 2
     assert expected.device == actual.device
     assert expected.dpi == actual.dpi
     assert expected.model == actual.model
