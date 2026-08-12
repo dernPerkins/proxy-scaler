@@ -95,6 +95,17 @@ export default function PdfPage() {
     enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
   });
 
+  // cards_per_page is always cols*rows server-side (pdf_layout.resolve_page_
+  // layout) and every page but the last is filled to exactly that (pdf_
+  // layout.paginate) — so total capacity minus units is precisely how many
+  // print slots are open on the last page. units already counts a
+  // double-faced card's front/back as two slots, so no separate DFC
+  // handling is needed here.
+  const cardsPerPage = layout.cols * layout.rows;
+  const leftoverSlots = previewQuery.data
+    ? cardsPerPage * previewQuery.data.page_count - previewQuery.data.units
+    : 0;
+
   function updateLayout<K extends keyof LayoutSettings>(key: K, value: LayoutSettings[K]) {
     setLayout((l) => ({ ...l, [key]: value }));
   }
@@ -398,6 +409,13 @@ export default function PdfPage() {
               <strong>{previewQuery.data.units}</strong> card(s) across{" "}
               <strong>{previewQuery.data.page_count}</strong> page(s).
             </p>
+            {leftoverSlots > 0 && (
+              <p className="hint" style={{ marginTop: 6 }}>
+                <strong>{leftoverSlots}</strong> open slot{leftoverSlots === 1 ? "" : "s"}{" "}
+                left on your last page — add more cards to fill it out (a double-faced
+                card uses 2 slots).
+              </p>
+            )}
             {previewQuery.data.missing.length > 0 && (
               <>
                 <p className="error-text" style={{ marginTop: 10 }}>
