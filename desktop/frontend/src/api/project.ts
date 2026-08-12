@@ -16,6 +16,24 @@ export interface ProjectSettings {
   dpi_targets: number[];
   skip_existing: boolean;
   tile_size: number;
+  // PDF tab layout settings — mirrors PdfLayoutRequest (minus project_tag/
+  // entries/project_name, which are per-request, not per-project). See
+  // desktop/src-tauri/src/project_store.rs::ProjectSettings.
+  page_width_mm: number;
+  page_height_mm: number;
+  cols: number;
+  rows: number;
+  bleed_mm: number;
+  spacing_x_mm: number;
+  spacing_y_mm: number;
+  offset_x_mm: number;
+  offset_y_mm: number;
+  guide_width_pt: number;
+  guide_length_mm: number;
+  export_dpi: number;
+  show_cut_lines: boolean;
+  preferred_dpi: number | null;
+  preferred_model: string | null;
 }
 
 export interface CardRow {

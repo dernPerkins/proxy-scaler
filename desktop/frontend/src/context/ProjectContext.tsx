@@ -23,6 +23,21 @@ function getDefaultSettings(): ProjectSettings {
     dpi_targets: [1200],
     skip_existing: true,
     tile_size: 0,
+    page_width_mm: 210,
+    page_height_mm: 297,
+    cols: 3,
+    rows: 3,
+    bleed_mm: 1.0,
+    spacing_x_mm: 0,
+    spacing_y_mm: 0,
+    offset_x_mm: 0,
+    offset_y_mm: 0,
+    guide_width_pt: 0.75,
+    guide_length_mm: 2.75,
+    export_dpi: 1200,
+    show_cut_lines: true,
+    preferred_dpi: null,
+    preferred_model: null,
   };
 }
 

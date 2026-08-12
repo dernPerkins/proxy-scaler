@@ -27,24 +27,6 @@ const PAGE_PRESETS: Record<string, { width: number; height: number }> = {
 
 type LayoutSettings = Omit<PdfLayoutRequest, "project_tag" | "entries" | "project_name">;
 
-const DEFAULT_LAYOUT: LayoutSettings = {
-  page_width_mm: PAGE_PRESETS.A4.width,
-  page_height_mm: PAGE_PRESETS.A4.height,
-  cols: 3,
-  rows: 3,
-  bleed_mm: 1.0,
-  spacing_x_mm: 0,
-  spacing_y_mm: 0,
-  offset_x_mm: 0,
-  offset_y_mm: 0,
-  guide_width_pt: 0.75,
-  guide_length_mm: 2.75,
-  export_dpi: 1200,
-  show_cut_lines: true,
-  preferred_dpi: null,
-  preferred_model: null,
-};
-
 function cardToEntry(card: CardRow): DeckEntryIn {
   return {
     quantity: card.quantity ?? 1,
@@ -56,7 +38,7 @@ function cardToEntry(card: CardRow): DeckEntryIn {
 }
 
 export default function PdfPage() {
-  const { projectId, projectTag, projectName, cards } = useProject();
+  const { projectId, projectTag, projectName, cards, settings, setSettings } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
   // See DecklistPage's identical check — generation-server unreachability
@@ -64,7 +46,27 @@ export default function PdfPage() {
   // no feedback.
   const serverUnavailable =
     connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
-  const [layout, setLayout] = useState<LayoutSettings>(DEFAULT_LAYOUT);
+  // Persisted on the project itself (ProjectContext's `settings`, saved via
+  // the same project-bar Save button as the Decklist tab's generation
+  // settings) rather than local component state — these used to live in a
+  // useState here and silently reset to defaults on every reload.
+  const layout: LayoutSettings = {
+    page_width_mm: settings.page_width_mm,
+    page_height_mm: settings.page_height_mm,
+    cols: settings.cols,
+    rows: settings.rows,
+    bleed_mm: settings.bleed_mm,
+    spacing_x_mm: settings.spacing_x_mm,
+    spacing_y_mm: settings.spacing_y_mm,
+    offset_x_mm: settings.offset_x_mm,
+    offset_y_mm: settings.offset_y_mm,
+    guide_width_pt: settings.guide_width_pt,
+    guide_length_mm: settings.guide_length_mm,
+    export_dpi: settings.export_dpi,
+    show_cut_lines: settings.show_cut_lines,
+    preferred_dpi: settings.preferred_dpi,
+    preferred_model: settings.preferred_model,
+  };
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
@@ -107,13 +109,13 @@ export default function PdfPage() {
     : 0;
 
   function updateLayout<K extends keyof LayoutSettings>(key: K, value: LayoutSettings[K]) {
-    setLayout((l) => ({ ...l, [key]: value }));
+    setSettings((s) => ({ ...s, [key]: value }));
   }
 
   function applyPreset(name: string) {
     const preset = PAGE_PRESETS[name];
     if (preset) {
-      setLayout((l) => ({ ...l, page_width_mm: preset.width, page_height_mm: preset.height }));
+      setSettings((s) => ({ ...s, page_width_mm: preset.width, page_height_mm: preset.height }));
     }
   }
 

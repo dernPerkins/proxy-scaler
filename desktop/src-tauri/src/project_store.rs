@@ -25,6 +25,21 @@ CREATE TABLE IF NOT EXISTS projects (
     dpi_targets TEXT NOT NULL DEFAULT '1200',
     skip_existing INTEGER NOT NULL DEFAULT 1,
     tile_size INTEGER NOT NULL DEFAULT 0,
+    page_width_mm REAL NOT NULL DEFAULT 210.0,
+    page_height_mm REAL NOT NULL DEFAULT 297.0,
+    cols INTEGER NOT NULL DEFAULT 3,
+    rows INTEGER NOT NULL DEFAULT 3,
+    bleed_mm REAL NOT NULL DEFAULT 1.0,
+    spacing_x_mm REAL NOT NULL DEFAULT 0.0,
+    spacing_y_mm REAL NOT NULL DEFAULT 0.0,
+    offset_x_mm REAL NOT NULL DEFAULT 0.0,
+    offset_y_mm REAL NOT NULL DEFAULT 0.0,
+    guide_width_pt REAL NOT NULL DEFAULT 0.75,
+    guide_length_mm REAL NOT NULL DEFAULT 2.75,
+    export_dpi INTEGER NOT NULL DEFAULT 1200,
+    show_cut_lines INTEGER NOT NULL DEFAULT 1,
+    preferred_dpi INTEGER,
+    preferred_model TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -45,6 +60,50 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 ";
 
+// Columns added to `projects` after its initial release — `CREATE TABLE IF
+// NOT EXISTS` (in SCHEMA above) only helps a genuinely fresh database; an
+// existing projects.db from before these columns existed needs them added
+// explicitly. No formal migration/version system exists in this file (see
+// proxy_scaler/db.py for that pattern on the Python side) — this is
+// additive-only and idempotent by checking PRAGMA table_info() each time,
+// matching how the rest of this file already re-runs its schema
+// defensively on every open_db() call.
+const PDF_LAYOUT_COLUMNS: &[(&str, &str)] = &[
+    ("page_width_mm", "REAL NOT NULL DEFAULT 210.0"),
+    ("page_height_mm", "REAL NOT NULL DEFAULT 297.0"),
+    ("cols", "INTEGER NOT NULL DEFAULT 3"),
+    ("rows", "INTEGER NOT NULL DEFAULT 3"),
+    ("bleed_mm", "REAL NOT NULL DEFAULT 1.0"),
+    ("spacing_x_mm", "REAL NOT NULL DEFAULT 0.0"),
+    ("spacing_y_mm", "REAL NOT NULL DEFAULT 0.0"),
+    ("offset_x_mm", "REAL NOT NULL DEFAULT 0.0"),
+    ("offset_y_mm", "REAL NOT NULL DEFAULT 0.0"),
+    ("guide_width_pt", "REAL NOT NULL DEFAULT 0.75"),
+    ("guide_length_mm", "REAL NOT NULL DEFAULT 2.75"),
+    ("export_dpi", "INTEGER NOT NULL DEFAULT 1200"),
+    ("show_cut_lines", "INTEGER NOT NULL DEFAULT 1"),
+    ("preferred_dpi", "INTEGER"),
+    ("preferred_model", "TEXT"),
+];
+
+fn migrate_projects_table(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(projects)")
+        .map_err(|e| e.to_string())?;
+    let existing: HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    for (name, decl) in PDF_LAYOUT_COLUMNS {
+        if !existing.contains(*name) {
+            conn.execute(&format!("ALTER TABLE projects ADD COLUMN {name} {decl}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let dir = app
         .path()
@@ -53,6 +112,7 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
     let conn = Connection::open(dir.join(DB_FILENAME)).map_err(|e| e.to_string())?;
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    migrate_projects_table(&conn)?;
     Ok(conn)
 }
 
@@ -155,6 +215,24 @@ pub struct ProjectSettings {
     pub dpi_targets: Vec<i64>,
     pub skip_existing: bool,
     pub tile_size: i64,
+    // PDF tab layout settings — mirrors desktop/frontend/src/api/types.ts's
+    // PdfLayoutRequest (minus project_tag/entries/project_name, which are
+    // per-request, not per-project).
+    pub page_width_mm: f64,
+    pub page_height_mm: f64,
+    pub cols: i64,
+    pub rows: i64,
+    pub bleed_mm: f64,
+    pub spacing_x_mm: f64,
+    pub spacing_y_mm: f64,
+    pub offset_x_mm: f64,
+    pub offset_y_mm: f64,
+    pub guide_width_pt: f64,
+    pub guide_length_mm: f64,
+    pub export_dpi: i64,
+    pub show_cut_lines: bool,
+    pub preferred_dpi: Option<i64>,
+    pub preferred_model: Option<String>,
 }
 
 impl Default for ProjectSettings {
@@ -164,6 +242,21 @@ impl Default for ProjectSettings {
             dpi_targets: vec![1200],
             skip_existing: true,
             tile_size: 0,
+            page_width_mm: 210.0,
+            page_height_mm: 297.0,
+            cols: 3,
+            rows: 3,
+            bleed_mm: 1.0,
+            spacing_x_mm: 0.0,
+            spacing_y_mm: 0.0,
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            guide_width_pt: 0.75,
+            guide_length_mm: 2.75,
+            export_dpi: 1200,
+            show_cut_lines: true,
+            preferred_dpi: None,
+            preferred_model: None,
         }
     }
 }
@@ -252,33 +345,71 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
 }
 
 fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, String> {
-    let (tag, name, text, model, dpi_targets_text, skip_existing, tile_size, created_at, updated_at): (
-        String,
-        String,
-        String,
-        String,
-        String,
-        bool,
-        i64,
-        String,
-        String,
-    ) = conn
+    // Named column access (row.get("...")) rather than positional indices —
+    // the projects table has grown enough columns (generation settings +
+    // the full PDF layout) that positional indices stop being readable.
+    struct Row {
+        tag: String,
+        name: String,
+        import_decklist_text: String,
+        model: String,
+        dpi_targets_text: String,
+        skip_existing: bool,
+        tile_size: i64,
+        page_width_mm: f64,
+        page_height_mm: f64,
+        cols: i64,
+        rows: i64,
+        bleed_mm: f64,
+        spacing_x_mm: f64,
+        spacing_y_mm: f64,
+        offset_x_mm: f64,
+        offset_y_mm: f64,
+        guide_width_pt: f64,
+        guide_length_mm: f64,
+        export_dpi: i64,
+        show_cut_lines: bool,
+        preferred_dpi: Option<i64>,
+        preferred_model: Option<String>,
+        created_at: String,
+        updated_at: String,
+    }
+
+    let loaded: Row = conn
         .query_row(
-            "SELECT tag, name, import_decklist_text, model, dpi_targets, skip_existing, tile_size, created_at, updated_at
+            "SELECT tag, name, import_decklist_text, model, dpi_targets, skip_existing, tile_size,
+                    page_width_mm, page_height_mm, cols, rows, bleed_mm, spacing_x_mm, spacing_y_mm,
+                    offset_x_mm, offset_y_mm, guide_width_pt, guide_length_mm, export_dpi,
+                    show_cut_lines, preferred_dpi, preferred_model, created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                ))
+                Ok(Row {
+                    tag: row.get("tag")?,
+                    name: row.get("name")?,
+                    import_decklist_text: row.get("import_decklist_text")?,
+                    model: row.get("model")?,
+                    dpi_targets_text: row.get("dpi_targets")?,
+                    skip_existing: row.get("skip_existing")?,
+                    tile_size: row.get("tile_size")?,
+                    page_width_mm: row.get("page_width_mm")?,
+                    page_height_mm: row.get("page_height_mm")?,
+                    cols: row.get("cols")?,
+                    rows: row.get("rows")?,
+                    bleed_mm: row.get("bleed_mm")?,
+                    spacing_x_mm: row.get("spacing_x_mm")?,
+                    spacing_y_mm: row.get("spacing_y_mm")?,
+                    offset_x_mm: row.get("offset_x_mm")?,
+                    offset_y_mm: row.get("offset_y_mm")?,
+                    guide_width_pt: row.get("guide_width_pt")?,
+                    guide_length_mm: row.get("guide_length_mm")?,
+                    export_dpi: row.get("export_dpi")?,
+                    show_cut_lines: row.get("show_cut_lines")?,
+                    preferred_dpi: row.get("preferred_dpi")?,
+                    preferred_model: row.get("preferred_model")?,
+                    created_at: row.get("created_at")?,
+                    updated_at: row.get("updated_at")?,
+                })
             },
         )
         .map_err(|e| match e {
@@ -288,18 +419,33 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
 
     Ok(LoadedProject {
         id: project_id,
-        tag,
-        name,
-        import_decklist_text: text,
+        tag: loaded.tag,
+        name: loaded.name,
+        import_decklist_text: loaded.import_decklist_text,
         settings: ProjectSettings {
-            model,
-            dpi_targets: dpi_targets_from_text(&dpi_targets_text),
-            skip_existing,
-            tile_size,
+            model: loaded.model,
+            dpi_targets: dpi_targets_from_text(&loaded.dpi_targets_text),
+            skip_existing: loaded.skip_existing,
+            tile_size: loaded.tile_size,
+            page_width_mm: loaded.page_width_mm,
+            page_height_mm: loaded.page_height_mm,
+            cols: loaded.cols,
+            rows: loaded.rows,
+            bleed_mm: loaded.bleed_mm,
+            spacing_x_mm: loaded.spacing_x_mm,
+            spacing_y_mm: loaded.spacing_y_mm,
+            offset_x_mm: loaded.offset_x_mm,
+            offset_y_mm: loaded.offset_y_mm,
+            guide_width_pt: loaded.guide_width_pt,
+            guide_length_mm: loaded.guide_length_mm,
+            export_dpi: loaded.export_dpi,
+            show_cut_lines: loaded.show_cut_lines,
+            preferred_dpi: loaded.preferred_dpi,
+            preferred_model: loaded.preferred_model,
         },
         cards: cards_for_project(conn, project_id)?,
-        created_at,
-        updated_at,
+        created_at: loaded.created_at,
+        updated_at: loaded.updated_at,
     })
 }
 
@@ -367,13 +513,32 @@ pub fn update_project(
     let now = now_timestamp();
     conn.execute(
         "UPDATE projects SET name = ?1, model = ?2, dpi_targets = ?3, skip_existing = ?4,
-         tile_size = ?5, updated_at = ?6 WHERE id = ?7",
+         tile_size = ?5, page_width_mm = ?6, page_height_mm = ?7, cols = ?8, rows = ?9,
+         bleed_mm = ?10, spacing_x_mm = ?11, spacing_y_mm = ?12, offset_x_mm = ?13,
+         offset_y_mm = ?14, guide_width_pt = ?15, guide_length_mm = ?16, export_dpi = ?17,
+         show_cut_lines = ?18, preferred_dpi = ?19, preferred_model = ?20, updated_at = ?21
+         WHERE id = ?22",
         params![
             trimmed,
             settings.model,
             dpi_targets_to_text(&settings.dpi_targets),
             settings.skip_existing,
             settings.tile_size,
+            settings.page_width_mm,
+            settings.page_height_mm,
+            settings.cols,
+            settings.rows,
+            settings.bleed_mm,
+            settings.spacing_x_mm,
+            settings.spacing_y_mm,
+            settings.offset_x_mm,
+            settings.offset_y_mm,
+            settings.guide_width_pt,
+            settings.guide_length_mm,
+            settings.export_dpi,
+            settings.show_cut_lines,
+            settings.preferred_dpi,
+            settings.preferred_model,
             now,
             project_id,
         ],
