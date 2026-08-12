@@ -78,10 +78,33 @@ export default function PdfPage() {
     queryFn: () => generationApi.listModels(),
   });
 
+  // Best-effort DFC-completeness data: how many physical faces each entry
+  // actually has, per Scryfall. Scoped to [projectTag, entries] only (not
+  // `layout`) so it doesn't re-hit the network on every layout tweak.
+  // Failure (offline, a card that fails to resolve) just means that
+  // entry's expected_faces stays null below — never blocks the PDF tab.
+  const resolveQuery = useQuery({
+    queryKey: ["pdf-resolve", projectTag, entries],
+    queryFn: () => generationApi.resolve(entries),
+    enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
+  });
+
+  const expectedFacesByRawLine = new Map<string, number>(
+    (resolveQuery.data?.resolved ?? []).map((r) => [r.raw_line, r.faces.length]),
+  );
+  const entriesWithFaceCounts: DeckEntryIn[] = entries.map((e) => ({
+    ...e,
+    expected_faces: e.raw_line ? (expectedFacesByRawLine.get(e.raw_line) ?? null) : null,
+  }));
+
   const previewQuery = useQuery({
-    queryKey: ["pdf-preview", projectTag, entries, layout],
+    queryKey: ["pdf-preview", projectTag, entriesWithFaceCounts, layout],
     queryFn: () =>
-      generationApi.pdfPreview({ project_tag: projectTag as string, entries, ...layout }),
+      generationApi.pdfPreview({
+        project_tag: projectTag as string,
+        entries: entriesWithFaceCounts,
+        ...layout,
+      }),
     enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
   });
 
@@ -89,9 +112,13 @@ export default function PdfPage() {
   // numeric one above (see api/types.ts's PdfPagePreview comment for why
   // they're kept distinct). Same enabled-gating as previewQuery.
   const pagePreviewQuery = useQuery({
-    queryKey: ["pdf-page-preview", projectTag, entries, layout],
+    queryKey: ["pdf-page-preview", projectTag, entriesWithFaceCounts, layout],
     queryFn: () =>
-      generationApi.pdfPagePreview({ project_tag: projectTag as string, entries, ...layout }),
+      generationApi.pdfPagePreview({
+        project_tag: projectTag as string,
+        entries: entriesWithFaceCounts,
+        ...layout,
+      }),
     enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
   });
 
@@ -126,7 +153,7 @@ export default function PdfPage() {
       await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, async () => {
         const body = {
           project_tag: projectTag,
-          entries,
+          entries: entriesWithFaceCounts,
           project_name: projectName,
           ...layout,
           method,
@@ -398,14 +425,23 @@ export default function PdfPage() {
               <strong>{previewQuery.data.units}</strong> card(s) across{" "}
               <strong>{previewQuery.data.page_count}</strong> page(s).
             </p>
-            {previewQuery.data.unmatched.length > 0 && (
-              <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
-                {previewQuery.data.unmatched.map((note, i) => (
-                  <li key={i} className="error-text">
-                    {note}
-                  </li>
-                ))}
-              </ul>
+            {previewQuery.data.missing.length > 0 && (
+              <>
+                <p className="error-text" style={{ marginTop: 10 }}>
+                  <strong>
+                    {previewQuery.data.missing.length} card(s) from your decklist have no
+                    generated image yet
+                  </strong>{" "}
+                  and are left out of this PDF — generate them from the Decklist tab.
+                </p>
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                  {previewQuery.data.missing.map((note, i) => (
+                    <li key={i} className="error-text">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
             {previewQuery.data.missing_at_dpi.length > 0 && (
               <>

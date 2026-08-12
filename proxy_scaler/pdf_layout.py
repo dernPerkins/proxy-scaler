@@ -326,6 +326,18 @@ def _describe_face(face: FaceResult) -> str:
     return name
 
 
+def _describe_entry(entry: DeckEntry, matched: int, expected: int | None) -> str:
+    """Human-readable identification for a decklist entry that has no
+    generated image at all, or (when `expected` is known) is missing one
+    or more of a multi-face card's faces."""
+    name = entry.name
+    if entry.set_code and entry.collector_number:
+        name = f"{entry.name} [{entry.set_code.upper()} {entry.collector_number}]"
+    if expected and 0 < matched < expected:
+        return f"{name} — {matched} of {expected} faces generated"
+    return name
+
+
 def _recency_key(item: FaceResult) -> tuple[int, str]:
     """Sort key for "most recently produced wins". created_at is None on
     gallery rows written before db migration 002 added the column; those
@@ -377,8 +389,10 @@ def match_quantities(
     *,
     preferred_dpi: int | None = None,
     preferred_model: str | None = None,
-) -> tuple[list[PrintUnit], list[str]]:
-    """Match decklist quantities to gallery face-groups.
+) -> tuple[list[PrintUnit], list[str], list[str]]:
+    """Match gallery face-groups to decklist quantities — decklist-driven:
+    the current decklist decides what's eligible to print, not the
+    project's full generation history.
 
     Quantity isn't persisted on FaceResult/gallery items — re-derive it from
     freshly-parsed decklist entries. For each face-group, sum quantity across
@@ -387,8 +401,22 @@ def match_quantities(
     legitimately matches two groups (front/back faces), each independently
     getting the full quantity. Falls back to name containment (mirrors
     db.py::_match_card_id's pattern) when no exact-printing match exists.
-    Unmatched groups default to quantity=1 and are returned separately for a
-    UI warning — never silently dropped.
+
+    A gallery face-group matching no current entry (e.g. a card removed
+    from the decklist after it was generated) is silently excluded from the
+    print run — it's not the caller's problem, and re-including it at
+    quantity 1 would print cards nobody asked for any more.
+
+    Conversely, an entry matching zero gallery face-groups genuinely has no
+    image and is reported in `missing` — that's the case worth surfacing as
+    an error, since it usually means the card was never generated. When the
+    entry's `expected_faces` is known (populated by resolving against
+    Scryfall — see api/routers/resolve.py), a multi-face entry (DFC/
+    transform) that matched *some* but not all of its faces is reported too:
+    the gallery alone can't tell a face was never attempted, since there's
+    no row to notice is "wrong" — only a `expected_faces` count from
+    Scryfall reveals that. `expected_faces=None` skips this check entirely
+    (e.g. offline), matching the old lenient any-match-counts behavior.
 
     `preferred_dpi`, when given, is a hard filter: only images at that DPI
     are printable, and any face without one is excluded from the run and
@@ -397,11 +425,11 @@ def match_quantities(
     given, wins among the eligible images; otherwise the most recently
     produced one does. See _pick_dpi_variant.
 
-    Returns (units, unmatched, missing_at_dpi).
+    Returns (units, missing, missing_at_dpi).
     """
     units: list[PrintUnit] = []
-    unmatched: list[str] = []
     missing_at_dpi: list[str] = []
+    matched_face_counts = [0] * len(entries)
 
     for key, face_items in group_by_face(gallery):
         rep = face_items[0]
@@ -417,14 +445,14 @@ def match_quantities(
         card_name = (rep.card_name or rep.face_name or "").casefold()
 
         matched_qty = 0
-        matched = False
+        matched_indices: set[int] = set()
         if set_code and collector:
-            for entry in entries:
+            for i, entry in enumerate(entries):
                 if entry.set_code == set_code and entry.collector_number == str(collector):
                     matched_qty += entry.quantity
-                    matched = True
-        if not matched and card_name:
-            for entry in entries:
+                    matched_indices.add(i)
+        if not matched_indices and card_name:
+            for i, entry in enumerate(entries):
                 if entry.has_exact_printing:
                     # Already fully accounted for by the exact-match branch
                     # above (for its own face-group) — an entry pinned to
@@ -440,19 +468,25 @@ def match_quantities(
                     or ename.split(" // ")[0] == card_name
                 ):
                     matched_qty += entry.quantity
-                    matched = True
+                    matched_indices.add(i)
 
-        if matched:
+        if matched_indices:
             units.append(
                 PrintUnit(face_key=key, quantity=matched_qty, best=best, dpi_fallback=unavailable)
             )
-        else:
-            unmatched.append(key)
-            units.append(
-                PrintUnit(face_key=key, quantity=1, best=best, dpi_fallback=unavailable)
-            )
+            for i in matched_indices:
+                matched_face_counts[i] += 1
+        # else: no current decklist entry wants this printing any more —
+        # silently excluded from the print run, not reported.
 
-    return units, unmatched, missing_at_dpi
+    missing: list[str] = []
+    for i, entry in enumerate(entries):
+        matched = matched_face_counts[i]
+        expected = entry.expected_faces
+        if matched == 0 or (expected is not None and matched < expected):
+            missing.append(_describe_entry(entry, matched, expected))
+
+    return units, missing, missing_at_dpi
 
 
 def expand_print_slots(units: list[PrintUnit]) -> list[FaceResult]:

@@ -31,6 +31,12 @@ class DeckEntry:
     set_code: str | None = None
     collector_number: str | None = None
     raw_line: str = ""
+    # How many physical faces this printing has (2 for a DFC/transform card,
+    # 1 otherwise), when known — populated by resolving against Scryfall
+    # (see api/routers/resolve.py::expand_faces). None means unknown/
+    # unverified, e.g. never resolved or resolved offline: callers should
+    # treat that as "don't check completeness", not "single-faced".
+    expected_faces: int | None = None
 
     @property
     def has_exact_printing(self) -> bool:

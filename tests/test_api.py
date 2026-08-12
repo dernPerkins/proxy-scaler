@@ -368,15 +368,16 @@ def test_pdf_preview_no_entries_is_400(client: TestClient) -> None:
 
 
 def test_pdf_preview_zero_units_when_nothing_generated(client: TestClient) -> None:
-    """An entry with no generated images yet contributes zero print units
-    — match_quantities's `unmatched` list is for entries that fail to
-    resolve at all, a different case from "resolved but nothing rendered
-    yet", so it's correctly empty here."""
+    """An entry with no generated image at all contributes zero print units
+    and is reported in `missing` — the decklist is authoritative, so a card
+    that was never generated is a real problem to surface, not something to
+    silently print anyway."""
     resp = client.post("/api/pdf/preview", json=_pdf_layout_body())
     assert resp.status_code == 200
     body = resp.json()
     assert body["units"] == 0
     assert body["page_count"] == 0
+    assert body["missing"] == ["Sol Ring [C21 263]"]
 
 
 def test_pdf_generate_returns_real_pdf_file(client: TestClient, tmp_path: Path) -> None:

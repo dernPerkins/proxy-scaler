@@ -310,8 +310,8 @@ def test_match_quantities_exact_printing() -> None:
     entries = [
         DeckEntry(quantity=3, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, unmatched, _missing = match_quantities(entries, gallery)
-    assert unmatched == []
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
     assert len(units) == 1
     assert units[0].quantity == 3
     assert units[0].best.scryfall_id == "sol-id"
@@ -324,8 +324,8 @@ def test_match_quantities_dfc_both_faces_get_quantity() -> None:
         _face("dfc-id", 1, "Bahamut, Warden of Light", name, "fin", "376", 800, face_label="back"),
     ]
     entries = [DeckEntry(quantity=2, name=name, set_code="fin", collector_number="376")]
-    units, unmatched, _missing = match_quantities(entries, gallery)
-    assert unmatched == []
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
     assert len(units) == 2
     assert all(u.quantity == 2 for u in units)
 
@@ -333,8 +333,8 @@ def test_match_quantities_dfc_both_faces_get_quantity() -> None:
 def test_match_quantities_name_fallback() -> None:
     gallery = [_face("x-id", None, "Lightning Bolt", "Lightning Bolt", "lea", "161", 800)]
     entries = [DeckEntry(quantity=4, name="Lightning Bolt")]
-    units, unmatched, _missing = match_quantities(entries, gallery)
-    assert unmatched == []
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
     assert units[0].quantity == 4
 
 
@@ -353,17 +353,61 @@ def test_match_quantities_exact_printing_entry_not_double_counted_by_name_fallba
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
         DeckEntry(quantity=1, name="Sol Ring"),
     ]
-    units, unmatched, _missing = match_quantities(entries, gallery)
-    assert unmatched == []
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
     assert len(units) == 2
     assert all(u.quantity == 1 for u in units)
 
 
-def test_match_quantities_unmatched_defaults_to_one() -> None:
+def test_match_quantities_orphan_gallery_image_silently_excluded() -> None:
+    """A gallery image with no matching current decklist entry (e.g. a card
+    removed from the decklist after generation) is left out of the print
+    run entirely — not printed, not reported."""
     gallery = [_face("y-id", None, "Counterspell", "Counterspell", "lea", "55", 800)]
-    units, unmatched, _missing = match_quantities([], gallery)
-    assert len(unmatched) == 1
+    units, missing, _missing_at_dpi = match_quantities([], gallery)
+    assert units == []
+    assert missing == []
+
+
+def test_match_quantities_entry_with_no_image_is_missing() -> None:
+    entries = [DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")]
+    units, missing, _missing_at_dpi = match_quantities(entries, [])
+    assert units == []
+    assert len(missing) == 1
+    assert "Sol Ring" in missing[0]
+
+
+def test_match_quantities_dfc_partial_generation_reported_when_expected_faces_known() -> None:
+    """Only the front face was ever generated — expected_faces=2 lets the
+    caller know the back face was never attempted (the gallery alone can't
+    tell), so the entry is reported even though its front face prints."""
+    name = "Delver of Secrets // Insectile Aberration"
+    gallery = [_face("dfc-id", 0, "Delver of Secrets", name, "isd", "51", 800, face_label="front")]
+    entries = [
+        DeckEntry(
+            quantity=1,
+            name=name,
+            set_code="isd",
+            collector_number="51",
+            expected_faces=2,
+        )
+    ]
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert len(units) == 1
     assert units[0].quantity == 1
+    assert len(missing) == 1
+    assert "1 of 2 faces generated" in missing[0]
+
+
+def test_match_quantities_dfc_partial_generation_ignored_when_expected_faces_unknown() -> None:
+    """Same as above, but expected_faces is None (unresolved / offline) —
+    degrades to the lenient any-match-counts behavior rather than guessing."""
+    name = "Delver of Secrets // Insectile Aberration"
+    gallery = [_face("dfc-id", 0, "Delver of Secrets", name, "isd", "51", 800, face_label="front")]
+    entries = [DeckEntry(quantity=1, name=name, set_code="isd", collector_number="51")]
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert len(units) == 1
+    assert missing == []
 
 
 def test_match_quantities_picks_highest_dpi() -> None:
@@ -442,8 +486,8 @@ def test_match_quantities_no_duplicate_units_across_models() -> None:
     entries = [
         DeckEntry(quantity=3, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, unmatched, _missing = match_quantities(entries, gallery)
-    assert unmatched == []
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
     assert len(units) == 1
     assert units[0].quantity == 3
 
@@ -460,7 +504,7 @@ def test_match_quantities_preferred_dpi_excludes_and_reports_when_missing() -> N
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _unmatched, missing = match_quantities(entries, gallery, preferred_dpi=1200)
+    units, _, missing = match_quantities(entries, gallery, preferred_dpi=1200)
 
     assert units == []
     assert missing == ["Sol Ring [C21 263]"]
@@ -480,12 +524,12 @@ def test_match_quantities_preferred_dpi_picks_most_recent_at_that_dpi() -> None:
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
 
-    units, _unmatched, missing = match_quantities([*entries], [older, newer], preferred_dpi=800)
+    units, _, missing = match_quantities([*entries], [older, newer], preferred_dpi=800)
     assert missing == []
     assert units[0].best.model == "ultrasharp_v2"
 
     # Order of the gallery list must not decide it.
-    units, _unmatched, _missing = match_quantities([*entries], [newer, older], preferred_dpi=800)
+    units, _, _missing = match_quantities([*entries], [newer, older], preferred_dpi=800)
     assert units[0].best.model == "ultrasharp_v2"
 
 
@@ -501,7 +545,7 @@ def test_match_quantities_untimestamped_rows_lose_to_timestamped() -> None:
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _unmatched, _missing = match_quantities(entries, [legacy, fresh], preferred_dpi=800)
+    units, _, _missing = match_quantities(entries, [legacy, fresh], preferred_dpi=800)
     assert units[0].best.model == "ultrasharp_v2"
 
 
@@ -517,7 +561,7 @@ def test_match_quantities_preferred_model_beats_recency_at_that_dpi() -> None:
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, _unmatched, _missing = match_quantities(
+    units, _, _missing = match_quantities(
         entries, [chosen, newer_other], preferred_dpi=800, preferred_model="swinir"
     )
     assert units[0].best.model == "swinir"
