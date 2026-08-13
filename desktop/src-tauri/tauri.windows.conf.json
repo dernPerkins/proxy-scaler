@@ -1,5 +1,8 @@
 {
   "bundle": {
-    "resources": ["target/release/proxy-scaler-serve"]
+    "targets": ["msi"],
+    "resources": {
+      "target/release/proxy-scaler-serve": "proxy-scaler-serve"
+    }
   }
 }

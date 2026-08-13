@@ -6,8 +6,8 @@ Unlike [mpc-scryfall](https://github.com/fediazgon/mpc-scryfall), this tool does
 
 ## Download
 
-Prebuilt desktop app, server app, and Linux package are on the
-[Releases page](https://github.com/dernPerkins/proxy-scaler/releases) — download, install, done. See
+Prebuilt desktop app, server app, and Linux package are on
+[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done. See
 [Desktop app](#desktop-app) and [Server](#server) below for what each one
 is and how to use it. Building from source (Python CLI, or the desktop app
 yourself) is covered under [Command-line / library use](#command-line--library-use).
@@ -115,7 +115,7 @@ the check.
 
 A small status window that runs the server for other machines to connect
 to, and minimises to the tray so it can be left running. Download it from
-the [Releases page](https://github.com/dernPerkins/proxy-scaler/releases), or build it yourself with
+[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link), or build it yourself with
 `make sidecar && make server-app` (`make macos-bundle-server-app-sidecar`
 too, on macOS — see [`desktop/README.md`](desktop/README.md)).
 

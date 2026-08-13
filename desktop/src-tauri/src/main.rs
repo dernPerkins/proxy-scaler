@@ -45,6 +45,8 @@
 //   - Linux: no bundle.targets entry configured (see ARCHITECTURE.md /
 //     desktop README for why) — the Makefile places files here exactly as
 //     before, ships as a .tar.gz.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod project_store;
 
 use std::sync::Arc;

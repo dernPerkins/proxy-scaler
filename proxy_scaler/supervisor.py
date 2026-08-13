@@ -113,7 +113,26 @@ def _spawn(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.P
         full_env.update(env)
         kwargs["env"] = full_env
     if IS_WINDOWS:
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # CREATE_NO_WINDOW is not cosmetic here, despite the name. When this
+        # supervisor is itself started without a console window — which is
+        # exactly what the desktop app does, since Tauri's shell plugin
+        # spawns sidecars with CREATE_NO_WINDOW — a console-subsystem child
+        # spawned *without* this flag deadlocks during startup, wedged in an
+        # LPC call to CSRSS while attaching to the console (observed as
+        # three threads in EventPairLow waits and ~0.03s of CPU burned over
+        # a full minute). The uvicorn child hit this every time; the worker
+        # happened to survive it. Net effect was that the API server never
+        # bound, so the supervisor's own health check timed out after 60s
+        # and the app reported "did not become ready within 90s" with no
+        # hint as to why. Setting it here keeps every child's console state
+        # consistent with the parent's instead of letting Windows try to
+        # attach one. Harmless when a console *is* present (running
+        # proxy-scaler-serve from a terminal): child output still reaches
+        # the inherited stdout/stderr handles, which is what the supervisor
+        # and the desktop app both read.
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **kwargs)
