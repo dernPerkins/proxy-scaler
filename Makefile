@@ -88,10 +88,19 @@ SERVER_APP_BIN := desktop/server-app/target/release/proxy-scaler-server
 CLIENT_APP_BUNDLE := desktop/src-tauri/target/release/bundle/macos/Proxy Scaler.app
 SERVER_APP_BUNDLE := desktop/server-app/target/release/bundle/macos/Proxy Scaler Server.app
 
+# macOS .dmg outputs. Built by hand from the *patched* .app rather than by
+# Tauri's own dmg bundler — see macos-release-client for why that
+# distinction is the whole point of these targets. arm64 vs x86_64 rather
+# than PKG_ARCH's dpkg-flavored names, since dpkg isn't a thing here.
+MACOS_ARCH := $(shell uname -m)
+CLIENT_DMG := dist/proxy-scaler-client_$(PKG_VERSION)_macos-$(MACOS_ARCH).dmg
+SERVER_APP_DMG := dist/proxy-scaler-server-app_$(PKG_VERSION)_macos-$(MACOS_ARCH).dmg
+
 .PHONY: help install test serve sidecar sidecar-release _sidecar-freeze sidecar-clean \
 	build run desktop deb \
 	server-app server-app-dev server-app-run \
 	macos-bundle-client-sidecar macos-bundle-server-app-sidecar \
+	macos-release macos-release-client macos-release-server-app \
 	release release-bg release-status release-client-archive release-server-app-archive \
 	init-db api-dev worker-dev frontend-install frontend-dev frontend-build
 
@@ -124,6 +133,13 @@ help:
 	@echo "                 with 'make macos-bundle-server-app-sidecar' for a runnable .app"
 	@echo "server-app-run   Launch the already-built server app"
 	@echo "server-app-dev   Run the server app via cargo tauri dev"
+	@echo ""
+	@echo "--- macOS installers (.dmg -- run 'make sidecar' first) ---"
+	@echo "macos-release    Both .dmg installers into dist/ -- USE THIS, not a bare"
+	@echo "                 'cargo tauri build': Tauri seals its own .dmg before the"
+	@echo "                 sidecar can be copied in, producing an app that can't start"
+	@echo "                 its server. See the target's comment in this Makefile"
+	@echo "macos-release-client / macos-release-server-app   One at a time"
 	@echo ""
 	@echo "--- headless server packaging (Linux only) ---"
 	@echo "deb              Build the .deb server package into dist/ (run 'make sidecar' first)"
@@ -342,6 +358,64 @@ server-app-run:
 
 server-app-dev:
 	cd desktop/server-app && cargo tauri dev
+
+# --- macOS release: .dmg built AROUND Tauri's own dmg bundler ----------
+#
+# Tauri assembles the .app and then builds its .dmg from it, all inside one
+# `cargo tauri build`. The sidecar can only be copied in *after* the .app
+# exists (see macos-bundle-*-sidecar for why it can't go through
+# bundle.resources), by which point Tauri's .dmg has already been sealed —
+# from the unpatched .app. That .dmg installs an app with no
+# proxy-scaler-serve/ directory at all, and the client dies at spawn()
+# with "Couldn't start the local server". It was shipped exactly once,
+# which is what these targets exist to prevent.
+#
+# So: build the .app target only, patch the sidecar in, then produce the
+# .dmg ourselves from what's actually on disk. Nothing here is reachable
+# by Tauri's own dmg step, deliberately.
+macos-release-client:
+ifeq ($(UNAME_S),Darwin)
+	@echo "==> [1/3] building client .app (no dmg -- see this target's comment)"
+	cd desktop/src-tauri && cargo tauri build --bundles app
+	@echo "==> [2/3] patching sidecar into the .app"
+	$(MAKE) macos-bundle-client-sidecar
+	@echo "==> [3/3] building .dmg from the patched .app"
+	mkdir -p dist
+	rm -f "$(CLIENT_DMG)"
+	hdiutil create -volname "Proxy Scaler" \
+		-srcfolder "$(CLIENT_APP_BUNDLE)" \
+		-ov -format UDZO "$(CLIENT_DMG)"
+	@echo "built: $(CLIENT_DMG)"
+else
+	@echo "error: 'macos-release-client' must be run on macOS" >&2
+	@exit 1
+endif
+
+macos-release-server-app:
+ifeq ($(UNAME_S),Darwin)
+	@echo "==> [1/3] building server app .app (no dmg)"
+	cd desktop/server-app && cargo tauri build --bundles app
+	@echo "==> [2/3] patching sidecar into the .app"
+	$(MAKE) macos-bundle-server-app-sidecar
+	@echo "==> [3/3] building .dmg from the patched .app"
+	mkdir -p dist
+	rm -f "$(SERVER_APP_DMG)"
+	hdiutil create -volname "Proxy Scaler Server" \
+		-srcfolder "$(SERVER_APP_BUNDLE)" \
+		-ov -format UDZO "$(SERVER_APP_DMG)"
+	@echo "built: $(SERVER_APP_DMG)"
+else
+	@echo "error: 'macos-release-server-app' must be run on macOS" >&2
+	@exit 1
+endif
+
+# Both macOS artifacts, assuming 'make sidecar' has already run. The
+# macOS counterpart to Linux's 'release' -- deliberately not called
+# 'release', which stays Linux-only (it ends in 'deb').
+macos-release: macos-release-client macos-release-server-app
+	@echo ""
+	@echo "macOS release artifacts:"
+	@ls -1 dist/*.dmg
 
 # Headless server package for Linux. Consumes the same PyInstaller onedir
 # bundle 'sidecar'/'sidecar-release' produces, so run one of those first.
