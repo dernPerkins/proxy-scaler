@@ -523,6 +523,14 @@ fn main() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                // Hide right away. Cleanup below is not instant — the
+                // sidecar has its own two children to stop — and leaving a
+                // frozen, unresponsive window on screen for those seconds
+                // reads as a hang rather than as a shutdown. The process
+                // still exits only once stop_sidecar has actually
+                // finished; this changes what the user sees, not when the
+                // work completes.
+                let _ = window.hide();
                 let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(shutdown_and_exit(app));
             }

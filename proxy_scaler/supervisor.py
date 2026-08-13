@@ -39,6 +39,23 @@ DEFAULT_PORT = 13207
 HEALTH_TIMEOUT_S = 60.0
 HEALTH_POLL_INTERVAL_S = 0.5
 SHUTDOWN_GRACE_S = 10.0
+# Windows only, and deliberately much shorter than SHUTDOWN_GRACE_S: the
+# window between asking a child to stop via a console control event and
+# giving up on it. A child that *can* receive CTRL_BREAK_EVENT acts on it
+# in well under a second, so a longer wait buys nothing — but a child that
+# can't receive it at all never responds, and the wait is then pure dead
+# time the user sits through while the app appears to hang on close.
+#
+# That second case is the normal one for the desktop app: children are
+# spawned with CREATE_NO_WINDOW (see _spawn), which gives each its own
+# console, and GenerateConsoleCtrlEvent only reaches process groups
+# attached to the *sender's* console. So neither child can hear it, both
+# time out, and at the old 10s each — applied serially — closing the app
+# took a measured 20.3s. Now: this brief attempt (which still pays off
+# when a console genuinely is shared, e.g. running proxy-scaler-serve from
+# a terminal), then straight to taskkill, with both children handled
+# concurrently rather than one after the other.
+CONSOLE_SIGNAL_GRACE_S = 1.5
 POLL_INTERVAL_S = 1.0
 
 IS_WINDOWS = sys.platform == "win32"
@@ -211,7 +228,11 @@ def _terminate(proc: subprocess.Popen, *, grace_s: float = SHUTDOWN_GRACE_S) -> 
     if IS_WINDOWS:
         try:
             proc.send_signal(signal.CTRL_BREAK_EVENT)
-            proc.wait(timeout=grace_s)
+            # Short on purpose — see CONSOLE_SIGNAL_GRACE_S. A child that
+            # can act on this does so almost immediately; one that can't
+            # hear it at all never will, and waiting out the full grace
+            # period for it is what made closing the app feel broken.
+            proc.wait(timeout=CONSOLE_SIGNAL_GRACE_S)
             return
         except (subprocess.TimeoutExpired, OSError):
             pass
@@ -393,8 +414,23 @@ def main(
                 shutdown_event.wait(POLL_INTERVAL_S)
     finally:
         print("Shutting down…")
-        for proc in children:
-            _terminate(proc)
+        # Concurrently, not in sequence: each child's stop is mostly spent
+        # waiting on timeouts, so doing them one at a time made the total
+        # the *sum* of those waits (with two children that was the
+        # difference between ~20s and ~10s before the grace period itself
+        # was shortened). Nothing here is order-dependent — the API server
+        # and worker are siblings, neither owns the other.
+        stoppers = [
+            threading.Thread(target=_terminate, args=(proc,), daemon=True)
+            for proc in children
+        ]
+        for stopper in stoppers:
+            stopper.start()
+        for stopper in stoppers:
+            # Bounded so a wedged child can't hold the process open
+            # forever; _terminate's own taskkill fallback has already had
+            # its say well before this expires.
+            stopper.join(timeout=SHUTDOWN_GRACE_S + 5.0)
         print("Shutdown complete.")
 
     return exit_code

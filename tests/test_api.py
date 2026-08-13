@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -146,11 +147,30 @@ def test_device_reports_gpu_when_cuda_available(client: TestClient) -> None:
 
 
 def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
-    with (
-        patch("torch.cuda.is_available", return_value=False),
-        patch("torch.backends.mps.is_available", return_value=False),
-    ):
-        resp = client.get("/api/device")
+    # All three of resolve_device()'s GPU paths have to be closed off, not
+    # just CUDA and MPS: torch_directml is an optional dependency present
+    # only in a GPU_VARIANT=directml build, and it reports *any* DirectX12
+    # adapter — including an Nvidia one. So on a Windows box with that
+    # variant installed, patching only the first two left the third
+    # answering truthfully and this test failed for an entirely correct
+    # reason. Patched conditionally because the import genuinely doesn't
+    # exist in a default or ROCm build, which is exactly why
+    # resolve_device() guards it with try/except ImportError.
+    directml = ExitStack()
+    with directml:
+        try:
+            import torch_directml  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            directml.enter_context(
+                patch("torch_directml.is_available", return_value=False)
+            )
+        with (
+            patch("torch.cuda.is_available", return_value=False),
+            patch("torch.backends.mps.is_available", return_value=False),
+        ):
+            resp = client.get("/api/device")
     assert resp.status_code == 200
     assert resp.json() == {"kind": "cpu"}
 

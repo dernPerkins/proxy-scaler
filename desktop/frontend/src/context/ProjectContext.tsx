@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
-import { getConnectionMode, getGpuAvailable } from "../config";
+import { getConnectionMode, getGpuAvailable, subscribeGpuAvailable } from "../config";
 import type { CardRow, LoadedProject, ProjectSettings } from "../api/project";
 
 // Prefers the real answer from connection.tsx's /api/device probe
@@ -98,12 +98,32 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [decklistText, setDecklistTextState] = useState("");
   const [cards, setCards] = useState<CardRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Whether settings.model is still an unreviewed default, i.e. safe for
+  // the GPU probe below to revise. Flipped by any deliberate model change
+  // — the user picking one, or a saved project supplying its own.
+  const modelIsDefault = useRef(true);
+
+  // Exposed instead of the raw setter so the model can't be quietly
+  // overwritten after the user has expressed a preference. Every other
+  // setting passes through untouched.
+  function updateSettings(
+    updater: ProjectSettings | ((s: ProjectSettings) => ProjectSettings),
+  ) {
+    setSettings((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (next.model !== prev.model) modelIsDefault.current = false;
+      return next;
+    });
+  }
 
   function applyLoaded(project: LoadedProject) {
     setProjectId(project.id);
     setProjectTag(project.tag);
     setProjectName(project.name);
     setSettings(project.settings);
+    // A saved project's stored model is an explicit choice, whatever it
+    // happens to be — never second-guess it when the probe lands.
+    modelIsDefault.current = false;
     setDecklistTextState(project.import_decklist_text);
     setCards(project.cards);
     setError(null);
@@ -205,10 +225,34 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectTag(null);
     setProjectName("");
     setSettings(getDefaultSettings());
+    modelIsDefault.current = true;
     setDecklistTextState("");
     setCards([]);
     setError(null);
   }
+
+  // The /api/device answer arrives long after this provider mounts —
+  // torch's cold import means the probe can take tens of seconds, while
+  // the UI is interactive within about one. getDefaultSettings() therefore
+  // runs while gpuAvailable is still null and falls back to the mode-based
+  // guess, which for Local mode assumes no GPU and picks the light
+  // realesrgan model. On a real GPU box that's simply the wrong default,
+  // and it was sticky: nothing ever revisited it.
+  //
+  // So revise it once the truth is known, but only where that's clearly
+  // safe — an unsaved project whose model hasn't been touched. A saved
+  // project or a deliberate pick is left exactly as-is.
+  useEffect(
+    () =>
+      subscribeGpuAvailable(() => {
+        if (!modelIsDefault.current) return;
+        setSettings((s) => {
+          const recommended = recommendedDefaultModel();
+          return s.model === recommended ? s : { ...s, model: recommended };
+        });
+      }),
+    [],
+  );
 
   // Auto-load on startup: the project the user most recently touched (see
   // set_last_project_id, called on every save/load below), falling back
@@ -251,7 +295,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     projectTag,
     projectName,
     settings,
-    setSettings,
+    setSettings: updateSettings,
     setProjectName,
     decklistText,
     cards,

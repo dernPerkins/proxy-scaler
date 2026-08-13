@@ -46,8 +46,25 @@ export function getGpuAvailable(): boolean | null {
   return gpuAvailable;
 }
 
+// Subscribers exist because this answer arrives *late* and something has
+// to react when it does. /api/device pays torch's cold-import cost on its
+// first call — measured at tens of seconds on a CUDA box, long after the
+// server reports healthy (~1s) and the UI is already interactive. Anything
+// that read gpuAvailable once, at mount, therefore only ever saw the null
+// fallback. See ProjectContext.tsx::recommendedDefaultModel.
+type GpuListener = (available: boolean | null) => void;
+const gpuListeners = new Set<GpuListener>();
+
+export function subscribeGpuAvailable(listener: GpuListener): () => void {
+  gpuListeners.add(listener);
+  return () => {
+    gpuListeners.delete(listener);
+  };
+}
+
 export function setGpuAvailable(available: boolean): void {
   gpuAvailable = available;
+  for (const listener of gpuListeners) listener(gpuAvailable);
 }
 
 // Called at the start of every applyTarget() — connection.tsx's probe is
@@ -61,6 +78,7 @@ export function setGpuAvailable(available: boolean): void {
 // wrong-server answer.
 export function clearGpuAvailable(): void {
   gpuAvailable = null;
+  for (const listener of gpuListeners) listener(gpuAvailable);
 }
 
 // Server-readiness gate. Local mode's sidecar can take real time to

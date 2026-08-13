@@ -1,12 +1,40 @@
 VENV := .venv
-PYTHON := $(VENV)/bin/python3
-PIP := $(VENV)/bin/pip
 RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
 # Used to gate the macos-bundle-*-sidecar targets (Make-level, not shell-
 # level — a shell `if...exit 0` inside one recipe line only exits that
 # line's own subshell, not the rest of the target's recipe, so this has
-# to be a Make conditional to actually skip the later lines on non-macOS).
+# to be a Make conditional to actually skip the later lines on non-macOS),
+# and to locate the venv's executables (see VENV_BIN below).
 UNAME_S := $(shell uname -s)
+
+# A venv puts its executables in Scripts/ on Windows and bin/ everywhere
+# else, and only Windows gives them an .exe suffix — so every target that
+# runs something out of the venv has to go through VENV_BIN/EXE rather
+# than hardcoding a path. Detected via uname, which under the Git Bash /
+# MSYS2 shell this runs in on Windows reports MINGW*/MSYS*/CYGWIN*.
+ifneq (,$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
+IS_WINDOWS := 1
+VENV_BIN := $(VENV)/Scripts
+EXE := .exe
+# Bootstrap interpreter, used once to create the venv. Not `python3` on
+# Windows: that name is usually the Microsoft Store alias stub, which
+# prints an ad and exits without creating anything. The `py` launcher is
+# the reliable way to reach a real interpreter.
+#
+# Pin the version when it matters — `make install PY="py -3.12"`. The
+# directml variant in particular needs one: torch-directml pins
+# torch==2.4.1, which has no wheels for the newest Python releases, so a
+# bare `py` (newest installed) will fail to resolve it.
+PY ?= py
+else
+IS_WINDOWS :=
+VENV_BIN := $(VENV)/bin
+EXE :=
+PY ?= python3
+endif
+
+PYTHON := $(VENV_BIN)/python$(EXE)
+PIP := $(VENV_BIN)/pip$(EXE)
 # api-dev runs uvicorn directly against the ASGI app, bypassing
 # supervisor.py's own CLI (and PROXY_SCALER_SERVER_PORT/HOST) entirely —
 # so it needs its own overrides rather than inheriting either of those.
@@ -110,6 +138,10 @@ help:
 	@echo ""
 	@echo "--- misc ---"
 	@echo "install          Create $(VENV) and pip install -e ."
+	@echo "                 Windows: pin the interpreter with PY=\"py -3.12\" if you"
+	@echo "                 plan to build the directml variant -- torch-directml"
+	@echo "                 pins torch==2.4.1, which has no wheels for the newest"
+	@echo "                 Python releases"
 	@echo "                 GPU_VARIANT=rocm|directml make install layers on an alternate"
 	@echo "                 torch build (AMD on Linux/Windows respectively) -- see the"
 	@echo "                 GPU_VARIANT comment above the sidecar targets in this Makefile"
@@ -119,21 +151,25 @@ help:
 	@echo "frontend-build   Build desktop/frontend/dist (bundled automatically by"
 	@echo "                 'make build' too -- rarely needed standalone)"
 
-$(VENV)/bin/python3:
-	python3 -m venv $(VENV)
+$(PYTHON):
+	$(PY) -m venv $(VENV)
 
-install: $(VENV)/bin/python3
+install: $(PYTHON)
 	$(PYTHON) -m pip install --upgrade pip
 	$(PIP) install -e .
 ifneq ($(GPU_VARIANT),)
 	$(PIP) install $(TORCH_INSTALL_ARGS)
 endif
 
+# -m rather than the pytest console script: pytest isn't a declared
+# dependency of this project, so `pip install -e .` alone doesn't produce
+# that script, and "No module named pytest" is a far more actionable error
+# than a bare "command not found" on a path that was never going to exist.
 test:
-	$(VENV)/bin/pytest tests/ -q
+	$(PYTHON) -m pytest tests/ -q
 
 serve:
-	$(VENV)/bin/proxy-scaler-serve
+	$(VENV_BIN)/proxy-scaler-serve$(EXE)
 
 sidecar-clean:
 	rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build
@@ -176,23 +212,43 @@ endif
 # placing copies of it next to compiled binaries is sidecar/sidecar-release's
 # own job below, so a standalone 'make deb' (which reads straight from this
 # dist dir, see packaging/build-deb.sh) doesn't need either of those to run.
+# Place a copy of the frozen sidecar at $(1). Hardlink first (free), fall
+# back to a dereferencing recursive copy where hardlinks aren't supported.
+# $(1) must not already exist — see the mkdir/rm dance in the callers.
+define stage_sidecar
+cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(1) \
+		|| cp -RL desktop/pyinstaller/dist/proxy-scaler-serve $(1)
+endef
+
 _sidecar-freeze: sidecar-clean
 	$(PIP) install pyinstaller pyinstaller-hooks-contrib
-	$(VENV)/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
+	$(PYTHON) -m PyInstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
 
 sidecar: _sidecar-freeze
-	mkdir -p $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR) \
+	# Parent dirs only — each destination itself must NOT exist, so that
+	# `cp SRC DEST` creates it *as* the copy rather than nesting the copy
+	# inside it. _sidecar-freeze's sidecar-clean prerequisite has already
+	# removed them; the rm -rf below just keeps this target safe to run on
+	# its own.
+	mkdir -p $(dir $(SIDECAR_DEBUG_DIR)) $(dir $(SIDECAR_RELEASE_DIR)) \
+		$(dir $(SERVER_APP_DEBUG_DIR)) $(dir $(SERVER_APP_RELEASE_DIR))
+	rm -rf $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR) \
 		$(SERVER_APP_DEBUG_DIR) $(SERVER_APP_RELEASE_DIR)
-	# -L (dereference symlinks): PyInstaller's onedir output commonly
-	# includes versioned .dylib/.so symlinks (torch's shared-library deps
-	# in particular) — copying the real file content instead keeps this
-	# a plain, boring directory of regular files, nothing fancier needed.
-	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_DEBUG_DIR)/
-	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RELEASE_DIR)/
-	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_DEBUG_DIR)/
-	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_RELEASE_DIR)/
+	# `cp -al` (hardlink) with a `cp -RL` fallback, rather than rsync:
+	# rsync simply isn't present in the Git Bash/MSYS environment this
+	# runs under on Windows, and this is the one step standing between a
+	# Windows checkout and a working packaged build. Both forms produce a
+	# tree of real files with no symlinks in it — the property `rsync -aL`
+	# was here for, since PyInstaller's onedir output commonly contains
+	# versioned .dylib/.so symlinks for torch's shared libraries.
+	# Hardlinks cost no I/O; the -RL fallback covers filesystems that
+	# refuse them (some FUSE/network mounts), dereferencing as it copies.
+	$(call stage_sidecar,$(SIDECAR_DEBUG_DIR))
+	$(call stage_sidecar,$(SIDECAR_RELEASE_DIR))
+	$(call stage_sidecar,$(SERVER_APP_DEBUG_DIR))
+	$(call stage_sidecar,$(SERVER_APP_RELEASE_DIR))
 	@echo "sidecar placed for the client and the server app (debug + release)"
 
 # Release-only variant: skips the two debug-dir copies entirely (pure
@@ -202,18 +258,17 @@ sidecar: _sidecar-freeze
 # (same "no symlinks in the shipped tree" property rsync -aL was already
 # giving us) but costs no actual I/O, unlike a multi-GB byte-for-byte
 # copy — both release dirs live under desktop/*/target/, the same
-# filesystem as the PyInstaller output, so this is safe. Falls back to
-# rsync -aL per-target if hardlinking isn't supported on this filesystem
-# (some FUSE/network mounts silently keep everything at link count 1).
+# filesystem as the PyInstaller output, so this is safe. Falls back to a
+# dereferencing copy per-target if hardlinking isn't supported on this
+# filesystem (some FUSE/network mounts silently keep everything at link
+# count 1) — see stage_sidecar.
 sidecar-release: _sidecar-freeze
 	@echo "==> [1/4] staging sidecar (release only)"
 	mkdir -p $(dir $(SIDECAR_RELEASE_DIR)) $(dir $(SERVER_APP_RELEASE_DIR))
 	rm -rf $(SIDECAR_RELEASE_DIR)
-	cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(SIDECAR_RELEASE_DIR) \
-		|| rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RELEASE_DIR)/
+	$(call stage_sidecar,$(SIDECAR_RELEASE_DIR))
 	rm -rf $(SERVER_APP_RELEASE_DIR)
-	cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(SERVER_APP_RELEASE_DIR) \
-		|| rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_RELEASE_DIR)/
+	$(call stage_sidecar,$(SERVER_APP_RELEASE_DIR))
 	@echo "sidecar placed for the client and the server app (release only)"
 
 # The real packaged-app build: compiles main.rs and (via tauri.conf.json's
@@ -282,9 +337,23 @@ server-app-dev:
 # package when built on Linux, on the architecture you're targeting — it
 # cannot be built from macOS. See packaging/build-deb.sh for the staging
 # details.
+# Guard rather than let these fail deep in the weeds. 'deb' needs dpkg-deb
+# and a Linux PyInstaller bundle; 'release' additionally tars Linux
+# binaries and ends in 'deb' — which, unguarded, meant a Windows or macOS
+# run did the full multi-GB freeze and both app builds first and only then
+# died on the very last step.
+LINUX_ONLY_MSG = builds a Linux artifact and must be run on Linux. On \
+Windows/macOS use 'make sidecar' then 'make build' / 'make server-app' \
+for this platform's own installers.
+
 deb:
+ifneq ($(UNAME_S),Linux)
+	@echo "error: 'deb' $(LINUX_ONLY_MSG)" >&2
+	@exit 1
+else
 	@echo "==> [4/4] building .deb"
 	./packaging/build-deb.sh
+endif
 
 # One command, everything upload-ready in dist/. sidecar-release listed
 # first and explicitly (rather than left implicit via the other three's
@@ -294,10 +363,16 @@ deb:
 # 'make deb', this just orders around it here. Not safe under `make -j`:
 # relies on plain left-to-right prerequisite ordering, which parallel make
 # doesn't honor.
+ifneq ($(UNAME_S),Linux)
+release:
+	@echo "error: 'release' $(LINUX_ONLY_MSG)" >&2
+	@exit 1
+else
 release: sidecar-release release-client-archive release-server-app-archive deb
 	@echo ""
 	@echo "release artifacts:"
 	@ls -1 dist/
+endif
 
 # Client binary + its sidecar folder, tarred together the same way you'd
 # hand someone the whole target/release/ directory. Linux isn't a
@@ -371,10 +446,10 @@ init-db:
 	$(PYTHON) -c "from proxy_scaler import db; db.init_db()"
 
 api-dev: init-db
-	$(VENV)/bin/uvicorn proxy_scaler.api:app --reload --host $(HOST) --port $(PORT)
+	$(VENV_BIN)/uvicorn$(EXE) proxy_scaler.api:app --reload --host $(HOST) --port $(PORT)
 
 worker-dev: init-db
-	$(VENV)/bin/python -m proxy_scaler.worker
+	$(PYTHON) -m proxy_scaler.worker
 
 frontend-install:
 	cd desktop/frontend && npm install
