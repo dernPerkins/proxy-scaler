@@ -157,7 +157,7 @@ hdiutil attach dist/proxy-scaler-client_0.1.0_macos-$(uname -m).dmg \
   -nobrowse -mountpoint /tmp/psdmg
 ls /tmp/psdmg                                     # app + Applications symlink
 ls /tmp/psdmg/"Proxy Scaler.app"/Contents/MacOS/  # binary + sidecar dir
-codesign --verify --deep --strict /tmp/psdmg/"Proxy Scaler.app"
+codesign --verify --strict /tmp/psdmg/"Proxy Scaler.app"
 hdiutil detach /tmp/psdmg
 ```
 
@@ -184,7 +184,7 @@ session, breaks in CI, and buys nothing functional. Deliberately skipped.
 ### Code signing
 
 **Ad-hoc only.** `macos-bundle-{client,server-app}-sidecar` runs
-`codesign --force --deep --sign -` on the `.app` immediately after the
+`codesign --force --sign -` on the `.app` immediately after the
 sidecar is copied in, and verifies it. This is not a substitute for
 notarization — there's still no Developer ID, so Gatekeeper still warns
 on first launch of a downloaded build (right-click → Open). Proper
@@ -201,20 +201,41 @@ installed build never showed up in Spotlight (LaunchServices discovers
 apps through Spotlight's index, so the two failures look identical from
 the outside).
 
-`--deep` is deprecated by Apple for *signing* (macOS 13+); the modern
-guidance is inside-out — nested code first, outer bundle last. It's used
-here anyway, on purpose: its documented failure mode is nested *bundles*
-carrying their own identities or entitlements (helper apps, frameworks)
-being re-signed with the wrong identity or visited out of order, and the
-sidecar contains none of those — it's PyInstaller onedir output, i.e.
-loose Mach-O executables/`.dylib`s/`.so`s with no entitlements. The
-alternative is hand-writing a "which of these ~10k files are Mach-O"
-`find` predicate, and a wrong guess there silently leaves unsigned code
-behind. If a future macOS removes `--deep` for signing, replace the
-`codesign_app` macro in the Makefile with a `find`-based pass that signs
-the sidecar's Mach-O files first and the outer `.app` last. `--deep` is
-*not* deprecated for verification, so the `--verify --deep --strict`
-check stays either way.
+**Do not add `--deep`.** It was tried and it fails outright:
+
+```
+Proxy Scaler.app: bundle format unrecognized, invalid, or unsuitable
+In subcomponent: .../proxy-scaler-serve/_internal/websockets-16.1.1.dist-info
+```
+
+`--deep` decides what counts as a nested *bundle* partly by directory
+name, and treats dotted names as `.framework`/`.bundle`-shaped. Every
+Python package in PyInstaller's `_internal/` ships a
+`<pkg>-<version>.dist-info` directory, so `--deep` walks into one, finds
+no `Contents/Info.plist`, and aborts. That's `--deep` misreading Python
+packaging metadata, not a signing problem to solve.
+
+Signing the outer bundle alone is also the correct scope, not merely the
+one that works: PyInstaller ad-hoc signs the binaries it emits on macOS
+(it must — arm64 refuses to execute unsigned code), so the sidecar's own
+Mach-O files arrive already signed. The sidecar copy only broke the
+*outer* seal, which is precisely what this restores. Apple has deprecated
+`--deep` for signing anyway (macOS 13+), in favour of inside-out signing.
+
+If the outer-only signature ever proves insufficient, the replacement is
+an inside-out pass — sign the sidecar's Mach-O files individually, then
+the outer `.app` last, still without `--deep`:
+
+```bash
+find "<app>/Contents/MacOS/proxy-scaler-serve" -type f -print0 |
+  while IFS= read -r -d '' f; do
+    file -b "$f" | grep -q Mach-O && codesign --force --sign - "$f"
+  done
+codesign --force --sign - "<app>"
+```
+
+That's slow (a `file` call per entry across ~10k files) which is why it
+isn't the default.
 
 ### Spotlight
 
@@ -230,7 +251,7 @@ appear. Force the re-index after installing:
 
 ```bash
 # 1. Confirm the installed app's signature is actually valid now
-codesign --verify --deep --strict --verbose=2 "/Applications/Proxy Scaler.app"
+codesign --verify --strict --verbose=2 "/Applications/Proxy Scaler.app"
 
 # 2. Re-register it with LaunchServices
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \

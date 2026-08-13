@@ -343,28 +343,31 @@ run:
 # Gatekeeper's first-run prompt doesn't go away. That needs an Apple
 # Developer account.
 #
-# --deep is deprecated by Apple for signing (macOS 13+) and the correct
-# modern approach is inside-out: sign nested code first, the outer bundle
-# last. It's used anyway, deliberately:
-#   - the documented failure mode of --deep is nested *bundles* that carry
-#     their own identities/entitlements (helper .apps, frameworks) being
-#     re-signed with the outer identity or visited out of order. The
-#     sidecar has none of those — it's PyInstaller onedir output: loose
-#     Mach-O executables, .dylibs and .sos, no entitlements anywhere.
-#   - the alternative is hand-rolling the "which of these ~10k files are
-#     Mach-O" predicate in find(1). codesign already knows; a wrong guess
-#     silently leaves unsigned code behind, which is the exact bug being
-#     fixed here.
-# If a future macOS drops --deep for signing outright, replace this with a
-# find(1) pass signing the sidecar's Mach-O files before the outer bundle
-# — see docs/releasing.md.
+# --verify is where this fails loudly if it didn't take.
 #
-# --verify is where this fails loudly if it didn't take. --deep is NOT
-# deprecated for verification.
+# Deliberately NOT --deep, on either command.
+#
+# --deep descends looking for nested code, and decides what counts as a
+# nested *bundle* partly by directory name — anything dotted looks like a
+# .framework/.bundle to it. PyInstaller's _internal/ is full of dotted
+# directories (every `<pkg>-<version>.dist-info`), so --deep walks into
+# e.g. websockets-16.1.1.dist-info, finds no Contents/Info.plist, and
+# fails the whole run with "bundle format unrecognized, invalid, or
+# unsuitable". That is not a fixable signing problem; it's --deep
+# misreading Python packaging metadata as an app bundle.
+#
+# Signing the outer bundle alone is also the *correct* scope here, not
+# just the working one: PyInstaller already ad-hoc signs the binaries it
+# emits on macOS (it has to — arm64 refuses to execute unsigned code), so
+# the sidecar's own Mach-O files arrive validly signed. The only thing
+# the sidecar copy broke was the outer bundle's seal, which is exactly
+# what this restores. Apple has deprecated --deep for signing anyway; the
+# inside-out alternative is documented in docs/releasing.md should this
+# ever stop being enough.
 define codesign_app
 	@echo "==> ad-hoc re-signing the bundle (the sidecar copy invalidated Tauri's signature)"
-	codesign --force --deep --sign - "$(1)"
-	codesign --verify --deep --strict "$(1)"
+	codesign --force --sign - "$(1)"
+	codesign --verify --strict "$(1)"
 	@echo "signed (ad-hoc, unnotarized): $(1)"
 endef
 
