@@ -215,9 +215,21 @@ endif
 # Place a copy of the frozen sidecar at $(1). Hardlink first (free), fall
 # back to a dereferencing recursive copy where hardlinks aren't supported.
 # $(1) must not already exist — see the mkdir/rm dance in the callers.
+#
+# The rm -rf between the two attempts is load-bearing, not defensive
+# fluff: `cp -al` doesn't abort on the first file it can't hardlink (e.g.
+# every *.so on a filesystem that refuses hardlinks entirely, like a FUSE/
+# NTFS-3G mount) — it keeps going, links whatever it can, and only then
+# exits non-zero. That leaves $(1) already existing and partially
+# populated by the time the fallback runs. `cp -RL SRC DEST` treats an
+# *existing* DEST as "copy SRC into DEST", not "recreate DEST as SRC", so
+# without clearing it first the fallback tries to nest the whole source
+# tree at DEST/proxy-scaler-serve/ and collides with the same-named file
+# the partial first attempt already placed there — "cannot overwrite
+# non-directory ... with directory", not a hardlink error at all.
 define stage_sidecar
 cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(1) \
-		|| cp -RL desktop/pyinstaller/dist/proxy-scaler-serve $(1)
+		|| { rm -rf $(1); cp -RL desktop/pyinstaller/dist/proxy-scaler-serve $(1); }
 endef
 
 _sidecar-freeze: sidecar-clean
