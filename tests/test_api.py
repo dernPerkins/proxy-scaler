@@ -143,7 +143,23 @@ def test_device_reports_gpu_when_cuda_available(client: TestClient) -> None:
     with patch("torch.cuda.is_available", return_value=True):
         resp = client.get("/api/device")
     assert resp.status_code == 200
-    assert resp.json() == {"kind": "gpu"}
+    # `kind` stays exactly "gpu" for every GPU backend — its values are
+    # persisted into on-disk cache sidecars, so they can't be widened.
+    # `backend` is the additive field the client uses to tell them apart.
+    assert resp.json() == {"kind": "gpu", "backend": "cuda"}
+
+
+def test_device_reports_mps_backend_on_apple_silicon(client: TestClient) -> None:
+    """Apple Silicon must be distinguishable from CUDA in the response:
+    both are `kind: "gpu"`, but the client picks a much lighter default
+    model for MPS (see ProjectContext.tsx::recommendedDefaultModel)."""
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        patch("torch.backends.mps.is_available", return_value=True),
+    ):
+        resp = client.get("/api/device")
+    assert resp.status_code == 200
+    assert resp.json() == {"kind": "gpu", "backend": "mps"}
 
 
 def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
@@ -172,7 +188,7 @@ def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
         ):
             resp = client.get("/api/device")
     assert resp.status_code == 200
-    assert resp.json() == {"kind": "cpu"}
+    assert resp.json() == {"kind": "cpu", "backend": "cpu"}
 
 
 def test_resolve_returns_canonical_identity(client: TestClient) -> None:

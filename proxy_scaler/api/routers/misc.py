@@ -8,7 +8,12 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import ClearGeneratedIn, ClearGeneratedOut, DeviceOut, ModelOptionOut
 from proxy_scaler.pipeline import clear_generated_data
-from proxy_scaler.upscale import UpscaleModel, device_kind, resolve_device
+from proxy_scaler.upscale import (
+    UpscaleModel,
+    device_backend,
+    device_kind,
+    resolve_device,
+)
 
 router = APIRouter(prefix="/api", tags=["misc"])
 
@@ -42,8 +47,14 @@ def get_device() -> DeviceOut:
     resolve_device() imports torch, and upscale.py's module docstring
     explains why that import must never sit on the startup-readiness
     path. First call here pays torch's import cost; every call after
-    that (in this process) is cheap."""
-    return DeviceOut(kind=device_kind(resolve_device()))
+    that (in this process) is cheap.
+
+    Reports the specific backend alongside the coarse gpu/cpu answer:
+    'gpu' alone can't distinguish Apple MPS from CUDA, and they want
+    different default models (see ProjectContext.tsx's
+    recommendedDefaultModel)."""
+    device = resolve_device()
+    return DeviceOut(kind=device_kind(device), backend=device_backend(device))
 
 
 @router.post("/generated-data/clear", response_model=ClearGeneratedOut)

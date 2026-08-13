@@ -1,20 +1,48 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
-import { getConnectionMode, getGpuAvailable, subscribeGpuAvailable } from "../config";
+import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
 import type { CardRow, LoadedProject, ProjectSettings } from "../api/project";
 
+// Heavy/quality-first vs. light/fast. Named rather than repeated inline so
+// the branching below reads as "which class of hardware is this."
+const HEAVY_MODEL = "ultrasharp_v2";
+const FAST_MODEL = "realesrgan_anime_fast";
+
 // Prefers the real answer from connection.tsx's /api/device probe
-// (fired once per connect()/switchTo(), see config.ts::gpuAvailable) —
+// (fired once per connect()/switchTo(), see config.ts::probedDevice) —
 // neither Local nor Remote implies anything about the actual hardware
 // behind the connected server. Falls back to the old mode-based guess
 // only while that probe hasn't answered yet (or failed): local runs
 // on-device, so a fast/light model is the safer default; a remote
 // server is assumed to have real GPU headroom.
+//
+// "Has a GPU" is not by itself enough to pick the heavy model. The
+// backend matters:
+//
+// - cuda (also ROCm, which reports through the same torch.cuda APIs):
+//   the heavy model, unchanged — this is the hardware it was chosen for.
+// - mps (Apple Silicon): the fast model. MPS is a real GPU, but on the
+//   heavy transformer/attention models it is slow enough on unified
+//   memory that the default felt broken on an M2. This is the bug this
+//   branch exists to fix; before `backend` existed, MPS was
+//   indistinguishable from CUDA here.
+// - privateuseone (torch-directml, AMD/Intel on Windows): the heavy
+//   model, matching today's behavior. These are discrete cards with
+//   their own VRAM, and nobody has reported a problem — changing it
+//   would be an untested regression risk against the GPU-detection work
+//   that just shipped, not a fix.
+// - anything else, including an older server that doesn't send `backend`
+//   at all: fall back to the coarse `kind`, i.e. exactly the pre-existing
+//   gpu-or-not behavior. Never let an unrecognized backend name silently
+//   downgrade a real GPU box.
 function recommendedDefaultModel(): string {
-  const gpu = getGpuAvailable();
-  if (gpu !== null) return gpu ? "ultrasharp_v2" : "realesrgan_anime_fast";
-  return getConnectionMode() === "local" ? "realesrgan_anime_fast" : "ultrasharp_v2";
+  const device = getProbedDevice();
+  if (device !== null) {
+    if (device.backend === "mps") return FAST_MODEL;
+    return device.kind === "gpu" ? HEAVY_MODEL : FAST_MODEL;
+  }
+  return getConnectionMode() === "local" ? FAST_MODEL : HEAVY_MODEL;
 }
 
 function getDefaultSettings(): ProjectSettings {
@@ -234,7 +262,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // The /api/device answer arrives long after this provider mounts —
   // torch's cold import means the probe can take tens of seconds, while
   // the UI is interactive within about one. getDefaultSettings() therefore
-  // runs while gpuAvailable is still null and falls back to the mode-based
+  // runs while the probed device is still null and falls back to the mode-based
   // guess, which for Local mode assumes no GPU and picks the light
   // realesrgan model. On a real GPU box that's simply the wrong default,
   // and it was sticky: nothing ever revisited it.
@@ -244,7 +272,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // project or a deliberate pick is left exactly as-is.
   useEffect(
     () =>
-      subscribeGpuAvailable(() => {
+      subscribeProbedDevice(() => {
         if (!modelIsDefault.current) return;
         setSettings((s) => {
           const recommended = recommendedDefaultModel();

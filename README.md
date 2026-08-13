@@ -46,12 +46,16 @@ on your last page (a double-faced card counts as two), and flags any card
 still missing a generated image — or, for a double-faced card, missing
 one of its two faces — before you print.
 
+A **Tasks** tab shows the generation queue — what's pending, running,
+done, or failed — since upscaling a full decklist runs in the background
+and takes real time.
+
 **GPU acceleration**: Nvidia (CUDA) and Apple Silicon (MPS) work out of
 the box. AMD works too — ROCm on Linux, DirectML on Windows — see
 [GPU support](#gpu-support) below for how a build picks up the right one.
 
-See [`desktop/README.md`](desktop/README.md) for building the client
-yourself.
+Building it yourself: [`desktop/README.md`](desktop/README.md) for the dev
+loop, [`docs/releasing.md`](docs/releasing.md) for producing installers.
 
 ## Server
 
@@ -115,9 +119,10 @@ the check.
 
 A small status window that runs the server for other machines to connect
 to, and minimises to the tray so it can be left running. Download it from
-[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link), or build it yourself with
-`make sidecar && make server-app` (`make macos-bundle-server-app-sidecar`
-too, on macOS — see [`desktop/README.md`](desktop/README.md)).
+[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link),
+or build it yourself — see [`docs/releasing.md`](docs/releasing.md), which
+covers the per-OS steps (macOS in particular needs `make macos-release`
+rather than a bare `cargo tauri build`).
 
 It shows whether the server is up, the address to paste into the client's
 **Connect to a server** box, and a live log. **Allow connections from
@@ -172,10 +177,9 @@ with every project and generated image.
 **Building it** (`make sidecar && make deb`, output in `dist/`) has to
 happen on Linux, on the architecture you're targeting — PyInstaller
 bundles a platform-specific runtime, so a package for a Linux server
-cannot be produced from macOS or Windows. See
-[`desktop/README.md`](desktop/README.md) for the full release build
-(`make release`), which produces the client, server app, and this package
-together.
+cannot be produced from macOS or Windows. `make release` builds this
+package alongside the client and server app in one go; see
+[`docs/releasing.md`](docs/releasing.md).
 
 ## GPU support
 

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { Device } from "./api/types";
 
 // Mutable: in a plain browser tab (no Tauri) this stays the dev default
 // below. Inside Tauri, ConnectGate overwrites it once via setApiBaseUrl
@@ -19,9 +20,9 @@ export function setApiBaseUrl(url: string): void {
 // Set once by ConnectGate alongside setApiBaseUrl, right after Local/Remote
 // is resolved. Used as a fallback signal for the default upscale model
 // (see ProjectContext.tsx::recommendedDefaultModel()) when the actual
-// gpuAvailable probe below hasn't answered yet — local runs on-device, so
+// device probe below hasn't answered yet — local runs on-device, so
 // a fast/light model is assumed the safer default; remote is assumed to
-// have real GPU headroom. Both are just guesses; gpuAvailable is the real
+// have real GPU headroom. Both are just guesses; the probed device is the real
 // answer once it arrives.
 let connectionMode: "local" | "remote" | null = null;
 
@@ -40,31 +41,36 @@ export function setConnectionMode(mode: "local" | "remote"): void {
 // connection never triggered one, e.g. before the first connect
 // completes) — callers should treat null as "fall back to the
 // connectionMode-based guess above," never as "assume CPU."
-let gpuAvailable: boolean | null = null;
+//
+// Holds the whole Device response, not just a gpu-yes/no boolean, because
+// `kind` alone can't tell Apple's MPS apart from CUDA — both report "gpu"
+// — and they want different default models. See
+// ProjectContext.tsx::recommendedDefaultModel().
+let probedDevice: Device | null = null;
 
-export function getGpuAvailable(): boolean | null {
-  return gpuAvailable;
+export function getProbedDevice(): Device | null {
+  return probedDevice;
 }
 
 // Subscribers exist because this answer arrives *late* and something has
 // to react when it does. /api/device pays torch's cold-import cost on its
 // first call — measured at tens of seconds on a CUDA box, long after the
 // server reports healthy (~1s) and the UI is already interactive. Anything
-// that read gpuAvailable once, at mount, therefore only ever saw the null
+// that read this once, at mount, therefore only ever saw the null
 // fallback. See ProjectContext.tsx::recommendedDefaultModel.
-type GpuListener = (available: boolean | null) => void;
-const gpuListeners = new Set<GpuListener>();
+type DeviceListener = (device: Device | null) => void;
+const deviceListeners = new Set<DeviceListener>();
 
-export function subscribeGpuAvailable(listener: GpuListener): () => void {
-  gpuListeners.add(listener);
+export function subscribeProbedDevice(listener: DeviceListener): () => void {
+  deviceListeners.add(listener);
   return () => {
-    gpuListeners.delete(listener);
+    deviceListeners.delete(listener);
   };
 }
 
-export function setGpuAvailable(available: boolean): void {
-  gpuAvailable = available;
-  for (const listener of gpuListeners) listener(gpuAvailable);
+export function setProbedDevice(device: Device): void {
+  probedDevice = device;
+  for (const listener of deviceListeners) listener(probedDevice);
 }
 
 // Called at the start of every applyTarget() — connection.tsx's probe is
@@ -76,9 +82,9 @@ export function setGpuAvailable(available: boolean): void {
 // around to overwriting it). Resetting to null here means that gap
 // always falls back to the honest mode-based guess instead of a stale,
 // wrong-server answer.
-export function clearGpuAvailable(): void {
-  gpuAvailable = null;
-  for (const listener of gpuListeners) listener(gpuAvailable);
+export function clearProbedDevice(): void {
+  probedDevice = null;
+  for (const listener of deviceListeners) listener(probedDevice);
 }
 
 // Server-readiness gate. Local mode's sidecar can take real time to

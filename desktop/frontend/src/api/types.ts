@@ -17,6 +17,14 @@ export interface ModelOption {
 // recommendedDefaultModel().
 export interface Device {
   kind: "gpu" | "cpu";
+  // The actual torch backend behind `kind`. `kind` collapses every GPU
+  // backend to "gpu", which isn't enough to choose a default model:
+  // Apple Silicon is a real GPU but far slower than CUDA on the heavy
+  // transformer models. Optional and widened to `string` on purpose — a
+  // server older than this field simply omits it, and torch can grow
+  // backend names we don't know about, so consumers must always have a
+  // sane branch for "something else."
+  backend?: "cuda" | "mps" | "privateuseone" | "cpu" | "unknown" | (string & {});
 }
 
 // What both /api/resolve, /api/generate, and /api/pdf take as their card

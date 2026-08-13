@@ -17,6 +17,16 @@ class ModelOptionOut(BaseModel):
 
 class DeviceOut(BaseModel):
     kind: str  # "gpu" | "cpu" — see upscale.py's device_kind()
+    # The real torch backend behind `kind`: "cuda" | "mps" | "privateuseone"
+    # (torch-directml) | "cpu" | "unknown". Added because `kind` collapses
+    # every GPU backend into one value, leaving the client unable to tell
+    # Apple's MPS (a real GPU, but slow on the heavy models) from CUDA when
+    # picking a default model. Deliberately *additive*: `kind` keeps its
+    # exact existing vocabulary because those strings are persisted into
+    # on-disk `.device` cache sidecars (upscale.py::write_cache_device) and
+    # re-reading them is how the gallery reports provenance. Defaulted so
+    # an older server answering a newer client still validates.
+    backend: str = "unknown"
 
 
 class DeckEntryIn(BaseModel):

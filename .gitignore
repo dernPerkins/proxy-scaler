@@ -20,18 +20,34 @@ build/
 # Left behind by `nohup make release &` — build log, not source.
 nohup.out
 
+# macOS Finder metadata. Anywhere in the tree, not just the root.
+.DS_Store
+
+# Tauri sidecar/resource staging inside the source tree. Nothing in this
+# repo's build references these — the sidecar is placed at
+# target/{debug,release}/proxy-scaler-serve/ by the Makefile, and Windows
+# picks it up from there via tauri.windows.conf.json's bundle.resources.
+# These directories only appear as leftovers from build experiments, so
+# they're generated output rather than inputs.
+desktop/src-tauri/binaries/
+desktop/src-tauri/resources/
+desktop/server-app/binaries/
+desktop/server-app/resources/
+
 # Local AI/agent tooling — instructions, skill definitions, and scratch
 # workspaces for whatever assistant a given contributor happens to use.
 # Deliberately not shipped: it's personal tooling config, not part of the
 # project, and nobody cloning this should have to pull (or wonder about)
-# someone else's agent setup. Project documentation that agents merely
-# *read* — README/ARCHITECTURE/CONTEXT.md and docs/adr/ — stays tracked,
-# because that's genuinely for humans too.
+# someone else's agent setup. CONTEXT.md is here because it's a
+# domain-vocabulary file in the agent tooling's own format, not prose
+# written for contributors. README.md, ARCHITECTURE.md and docs/adr/ stay
+# tracked — those are genuinely for humans.
 .claude/
 .agents/
 .scratch/
 AGENTS.md
 CLAUDE.md
+CONTEXT.md
 docs/agents/
 .cursor/
 .cursorrules

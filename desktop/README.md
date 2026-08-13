@@ -1,21 +1,20 @@
 # Desktop shell (Tauri)
 
-Streamlit is gone from this stack entirely. The window now loads a real
-React + TypeScript + Vite frontend (`desktop/frontend/`) that talks to a
-FastAPI backend (`proxy_scaler.api`) over HTTP — in Local mode, that API
-server is spawned as a Tauri sidecar (`proxy-scaler-serve`, the same
-`supervisor.py` as before, just managing an API server + worker instead
-of Streamlit + worker); in Remote mode there's no sidecar, the frontend
-just points its API client at a user-supplied host directly.
+The dev loop for the two Tauri apps in this repo. For producing shippable
+installers, see [`docs/releasing.md`](../docs/releasing.md) instead.
 
-**Heads up**: none of the Rust (`main.rs`) or TypeScript (`frontend/src`)
-code here has been run through a real `cargo tauri dev` or `vite build`
-in this environment — Rust because there's no toolchain available at
-all, TypeScript because it *does* type-check cleanly here (`npx tsc
---noEmit`, zero errors) but the sandbox's Node is too old to actually run
-Vite (needs 18+). Expect a compiler-error round or two on your machine,
-the same pattern every other native-toolchain piece in this project has
-needed.
+- **`src-tauri/`** — the client: a React + TypeScript + Vite frontend in a
+  Tauri window, talking to the FastAPI backend (`proxy_scaler.api`) over
+  HTTP. In Local mode it spawns that API server itself as a sidecar; in
+  Remote mode there's no local process at all and the frontend just points
+  its API client at a user-supplied host.
+- **`server-app/`** — the server app: a small status window + tray icon
+  that runs the same generation server for *other* machines to connect to.
+  Its UI is plain HTML (`server-app/ui/`), not the React frontend.
+
+Project data (decklist text, parsed cards, settings) lives in a local
+SQLite file owned by the Rust side (`src-tauri/src/project_store.rs`) —
+no network, no separate process. See [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## 1. Build the frontend
 
@@ -25,154 +24,97 @@ npm install
 npm run build
 ```
 
-Produces `desktop/frontend/dist/`, which is what `tauri.conf.json`'s
-`frontendDist` points at for a real `tauri build`. For day-to-day dev
-(`cargo tauri dev`), you don't need this build — see step 3, which uses
-Vite's dev server directly via `devUrl` instead.
+Produces `desktop/frontend/dist/`, which `tauri.conf.json`'s
+`frontendDist` points at for a real `tauri build`. For day-to-day dev you
+don't need this — step 3 uses Vite's dev server via `devUrl` instead.
 
 ## 2. Build the sidecar (required even for `cargo tauri dev`)
 
-Not special-cased in dev mode — `main.rs` looks for the frozen server as
-`proxy-scaler-serve/proxy-scaler-serve[.exe]` next to whichever binary is
-currently running (`target/debug/proxy-scaler-spike` under `cargo tauri
-dev`, `target/release/proxy-scaler-spike` under a real build), computed
-at runtime via `std::env::current_exe()`. PyInstaller freezes are
-platform-specific (no cross-compiling from another OS), so this has to be
-built on the same machine/OS you're testing on.
-
-This is a PyInstaller **onedir** build (a plain directory, loaded
-directly off disk, no per-launch extraction) placed there directly by the
-Makefile — deliberately **not** via Tauri's `externalBin` (single-file
-only, which used to force PyInstaller into `onefile` mode: self-extracts
-its entire bundle, torch alone ~1GB+, to a fresh temp dir on *every
-single launch*, a real measured startup-time cost) **and not** via
-`bundle.resources` either (tried that next; hit a reproducible crash —
-"Not a directory (os error 20)" — inside `tauri-build` 2.6.3's own
-resource-copying code walking this real, ~1500+ file bundle, that
-couldn't be pinned down further without a local Rust toolchain to step
-through it). Bypassing Tauri's resource pipeline entirely sidesteps that
-whole class of problem.
-
-The easiest path is `make sidecar` from the repo root (see the root
-`Makefile`) — it wraps exactly the commands below and clears stale
-artifacts first:
+Not special-cased in dev mode: `main.rs` looks for the frozen server at
+`proxy-scaler-serve/proxy-scaler-serve[.exe]`, as a sibling of whichever
+binary is running — `target/debug/` under `cargo tauri dev`,
+`target/release/` under a real build — resolved at runtime via
+`std::env::current_exe()`.
 
 ```bash
-make sidecar
+make sidecar     # from the repo root
 ```
 
-Equivalent by hand:
+That stages the PyInstaller output into all four locations (client and
+server app, debug and release), so either mode just works without
+deciding in advance. `make sidecar-release` does release-only, which is
+what the release targets use.
 
-```bash
-# from the repo root, using the existing project venv
-.venv/bin/pip install pyinstaller pyinstaller-hooks-contrib
-.venv/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
-  --distpath desktop/pyinstaller/dist \
-  --workpath desktop/pyinstaller/build
+PyInstaller freezes are platform-specific — no cross-compiling — so this
+has to be built on the OS you're testing on.
 
-# Placed in both target profiles so either dev mode or a real build just
-# works without knowing in advance which one you'll use.
-mkdir -p desktop/src-tauri/target/debug/proxy-scaler-serve
-mkdir -p desktop/src-tauri/target/release/proxy-scaler-serve
-# -L dereferences symlinks (PyInstaller's onedir output on macOS commonly
-# includes versioned .dylib symlinks) — keeps this a plain directory of
-# regular files, nothing fancier needed.
-rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
-  desktop/src-tauri/target/debug/proxy-scaler-serve/
-rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ \
-  desktop/src-tauri/target/release/proxy-scaler-serve/
-```
+### Why it's placed this way
 
-This freeze is meaningfully simpler now than it was with Streamlit as the
-sidecar's child — no more `copy_metadata`/`collect_data_files` for
-Streamlit's version lookup and bundled static frontend, no more bundling
-`app.py` as a second Analysis script, no more `magic_funcs` hiddenimport.
-See the comment at the top of `desktop/pyinstaller/proxy-scaler-serve.spec`
-if a similar "PackageNotFoundError: No package metadata" surfaces for
-`fastapi`/`uvicorn`/`pydantic` — the fix pattern is the same one that
-solved it for Streamlit.
+This is a PyInstaller **onedir** build (a plain directory, loaded off
+disk, no per-launch extraction) placed by the Makefile, deliberately
+**not** via Tauri's `externalBin` (single-file only, which forces
+PyInstaller into `onefile` mode: it self-extracts its entire bundle,
+torch alone ~1GB+, to a fresh temp dir on *every single launch* — a real
+measured startup cost).
+
+`bundle.resources` was also rejected initially, for a reproducible
+`Not a directory (os error 20)` crash inside `tauri-build`'s own
+resource-copying code walking the ~1500-file bundle. That was later
+root-caused to torch's versioned `.so`/`.dylib` symlinks, and feeding it
+an already-dereferenced copy avoids it — which is why Windows now *does*
+use `bundle.resources` (see `tauri.windows.conf.json`). macOS still
+doesn't, because Tauri's `resource_dir()` there is `Contents/Resources/`
+while the binary lives in `Contents/MacOS/`. The full per-platform story
+is in the comment at the top of `src-tauri/src/main.rs`.
 
 ## 3. Run it
 
 ```bash
-make sidecar   # if you haven't already
-cd desktop/src-tauri
-cargo tauri dev
+make sidecar     # if you haven't already
+cd desktop/src-tauri && cargo tauri dev
 ```
 
-`tauri.conf.json`'s `devUrl` (`http://localhost:5173`, Vite's default)
-means `cargo tauri dev` expects Vite's dev server already running — start
-it in a separate terminal first:
+`devUrl` (`http://localhost:5173`) means `cargo tauri dev` expects Vite
+already running — start it in a separate terminal:
 
 ```bash
-cd desktop/frontend
-npm run dev
+cd desktop/frontend && npm run dev
 ```
 
 A window opens showing the picker on every launch: **Use this device**
-(Local — spawns the sidecar, waits for it to report ready, then points
-the app's API client at it) or **Connect to a server** (Remote — asks
-for an IP/hostname, no sidecar involved). Deliberately not remembered
-across launches — asks fresh every time rather than silently reconnecting
-to whatever was picked last.
+(Local — spawns the sidecar, waits for `PROXY_SCALER_READY`, then points
+the app at it) or **Connect to a server** (Remote — asks for an
+IP/hostname, no sidecar involved). Deliberately not remembered across
+launches; an earlier version did, and there was no way to switch modes
+without clearing devtools storage.
+
+For the server app: `make server-app-dev`, or `make server-app` then
+`make server-app-run`.
 
 ## 4. What to test
 
-- **Local mode**: does the window transition from the picker to the real
-  app once the sidecar reports ready? Check the terminal running
-  `cargo tauri dev` for `[proxy-scaler-serve] PROXY_SCALER_READY` and any
-  stderr output if it hangs or errors.
-- **Generate + download a PDF, and download a generated image, end to
-  end** — this is the actual point of the whole migration: the old
-  `st.download_button` silently did nothing inside Tauri's webview, and a
-  first attempt at fixing it via a browser `fetch()` → `blob()` → `<a
-  download>` pattern *also* failed on real testing (WKWebView on macOS
-  doesn't reliably honor the HTML `download` attribute at all — an image
-  link just navigated to a larger view instead of saving, a PDF blob link
-  did nothing). The real fix goes through Tauri's native save-file dialog
-  instead (`main.rs::save_file`, `desktop/frontend/src/download.ts`) —
-  confirm both actually prompt a native "Save As" dialog and produce a
-  real file on disk.
-- **Saved projects survive an app restart** — a real shipped bug: the DB's
-  default path was derived from `__file__`, which for a frozen
-  PyInstaller onefile build resolves inside the per-launch temp
-  extraction directory, wiped and recreated fresh every single run.
-  Everything worked fine *within* one session and then silently reset on
-  the next launch. Fixed via `db.default_data_dir()` (a stable,
-  OS-conventional per-user directory — `~/Library/Application Support/
-  proxy-scaler` on macOS) used both for the DB and, via
-  `supervisor.py`'s frozen `ROOT`, as the API server/worker's working
-  directory (so relative output/cache/weights paths land somewhere
-  persistent too, not just the DB). Confirm: save a project, quit the
-  app fully, relaunch, and it's still there.
-- **Closing the window**: confirm that closing the window actually stops
-  both the sidecar *and* the API server/worker processes underneath it,
-  not just the visible window. Check `ps aux | grep -E "uvicorn|proxy_scaler"`
-  (or Activity Monitor on macOS) right after closing — nothing should be
-  left running.
-- **Remote mode**: point it at another proxy-scaler instance (or even
-  `127.0.0.1` if you have one running manually via
-  `.venv/bin/uvicorn proxy_scaler.api:app` in a separate terminal) and
-  confirm it connects with no sidecar spawned.
-- **The picker asks fresh on every launch** — an earlier version
-  remembered the last Local/Remote choice via `localStorage` and silently
-  reconnected; that's gone now on purpose (real user feedback: there was
-  no way to switch modes without manually clearing devtools storage).
+- **Local mode**: does the window get from the picker to the real app once
+  the sidecar reports ready? Watch the `cargo tauri dev` terminal for
+  `[proxy-scaler-serve] PROXY_SCALER_READY`, and for stderr if it hangs.
+- **Generate + download a PDF, and download a generated image.** Downloads
+  go through Tauri's native save dialog (`main.rs::save_file`,
+  `frontend/src/download.ts`) rather than the browser — WKWebView on macOS
+  doesn't reliably honor the HTML `download` attribute, so an image link
+  navigated instead of saving and a PDF blob link did nothing. Confirm
+  both prompt a real "Save As" and produce a file.
+- **Saved projects survive a restart.** Save a project, fully quit,
+  relaunch — it should still be there, along with its PDF layout settings.
+- **Closing the window stops everything.** After closing, check
+  `ps aux | grep -E "uvicorn|proxy_scaler"` — the sidecar *and* the API
+  server and worker underneath it should all be gone, not just the window.
+- **Remote mode**: point it at another instance (even `127.0.0.1` with a
+  manually-run `proxy-scaler-serve`) and confirm no sidecar is spawned.
+- **Mid-session Local↔Remote switch** leaves project data untouched.
 
-## 5. Notes
+## Notes
 
-- `bundle.active` is still `false` — no installers/code-signing yet,
-  that's still ahead.
-- `security.csp` is `null` (disabled). Fine for now; should be scoped down
-  before a real release build.
-- File downloads (`desktop/frontend/src/download.ts`) go through a
-  Rust-side `save_file` command (`tauri-plugin-dialog` + `std::fs::write`)
-  when running inside Tauri, with a plain browser `<a download>` fallback
-  for the `npm run dev`-without-Tauri workflow, where the HTML attribute
-  works fine. Untested against a real compiler as of this writing — expect
-  the usual round of fixes.
-- `desktop/src/index.html` (the old plain-JS picker) is now dead code —
-  `tauri.conf.json`'s `frontendDist`/`devUrl` point at
-  `desktop/frontend/` instead. Left in place rather than deleted until the
-  new React picker (`desktop/frontend/src/ConnectGate.tsx`) is confirmed
-  working end-to-end on a real machine.
+- `security.csp` is `null` (disabled). Should be scoped down before a
+  wider release.
+- No code signing or notarization on any platform yet — see
+  [`docs/releasing.md`](../docs/releasing.md) for what that means for
+  macOS Gatekeeper in particular.

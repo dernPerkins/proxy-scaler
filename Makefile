@@ -87,6 +87,13 @@ SERVER_APP_BIN := desktop/server-app/target/release/proxy-scaler-server
 # below.
 CLIENT_APP_BUNDLE := desktop/src-tauri/target/release/bundle/macos/Proxy Scaler.app
 SERVER_APP_BUNDLE := desktop/server-app/target/release/bundle/macos/Proxy Scaler Server.app
+# Bundle basenames, spelled out rather than derived with $(notdir ...):
+# these paths contain spaces, and notdir operates on whitespace-separated
+# words, so it would be splitting the path apart and happening to
+# reassemble it. Used as the name the .app is copied to inside the dmg
+# staging dir — it's what the user sees in the dmg window.
+CLIENT_APP_NAME := Proxy Scaler.app
+SERVER_APP_NAME := Proxy Scaler Server.app
 
 # macOS .dmg outputs. Built by hand from the *patched* .app rather than by
 # Tauri's own dmg bundler — see macos-release-client for why that
@@ -95,6 +102,16 @@ SERVER_APP_BUNDLE := desktop/server-app/target/release/bundle/macos/Proxy Scaler
 MACOS_ARCH := $(shell uname -m)
 CLIENT_DMG := dist/proxy-scaler-client_$(PKG_VERSION)_macos-$(MACOS_ARCH).dmg
 SERVER_APP_DMG := dist/proxy-scaler-server-app_$(PKG_VERSION)_macos-$(MACOS_ARCH).dmg
+
+# What the .dmg's window actually contains gets assembled here first: the
+# .app plus a symlink to /Applications, so the volume opens as the
+# drag-across install everyone expects rather than a lone .app icon with
+# nowhere to drop it (hdiutil -srcfolder pointed straight at the .app can
+# only ever produce the latter). Under target/ rather than dist/ so the
+# transient multi-GB copy stays out of the upload directory, and on the
+# same volume as the .app it's copying. See build_dmg below.
+CLIENT_DMG_STAGE := desktop/src-tauri/target/release/dmg-stage
+SERVER_APP_DMG_STAGE := desktop/server-app/target/release/dmg-stage
 
 .PHONY: help install test serve sidecar sidecar-release _sidecar-freeze sidecar-clean \
 	build run desktop deb \
@@ -311,6 +328,46 @@ build:
 run:
 	./$(RELEASE_BIN)
 
+# Re-sign $(1) (an .app) ad-hoc. Must run AFTER the sidecar is copied in:
+# `cargo tauri build` signs the bundle it produced, and dropping a
+# multi-GB directory into Contents/MacOS/ afterwards invalidates that
+# signature — Contents/MacOS/ is "nested code" as far as the signature's
+# resource rules are concerned, so its contents are sealed, not ignored.
+#
+# What a broken signature costs us: Gatekeeper blocks a fresh install on
+# another Mac (right-click -> Open works around it), and LaunchServices
+# is entitled to refuse to register the app at all — which is what keeps
+# it out of Spotlight, since LaunchServices discovers apps via Spotlight's
+# index. Ad-hoc (`--sign -`) fixes the *validity* of the signature, not
+# its *trust*: there's still no Developer ID and no notarization, so
+# Gatekeeper's first-run prompt doesn't go away. That needs an Apple
+# Developer account.
+#
+# --deep is deprecated by Apple for signing (macOS 13+) and the correct
+# modern approach is inside-out: sign nested code first, the outer bundle
+# last. It's used anyway, deliberately:
+#   - the documented failure mode of --deep is nested *bundles* that carry
+#     their own identities/entitlements (helper .apps, frameworks) being
+#     re-signed with the outer identity or visited out of order. The
+#     sidecar has none of those — it's PyInstaller onedir output: loose
+#     Mach-O executables, .dylibs and .sos, no entitlements anywhere.
+#   - the alternative is hand-rolling the "which of these ~10k files are
+#     Mach-O" predicate in find(1). codesign already knows; a wrong guess
+#     silently leaves unsigned code behind, which is the exact bug being
+#     fixed here.
+# If a future macOS drops --deep for signing outright, replace this with a
+# find(1) pass signing the sidecar's Mach-O files before the outer bundle
+# — see docs/releasing.md.
+#
+# --verify is where this fails loudly if it didn't take. --deep is NOT
+# deprecated for verification.
+define codesign_app
+	@echo "==> ad-hoc re-signing the bundle (the sidecar copy invalidated Tauri's signature)"
+	codesign --force --deep --sign - "$(1)"
+	codesign --verify --deep --strict "$(1)"
+	@echo "signed (ad-hoc, unnotarized): $(1)"
+endef
+
 # macOS only: Tauri's own resource_dir() resolves to Contents/Resources/
 # there, not Contents/MacOS/ where the compiled binary (and this app's
 # current_exe()-relative sidecar lookup) actually lives — and Tauri v2 has
@@ -328,6 +385,7 @@ ifeq ($(UNAME_S),Darwin)
 	rm -rf "$(CLIENT_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve"
 	rsync -a --delete $(SIDECAR_RELEASE_DIR)/ "$(CLIENT_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve/"
 	@echo "sidecar copied into $(CLIENT_APP_BUNDLE)/Contents/MacOS/"
+	$(call codesign_app,$(CLIENT_APP_BUNDLE))
 else
 	@echo "macos-bundle-client-sidecar is a no-op outside macOS"
 endif
@@ -349,6 +407,7 @@ ifeq ($(UNAME_S),Darwin)
 	rm -rf "$(SERVER_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve"
 	rsync -a --delete $(SERVER_APP_RELEASE_DIR)/ "$(SERVER_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve/"
 	@echo "sidecar copied into $(SERVER_APP_BUNDLE)/Contents/MacOS/"
+	$(call codesign_app,$(SERVER_APP_BUNDLE))
 else
 	@echo "macos-bundle-server-app-sidecar is a no-op outside macOS"
 endif
@@ -373,18 +432,49 @@ server-app-dev:
 # So: build the .app target only, patch the sidecar in, then produce the
 # .dmg ourselves from what's actually on disk. Nothing here is reachable
 # by Tauri's own dmg step, deliberately.
+
+# Build a .dmg whose window is the standard drag-to-install layout.
+#   $(1) .app to ship   $(2) staging dir   $(3) .app's basename
+#   $(4) volume name    $(5) output .dmg
+#
+# `hdiutil create -srcfolder <the .app>` — what this used to do — makes a
+# volume containing nothing but the .app, so the user has to go find
+# /Applications in another Finder window themselves. Pointing -srcfolder
+# at a *directory* holding the .app plus a symlink to /Applications gives
+# the conventional layout instead: both icons in one window, drag across.
+#
+# Deliberately NOT doing the "pretty" version (custom window size,
+# background image, icon positions). That needs a .DS_Store built by
+# driving Finder over AppleScript at build time — fragile, needs a GUI
+# session, and can't be tested anywhere but a Mac with a logged-in user.
+# The symlink is the part that actually removes user work.
+#
+# ditto, not cp -R: it's Apple's own bundle-aware copier (metadata,
+# xattrs, ACLs, symlinks all preserved) and the .app is code-signed by
+# this point, so a copy that quietly drops metadata is a real risk. Costs
+# a full multi-GB copy per dmg; the staging dir is removed straight after.
+# rm -rf runs first as well as last so a previous run that died mid-way
+# (leaving a stale, half-populated stage) can't leak into this one — ditto
+# into an existing destination merges rather than replaces.
+define build_dmg
+	@echo "==> staging dmg contents (.app + /Applications symlink)"
+	rm -rf "$(2)"
+	mkdir -p "$(2)" dist
+	ditto "$(1)" "$(2)/$(3)"
+	ln -s /Applications "$(2)/Applications"
+	rm -f "$(5)"
+	hdiutil create -volname "$(4)" -srcfolder "$(2)" -ov -format UDZO "$(5)"
+	rm -rf "$(2)"
+endef
+
 macos-release-client:
 ifeq ($(UNAME_S),Darwin)
 	@echo "==> [1/3] building client .app (no dmg -- see this target's comment)"
 	cd desktop/src-tauri && cargo tauri build --bundles app
-	@echo "==> [2/3] patching sidecar into the .app"
+	@echo "==> [2/3] patching sidecar into the .app (and re-signing it)"
 	$(MAKE) macos-bundle-client-sidecar
 	@echo "==> [3/3] building .dmg from the patched .app"
-	mkdir -p dist
-	rm -f "$(CLIENT_DMG)"
-	hdiutil create -volname "Proxy Scaler" \
-		-srcfolder "$(CLIENT_APP_BUNDLE)" \
-		-ov -format UDZO "$(CLIENT_DMG)"
+	$(call build_dmg,$(CLIENT_APP_BUNDLE),$(CLIENT_DMG_STAGE),$(CLIENT_APP_NAME),Proxy Scaler,$(CLIENT_DMG))
 	@echo "built: $(CLIENT_DMG)"
 else
 	@echo "error: 'macos-release-client' must be run on macOS" >&2
@@ -395,14 +485,10 @@ macos-release-server-app:
 ifeq ($(UNAME_S),Darwin)
 	@echo "==> [1/3] building server app .app (no dmg)"
 	cd desktop/server-app && cargo tauri build --bundles app
-	@echo "==> [2/3] patching sidecar into the .app"
+	@echo "==> [2/3] patching sidecar into the .app (and re-signing it)"
 	$(MAKE) macos-bundle-server-app-sidecar
 	@echo "==> [3/3] building .dmg from the patched .app"
-	mkdir -p dist
-	rm -f "$(SERVER_APP_DMG)"
-	hdiutil create -volname "Proxy Scaler Server" \
-		-srcfolder "$(SERVER_APP_BUNDLE)" \
-		-ov -format UDZO "$(SERVER_APP_DMG)"
+	$(call build_dmg,$(SERVER_APP_BUNDLE),$(SERVER_APP_DMG_STAGE),$(SERVER_APP_NAME),Proxy Scaler Server,$(SERVER_APP_DMG))
 	@echo "built: $(SERVER_APP_DMG)"
 else
 	@echo "error: 'macos-release-server-app' must be run on macOS" >&2

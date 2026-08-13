@@ -5,9 +5,8 @@ and update it in the same change that shifts the architecture. Out of date
 docs are worse than no docs; keep this current or delete the section.
 
 This is the implementation-level reference: diagrams, endpoint/command
-inventories, and data-flow detail. Domain vocabulary lives in
-[`CONTEXT.md`](./CONTEXT.md); hard-to-reverse architectural decisions and
-their rationale live in [`docs/adr/`](./docs/adr/).
+inventories, and data-flow detail. Hard-to-reverse architectural
+decisions and their rationale live in [`docs/adr/`](./docs/adr/).
 
 ## Status
 
@@ -24,9 +23,21 @@ log` if this document and the code ever disagree — the code wins.
 
 ## The core split
 
-See [`CONTEXT.md`](./CONTEXT.md) for the Project / Generation server /
-`project_tag` vocabulary, and [ADR-0001](./docs/adr/0001-split-project-and-generation-concerns.md)
-for why the split happened and what it costs to reverse.
+See [ADR-0001](./docs/adr/0001-split-project-and-generation-concerns.md)
+for why the split happened and what it costs to reverse. The three terms
+that matter throughout this document:
+
+- **Project** — a decklist workspace: its raw text, unresolved card list,
+  and per-project preferences (model, DPI targets, tile size, PDF
+  layout). Always lives on the machine running the desktop client, never
+  on a generation server.
+- **Generation server** — the Python FastAPI + worker pair that resolves
+  cards against Scryfall, downloads, upscales, and assembles PDFs. Has no
+  concept of a "project."
+- **`project_tag`** — an opaque string a Project mints once and attaches
+  to every generation request, used purely to scope/filter that project's
+  tasks and images. Deliberately *not* a foreign key; the generation side
+  has no projects table to point at.
 
 `generation_tasks.project_id` was already nullable and never joined
 before the split — the split just makes that looseness the *only*

@@ -254,6 +254,36 @@ def device_kind(device: torch.device | str | None) -> str:
     return name or "unknown"
 
 
+def device_backend(device: torch.device | str | None) -> str:
+    """The *actual* torch backend name — "cuda" | "mps" | "privateuseone" |
+    "cpu" | "unknown" — as opposed to device_kind()'s deliberately coarse
+    gpu/cpu answer.
+
+    Two distinct consumers, hence two functions rather than one:
+
+    - device_kind() is gallery/cache provenance. Its values are persisted
+      into on-disk `.device` sidecar files (see write_cache_device), so
+      its vocabulary can't change without invalidating existing caches.
+    - this one is a live capability signal for the client, which needs to
+      tell Apple's MPS apart from CUDA to pick a sensible default model
+      (MPS is a real GPU but far slower on the heavy transformer models —
+      see ProjectContext.tsx::recommendedDefaultModel()). Never written
+      to disk; safe to extend as new backends appear.
+
+    Not normalized beyond lowercasing, on purpose: "privateuseone" is
+    torch-directml's own backend name and callers match on it directly.
+    """
+    if device is None:
+        return "unknown"
+    import torch
+
+    name = device.type if isinstance(device, torch.device) else str(device).lower()
+    # torch.device("cuda:0").type is already "cuda", but a bare string like
+    # "cuda:0" isn't — strip any index so both forms agree.
+    name = name.split(":", 1)[0]
+    return name or "unknown"
+
+
 @dataclass(frozen=True)
 class UpscaleResult:
     """Upscaled image plus where inference ran."""

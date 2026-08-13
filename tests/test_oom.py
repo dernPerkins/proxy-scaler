@@ -13,6 +13,7 @@ from proxy_scaler.upscale import (
     UpscaleResult,
     _clear_device_cache,
     _is_oom_error,
+    device_backend,
     device_kind,
     read_cache_device,
     write_cache_device,
@@ -46,6 +47,29 @@ def test_device_kind_directml() -> None:
     assert device_kind(_DirectMlDev()) == "gpu"  # type: ignore[arg-type]
     assert device_kind("privateuseone") == "gpu"
     assert device_kind("directml") == "gpu"
+
+
+def test_device_backend_keeps_backends_distinct() -> None:
+    """The counterpart to device_kind(): same inputs, but the real backend
+    survives instead of collapsing to "gpu". The client needs this to tell
+    Apple MPS from CUDA when choosing a default model."""
+
+    class _DirectMlDev:
+        type = "privateuseone"
+
+        def __str__(self) -> str:
+            return "privateuseone"
+
+    assert device_backend(torch.device("cpu")) == "cpu"
+    assert device_backend(torch.device("cuda")) == "cuda"
+    assert device_backend("cuda") == "cuda"
+    assert device_backend("mps") == "mps"
+    assert device_backend(_DirectMlDev()) == "privateuseone"  # type: ignore[arg-type]
+    assert device_backend(None) == "unknown"
+    # An indexed device string ("cuda:0") must answer the same as the
+    # torch.device form, whose .type has the index stripped already.
+    assert device_backend("cuda:0") == "cuda"
+    assert device_backend(torch.device("cuda", 0)) == "cuda"
 
 
 def test_upscale_falls_back_to_cpu_after_oom(tmp_path) -> None:

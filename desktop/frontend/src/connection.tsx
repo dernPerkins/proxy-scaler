@@ -3,12 +3,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "./api/generation";
 import { projectApi, type RecentHost } from "./api/project";
 import {
-  clearGpuAvailable,
+  clearProbedDevice,
   getApiBaseUrl,
   getConnectionMode,
   setApiBaseUrl,
   setConnectionMode,
-  setGpuAvailable,
+  setProbedDevice,
   setServerError,
   setServerReady,
   setServerStarting,
@@ -163,17 +163,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }
 
   // Best-effort, fire-and-forget — see ProjectContext.tsx's
-  // recommendedDefaultModel(), the only consumer of gpuAvailable. Only
+  // recommendedDefaultModel(), the only consumer of the probed device. Only
   // ever called after setServerReady() (both call sites below), so this
   // can't race /api/health or anything else on the startup path. A
   // failure here (torch not importable, a slow/CPU-only box that errors,
-  // network hiccup) just leaves gpuAvailable at null forever for this
+  // network hiccup) just leaves the probed device at null forever for this
   // connection — recommendedDefaultModel() already treats null as "fall
   // back to the mode-based guess," so there's nothing to recover here.
   function probeGpu(): void {
     generationApi
       .getDevice()
-      .then((d) => setGpuAvailable(d.kind === "gpu"))
+      .then((d) => setProbedDevice(d))
       .catch(() => {});
   }
 
@@ -217,10 +217,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // actually up (api/generation.ts's requests wait on the same gate).
   function applyTarget(target: ConnectionTarget) {
     // Every target switch starts from "GPU status unknown" — see
-    // clearGpuAvailable's own comment for why leaving the previous
+    // clearProbedDevice's own comment for why leaving the previous
     // server's answer in place until the new probe resolves is actively
     // wrong, not just stale.
-    clearGpuAvailable();
+    clearProbedDevice();
 
     if (target.mode === "remote") {
       setApiBaseUrl(`http://${target.host}:${target.port}`);
