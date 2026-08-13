@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "resources": ["target/release/proxy-scaler-serve"]
+  }
+}

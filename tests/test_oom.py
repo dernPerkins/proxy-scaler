@@ -32,6 +32,22 @@ def test_device_kind() -> None:
     assert device_kind(None) == "unknown"
 
 
+def test_device_kind_directml() -> None:
+    """torch-directml's device sits on torch's "privateuseone" backend
+    (confirmed against the actual package), not a "directml" string —
+    device_kind() has to know that mapping explicitly."""
+
+    class _DirectMlDev:
+        type = "privateuseone"
+
+        def __str__(self) -> str:
+            return "privateuseone"
+
+    assert device_kind(_DirectMlDev()) == "gpu"  # type: ignore[arg-type]
+    assert device_kind("privateuseone") == "gpu"
+    assert device_kind("directml") == "gpu"
+
+
 def test_upscale_falls_back_to_cpu_after_oom(tmp_path) -> None:
     """GPU OOM should clear cache and retry once on CPU (no tile retries)."""
     up = Upscaler(model=UpscaleModel.SWINIR, scale=4, weights_dir=tmp_path, tile=0)
@@ -192,3 +208,13 @@ def test_cache_device_sidecar(tmp_path) -> None:
 
 def test_clear_device_cache_noop_on_cpu() -> None:
     _clear_device_cache(torch.device("cpu"))
+
+
+def test_clear_device_cache_noop_on_directml() -> None:
+    """privateuseone (DirectML) has no empty_cache()-equivalent to call —
+    confirm this silently no-ops rather than raising."""
+
+    class _DirectMlDev:
+        type = "privateuseone"
+
+    _clear_device_cache(_DirectMlDev())  # type: ignore[arg-type]

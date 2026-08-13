@@ -12,7 +12,6 @@ SchemaVersionMismatch)."""
 
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 import sqlite3
@@ -26,6 +25,16 @@ from .decklist import DeckEntry
 
 if TYPE_CHECKING:
     from .pipeline import FaceResult
+
+# fcntl/msvcrt are both stdlib but mutually platform-exclusive (no fcntl on
+# Windows, no msvcrt elsewhere) — see acquire_worker_lock/release_worker_lock
+# below for the actual locking, gated on IS_WINDOWS the same way
+# supervisor.py already gates its own platform-specific process handling.
+IS_WINDOWS = sys.platform == "win32"
+if IS_WINDOWS:
+    import msvcrt
+else:
+    import fcntl
 
 _IS_FROZEN = bool(getattr(sys, "frozen", False))
 
@@ -894,6 +903,19 @@ def acquire_worker_lock(lock_path: Path | str | None = None) -> int | None:
     path = Path(lock_path) if lock_path else WORKER_LOCK_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
+    if IS_WINDOWS:
+        # msvcrt.locking locks a byte range starting at the current file
+        # position — needs at least one byte to exist to lock it, unlike
+        # flock's whole-file lock which doesn't care about file size.
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            os.close(fd)
+            return None
+        return fd
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -903,6 +925,11 @@ def acquire_worker_lock(lock_path: Path | str | None = None) -> int | None:
 
 
 def release_worker_lock(fd: int) -> None:
+    if IS_WINDOWS:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
+        return
     fcntl.flock(fd, fcntl.LOCK_UN)
     os.close(fd)
 

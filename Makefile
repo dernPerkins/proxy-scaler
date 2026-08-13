@@ -2,6 +2,11 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python3
 PIP := $(VENV)/bin/pip
 RELEASE_BIN := desktop/src-tauri/target/release/proxy-scaler-spike
+# Used to gate the macos-bundle-*-sidecar targets (Make-level, not shell-
+# level — a shell `if...exit 0` inside one recipe line only exits that
+# line's own subshell, not the rest of the target's recipe, so this has
+# to be a Make conditional to actually skip the later lines on non-macOS).
+UNAME_S := $(shell uname -s)
 # api-dev runs uvicorn directly against the ASGI app, bypassing
 # supervisor.py's own CLI (and PROXY_SCALER_SERVER_PORT/HOST) entirely —
 # so it needs its own overrides rather than inheriting either of those.
@@ -28,14 +33,15 @@ PKG_ARCH := $(shell dpkg --print-architecture 2>/dev/null || uname -m)
 CLIENT_ARCHIVE := dist/proxy-scaler-client_$(PKG_VERSION)_linux-$(PKG_ARCH).tar.gz
 SERVER_APP_ARCHIVE := dist/proxy-scaler-server-app_$(PKG_VERSION)_linux-$(PKG_ARCH).tar.gz
 # Placed as a sibling of the compiled binary in *both* target profiles —
-# main.rs finds it via std::env::current_exe()'s own directory at runtime,
-# not through Tauri's bundle.resources/externalBin mechanisms (see
-# main.rs's top-of-file comment for why: bundle.resources hit a
-# reproducible crash in tauri-build 2.6.3's own resource-copying code on
-# this real, ~1500+ file torch bundle). Both profiles are populated
-# unconditionally so 'make build' (release) and 'make desktop'/dev mode
-# (debug) each just work without having to know in advance which one
-# you'll use.
+# main.rs finds it via std::env::current_exe()'s own directory at runtime.
+# Windows now also gets it via tauri.windows.conf.json's bundle.resources
+# (which resolves to the same directory there), but debug builds and
+# macOS/Linux release builds still rely on this Makefile placement — see
+# main.rs's top-of-file comment for the full per-platform story, including
+# why bundle.resources was initially abandoned and what made it viable
+# again. Both profiles are populated unconditionally so 'make build'
+# (release) and 'make desktop'/dev mode (debug) each just work without
+# having to know in advance which one you'll use.
 SIDECAR_DEBUG_DIR := desktop/src-tauri/target/debug/proxy-scaler-serve
 SIDECAR_RELEASE_DIR := desktop/src-tauri/target/release/proxy-scaler-serve
 
@@ -47,16 +53,25 @@ SERVER_APP_DEBUG_DIR := desktop/server-app/target/debug/proxy-scaler-serve
 SERVER_APP_RELEASE_DIR := desktop/server-app/target/release/proxy-scaler-serve
 SERVER_APP_BIN := desktop/server-app/target/release/proxy-scaler-server
 
-.PHONY: help install test serve sidecar sidecar-clean \
+# Where 'cargo tauri build' actually puts the .app once bundle.active is
+# on — productName-derived, must match tauri.conf.json's own "productName"
+# for each app exactly. Only real on macOS; see macos-bundle-*-sidecar
+# below.
+CLIENT_APP_BUNDLE := desktop/src-tauri/target/release/bundle/macos/Proxy Scaler.app
+SERVER_APP_BUNDLE := desktop/server-app/target/release/bundle/macos/Proxy Scaler Server.app
+
+.PHONY: help install test serve sidecar sidecar-release _sidecar-freeze sidecar-clean \
 	build run desktop deb \
 	server-app server-app-dev server-app-run \
-	release release-client-archive release-server-app-archive \
+	macos-bundle-client-sidecar macos-bundle-server-app-sidecar \
+	release release-bg release-status release-client-archive release-server-app-archive \
 	init-db api-dev worker-dev frontend-install frontend-dev frontend-build
 
 help:
 	@echo "--- packaged app (no hot reload -- this is the real build) ---"
 	@echo "build            Build the packaged app (assumes sidecar is already fresh;"
-	@echo "                 run 'make sidecar' first if Python code changed)"
+	@echo "                 run 'make sidecar' first if Python code changed). On macOS,"
+	@echo "                 follow with 'make macos-bundle-client-sidecar' for a runnable .app"
 	@echo "run              Launch the already-built packaged app"
 	@echo "sidecar          Freeze the Python API+worker, placed next to the compiled binary"
 	@echo "sidecar-clean    Remove built sidecar artifacts (stale placements, dist/build dirs)"
@@ -77,7 +92,8 @@ help:
 	@echo "                 sidecar resource directory in place -- see 'sidecar' above)"
 	@echo ""
 	@echo "--- server app (Windows/macOS: status window + tray) ---"
-	@echo "server-app       Build the server app (run 'make sidecar' first)"
+	@echo "server-app       Build the server app (run 'make sidecar' first). On macOS, follow"
+	@echo "                 with 'make macos-bundle-server-app-sidecar' for a runnable .app"
 	@echo "server-app-run   Launch the already-built server app"
 	@echo "server-app-dev   Run the server app via cargo tauri dev"
 	@echo ""
@@ -85,14 +101,18 @@ help:
 	@echo "deb              Build the .deb server package into dist/ (run 'make sidecar' first)"
 	@echo ""
 	@echo "--- everything at once, ready to upload (Linux only) ---"
-	@echo "release          sidecar + client + server-app + deb, all landing in dist/ --"
-	@echo "                 this is what you want for a GitHub release. Client/server-app"
-	@echo "                 come out as .tar.gz (binary + its sidecar folder), since"
-	@echo "                 Tauri's own installer bundling (.dmg/.msi/.AppImage) isn't"
-	@echo "                 wired up in this repo yet -- see tauri.conf.json's bundle.active"
+	@echo "release          sidecar-release + client + server-app + deb, all landing in dist/"
+	@echo "                 -- this is what you want for a GitHub release."
+	@echo "release-bg       Same as 'release', but detached (setsid) so it survives an SSH"
+	@echo "                 disconnect -- logs to dist/.release.log, exit code to"
+	@echo "                 dist/.release.exit. Safe to close the terminal right after."
+	@echo "release-status   Check progress/completion of a 'release-bg' run"
 	@echo ""
 	@echo "--- misc ---"
 	@echo "install          Create $(VENV) and pip install -e ."
+	@echo "                 GPU_VARIANT=rocm|directml make install layers on an alternate"
+	@echo "                 torch build (AMD on Linux/Windows respectively) -- see the"
+	@echo "                 GPU_VARIANT comment above the sidecar targets in this Makefile"
 	@echo "test             Run the full pytest suite"
 	@echo "serve            Run the supervisor directly (proxy-scaler-serve)"
 	@echo "frontend-install npm install in desktop/frontend"
@@ -105,6 +125,9 @@ $(VENV)/bin/python3:
 install: $(VENV)/bin/python3
 	$(PYTHON) -m pip install --upgrade pip
 	$(PIP) install -e .
+ifneq ($(GPU_VARIANT),)
+	$(PIP) install $(TORCH_INSTALL_ARGS)
+endif
 
 test:
 	$(VENV)/bin/pytest tests/ -q
@@ -117,6 +140,31 @@ sidecar-clean:
 	rm -rf $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR)
 	rm -rf $(SERVER_APP_DEBUG_DIR) $(SERVER_APP_RELEASE_DIR)
 
+# GPU_VARIANT picks which torch build 'install' layers on top of the base
+# `pip install -e .` — a mutually-exclusive alternate build (not an
+# additive extra, hence a Makefile-level choice rather than a pyproject.toml
+# optional-dependency): default/unset = PyPI's default CUDA-enabled wheel
+# (unchanged behavior); 'rocm' = AMD on Linux (resolve_device() in
+# upscale.py needs no code for this — ROCm's HIP backend already reports
+# through the same torch.cuda.* namespace CUDA uses); 'directml' = AMD (or
+# any DirectX12 GPU) on Windows, where no ROCm build exists at all (see
+# upscale.py's torch_directml branch). 'sidecar' never re-resolves
+# dependencies itself, so the variant choice has to happen at 'install'
+# time — run e.g. `GPU_VARIANT=rocm make install sidecar` on the box
+# you're building for.
+GPU_VARIANT ?=
+ifeq ($(GPU_VARIANT),rocm)
+TORCH_INSTALL_ARGS := torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+else ifeq ($(GPU_VARIANT),directml)
+# torch-directml hard-pins these exact versions in its own package
+# metadata — not a range, an exact pin (confirmed against the published
+# wheel) — so a directml build can't float to a newer torch the way a
+# default/rocm build might.
+TORCH_INSTALL_ARGS := torch==2.4.1 torchvision==0.19.1 torch-directml
+else
+TORCH_INSTALL_ARGS :=
+endif
+
 # One-folder PyInstaller freeze (see desktop/pyinstaller/proxy-scaler-serve.spec
 # for why onedir, not onefile — onefile self-extracts its ~1GB+ torch bundle
 # to a fresh temp dir on *every* launch, a real measured startup-time cost;
@@ -124,12 +172,17 @@ sidecar-clean:
 # so this step itself is slow — that's inherent to the approach, not
 # something to optimize away here. Only needed when Python code
 # (proxy_scaler/*) changed; a Rust- or frontend-only change doesn't need
-# this.
-sidecar: sidecar-clean
+# this. Produces desktop/pyinstaller/dist/proxy-scaler-serve/ only —
+# placing copies of it next to compiled binaries is sidecar/sidecar-release's
+# own job below, so a standalone 'make deb' (which reads straight from this
+# dist dir, see packaging/build-deb.sh) doesn't need either of those to run.
+_sidecar-freeze: sidecar-clean
 	$(PIP) install pyinstaller pyinstaller-hooks-contrib
 	$(VENV)/bin/pyinstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
+
+sidecar: _sidecar-freeze
 	mkdir -p $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR) \
 		$(SERVER_APP_DEBUG_DIR) $(SERVER_APP_RELEASE_DIR)
 	# -L (dereference symlinks): PyInstaller's onedir output commonly
@@ -142,21 +195,80 @@ sidecar: sidecar-clean
 	rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_RELEASE_DIR)/
 	@echo "sidecar placed for the client and the server app (debug + release)"
 
+# Release-only variant: skips the two debug-dir copies entirely (pure
+# cargo-tauri-dev convenience that 'release's downstream targets never
+# read) and hardlinks instead of dereferencing-copying the two it does
+# need. A hardlink is indistinguishable from a real file to tar/dpkg-deb
+# (same "no symlinks in the shipped tree" property rsync -aL was already
+# giving us) but costs no actual I/O, unlike a multi-GB byte-for-byte
+# copy — both release dirs live under desktop/*/target/, the same
+# filesystem as the PyInstaller output, so this is safe. Falls back to
+# rsync -aL per-target if hardlinking isn't supported on this filesystem
+# (some FUSE/network mounts silently keep everything at link count 1).
+sidecar-release: _sidecar-freeze
+	@echo "==> [1/4] staging sidecar (release only)"
+	mkdir -p $(dir $(SIDECAR_RELEASE_DIR)) $(dir $(SERVER_APP_RELEASE_DIR))
+	rm -rf $(SIDECAR_RELEASE_DIR)
+	cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(SIDECAR_RELEASE_DIR) \
+		|| rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SIDECAR_RELEASE_DIR)/
+	rm -rf $(SERVER_APP_RELEASE_DIR)
+	cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(SERVER_APP_RELEASE_DIR) \
+		|| rsync -aL --delete desktop/pyinstaller/dist/proxy-scaler-serve/ $(SERVER_APP_RELEASE_DIR)/
+	@echo "sidecar placed for the client and the server app (release only)"
+
 # The real packaged-app build: compiles main.rs and (via tauri.conf.json's
 # beforeBuildCommand) rebuilds the frontend automatically. Does NOT
 # refreeze the sidecar — run 'make sidecar' first if Python changed, or
-# this will happily package a stale one.
+# this will happily package a stale one. On macOS, follow with
+# 'make macos-bundle-client-sidecar' to get a runnable .app (see its own
+# comment for why that's a separate step, not automatic).
 build:
 	cd desktop/src-tauri && cargo tauri build
 
 run:
 	./$(RELEASE_BIN)
 
+# macOS only: Tauri's own resource_dir() resolves to Contents/Resources/
+# there, not Contents/MacOS/ where the compiled binary (and this app's
+# current_exe()-relative sidecar lookup) actually lives — and Tauri v2 has
+# no afterBundleCommand hook to place something post-bundle. So the
+# sidecar has to be copied in by hand, right after 'cargo tauri build'
+# produces the .app. A no-op with a clear message on any other OS. Plain
+# copy (not a hardlink) since the .app may land on a different volume than
+# target/release/proxy-scaler-serve (e.g. once DMG staging is involved).
+macos-bundle-client-sidecar:
+ifeq ($(UNAME_S),Darwin)
+	@if [ ! -d "$(CLIENT_APP_BUNDLE)" ]; then \
+		echo "error: $(CLIENT_APP_BUNDLE) not found -- run 'make build' first" >&2; \
+		exit 1; \
+	fi
+	rm -rf "$(CLIENT_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve"
+	rsync -a --delete $(SIDECAR_RELEASE_DIR)/ "$(CLIENT_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve/"
+	@echo "sidecar copied into $(CLIENT_APP_BUNDLE)/Contents/MacOS/"
+else
+	@echo "macos-bundle-client-sidecar is a no-op outside macOS"
+endif
+
 # The server app: a status window that runs the generation server for
 # other machines to connect to, and lives in the tray. Same sidecar
-# staging story as the client, so 'make sidecar' covers both.
+# staging story as the client, so 'make sidecar' covers both. On macOS,
+# follow with 'make macos-bundle-server-app-sidecar' — see
+# macos-bundle-client-sidecar's comment, identical reasoning.
 server-app:
 	cd desktop/server-app && cargo tauri build
+
+macos-bundle-server-app-sidecar:
+ifeq ($(UNAME_S),Darwin)
+	@if [ ! -d "$(SERVER_APP_BUNDLE)" ]; then \
+		echo "error: $(SERVER_APP_BUNDLE) not found -- run 'make server-app' first" >&2; \
+		exit 1; \
+	fi
+	rm -rf "$(SERVER_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve"
+	rsync -a --delete $(SERVER_APP_RELEASE_DIR)/ "$(SERVER_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve/"
+	@echo "sidecar copied into $(SERVER_APP_BUNDLE)/Contents/MacOS/"
+else
+	@echo "macos-bundle-server-app-sidecar is a no-op outside macOS"
+endif
 
 server-app-run:
 	./$(SERVER_APP_BIN)
@@ -165,40 +277,78 @@ server-app-dev:
 	cd desktop/server-app && cargo tauri dev
 
 # Headless server package for Linux. Consumes the same PyInstaller onedir
-# bundle 'sidecar' produces, so run that first. PyInstaller output is
-# platform-specific: this only produces a working package when built on
-# Linux, on the architecture you're targeting — it cannot be built from
-# macOS. See packaging/build-deb.sh for the staging details.
+# bundle 'sidecar'/'sidecar-release' produces, so run one of those first.
+# PyInstaller output is platform-specific: this only produces a working
+# package when built on Linux, on the architecture you're targeting — it
+# cannot be built from macOS. See packaging/build-deb.sh for the staging
+# details.
 deb:
+	@echo "==> [4/4] building .deb"
 	./packaging/build-deb.sh
 
-# One command, everything upload-ready in dist/. sidecar listed first and
-# explicitly (rather than left implicit via the other three's own prereqs)
-# so it's guaranteed to run exactly once, before any of them, even though
-# 'deb' itself deliberately has no sidecar prerequisite of its own (see its
-# comment above) — that's still true for a standalone 'make deb', this
-# just orders around it here. Not safe under `make -j`: relies on plain
-# left-to-right prerequisite ordering, which parallel make doesn't honor.
-release: sidecar release-client-archive release-server-app-archive deb
+# One command, everything upload-ready in dist/. sidecar-release listed
+# first and explicitly (rather than left implicit via the other three's
+# own prereqs) so it's guaranteed to run exactly once, before any of them,
+# even though 'deb' itself deliberately has no sidecar prerequisite of its
+# own (see its comment above) — that's still true for a standalone
+# 'make deb', this just orders around it here. Not safe under `make -j`:
+# relies on plain left-to-right prerequisite ordering, which parallel make
+# doesn't honor.
+release: sidecar-release release-client-archive release-server-app-archive deb
 	@echo ""
 	@echo "release artifacts:"
 	@ls -1 dist/
 
 # Client binary + its sidecar folder, tarred together the same way you'd
-# hand someone the whole target/release/ directory — there's no installer
-# bundle to produce instead (bundle.active is off, see tauri.conf.json).
-release-client-archive: sidecar build
+# hand someone the whole target/release/ directory. Linux isn't a
+# configured bundle.targets entry (see tauri.conf.json — Windows/macOS get
+# real installers, Linux still ships as a tarball, see ARCHITECTURE.md/
+# desktop README for why), so 'cargo tauri build' here just compiles the
+# binary same as always, nothing installer-shaped to produce instead.
+release-client-archive: sidecar-release build
+	@echo "==> [2/4] archiving client"
 	mkdir -p dist
 	tar czf $(CLIENT_ARCHIVE) -C desktop/src-tauri/target/release \
 		proxy-scaler-spike proxy-scaler-serve
 	@echo "built: $(CLIENT_ARCHIVE)"
 
 # Same idea as release-client-archive, for the status-window server app.
-release-server-app-archive: sidecar server-app
+release-server-app-archive: sidecar-release server-app
+	@echo "==> [3/4] archiving server app"
 	mkdir -p dist
 	tar czf $(SERVER_APP_ARCHIVE) -C desktop/server-app/target/release \
 		proxy-scaler-server proxy-scaler-serve
 	@echo "built: $(SERVER_APP_ARCHIVE)"
+
+# Runs 'release' fully detached (setsid, its own session — not just
+# backgrounded within this shell) so it survives an SSH disconnect. Logs
+# to dist/.release.log, writes its exit code to dist/.release.exit when
+# done; check either with 'make release-status'. Safe to close the
+# terminal/SSH session immediately after this returns.
+release-bg:
+	@mkdir -p dist
+	@rm -f dist/.release.exit dist/.release.pid
+	@setsid sh -c '$(MAKE) release > dist/.release.log 2>&1; echo $$? > dist/.release.exit' < /dev/null & \
+	echo $$! > dist/.release.pid ; \
+	echo "release started in the background (PID $$(cat dist/.release.pid))" ; \
+	echo "  check status: make release-status" ; \
+	echo "  raw log:      tail -f dist/.release.log"
+
+release-status:
+	@if [ ! -f dist/.release.pid ]; then \
+		echo "no release-bg run found (dist/.release.pid missing)"; \
+	elif kill -0 "$$(cat dist/.release.pid)" 2>/dev/null; then \
+		echo "still running (PID $$(cat dist/.release.pid)) -- last 20 lines of dist/.release.log:"; \
+		tail -n 20 dist/.release.log 2>/dev/null || echo "(no output yet)"; \
+	else \
+		if [ -f dist/.release.exit ] && [ "$$(cat dist/.release.exit)" = "0" ]; then \
+			echo "done -- release succeeded"; \
+		else \
+			echo "done -- release FAILED (exit $$(cat dist/.release.exit 2>/dev/null || echo unknown))"; \
+		fi; \
+		echo "last 20 lines of dist/.release.log:"; \
+		tail -n 20 dist/.release.log 2>/dev/null || true; \
+	fi
 
 # Tauri dev mode: Rust auto-rebuilds/relaunches on change, and the window
 # loads Vite's dev server (devUrl in tauri.conf.json) for frontend HMR.

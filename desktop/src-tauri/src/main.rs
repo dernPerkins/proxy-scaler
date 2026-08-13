@@ -7,22 +7,44 @@
 // launch (see ConnectGate.tsx), not persisted.
 //
 // proxy-scaler-serve is a PyInstaller onedir build (a plain directory,
-// loaded directly off disk, no per-launch extraction) placed by `make
-// sidecar` as a sibling of the compiled binary at
-// target/release/proxy-scaler-serve/ — NOT via Tauri's externalBin
-// (single-file only, which forced onefile mode: self-extracting its
-// ~1GB+ torch/spandrel/torchvision bundle to a fresh temp dir on *every*
-// launch, a real measured startup-time regression) and NOT via
-// tauri.conf.json's bundle.resources either (tried that first; hit a
-// reproducible crash — "Not a directory (os error 20)" — inside
-// tauri-build 2.6.3's own copy_resources/ResourcePaths code walking this
-// real, ~1500+ file bundle, that couldn't be resolved without a local
-// Rust toolchain to step through it). This sidesteps Tauri's resource
-// pipeline entirely: main.rs computes the path itself, relative to
-// std::env::current_exe(), and the Makefile places files there directly.
-// Revisit if/when bundle.active flips to true for real .app/.dmg
-// packaging — this placement doesn't survive that step and needs its own
-// solution then (afterBuildCommand copying into the bundle, most likely).
+// loaded directly off disk, no per-launch extraction). Looked up here at
+// runtime relative to std::env::current_exe(), rather than through
+// Tauri's app.path().resource_dir() API — NOT via Tauri's externalBin
+// either (single-file only, which forced onefile mode: self-extracting
+// its ~1GB+ torch/spandrel/torchvision bundle to a fresh temp dir on
+// *every* launch, a real measured startup-time regression).
+//
+// bundle.resources was tried and initially abandoned for a reproducible
+// crash — "Not a directory (os error 20)" — inside tauri-build 2.6.3's
+// own copy_resources/ResourcePaths code walking the raw PyInstaller
+// output. Root cause, confirmed once a real Rust toolchain was available
+// to step through it: that code's read_link()-then-is_dir() handling of
+// torch's dense set of versioned .so/.dylib symlinks (is_dir() follows
+// symlinks, and a dangling/relative one trips it). Feeding it an
+// already-dereferenced copy (exactly what `make sidecar`/`sidecar-release`
+// already produce via rsync -aL/cp -al, since real regular files have no
+// such problem) avoids the crash entirely — confirmed via a clean
+// `cargo build --release` with bundle.resources pointed at
+// target/release/proxy-scaler-serve/.
+//
+// Given that, the placement per platform is:
+//   - Windows: tauri.windows.conf.json declares bundle.resources pointing
+//     at the dereferenced sidecar dir. Tauri's own resource_dir() on
+//     Windows already resolves to "the directory containing the main
+//     executable" — the exact same place current_exe()-relative lookup
+//     here already checks — so this needed no main.rs change at all.
+//   - macOS: resource_dir() there resolves to Contents/Resources/, NOT
+//     Contents/MacOS/ where the binary (and this lookup) lives, and Tauri
+//     v2 has no afterBundleCommand hook to place something there
+//     post-bundle. So macOS keeps this current_exe()-relative lookup and
+//     gets its sidecar copied into Contents/MacOS/ by a manual Makefile
+//     step run right after `cargo tauri build` (see the Makefile's
+//     macOS-only bundle step) — bundle.resources is deliberately NOT
+//     configured for macOS, to avoid embedding a second, unused multi-GB
+//     copy inside Contents/Resources/.
+//   - Linux: no bundle.targets entry configured (see ARCHITECTURE.md /
+//     desktop README for why) — the Makefile places files here exactly as
+//     before, ships as a .tar.gz.
 mod project_store;
 
 use std::sync::Arc;

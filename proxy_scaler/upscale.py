@@ -187,9 +187,27 @@ def resolve_device() -> torch.device:
     import torch
 
     if torch.cuda.is_available():
+        # Also where a ROCm-built torch (AMD on Linux) lands: ROCm's HIP
+        # backend deliberately mirrors the cuda namespace end to end
+        # (is_available(), device("cuda"), OutOfMemoryError, empty_cache(),
+        # synchronize()), so no separate branch is needed for it here or
+        # anywhere else in this module.
         return torch.device("cuda")
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return torch.device("mps")
+    # AMD on Windows: no ROCm build exists for Windows, so torch-directml
+    # (Microsoft's DirectX12-backed torch device, works with any
+    # DirectX12 GPU — AMD/Intel/Nvidia) is the realistic path. Its device
+    # lives on torch's "privateuseone" backend, invisible to the checks
+    # above — only installed in a directml-flavored build (see Makefile's
+    # GPU_VARIANT), so this import is optional everywhere else.
+    try:
+        import torch_directml
+    except ImportError:
+        pass
+    else:
+        if torch_directml.is_available():
+            return torch_directml.device()
     return torch.device("cpu")
 
 
@@ -215,6 +233,9 @@ def _clear_device_cache(device: torch.device | None) -> None:
             torch.mps.empty_cache()
         except Exception:  # noqa: BLE001
             pass
+    # device.type == "privateuseone" (DirectML) intentionally falls
+    # through and does nothing — torch-directml's public API has no
+    # empty_cache()-equivalent to call.
 
 
 def device_kind(device: torch.device | str | None) -> str:
@@ -226,7 +247,9 @@ def device_kind(device: torch.device | str | None) -> str:
     name = device.type if isinstance(device, torch.device) else str(device).lower()
     if name == "cpu":
         return "cpu"
-    if name in ("cuda", "mps", "gpu"):
+    # "privateuseone" is torch-directml's (AMD-on-Windows) backend name;
+    # "directml" is a defensive alias in case that ever changes upstream.
+    if name in ("cuda", "mps", "gpu", "privateuseone", "directml"):
         return "gpu"
     return name or "unknown"
 
