@@ -144,11 +144,32 @@ This shipped exactly once. `macos-release` prevents it by building
 then producing the `.dmg` itself with `hdiutil` — Tauri's own dmg step is
 never used.
 
-macOS also differs from Windows here: Tauri's `resource_dir()` resolves
-to `Contents/Resources/`, but the binary (and therefore the sidecar
-lookup) lives in `Contents/MacOS/`. `bundle.resources` is deliberately
-*not* configured for macOS, to avoid embedding a second unused multi-GB
-copy.
+### Where the sidecar goes inside the .app
+
+`Contents/Resources/proxy-scaler-serve/` — **not** `Contents/MacOS/`
+next to the binary, which is where every other platform puts it.
+
+Apple's bundle format defines `Contents/MacOS/` as executables-only, and
+`codesign` enforces it. Signing a bundle with a PyInstaller onedir tree
+in there fails outright on the first non-code file it meets:
+
+```
+Proxy Scaler.app: code object is not signed at all
+In subcomponent: .../proxy-scaler-serve/_internal/pyphen/dictionaries/hyph_lt.dic
+```
+
+That is not fixable by signing harder — a hyphenation dictionary is not
+code, and `Contents/MacOS` has no way to say so. `Contents/Resources/` is
+where non-code belongs; its contents are sealed by hash instead of being
+treated as nested code.
+
+`main.rs` therefore checks two locations and takes whichever exists: a
+sibling of the binary (dev builds, and the shipped Windows/Linux layout),
+then `../Resources/`. One lookup, correct everywhere, no
+`cfg!(target_os)`. If neither exists the error names both paths it tried.
+
+`bundle.resources` is still deliberately *not* configured for macOS —
+Tauri would copy the tree a second time during the build.
 
 ### Always verify before distributing
 
@@ -156,7 +177,7 @@ copy.
 hdiutil attach dist/proxy-scaler-client_0.1.0_macos-$(uname -m).dmg \
   -nobrowse -mountpoint /tmp/psdmg
 ls /tmp/psdmg                                     # app + Applications symlink
-ls /tmp/psdmg/"Proxy Scaler.app"/Contents/MacOS/  # binary + sidecar dir
+ls /tmp/psdmg/"Proxy Scaler.app"/Contents/Resources/  # sidecar dir
 codesign --verify --strict /tmp/psdmg/"Proxy Scaler.app"
 hdiutil detach /tmp/psdmg
 ```
@@ -191,8 +212,8 @@ on first launch of a downloaded build (right-click → Open). Proper
 notarization needs a paid Apple Developer account.
 
 Why it's needed at all: `cargo tauri build` signs the bundle it just
-produced, and copying a multi-GB directory into `Contents/MacOS/`
-afterwards invalidates that signature — `Contents/MacOS/` is nested code
+produced, and copying a multi-GB directory into `Contents/Resources/`
+afterwards invalidates that signature — bundle contents are sealed
 under the signature's resource rules, so its contents are sealed rather
 than ignored. A bundle with a *broken* signature is worse than an
 unsigned one: Gatekeeper is stricter about it, and LaunchServices may
@@ -227,7 +248,7 @@ an inside-out pass — sign the sidecar's Mach-O files individually, then
 the outer `.app` last, still without `--deep`:
 
 ```bash
-find "<app>/Contents/MacOS/proxy-scaler-serve" -type f -print0 |
+find "<app>/Contents/Resources/proxy-scaler-serve" -type f -print0 |
   while IFS= read -r -d '' f; do
     file -b "$f" | grep -q Mach-O && codesign --force --sign - "$f"
   done

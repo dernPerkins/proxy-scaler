@@ -330,9 +330,8 @@ run:
 
 # Re-sign $(1) (an .app) ad-hoc. Must run AFTER the sidecar is copied in:
 # `cargo tauri build` signs the bundle it produced, and dropping a
-# multi-GB directory into Contents/MacOS/ afterwards invalidates that
-# signature — Contents/MacOS/ is "nested code" as far as the signature's
-# resource rules are concerned, so its contents are sealed, not ignored.
+# multi-GB directory into Contents/Resources/ afterwards invalidates that
+# signature — bundle contents are sealed by the signature, not ignored.
 #
 # What a broken signature costs us: Gatekeeper blocks a fresh install on
 # another Mac (right-click -> Open works around it), and LaunchServices
@@ -371,12 +370,19 @@ define codesign_app
 	@echo "signed (ad-hoc, unnotarized): $(1)"
 endef
 
-# macOS only: Tauri's own resource_dir() resolves to Contents/Resources/
-# there, not Contents/MacOS/ where the compiled binary (and this app's
-# current_exe()-relative sidecar lookup) actually lives — and Tauri v2 has
-# no afterBundleCommand hook to place something post-bundle. So the
-# sidecar has to be copied in by hand, right after 'cargo tauri build'
-# produces the .app. A no-op with a clear message on any other OS. Plain
+# macOS only. Tauri v2 has no afterBundleCommand hook, so the sidecar has
+# to be copied into the .app by hand, right after 'cargo tauri build'
+# produces it.
+#
+# It goes in Contents/Resources/, NOT Contents/MacOS/ next to the binary.
+# Apple's bundle format defines Contents/MacOS as executables-only and
+# codesign enforces that: signing a bundle with a PyInstaller onedir tree
+# in there fails outright with "code object is not signed at all" on the
+# first non-code file it meets (a hyphenation dictionary, .dist-info
+# metadata, ...). Contents/Resources is where non-code belongs, sealed by
+# hash instead. main.rs checks both locations, so dev builds keep working
+# with the sidecar as a plain sibling. A no-op with a clear message on any
+# other OS. Plain
 # copy (not a hardlink) since the .app may land on a different volume than
 # target/release/proxy-scaler-serve (e.g. once DMG staging is involved).
 macos-bundle-client-sidecar:
@@ -385,9 +391,9 @@ ifeq ($(UNAME_S),Darwin)
 		echo "error: $(CLIENT_APP_BUNDLE) not found -- run 'make build' first" >&2; \
 		exit 1; \
 	fi
-	rm -rf "$(CLIENT_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve"
-	rsync -a --delete $(SIDECAR_RELEASE_DIR)/ "$(CLIENT_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve/"
-	@echo "sidecar copied into $(CLIENT_APP_BUNDLE)/Contents/MacOS/"
+	rm -rf "$(CLIENT_APP_BUNDLE)/Contents/Resources/proxy-scaler-serve"
+	rsync -a --delete $(SIDECAR_RELEASE_DIR)/ "$(CLIENT_APP_BUNDLE)/Contents/Resources/proxy-scaler-serve/"
+	@echo "sidecar copied into $(CLIENT_APP_BUNDLE)/Contents/Resources/"
 	$(call codesign_app,$(CLIENT_APP_BUNDLE))
 else
 	@echo "macos-bundle-client-sidecar is a no-op outside macOS"
@@ -407,9 +413,9 @@ ifeq ($(UNAME_S),Darwin)
 		echo "error: $(SERVER_APP_BUNDLE) not found -- run 'make server-app' first" >&2; \
 		exit 1; \
 	fi
-	rm -rf "$(SERVER_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve"
-	rsync -a --delete $(SERVER_APP_RELEASE_DIR)/ "$(SERVER_APP_BUNDLE)/Contents/MacOS/proxy-scaler-serve/"
-	@echo "sidecar copied into $(SERVER_APP_BUNDLE)/Contents/MacOS/"
+	rm -rf "$(SERVER_APP_BUNDLE)/Contents/Resources/proxy-scaler-serve"
+	rsync -a --delete $(SERVER_APP_RELEASE_DIR)/ "$(SERVER_APP_BUNDLE)/Contents/Resources/proxy-scaler-serve/"
+	@echo "sidecar copied into $(SERVER_APP_BUNDLE)/Contents/Resources/"
 	$(call codesign_app,$(SERVER_APP_BUNDLE))
 else
 	@echo "macos-bundle-server-app-sidecar is a no-op outside macOS"

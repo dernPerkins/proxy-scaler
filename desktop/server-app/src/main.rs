@@ -173,7 +173,32 @@ async fn start_server(app: AppHandle, state: State<'_, ServerState>) -> Result<(
         .parent()
         .ok_or_else(|| "current executable has no parent directory".to_string())?
         .to_path_buf();
-    let exe_path = exe_dir.join("proxy-scaler-serve").join(exe_name);
+    // Sibling first (dev builds, Windows/Linux), then ../Resources for a
+    // macOS .app — see the client's identical lookup in
+    // desktop/src-tauri/src/main.rs for why Contents/MacOS can't hold the
+    // sidecar.
+    let candidates = [
+        exe_dir.join("proxy-scaler-serve").join(&exe_name),
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join("proxy-scaler-serve")
+            .join(&exe_name),
+    ];
+    let exe_path = candidates
+        .iter()
+        .find(|p| p.is_file())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "proxy-scaler-serve not found. Looked in: {}",
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
 
     // Bound separately rather than inlined: an array literal mixing
     // `&'static str` and `&String` relies on coercion to unify, which is

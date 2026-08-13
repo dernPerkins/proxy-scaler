@@ -124,7 +124,41 @@ async fn start_local_server(
         .parent()
         .ok_or_else(|| "current executable has no parent directory".to_string())?
         .to_path_buf();
-    let exe_path = exe_dir.join("proxy-scaler-serve").join(exe_name);
+    // Two candidate locations, first one that exists wins:
+    //   - a sibling of this binary — dev builds (target/{debug,release}/)
+    //     and the shipped Windows/Linux layout.
+    //   - ../Resources/ — inside a macOS .app. Contents/MacOS is defined by
+    //     Apple's bundle format as executables-*only*, and codesign enforces
+    //     it: a PyInstaller onedir tree there fails to sign outright, with
+    //     "code object is not signed at all" on the first non-code file it
+    //     meets (hyphenation dictionaries, .dist-info metadata, ...).
+    //     Contents/Resources is where non-code belongs — sealed by hash
+    //     rather than treated as code. See docs/releasing.md.
+    // Checking both keeps one lookup correct everywhere instead of
+    // cfg!(target_os)-ing it, and means a mis-placed sidecar reports where
+    // it actually looked rather than a bare spawn failure.
+    let candidates = [
+        exe_dir.join("proxy-scaler-serve").join(&exe_name),
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join("proxy-scaler-serve")
+            .join(&exe_name),
+    ];
+    let exe_path = candidates
+        .iter()
+        .find(|p| p.is_file())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "proxy-scaler-serve not found. Looked in: {}",
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
     // Bound separately rather than inlined: an array literal mixing
     // `&'static str` and `&String` relies on coercion to unify, which is
     // needless risk for a build we can't check locally (same pitfall
