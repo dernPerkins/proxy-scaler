@@ -49,6 +49,7 @@
 
 mod project_store;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,7 +57,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{oneshot, Mutex, Notify};
 
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project, get_last_project_id,
@@ -77,6 +78,13 @@ const READY_MARKER: &str = "PROXY_SCALER_READY";
 // picked to dodge the usual 8000/8080/8888/9000/etc collisions.
 const LOCAL_PORT: u16 = 13207;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(12);
+/// Generous on purpose: the sidecar is a ~2.8GB PyInstaller bundle whose
+/// first launch after an install can be dominated by the OS scanning it.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+/// How much of the sidecar's stderr to keep for the startup-failure
+/// message. Enough to carry a Python traceback's tail, small enough that
+/// it stays readable inside a UI toast.
+const STDERR_TAIL_LINES: usize = 20;
 
 #[derive(Default)]
 struct SidecarState {
@@ -133,39 +141,112 @@ async fn start_local_server(
     *guard = Some(child);
     drop(guard);
 
-    let ready = Arc::new(Notify::new());
-    let ready_signal = ready.clone();
+    // The startup outcome, reported exactly once by the reader task below:
+    // Ok on the ready marker, Err if the process dies first. A oneshot
+    // rather than a second Notify specifically because Notify only wakes
+    // waiters already registered at the time it fires — a sidecar that
+    // exits before this function reaches its await would be missed
+    // entirely and then waited out for the full timeout, reporting a
+    // meaningless "did not become ready" for what was actually an
+    // immediate, diagnosable crash.
+    let (outcome_tx, outcome_rx) = oneshot::channel::<Result<(), String>>();
+    let mut outcome_tx = Some(outcome_tx);
     let exited = state.exited.clone();
 
     tauri::async_runtime::spawn(async move {
+        // Kept so a startup failure can report what the sidecar actually
+        // said instead of a bare timeout. Everything worth reading lands
+        // on stderr — supervisor.py's own "API server did not become
+        // healthy in time", or a child's traceback.
+        let mut stderr_tail: VecDeque<String> = VecDeque::new();
+
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     let text = String::from_utf8_lossy(&line);
                     print!("[proxy-scaler-serve] {text}");
                     if text.contains(READY_MARKER) {
-                        ready_signal.notify_one();
+                        if let Some(tx) = outcome_tx.take() {
+                            let _ = tx.send(Ok(()));
+                        }
                     }
                 }
                 CommandEvent::Stderr(line) => {
-                    eprint!("[proxy-scaler-serve] {}", String::from_utf8_lossy(&line));
+                    let text = String::from_utf8_lossy(&line);
+                    eprint!("[proxy-scaler-serve] {text}");
+                    if stderr_tail.len() == STDERR_TAIL_LINES {
+                        stderr_tail.pop_front();
+                    }
+                    stderr_tail.push_back(text.trim_end().to_string());
                 }
                 CommandEvent::Terminated(payload) => {
                     eprintln!("[proxy-scaler-serve] exited: {payload:?}");
+                    // Only meaningful if it died *before* reporting ready;
+                    // once the take() above has consumed the sender, a
+                    // later exit is an ordinary shutdown, not a failure.
+                    if let Some(tx) = outcome_tx.take() {
+                        let detail = if stderr_tail.is_empty() {
+                            "no output on stderr".to_string()
+                        } else {
+                            stderr_tail
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        };
+                        let _ = tx.send(Err(format!(
+                            "proxy-scaler-serve exited during startup (code {:?}): {detail}",
+                            payload.code
+                        )));
+                    }
                     exited.notify_waiters();
                     break;
                 }
                 _ => {}
             }
         }
+
+        // The event stream can also just end — no Terminated event, the
+        // channel simply closed. Leaving the oneshot unsent would strand
+        // the caller on the full timeout for no reason.
+        if let Some(tx) = outcome_tx.take() {
+            let _ = tx.send(Err(
+                "proxy-scaler-serve stopped reporting before signalling ready".to_string(),
+            ));
+        }
     });
 
     drop(transition);
 
-    match tokio::time::timeout(Duration::from_secs(90), ready.notified()).await {
-        Ok(()) => Ok(local_url()),
-        Err(_) => Err("proxy-scaler-serve did not become ready within 90s".to_string()),
+    let outcome = match tokio::time::timeout(STARTUP_TIMEOUT, outcome_rx).await {
+        Ok(Ok(Ok(()))) => Ok(local_url()),
+        Ok(Ok(Err(reason))) => Err(reason),
+        // Sender dropped without sending. The fallback above makes this
+        // unreachable in practice, but treat it as a failure rather than
+        // reporting a success there's no evidence for.
+        Ok(Err(_)) => Err("proxy-scaler-serve startup reporting failed".to_string()),
+        Err(_) => Err(format!(
+            "proxy-scaler-serve did not become ready within {}s",
+            STARTUP_TIMEOUT.as_secs()
+        )),
+    };
+
+    if outcome.is_err() {
+        // Don't leave a dead or wedged child sitting in the slot: the
+        // early-return at the top of this function treats an occupied slot
+        // as "already running", so a retry would return the local URL and
+        // report success with nothing behind it.
+        let _transition = state.transition.lock().await;
+        let mut guard = state.child.lock().await;
+        if let Some(child) = guard.take() {
+            // Hard kill rather than stop_sidecar's graceful path: startup
+            // already failed, so there's no healthy supervisor left to
+            // cooperate with a stdin shutdown request.
+            let _ = child.kill();
+        }
     }
+
+    outcome
 }
 
 fn local_url() -> String {

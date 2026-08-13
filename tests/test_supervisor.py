@@ -267,3 +267,92 @@ def test_supervisor_stops_on_stdin_close(running_supervisor) -> None:
     running_supervisor.proc.stdin.close()
     running_supervisor.proc.wait(timeout=30)
     running_supervisor.assert_children_gone()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="CREATE_NO_WINDOW is Windows-only")
+def test_supervisor_reaches_ready_without_a_console(tmp_path: Path) -> None:
+    """Regression guard for a bug that shipped: with no console attached,
+    the supervisor came up but its API server child never did.
+
+    The desktop app is a GUI process, and Tauri's shell plugin spawns
+    sidecars with CREATE_NO_WINDOW — so the supervisor runs with no
+    console of its own. A console-subsystem child spawned from there
+    *without* that same flag deadlocks during startup inside an LPC call
+    to CSRSS while attaching to the console (three threads parked in
+    EventPairLow, ~0.03s of CPU burned over a full minute). The uvicorn
+    child hit it every time, so the API never bound, the supervisor's
+    health check timed out, and the app surfaced only a generic "did not
+    become ready" with no hint at the cause. See supervisor._spawn.
+
+    Deliberately not part of the `running_supervisor` fixture's coverage:
+    that fixture inherits this process's console, which is exactly the
+    condition under which the bug does *not* reproduce. The whole point
+    here is the console-less spawn, so this drives the subprocess itself.
+
+    Asserts against the ready marker, a live HTTP response, and the
+    worker's lock file rather than `ps`/`/proc` — all cross-platform, and
+    a real HTTP response is stronger evidence than process existence
+    anyway: the failure mode was a child that was alive but never bound.
+    """
+    port = supervisor.DEFAULT_PORT + (os.getpid() % 1000)
+    lock_path = tmp_path / "worker.lock"
+
+    env = dict(os.environ)
+    env["PROXY_SCALER_SERVER_HOST"] = "127.0.0.1"
+    env["PROXY_SCALER_SERVER_PORT"] = str(port)
+    env["PROXY_SCALER_DB_PATH"] = str(tmp_path / "test.db")
+    env["PROXY_SCALER_WORKER_LOCK_PATH"] = str(lock_path)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-u", "-m", "proxy_scaler.supervisor"],
+        cwd=str(ROOT),
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        # The whole point of the test — mirrors how Tauri spawns this.
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    captured: list[str] = []
+
+    def _fail(message: str) -> str:
+        return f"{message}; supervisor output:\n" + "".join(captured)
+
+    try:
+        # Read line by line rather than communicate(): the supervisor runs
+        # until stopped, so there's no EOF to wait for. Under the bug this
+        # loop simply never sees the marker.
+        ready = False
+        deadline = time.monotonic() + 120.0  # torch cold start can be slow
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            line = proc.stdout.readline()
+            if not line:
+                break
+            captured.append(line.decode("utf-8", "replace"))
+            if supervisor.READY_MARKER in captured[-1]:
+                ready = True
+                break
+        assert ready, _fail("supervisor never reported ready with no console attached")
+
+        resp = requests.get(f"http://127.0.0.1:{port}/api/health", timeout=10)
+        assert resp.ok, _fail(f"health endpoint returned {resp.status_code}")
+
+        lock_deadline = time.monotonic() + 30.0
+        while time.monotonic() < lock_deadline and not lock_path.exists():
+            time.sleep(0.5)
+        assert lock_path.exists(), _fail("worker never acquired its lock file")
+    finally:
+        # SIGTERM is a hard TerminateProcess on Windows, which would skip
+        # the supervisor's own child cleanup — close stdin instead, the
+        # same graceful trigger the desktop app uses.
+        if proc.poll() is None:
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+        proc.stdout.close()
