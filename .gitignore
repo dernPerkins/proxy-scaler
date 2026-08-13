@@ -6,6 +6,9 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*.log
+# Runtime artifact of the background worker (see db.py::acquire_worker_lock),
+# not project data — data/.gitkeep is what keeps this directory in the repo.
+data/*.lock
 *.pyc
 __pycache__/
 .venv/
@@ -14,4 +17,24 @@ venv/
 dist/
 build/
 .pytest_cache/
-.claude
+# Left behind by `nohup make release &` — build log, not source.
+nohup.out
+
+# Local AI/agent tooling — instructions, skill definitions, and scratch
+# workspaces for whatever assistant a given contributor happens to use.
+# Deliberately not shipped: it's personal tooling config, not part of the
+# project, and nobody cloning this should have to pull (or wonder about)
+# someone else's agent setup. Project documentation that agents merely
+# *read* — README/ARCHITECTURE/CONTEXT.md and docs/adr/ — stays tracked,
+# because that's genuinely for humans too.
+.claude/
+.agents/
+.scratch/
+AGENTS.md
+CLAUDE.md
+docs/agents/
+.cursor/
+.cursorrules
+.aider*
+.windsurfrules
+.github/copilot-instructions.md
