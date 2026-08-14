@@ -115,8 +115,8 @@ export default function ProjectBar() {
   // watching this flip to the name is the only confirmation the debounce
   // fired.
   //
-  // "Nothing yet" for the empty slate — prototype variant A, the layout
-  // chosen in .scratch/optional-projects/decisions/05-projectbar-prototype.md.
+  // "Nothing yet" for the empty slate — the chip's three states as settled
+  // in .scratch/optional-projects/issues/07-the-projectbar.md.
   // The `#{id}` fallback is unreachable while isNamed means a non-empty
   // stored name; it is there so the chip can never render blank.
   const chipLabel = project.isNamed
