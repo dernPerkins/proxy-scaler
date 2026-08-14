@@ -494,16 +494,32 @@ fn summary_for_id(conn: &Connection, project_id: i64) -> Result<ProjectSummary, 
 /// Named `_id` rather than sharing the command's name below, which returns
 /// the whole summary because the frontend needs the tag too.
 fn get_or_create_unnamed_project_id(conn: &Connection) -> Result<i64, String> {
-    let existing: Option<i64> = conn
-        .query_row("SELECT id FROM projects WHERE name = ''", [], |row| row.get(0))
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if let Some(id) = existing {
+    if let Some(id) = unnamed_project_id(conn)? {
         return Ok(id);
     }
     // The same INSERT a named Project gets, tag included: an Unnamed
     // Project is a full-fledged row, not a stub to be filled in later.
-    insert_project(conn, "").map_err(|e| e.to_string())
+    match insert_project(conn, "") {
+        Ok(id) => Ok(id),
+        // Losing a race is a normal outcome, not an error to show. Tauri
+        // commands run on a threadpool, each on its own connection, so two
+        // callers that both need the row (a first decklist import and a
+        // settings write, say) can both find nothing and both INSERT. The
+        // schema settles it — `name TEXT NOT NULL UNIQUE` means the loser
+        // gets a UNIQUE violation — and what the loser wanted is exactly
+        // what the winner just created, so re-read and take it. Only a
+        // failure with no row behind it reaches the user.
+        Err(insert_err) => match unnamed_project_id(conn) {
+            Ok(Some(id)) => Ok(id),
+            _ => Err(insert_err.to_string()),
+        },
+    }
+}
+
+fn unnamed_project_id(conn: &Connection) -> Result<Option<i64>, String> {
+    conn.query_row("SELECT id FROM projects WHERE name = ''", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 // --- Tauri commands -------------------------------------------------------
@@ -579,6 +595,16 @@ pub fn get_project(app: AppHandle, project_id: i64) -> Result<LoadedProject, Str
 /// An empty name is accepted — the Unnamed Project has to be writable
 /// before it is named. The UNIQUE constraint still does the collision
 /// check, which is why there is no second one here.
+///
+/// It never *un-names* a project, though: a blank name leaves the stored
+/// one alone (matching the frontend, where clearing the field reverts on
+/// blur) rather than being rejected, so the settings half of the write
+/// still lands. Blanking a named project would either drop it out of the
+/// picker for good — `list_project_summaries` filters `WHERE name <> ''`,
+/// and nothing else offers a route back to a row by id — or, with an
+/// Unnamed Project present, fail the UNIQUE constraint and report the
+/// nonsense `A project named "" already exists.`. Deleting is the gesture
+/// for getting rid of a project.
 fn update_project_row(
     conn: &Connection,
     project_id: i64,
@@ -588,7 +614,11 @@ fn update_project_row(
     let trimmed = name.trim();
     let now = now_timestamp();
     conn.execute(
-        "UPDATE projects SET name = ?1, model = ?2, dpi_targets = ?3, skip_existing = ?4,
+        // The CASE is the "never un-name" rule above, done in SQL so it
+        // needs no read-modify-write of its own: for the Unnamed Project
+        // `name` is already `''`, so keeping it is the same as writing it.
+        "UPDATE projects SET name = CASE WHEN ?1 <> '' THEN ?1 ELSE name END,
+         model = ?2, dpi_targets = ?3, skip_existing = ?4,
          tile_size = ?5, page_width_mm = ?6, page_height_mm = ?7, cols = ?8, rows = ?9,
          bleed_mm = ?10, spacing_x_mm = ?11, spacing_y_mm = ?12, offset_x_mm = ?13,
          offset_y_mm = ?14, guide_width_pt = ?15, guide_length_mm = ?16, export_dpi = ?17,
@@ -966,6 +996,54 @@ mod tests {
         let updated = update_project_row(&conn, id, "", &ProjectSettings::default()).expect("update");
 
         assert_eq!(updated.name, "");
+    }
+
+    #[test]
+    fn a_named_project_cannot_be_blanked() {
+        let conn = test_conn();
+        // With an Unnamed Project already present, blanking a named one
+        // would hit the UNIQUE constraint and report the nonsense message
+        // `A project named "" already exists.`; without one it would
+        // succeed and quietly drop the project out of the picker, which
+        // filters `WHERE name <> ''`.
+        get_or_create_unnamed_project_id(&conn).expect("create unnamed");
+        let named = create_project_row(&conn, "Krenko").expect("create named");
+        let settings = ProjectSettings { cols: 4, ..ProjectSettings::default() };
+
+        let updated = update_project_row(&conn, named.id, "   ", &settings)
+            .expect("a blank name is ignored, not an error");
+
+        assert_eq!(updated.name, "Krenko", "the stored name stands");
+        assert_eq!(
+            load_project(&conn, named.id).expect("load").settings.cols,
+            4,
+            "the settings half of the write still lands"
+        );
+        assert_eq!(
+            list_project_summaries(&conn).expect("list").len(),
+            1,
+            "and it is still visible to the picker"
+        );
+    }
+
+    #[test]
+    fn get_or_create_unnamed_project_is_idempotent_across_connections() {
+        // Two connections onto one shared in-memory database, because
+        // every Tauri command opens its own. This does *not* reproduce the
+        // interleaving the UNIQUE-violation fallback exists for — that
+        // needs both callers inside the same window, which isn't
+        // deterministic from here — it pins the outcome the fallback has
+        // to produce: one row, whoever asks.
+        let winner = Connection::open("file:race-test-db?mode=memory&cache=shared")
+            .expect("open shared db");
+        winner.execute_batch(SCHEMA).expect("apply schema");
+        let loser = Connection::open("file:race-test-db?mode=memory&cache=shared")
+            .expect("open second handle");
+
+        let winner_id = get_or_create_unnamed_project_id(&winner).expect("winner creates");
+        let loser_id = get_or_create_unnamed_project_id(&loser).expect("loser must not error");
+
+        assert_eq!(winner_id, loser_id);
     }
 
     #[test]
