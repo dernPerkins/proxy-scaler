@@ -466,9 +466,11 @@ def test_cancel_all_tasks_cancels_only_pending(client: TestClient, tmp_path: Pat
     assert resp.json() == {"canceled": 0}
 
 
-def _enqueue_and_fail(tmp_path: Path, db_path: str, *, model: str, dpi: int) -> int:
-    task_id = db.enqueue_task(
-        "tag-a",
+def _enqueue_for_tag(tmp_path: Path, db_path: str, project_tag: str, **overrides) -> int:
+    """Queue one pending task straight into the DB, skipping /api/generate
+    (and its Scryfall round trip) — for tests that only care about the
+    task rows themselves."""
+    kwargs = dict(
         scryfall_id="sol-id",
         face_index=None,
         face_label=None,
@@ -477,13 +479,19 @@ def _enqueue_and_fail(tmp_path: Path, db_path: str, *, model: str, dpi: int) -> 
         set_code="c21",
         collector_number="263",
         png_url="https://example.com/sol.png",
-        dpi=dpi,
-        model=model,
+        dpi=800,
+        model="swinir",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
         db_path=db_path,
     )
+    kwargs.update(overrides)
+    return db.enqueue_task(project_tag, **kwargs)
+
+
+def _enqueue_and_fail(tmp_path: Path, db_path: str, *, model: str, dpi: int) -> int:
+    task_id = _enqueue_for_tag(tmp_path, db_path, "tag-a", model=model, dpi=dpi)
     db.mark_task_failed(task_id, "disk full", db_path=db_path)
     return task_id
 
@@ -760,6 +768,84 @@ def test_clear_generated_data_with_project_tag_clears_records_too(
 
     resp = client.get("/api/gallery", params={"project_tag": "tag-a"})
     assert resp.json() == []
+
+
+# --- Tag discard -----------------------------------------------------------
+
+
+def test_discard_tag_cancels_pending_and_clears_records_for_that_tag_only(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Discard means "this session was thrown away": the tag's pending
+    work is canceled and its records go, while another Project's tasks and
+    gallery rows — and this tag's already-running task, which can't be
+    cancelled (spec §8) — are untouched."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    running_id = _enqueue_for_tag(tmp_path, db_path, "tag-a", collector_number="1")
+    db.claim_next_task(db_path=db_path)  # the only pending task so far -> running
+    pending_id = _enqueue_for_tag(tmp_path, db_path, "tag-a", collector_number="2")
+    done_id = _enqueue_for_tag(tmp_path, db_path, "tag-a", collector_number="3")
+    db.mark_task_done(done_id, db_path=db_path)
+    failed_id = _enqueue_for_tag(tmp_path, db_path, "tag-a", collector_number="4")
+    db.mark_task_failed(failed_id, "boom", db_path=db_path)
+    other_pending_id = _enqueue_for_tag(tmp_path, db_path, "tag-b", collector_number="5")
+    other_done_id = _enqueue_for_tag(tmp_path, db_path, "tag-b", collector_number="6")
+    db.mark_task_done(other_done_id, db_path=db_path)
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    _write_gallery_item(tmp_path, db_path, "tag-b")
+
+    resp = client.post("/api/tags/tag-a/discard")
+    assert resp.status_code == 200
+    assert resp.json() == {"canceled": 1}
+
+    # Canceling before clearing (not the other way round) is what stops the
+    # worker claiming a pending task in between — the clear then sweeps the
+    # freshly-canceled row away with the rest of the tag's history, so the
+    # running task is all that's left of this tag.
+    assert db.get_task(pending_id, db_path=db_path) is None
+    assert db.get_task(done_id, db_path=db_path) is None
+    assert db.get_task(failed_id, db_path=db_path) is None
+    assert [t.id for t in db.list_tasks(project_tag="tag-a", db_path=db_path)] == [running_id]
+    assert db.get_task(running_id, db_path=db_path).status == "running"
+    assert db.list_gallery_items("tag-a", db_path=db_path) == []
+
+    assert db.get_task(other_pending_id, db_path=db_path).status == "pending"
+    assert db.get_task(other_done_id, db_path=db_path).status == "done"
+    assert db.list_gallery_items("tag-b", db_path=db_path) != []
+
+
+def test_discard_tag_deletes_no_files(client: TestClient, tmp_path: Path) -> None:
+    """The one thing discard must never do: output filenames carry no tag,
+    so the images are shared across every Project and deleting them would
+    strand other Projects' gallery rows."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    output_dir = tmp_path / "out"
+    cache_dir = tmp_path / "cache"
+    output_dir.mkdir()
+    cache_dir.mkdir()
+    (output_dir / "a.png").write_bytes(b"x")
+    (cache_dir / "b.png").write_bytes(b"y")
+    # The route takes no directories, so these are reachable only the way a
+    # file-deleting implementation would have to find them: off the tag's
+    # own task rows. Recording them here is what stops this test passing
+    # vacuously against a route that did wipe the dirs it can see.
+    _enqueue_for_tag(
+        tmp_path, db_path, "tag-a", output_dir=str(output_dir), cache_dir=str(cache_dir)
+    )
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/tags/tag-a/discard")
+    assert resp.status_code == 200
+
+    assert (output_dir / "a.png").exists()
+    assert (cache_dir / "b.png").exists()
+    assert Path(item["out_path"]).exists()
+
+
+def test_discard_tag_with_no_records_is_a_no_op(client: TestClient) -> None:
+    resp = client.post("/api/tags/unknown-tag/discard")
+    assert resp.status_code == 200
+    assert resp.json() == {"canceled": 0}
 
 
 # --- PDF render jobs -------------------------------------------------------

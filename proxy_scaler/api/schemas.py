@@ -246,3 +246,10 @@ class ClearGeneratedIn(BaseModel):
 
 class ClearGeneratedOut(BaseModel):
     notes: list[str]
+
+
+class DiscardTagOut(BaseModel):
+    # How many pending tasks the discard canceled. The client fires
+    # discard fire-and-forget and ignores the body; this is here so a
+    # manual `curl` can see what actually happened.
+    canceled: int

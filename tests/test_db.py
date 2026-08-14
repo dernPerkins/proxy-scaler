@@ -15,6 +15,7 @@ from proxy_scaler import db as db_module
 from proxy_scaler.db import (
     TaskRow,
     acquire_worker_lock,
+    cancel_pending_tasks_for_tag,
     cancel_task,
     claim_next_task,
     enqueue_task,
@@ -235,6 +236,34 @@ def test_cancel_task_only_affects_pending(db_path: Path) -> None:
     claim_next_task(db_path=db_path)  # now running, not pending
     assert cancel_task(tid2, db_path=db_path) is False
     assert get_task(tid2, db_path=db_path).status == "running"
+
+
+def test_cancel_pending_tasks_for_tag_only_touches_that_tags_pending(db_path: Path) -> None:
+    """Discarding one Project's session must leave another Project's queue
+    alone, and can't reach work that already started — a running upscale
+    finishes and writes its row anyway (the accepted residue in spec §8)."""
+    running = _enqueue_sol_ring(db_path, project_tag="tag-a", collector_number="1")
+    claim_next_task(db_path=db_path)  # the only pending task so far -> running
+    mine = _enqueue_sol_ring(db_path, project_tag="tag-a", collector_number="2")
+    theirs = _enqueue_sol_ring(db_path, project_tag="tag-b", collector_number="3")
+
+    assert cancel_pending_tasks_for_tag("tag-a", db_path=db_path) == 1
+
+    assert get_task(mine, db_path=db_path).status == "canceled"
+    assert get_task(running, db_path=db_path).status == "running"
+    assert get_task(theirs, db_path=db_path).status == "pending"
+
+
+def test_cancel_pending_tasks_for_tag_is_a_no_op_for_a_falsy_tag(db_path: Path) -> None:
+    """The same guard every other project_tag-scoped write in the module
+    carries: an empty tag must never widen into "cancel everything"."""
+    tid = _enqueue_sol_ring(db_path, project_tag="tag-a")
+    untagged = _enqueue_sol_ring(db_path, collector_number="2")
+
+    assert cancel_pending_tasks_for_tag("", db_path=db_path) == 0
+
+    assert get_task(tid, db_path=db_path).status == "pending"
+    assert get_task(untagged, db_path=db_path).status == "pending"
 
 
 def test_list_tasks_filters_by_project_tag_and_status(db_path: Path) -> None:

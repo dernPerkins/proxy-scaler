@@ -6,7 +6,13 @@ from fastapi import APIRouter
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
-from proxy_scaler.api.schemas import ClearGeneratedIn, ClearGeneratedOut, DeviceOut, ModelOptionOut
+from proxy_scaler.api.schemas import (
+    ClearGeneratedIn,
+    ClearGeneratedOut,
+    DeviceOut,
+    DiscardTagOut,
+    ModelOptionOut,
+)
 from proxy_scaler.pipeline import clear_generated_data
 from proxy_scaler.upscale import (
     UpscaleModel,
@@ -69,3 +75,19 @@ def clear_generated(body: ClearGeneratedIn) -> ClearGeneratedOut:
         db.clear_project_generation_records(body.project_tag, db_path=get_db_path())
         notes.append("cleared generation records for this project")
     return ClearGeneratedOut(notes=notes)
+
+
+@router.post("/tags/{project_tag}/discard", response_model=DiscardTagOut)
+def discard_tag(project_tag: str) -> DiscardTagOut:
+    """One route meaning "this session was thrown away": stop the tag's
+    queued work and forget its generation records.
+
+    It never deletes files, and that's the whole reason it isn't a flag on
+    /api/generated-data/clear (which unconditionally rmtree's the output
+    and cache dirs first). Output filenames carry no tag — output_filename
+    takes none — so the images are shared across every Project, and
+    deleting them per-tag would delete files other Projects' gallery rows
+    point at."""
+    canceled = db.cancel_pending_tasks_for_tag(project_tag, db_path=get_db_path())
+    db.clear_project_generation_records(project_tag, db_path=get_db_path())
+    return DiscardTagOut(canceled=canceled)

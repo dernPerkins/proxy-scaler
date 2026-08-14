@@ -187,6 +187,7 @@ string, not a database relationship.
 | `POST /api/pdf` | Assemble a PDF from `project_tag` + layout + card list **with quantities** (quantity is project data the generation server has no other way to know) |
 | `GET /api/models` | Enumerate upscale models (static, unchanged) |
 | `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine |
+| `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session: cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
 | `GET /api/health` | Supervisor readiness probe |
 
 ## Frontend data flow (`desktop/frontend/src`)

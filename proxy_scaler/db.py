@@ -675,6 +675,31 @@ def cancel_all_tasks(db_path: Path | str | None = None) -> int:
         return cur.rowcount
 
 
+def cancel_pending_tasks_for_tag(
+    project_tag: str, db_path: Path | str | None = None
+) -> int:
+    """Cancel every still-pending task belonging to one project_tag —
+    the queue half of discarding a session (see the discard route in
+    api/routers/misc.py). Returns the number canceled. Neither existing
+    cancel fits: cancel_task is per-id and cancel_all_tasks is across all
+    projects, which would cancel other Projects' queued work.
+
+    Running tasks are deliberately left alone — an in-flight upscale can't
+    be cancelled, so it finishes and writes its row for a tag that's
+    already gone (the accepted residue in spec §8). A no-op for a falsy
+    project_tag, matching every other project_tag-scoped write here."""
+    if not project_tag:
+        return 0
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'canceled', completed_at = ? "
+            "WHERE project_tag = ? AND status = 'pending'",
+            (_utc_now(), project_tag),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def retry_task(task_id: int, db_path: Path | str | None = None) -> bool:
     """Re-queue a failed task in place. created_at is bumped to now so it
     joins the back of the pending queue (claim_next_task orders by

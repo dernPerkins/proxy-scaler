@@ -145,5 +145,14 @@ export const generationApi = {
       }),
     }),
 
+  // "This session was thrown away": cancels the tag's pending tasks and
+  // drops its generation records. Deletes no files — clearGeneratedData
+  // is the file-deleting one; misc.py::discard_tag says why these can't
+  // be the same call.
+  discardTag: (projectTag: string) =>
+    request<{ canceled: number }>(`/api/tags/${encodeURIComponent(projectTag)}/discard`, {
+      method: "POST",
+    }),
+
   health: () => request<{ status: string }>("/api/health"),
 };
