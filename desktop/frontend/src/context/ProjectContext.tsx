@@ -99,6 +99,10 @@ interface ProjectContextValue {
   remove: (id: number) => void;
   saving: boolean;
   error: string | null;
+  /** Fires on every save attempt (button or Ctrl/Cmd+S), success or
+   *  failure — id is bumped even on a repeat identical outcome so a
+   *  listener keyed on it (e.g. a toast) can tell two saves apart. */
+  saveResult: { id: number; ok: true } | { id: number; ok: false; message: string } | null;
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
@@ -126,6 +130,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [decklistText, setDecklistTextState] = useState("");
   const [cards, setCards] = useState<CardRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [saveResult, setSaveResult] = useState<ProjectContextValue["saveResult"]>(null);
+  const saveResultId = useRef(0);
   // Whether settings.model is still an unreviewed default, i.e. safe for
   // the GPU probe below to revise. Flipped by any deliberate model change
   // — the user picking one, or a saved project supplying its own.
@@ -180,9 +186,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setProjectTag(project.tag);
       setProjectName(project.name);
       setError(null);
+      setSaveResult({ id: ++saveResultId.current, ok: true });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => {
+      setError(err.message);
+      setSaveResult({ id: ++saveResultId.current, ok: false, message: err.message });
+    },
   });
 
   const saveAsMutation = useMutation({
@@ -341,6 +351,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     remove: (id: number) => deleteMutation.mutate(id),
     saving: saveMutation.isPending || saveAsMutation.isPending,
     error,
+    saveResult,
   };
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

@@ -2,6 +2,7 @@ import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
+import SaveShortcutToast from "./components/SaveShortcutToast";
 import ServerStatusToast from "./components/ServerStatusToast";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
@@ -22,6 +23,7 @@ export default function App() {
     <ProjectProvider>
       <div className="app">
         <ServerStatusToast />
+        <SaveShortcutToast />
         <ConnectionLostDialog />
         <DownloadProgressModal />
         <ProjectBar />

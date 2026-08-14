@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path, get_lock_path
@@ -95,6 +95,24 @@ def get_task(task_id: int) -> TaskOut:
 def cancel_task(task_id: int) -> dict:
     canceled = db.cancel_task(task_id, db_path=get_db_path())
     return {"canceled": canceled}
+
+
+@router.post("/tasks/cancel-all")
+def cancel_all_tasks() -> dict:
+    canceled = db.cancel_all_tasks(db_path=get_db_path())
+    return {"canceled": canceled}
+
+
+@router.post("/tasks/{task_id}/retry")
+def retry_task(task_id: int) -> dict:
+    retried = db.retry_task(task_id, db_path=get_db_path())
+    return {"retried": retried}
+
+
+@router.post("/tasks/retry-all")
+def retry_all_tasks(project_tag: str, model: str, dpi: list[int] = Query(...)) -> dict:
+    retried = db.retry_all_failed(project_tag, model, dpi, db_path=get_db_path())
+    return {"retried": retried}
 
 
 @router.get("/worker/status", response_model=WorkerStatusOut)

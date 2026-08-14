@@ -310,6 +310,107 @@ def test_task_cancel(client: TestClient, tmp_path: Path) -> None:
     assert client.get(f"/api/tasks/{task_id}").json()["status"] == "canceled"
 
 
+def test_cancel_all_tasks_cancels_only_pending(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    resp = client.post(
+        "/api/generate",
+        json={
+            "project_tag": "tag-a",
+            "entries": [_sol_ring_entry()],
+            "model": "swinir",
+            "dpi_targets": [800],
+            "skip_existing": False,
+            "output_dir": str(tmp_path / "out"),
+            "cache_dir": str(tmp_path / "cache"),
+            "weights_dir": str(tmp_path / "weights"),
+        },
+    )
+    pending_id = resp.json()["task_ids"][0]
+    done_id = db.enqueue_task(
+        "tag-a",
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        db_path=db_path,
+    )
+    db.mark_task_done(done_id, db_path=db_path)
+
+    resp = client.post("/api/tasks/cancel-all")
+    assert resp.status_code == 200
+    assert resp.json() == {"canceled": 1}
+    assert client.get(f"/api/tasks/{pending_id}").json()["status"] == "canceled"
+    assert client.get(f"/api/tasks/{done_id}").json()["status"] == "done"
+
+    # No-op on a second call — nothing left pending.
+    resp = client.post("/api/tasks/cancel-all")
+    assert resp.json() == {"canceled": 0}
+
+
+def _enqueue_and_fail(tmp_path: Path, db_path: str, *, model: str, dpi: int) -> int:
+    task_id = db.enqueue_task(
+        "tag-a",
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=dpi,
+        model=model,
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        db_path=db_path,
+    )
+    db.mark_task_failed(task_id, "disk full", db_path=db_path)
+    return task_id
+
+
+def test_task_retry_requeues_failed_task(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    task_id = _enqueue_and_fail(tmp_path, db_path, model="swinir", dpi=800)
+
+    resp = client.post(f"/api/tasks/{task_id}/retry")
+    assert resp.status_code == 200
+    assert resp.json() == {"retried": True}
+    task = client.get(f"/api/tasks/{task_id}").json()
+    assert task["status"] == "pending"
+    assert task["error"] is None
+
+    # No-op — task is pending now, not failed.
+    resp = client.post(f"/api/tasks/{task_id}/retry")
+    assert resp.json() == {"retried": False}
+
+
+def test_retry_all_only_matches_project_model_and_dpi(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    matching_id = _enqueue_and_fail(tmp_path, db_path, model="swinir", dpi=800)
+    wrong_dpi_id = _enqueue_and_fail(tmp_path, db_path, model="swinir", dpi=1200)
+    wrong_model_id = _enqueue_and_fail(tmp_path, db_path, model="ultrasharp_v2", dpi=800)
+
+    resp = client.post(
+        "/api/tasks/retry-all",
+        params={"project_tag": "tag-a", "model": "swinir", "dpi": [800]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"retried": 1}
+    assert client.get(f"/api/tasks/{matching_id}").json()["status"] == "pending"
+    assert client.get(f"/api/tasks/{wrong_dpi_id}").json()["status"] == "failed"
+    assert client.get(f"/api/tasks/{wrong_model_id}").json()["status"] == "failed"
+
+
 def test_worker_status_not_running(client: TestClient) -> None:
     resp = client.get("/api/worker/status")
     assert resp.status_code == 200

@@ -88,6 +88,15 @@ export const generationApi = {
   getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
   cancelTask: (id: number) =>
     request<{ canceled: boolean }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
+  cancelAllTasks: () =>
+    request<{ canceled: number }>("/api/tasks/cancel-all", { method: "POST" }),
+  retryTask: (id: number) =>
+    request<{ retried: boolean }>(`/api/tasks/${id}/retry`, { method: "POST" }),
+  retryAllTasks: (projectTag: string, model: string, dpis: number[]) => {
+    const search = new URLSearchParams({ project_tag: projectTag, model });
+    dpis.forEach((d) => search.append("dpi", String(d)));
+    return request<{ retried: number }>(`/api/tasks/retry-all?${search}`, { method: "POST" });
+  },
   workerStatus: () => request<WorkerStatus>("/api/worker/status"),
 
   listGallery: (projectTag: string) =>

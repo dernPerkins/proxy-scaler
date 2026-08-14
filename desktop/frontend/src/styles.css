@@ -838,6 +838,11 @@ tbody tr:last-child td {
 .toast-body {
   flex: 1;
 }
+.toast-secondary {
+  /* Stacks above the default .toast (bottom:18px) so the save toast
+     doesn't overlap ServerStatusToast if both are visible at once. */
+  bottom: 88px;
+}
 
 @keyframes toast-in {
   from {

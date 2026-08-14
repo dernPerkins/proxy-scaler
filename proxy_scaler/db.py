@@ -662,6 +662,58 @@ def cancel_task(task_id: int, db_path: Path | str | None = None) -> bool:
         return cur.rowcount > 0
 
 
+def cancel_all_tasks(db_path: Path | str | None = None) -> int:
+    """Cancel every still-pending task, across all projects. Returns the
+    number canceled."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'canceled', completed_at = ? "
+            "WHERE status = 'pending'",
+            (_utc_now(),),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+def retry_task(task_id: int, db_path: Path | str | None = None) -> bool:
+    """Re-queue a failed task in place. created_at is bumped to now so it
+    joins the back of the pending queue (claim_next_task orders by
+    created_at ASC) rather than jumping ahead on its original timestamp.
+    Returns False (no-op) unless the task is currently failed."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'pending', error = NULL, "
+            "started_at = NULL, completed_at = NULL, created_at = ? "
+            "WHERE id = ? AND status = 'failed'",
+            (_utc_now(), task_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def retry_all_failed(
+    project_tag: str,
+    model: str,
+    dpis: list[int],
+    db_path: Path | str | None = None,
+) -> int:
+    """Bulk retry_task, scoped to the failed tasks matching one project's
+    model and set of target DPIs. Returns the number retried."""
+    if not project_tag or not dpis:
+        return 0
+    placeholders = ",".join("?" for _ in dpis)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'pending', error = NULL, "
+            "started_at = NULL, completed_at = NULL, created_at = ? "
+            f"WHERE project_tag = ? AND model = ? AND status = 'failed' "
+            f"AND dpi IN ({placeholders})",
+            (_utc_now(), project_tag, model, *dpis),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def list_tasks(
     project_tag: str | None = None,
     statuses: list[str] | None = None,
