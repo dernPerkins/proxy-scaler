@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
 import type { CardRow, LoadedProject, ProjectSettings } from "../api/project";
@@ -119,7 +120,12 @@ interface ProjectContextValue {
    *  error line. */
   rename: (name: string) => Promise<void>;
   saveAs: (name: string) => void;
-  createNew: () => void;
+  /** New *is* discard: from an Unnamed Project it deletes the row (and
+   *  fires the tag's discard at the connected server), from a named Project
+   *  it only detaches to a blank slate. Holding cards, the discard asks
+   *  first — and returns `false` when that confirm is declined, so a caller
+   *  clearing state of its own can leave it alone. See spec §5.6. */
+  createNew: () => boolean;
   load: (id: number) => void;
   remove: (id: number) => void;
   error: string | null;
@@ -171,6 +177,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   );
   const settingsWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsWriteChain = useRef<Promise<void>>(Promise.resolve());
+  // A discard's row delete, while it is in flight. ensureProjectRow waits on
+  // it so an import arriving in the same breath as New can't have its
+  // get_or_create answered with the row being deleted — that would hand back
+  // the discarded tag and then delete the row the import is writing into.
+  // Never rejects; discardUnnamedRow reports the failure itself, and a
+  // delete that failed leaves the row for get_or_create to find, which is
+  // the honest answer to "what row is there now".
+  const rowDeleteInFlight = useRef<Promise<void>>(Promise.resolve());
 
   function adoptProjectId(id: number | null) {
     projectIdRef.current = id;
@@ -192,6 +206,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   async function ensureProjectRow(): Promise<number> {
     const existing = projectIdRef.current;
     if (existing != null) return existing;
+    await rowDeleteInFlight.current;
     const unnamed = await projectApi.getOrCreateUnnamedProject();
     // Adopted straight away rather than in a mutation's onSuccess: the row
     // exists in the store from this point on whether or not the write that
@@ -410,8 +425,81 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  function createNew() {
-    settleSettingsWriteBeforeTransition();
+  // Deleting the Unnamed Project row is the whole of "discard" — there is
+  // no separate mint step, because ensureProjectRow's get_or_create hands
+  // back a fresh row, and with it a fresh tag, at the next import
+  // (.scratch/optional-projects/decisions/03-tag-lifecycle-and-record-cleanup.md).
+  function discardUnnamedRow(id: number, tag: string | null) {
+    // Fired at the connected server once, and never retried. Each
+    // generation server owns its own database, so this call can
+    // legitimately be aimed at a host that never held these records —
+    // generate on Remote, switch to Local, discard. A retry queue would
+    // have to remember (host, tag) pairs and would still fail permanently
+    // once a host is gone, so failure is simply accepted: the orphaned rows
+    // it leaves are the business of the images manager the spec puts out of
+    // scope (§9). Nothing here blocks the row delete or reaches the error
+    // line, including "the server is stopped".
+    //
+    // Not literally "the server connected at this instant": request() waits
+    // on config.ts's readiness gate first, so a discard fired while the
+    // local sidecar is down parks there and can land on whatever the user
+    // connects to next. Aiming at the wrong host is already the accepted
+    // case above, so this needs no machinery of its own.
+    if (tag) void generationApi.discardTag(tag).catch(() => {});
+    // The local row is the part that has to happen. If this fails the row
+    // survives holding its cards, the next import reopens it — old tag and
+    // all, since get_or_create finds it still there — and the blank slate
+    // in front of the user is a lie. So unlike the call above, this one is
+    // reported; a failed delete is a failed discard, not a silent one.
+    //
+    // No ["projects"] invalidation: the picker lists named projects only
+    // (project_store.rs::list_project_summaries filters `name <> ''`), so
+    // an Unnamed Project leaving the store changes nothing it shows.
+    rowDeleteInFlight.current = projectApi
+      .deleteProject(id)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }
+
+  // "New" and "discard" are one operation (spec §5.6). From a named Project
+  // this keeps today's meaning — detach to a blank slate, leaving the named
+  // Project itself alone. From an Unnamed Project it is the discard, and the
+  // row goes with it: left behind it would strand its tag, and the next
+  // import would reopen the old session instead of starting over.
+  //
+  // Returns false only when the user declined the confirm, so the caller can
+  // leave its own state alone — declining changes nothing.
+  function createNew(): boolean {
+    const id = projectIdRef.current;
+    // "Unnamed Project" is a row with no stored name — the same test as
+    // isNamed. With no row at all there is nothing to delete and this is
+    // already a blank slate.
+    //
+    // A rename still in flight is treated as named even though projectName
+    // is still '': the name lands a moment later, and deleting the row
+    // underneath it would throw away a Project the user had just named.
+    // The reverse mistake — detaching from a row whose rename then fails on
+    // a collision — leaves an Unnamed Project the next import reopens, and
+    // loses nothing.
+    const discarding =
+      id != null && projectName.trim().length === 0 && !renameMutation.isPending;
+    if (discarding && cards.length > 0) {
+      // The prompt is new, and lives only on this branch. Today's silent
+      // New threw away React state that was never promised to survive;
+      // since settings and cards began writing through (§5.2), the same
+      // click throws away work the app has been quietly keeping.
+      const ok = window.confirm(
+        "Discard this unnamed project? Its cards and gallery entries are removed. This cannot be undone.",
+      );
+      if (!ok) return false;
+    }
+    if (discarding) {
+      // Discarded rather than settled: the row this write targets is the
+      // one about to be deleted.
+      discardPendingSettingsWrite();
+      discardUnnamedRow(id, projectTag);
+    } else {
+      settleSettingsWriteBeforeTransition();
+    }
     adoptProjectId(null);
     setProjectTag(null);
     setProjectName("");
@@ -420,6 +508,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setDecklistTextState("");
     setCards([]);
     setError(null);
+    return true;
   }
 
   // The debounce leaves a window — up to SETTINGS_WRITE_DEBOUNCE_MS — in

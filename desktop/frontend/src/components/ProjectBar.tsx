@@ -154,6 +154,12 @@ export default function ProjectBar() {
 
       <button
         onClick={() => {
+          // New goes first now that it can ask before discarding: declining
+          // that confirm has to change nothing, this field included. Being
+          // synchronous, it can't be interrupted by a queued commit firing
+          // — and a commit already *in flight* is handled at createNew,
+          // which treats a renaming row as named rather than deleting it.
+          if (!project.createNew()) return;
           // A queued commit belongs to the slate being discarded: left
           // alone it would name it half a second later, and from a project
           // with no row yet nothing else here would notice New at all.
@@ -161,7 +167,6 @@ export default function ProjectBar() {
           setNameDraft("");
           setNameError(null);
           closeDuplicateField();
-          project.createNew();
         }}
       >
         New
