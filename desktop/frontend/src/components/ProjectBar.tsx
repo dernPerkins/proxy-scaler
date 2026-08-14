@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
 import { useProject } from "../context/ProjectContext";
 import { useServerReadiness } from "../config";
+import ConfirmDialog from "./ConfirmDialog";
 
 // Long enough that typing "Krenko Goblins" is one commit rather than two,
 // short enough that the chip flips while the user is still looking at the
@@ -22,6 +23,11 @@ export default function ProjectBar() {
   const [duplicateName, setDuplicateName] = useState("");
   const [showDuplicate, setShowDuplicate] = useState(false);
   const [selectedLoadId, setSelectedLoadId] = useState<number | "">("");
+  // The two questions this bar asks before destroying something. Both were
+  // `window.confirm` until issue 16: native dialogs never appear inside
+  // Tauri's WKWebView, so on macOS both gestures went ahead unasked.
+  const [confirmingNew, setConfirmingNew] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // The name field is the whole naming mechanism: there is no Save button,
   // so what is typed lives here until a pause (or Enter) commits it. The
@@ -41,6 +47,15 @@ export default function ProjectBar() {
   // draft-reset effect reads while a second is still to run.
   const inFlightCommits = useRef(0);
   const lastProjectId = useRef(project.projectId);
+  // The queued name the discard confirm is holding, if there was one when
+  // New was clicked. The old native confirm blocked the whole webview, so
+  // no timer could fire under it; a React modal stays up for as long as a
+  // person takes to read it, which is many times the 500ms debounce. Left
+  // running, the queued commit would name the very slate the dialog is
+  // asking permission to discard. So it is cancelled while the question is
+  // open and put back if the answer is No — declining changes nothing, and
+  // a name half-typed into the field is part of that nothing.
+  const suspendedCommit = useRef<string | null>(null);
 
   // Load, Delete and Duplicate all swap the project out from under a field
   // that may be holding text typed for the outgoing one, so the draft
@@ -168,10 +183,54 @@ export default function ProjectBar() {
   // releases Rust's teardown, and the pagehide listener beside it. Resolves
   // once the queued commit *and* anything already in flight ahead of it
   // have finished; resolves immediately when the field is idle.
+  //
+  // suspendedCommit counts as queued: while the discard confirm is up the
+  // name is parked there rather than in a timer (see suspendedCommit), and
+  // "every pending write" has to mean that one too — the window's X is
+  // native chrome outside the webview, so it reaches this even with the
+  // modal open, and ticket 14's whole point is that the quit path finds
+  // nothing left behind. The discard itself is unaffected: it was never
+  // answered, so it does not happen, and the project quits named.
+  //
+  // Cleared on the way past so a Cancel arriving afterwards cannot
+  // reschedule a name that has already landed.
   function flushPendingNameCommit(): Promise<void> {
-    const queued = queuedName.current;
+    const queued = queuedName.current ?? suspendedCommit.current;
+    suspendedCommit.current = null;
     if (queued != null) return commitName(queued);
     return commitChain.current;
+  }
+
+  // New, once there is nothing left to ask — either because this New is a
+  // detach, or because the confirm came back Yes.
+  //
+  // createNew goes first, and being synchronous it cannot be interrupted by
+  // a queued commit firing between the discard and the field being cleared
+  // behind it. A commit already *in flight* is handled inside createNew,
+  // which treats a renaming row as named rather than deleting it.
+  function applyNew() {
+    project.createNew();
+    // A queued commit belongs to the slate being discarded: left alone it
+    // would name it half a second later, and from a project with no row yet
+    // nothing else here would notice New at all. Already cancelled on the
+    // confirm path, where the wait itself is the hazard (see
+    // suspendedCommit); this covers the New that asked nothing.
+    suspendedCommit.current = null;
+    cancelPendingCommit();
+    setNameDraft("");
+    setNameError(null);
+    closeDuplicateField();
+  }
+
+  // Declining has to leave the field exactly as the click found it, timer
+  // included — so the suspended commit is rescheduled rather than dropped.
+  // It restarts the 500ms, which is the honest reading: the pause the user
+  // was in the middle of was interrupted by their own detour.
+  function cancelNew() {
+    setConfirmingNew(false);
+    const queued = suspendedCommit.current;
+    suspendedCommit.current = null;
+    if (queued != null) scheduleCommit(queued);
   }
 
   const projects = projectsQuery.data ?? [];
@@ -225,19 +284,15 @@ export default function ProjectBar() {
 
       <button
         onClick={() => {
-          // New goes first now that it can ask before discarding: declining
-          // that confirm has to change nothing, this field included. Being
-          // synchronous, it can't be interrupted by a queued commit firing
-          // — and a commit already *in flight* is handled at createNew,
-          // which treats a renaming row as named rather than deleting it.
-          if (!project.createNew()) return;
-          // A queued commit belongs to the slate being discarded: left
-          // alone it would name it half a second later, and from a project
-          // with no row yet nothing else here would notice New at all.
-          cancelPendingCommit();
-          setNameDraft("");
-          setNameError(null);
-          closeDuplicateField();
+          // Spec §5.6: an Unnamed Project holding cards is wiped behind a
+          // confirm. Everything else is a detach and goes straight through.
+          if (project.newWouldDiscard) {
+            suspendedCommit.current = queuedName.current;
+            cancelPendingCommit();
+            setConfirmingNew(true);
+            return;
+          }
+          applyNew();
         }}
       >
         New
@@ -302,15 +357,7 @@ export default function ProjectBar() {
           </button>
           <button
             className="btn-danger"
-            onClick={() => {
-              if (
-                selectedLoadId !== "" &&
-                confirm("Permanently delete this project from the database?")
-              ) {
-                project.remove(selectedLoadId);
-                setSelectedLoadId("");
-              }
-            }}
+            onClick={() => setConfirmingDelete(true)}
             disabled={selectedLoadId === ""}
           >
             Delete
@@ -323,6 +370,50 @@ export default function ProjectBar() {
       )}
 
       {project.error && <span className="error-text">{project.error}</span>}
+
+      {/* The prompt is new, and lives only on this branch. Today's silent
+          New threw away React state that was never promised to survive;
+          since settings and cards began writing through (spec §5.2), the
+          same click throws away work the app has been quietly keeping. */}
+      {confirmingNew && (
+        <ConfirmDialog
+          title="Discard this unnamed project?"
+          confirmLabel="Discard"
+          onCancel={cancelNew}
+          onConfirm={() => {
+            setConfirmingNew(false);
+            applyNew();
+          }}
+        >
+          Its {cardCount} {cardCount === 1 ? "card" : "cards"} and gallery entries are
+          removed. This cannot be undone.
+        </ConfirmDialog>
+      )}
+
+      {/* Names the project, which the native confirm never did — the
+          picker is a dropdown, so "this project" was whatever the user
+          last left selected in it.
+
+          The id test is TypeScript's, not a guard against a stale flag:
+          `remove` wants a number and the selection is `number | ""`. Both
+          answers below clear confirmingDelete, so it cannot outlive its
+          dialog and spring back on a later selection. */}
+      {confirmingDelete && selectedLoadId !== "" && (
+        <ConfirmDialog
+          title="Delete this project?"
+          confirmLabel="Delete"
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={() => {
+            setConfirmingDelete(false);
+            project.remove(selectedLoadId);
+            setSelectedLoadId("");
+          }}
+        >
+          {projects.find((p) => p.id === selectedLoadId)?.name ?? `#${selectedLoadId}`} is
+          permanently removed from the database, cards and settings included. This cannot
+          be undone.
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

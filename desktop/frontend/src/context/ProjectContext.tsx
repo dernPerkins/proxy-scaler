@@ -138,10 +138,24 @@ interface ProjectContextValue {
   registerNameCommitFlush: (flush: (() => Promise<void>) | null) => void;
   /** New *is* discard: from an Unnamed Project it deletes the row (and
    *  fires the tag's discard at the connected server), from a named Project
-   *  it only detaches to a blank slate. Holding cards, the discard asks
-   *  first — and returns `false` when that confirm is declined, so a caller
-   *  clearing state of its own can leave it alone. See spec §5.6. */
-  createNew: () => boolean;
+   *  it only detaches to a blank slate. See spec §5.6.
+   *
+   *  Asks nothing itself, and is synchronous because of it. §5.6's confirm
+   *  is rendered by the button that calls this — see `newWouldDiscard` and
+   *  ProjectBar.tsx.
+   *
+   *  So this discards unconditionally, and any *new* caller owes the user
+   *  the same question: check `newWouldDiscard` first. It cannot ask here
+   *  — a React modal makes the answer asynchronous, and the bar depends on
+   *  this being synchronous to clear its name field behind the discard
+   *  without a queued commit landing in between. */
+  createNew: () => void;
+  /** Whether the next `createNew` would destroy something: an Unnamed
+   *  Project holding cards, whose row and gallery entries go with it.
+   *  §5.6's "holding cards" test, kept here beside the function it
+   *  describes rather than re-derived by whoever puts the confirm on
+   *  screen. Every other New is a detach and asks nothing. */
+  newWouldDiscard: boolean;
   load: (id: number) => void;
   remove: (id: number) => void;
   error: string | null;
@@ -481,38 +495,41 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
 
+  // Whether New, from the project identified by `id`, is the discard rather
+  // than a detach. "Unnamed Project" is a row with no stored name — the same
+  // test as isNamed. With no row at all there is nothing to delete and this
+  // is already a blank slate.
+  //
+  // A rename still in flight is treated as named even though projectName is
+  // still '': the name lands a moment later, and deleting the row underneath
+  // it would throw away a Project the user had just named. The reverse
+  // mistake — detaching from a row whose rename then fails on a collision —
+  // leaves an Unnamed Project the next import reopens, and loses nothing.
+  //
+  // Only the id is a parameter, because it is the only operand whose two
+  // callers disagree: createNew passes the ref, current as of this tick,
+  // while newWouldDiscard passes state, which is what the bar's button is
+  // rendered against. projectName and the rename's pending flag are read
+  // from the render closure either way — they move together with a render,
+  // so there is no staler and fresher reading of them to choose between.
+  // Narrowing `id` on the way out is what lets createNew hand it straight
+  // to discardUnnamedRow.
+  function isDiscard(id: number | null): id is number {
+    return id != null && projectName.trim().length === 0 && !renameMutation.isPending;
+  }
+
   // "New" and "discard" are one operation (spec §5.6). From a named Project
   // this keeps today's meaning — detach to a blank slate, leaving the named
   // Project itself alone. From an Unnamed Project it is the discard, and the
   // row goes with it: left behind it would strand its tag, and the next
   // import would reopen the old session instead of starting over.
   //
-  // Returns false only when the user declined the confirm, so the caller can
-  // leave its own state alone — declining changes nothing.
-  function createNew(): boolean {
+  // The confirm §5.6 puts in front of a discard that is holding cards is not
+  // here: this stays synchronous, and the button renders the question (see
+  // newWouldDiscard). By the time this is called the answer is already yes.
+  function createNew(): void {
     const id = projectIdRef.current;
-    // "Unnamed Project" is a row with no stored name — the same test as
-    // isNamed. With no row at all there is nothing to delete and this is
-    // already a blank slate.
-    //
-    // A rename still in flight is treated as named even though projectName
-    // is still '': the name lands a moment later, and deleting the row
-    // underneath it would throw away a Project the user had just named.
-    // The reverse mistake — detaching from a row whose rename then fails on
-    // a collision — leaves an Unnamed Project the next import reopens, and
-    // loses nothing.
-    const discarding =
-      id != null && projectName.trim().length === 0 && !renameMutation.isPending;
-    if (discarding && cards.length > 0) {
-      // The prompt is new, and lives only on this branch. Today's silent
-      // New threw away React state that was never promised to survive;
-      // since settings and cards began writing through (§5.2), the same
-      // click throws away work the app has been quietly keeping.
-      const ok = window.confirm(
-        "Discard this unnamed project? Its cards and gallery entries are removed. This cannot be undone.",
-      );
-      if (!ok) return false;
-    }
+    const discarding = isDiscard(id);
     if (discarding) {
       // Discarded rather than settled: the row this write targets is the
       // one about to be deleted.
@@ -529,7 +546,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setDecklistTextState("");
     setCards([]);
     setError(null);
-    return true;
   }
 
   // The debounce leaves a window — up to SETTINGS_WRITE_DEBOUNCE_MS — in
@@ -696,6 +712,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       nameCommitFlush.current = flush;
     },
     createNew,
+    // Deliberately the state-read id, not projectIdRef: this is what the
+    // bar renders its button against, and it must agree with what the user
+    // is looking at.
+    newWouldDiscard: isDiscard(projectId) && cards.length > 0,
     load: (id: number) => loadMutation.mutate(id),
     remove: (id: number) => deleteMutation.mutate(id),
     error,

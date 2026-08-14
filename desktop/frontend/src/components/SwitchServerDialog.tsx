@@ -17,8 +17,13 @@ export interface SwitchServerDialogProps {
 // Follows CompareDialog's pattern (overlay closes on click, inner panel
 // stops propagation) rather than a native confirm(). Deliberate: native
 // dialog behaviour inside Tauri's WKWebView is exactly the class of thing
-// this app has already been bitten by twice — see main.rs::download_to_file for
-// the download-attribute story.
+// this app has already been bitten by twice — see
+// download.ts::downloadViaBrowser for the download-attribute story.
+//
+// Bitten a third time since, by a native confirm() that never appeared on
+// macOS at all (issue 16). ConfirmDialog is that rule factored out; this
+// stays its own component because it asks for a host and a port, not just
+// yes or no.
 export default function SwitchServerDialog({
   target,
   busy,
