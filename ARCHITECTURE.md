@@ -213,6 +213,7 @@ string, not a database relationship.
 | `POST /api/tasks/{id}/cancel` | Cancel a queued/running task |
 | `GET /api/worker/status` | Is the background worker alive |
 | `GET /api/gallery?project_tag=` | List generated images for a project |
+| `POST /api/gallery/adopt` | Copy other projects' finished images for matching cards into this `project_tag`'s gallery — called on import/load so already-generated cards show without a Generate request |
 | `GET /api/gallery/{id}/original` \| `/full` | Serve image bytes |
 | `POST /api/pdf` | Assemble a PDF from `project_tag` + layout + card list **with quantities** (quantity is project data the generation server has no other way to know) |
 | `GET /api/models` | Enumerate upscale models (static, unchanged) |

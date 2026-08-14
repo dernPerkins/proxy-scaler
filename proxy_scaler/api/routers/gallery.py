@@ -7,7 +7,14 @@ from fastapi.responses import FileResponse
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
-from proxy_scaler.api.schemas import GalleryItemOut, GenerateOut, RegenerateGalleryItemIn
+from proxy_scaler.api.schemas import (
+    AdoptGalleryIn,
+    AdoptGalleryOut,
+    GalleryItemOut,
+    GenerateOut,
+    RegenerateGalleryItemIn,
+)
+from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.services import generation as generation_service
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
@@ -46,6 +53,29 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
         )
         for i in items
     ]
+
+
+@router.post("/adopt", response_model=AdoptGalleryOut)
+def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
+    """Copy other projects' finished images for these cards into this
+    project's gallery (see db.adopt_gallery_items). Called by the client
+    after an import / on project load, so already-generated images show
+    without waiting for a Generate request. Idempotent and cheap: pure
+    SQL plus a file-existence check, no Scryfall, no upscaling."""
+    entries = [
+        DeckEntry(
+            quantity=e.quantity,
+            name=e.name,
+            set_code=e.set_code,
+            collector_number=e.collector_number,
+            raw_line=e.raw_line,
+        )
+        for e in body.entries
+    ]
+    adopted = db.adopt_gallery_items(
+        body.project_tag, entries, db_path=get_db_path()
+    )
+    return AdoptGalleryOut(adopted=adopted)
 
 
 @router.get("/{gallery_item_id}/original")

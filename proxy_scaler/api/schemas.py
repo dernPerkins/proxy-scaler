@@ -39,6 +39,15 @@ class ResolveIn(BaseModel):
     entries: list[DeckEntryIn]
 
 
+class AdoptGalleryIn(BaseModel):
+    project_tag: str
+    entries: list[DeckEntryIn]
+
+
+class AdoptGalleryOut(BaseModel):
+    adopted: int
+
+
 class ResolvedFaceOut(BaseModel):
     scryfall_id: str
     face_index: int | None

@@ -820,6 +820,109 @@ def list_gallery_items(
     return [_gallery_row_to_dict(g) for g in rows]
 
 
+def adopt_gallery_items(
+    project_tag: str,
+    entries: list[DeckEntry],
+    db_path: Path | str | None = None,
+) -> int:
+    """Copy other projects' finished images for matching cards into this
+    project's gallery, so a freshly imported deck shows what already
+    exists instead of "Not generated yet" until a Generate is requested.
+
+    Rows are matched by exact printing (set_code + collector_number) when
+    the entry has one, else by card name; for each (scryfall_id,
+    face_index, model, dpi) variant the most recently produced row wins.
+    Variants this project already has are left alone (a re-import must
+    never clobber this project's own results), and rows whose output file
+    is gone from disk are skipped — adopting one would produce a gallery
+    entry that lists as "done" but 404s on view and breaks PDF export.
+    The copy keeps the source row's created_at: adoption isn't
+    production, and the PDF tab's most-recent-wins pick should not see a
+    years-old image as freshly made. Returns the number of rows adopted.
+    """
+    if not project_tag or not entries:
+        return 0
+    exact = {
+        ((entry.set_code or "").lower(), str(entry.collector_number))
+        for entry in entries
+        if entry.set_code and entry.collector_number is not None
+    }
+    names = {
+        entry.name.lower()
+        for entry in entries
+        if not (entry.set_code and entry.collector_number is not None)
+    }
+
+    adopted = 0
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            # Newest first so the first row seen per variant key is the
+            # winner; NULL created_at (pre-migration-002 rows) sorts last.
+            """
+            SELECT * FROM project_gallery_items
+            WHERE project_tag != ?
+            ORDER BY created_at IS NULL, created_at DESC
+            """,
+            (project_tag,),
+        ).fetchall()
+        seen: set[tuple] = set()
+        for row in rows:
+            matches = (
+                (row["set_code"] or "").lower(),
+                str(row["collector_number"]),
+            ) in exact or (row["card_name"] or "").lower() in names
+            if not matches:
+                continue
+            key = (row["scryfall_id"], row["face_index"], row["model"], row["dpi"])
+            if key in seen:
+                continue
+            seen.add(key)
+            if not Path(row["out_path"]).is_file():
+                continue
+            existing = conn.execute(
+                # `IS ?` not `= ?`: face_index is NULL for single-faced
+                # cards, and NULL never equals NULL (see upsert_gallery_item).
+                "SELECT id FROM project_gallery_items WHERE project_tag = ? "
+                "AND scryfall_id = ? AND face_index IS ? AND model = ? AND dpi = ?",
+                (project_tag, *key),
+            ).fetchone()
+            if existing is not None:
+                continue
+            conn.execute(
+                """
+                INSERT INTO project_gallery_items (
+                    project_tag, scryfall_id, face_index, face_name, card_name,
+                    set_code, collector_number, face_label, model, dpi, native_scale,
+                    device, image_filename, out_path, original_path, png_url,
+                    created_at, total_faces
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_tag,
+                    row["scryfall_id"],
+                    row["face_index"],
+                    row["face_name"],
+                    row["card_name"],
+                    row["set_code"],
+                    row["collector_number"],
+                    row["face_label"],
+                    row["model"],
+                    row["dpi"],
+                    row["native_scale"],
+                    row["device"],
+                    row["image_filename"],
+                    row["out_path"],
+                    row["original_path"],
+                    row["png_url"],
+                    row["created_at"],
+                    row["total_faces"],
+                ),
+            )
+            adopted += 1
+        conn.commit()
+    return adopted
+
+
 def get_gallery_item(
     gallery_item_id: int, db_path: Path | str | None = None
 ) -> dict[str, Any] | None:

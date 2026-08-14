@@ -145,6 +145,60 @@ def test_scan_gallery_from_output(tmp_path: Path) -> None:
     assert {g["dpi"] for g in gallery} == {600, 800}
 
 
+def test_adopt_gallery_items_copies_matching_rows(db_path: Path, tmp_path: Path) -> None:
+    from proxy_scaler.decklist import DeckEntry
+
+    img = tmp_path / "sol.png"
+    img.write_bytes(b"png")
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=img, original_path=img), db_path=db_path
+    )
+
+    entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    assert db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path) == 1
+
+    [item] = list_gallery_items("tag-b", db_path=db_path)
+    assert item["card_name"] == "Sol Ring"
+    assert item["model"] == "ultrasharp_v2"
+    assert item["out_path"] == str(img)
+
+    # Idempotent: the variant now exists under tag-b, so nothing re-copies.
+    assert db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path) == 0
+    # And the source rows are untouched.
+    assert len(list_gallery_items("tag-a", db_path=db_path)) == 1
+
+
+def test_adopt_gallery_items_matches_name_only_entries(db_path: Path, tmp_path: Path) -> None:
+    from proxy_scaler.decklist import DeckEntry
+
+    img = tmp_path / "sol.png"
+    img.write_bytes(b"png")
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=img, original_path=img), db_path=db_path
+    )
+
+    # A bare "1 Sol Ring" line has no printing to match on — name it is.
+    entry = DeckEntry(quantity=1, name="sol ring")
+    assert db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path) == 1
+
+    # A different card adopts nothing.
+    other = DeckEntry(quantity=1, name="Lightning Bolt")
+    assert db_module.adopt_gallery_items("tag-c", [other], db_path=db_path) == 0
+
+
+def test_adopt_gallery_items_skips_rows_whose_file_is_gone(db_path: Path, tmp_path: Path) -> None:
+    from proxy_scaler.decklist import DeckEntry
+
+    missing = tmp_path / "deleted.png"  # never written
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=missing, original_path=missing), db_path=db_path
+    )
+
+    entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    assert db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path) == 0
+    assert list_gallery_items("tag-b", db_path=db_path) == []
+
+
 # --- Task queue -------------------------------------------------------
 
 

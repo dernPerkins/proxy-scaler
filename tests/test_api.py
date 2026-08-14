@@ -978,3 +978,29 @@ def test_pdf_job_cancel_marks_it_canceled(client: TestClient) -> None:
 def test_pdf_job_status_404s_for_unknown_id(client: TestClient) -> None:
     pdf_jobs._reset_for_tests()
     assert client.get("/api/pdf/jobs/nope").status_code == 404
+
+
+def test_adopt_gallery_surfaces_another_projects_images(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Importing a deck whose cards were already generated under another
+    project should show those images without a Generate request."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post(
+        "/api/gallery/adopt",
+        json={"project_tag": "tag-b", "entries": [_sol_ring_entry()]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"adopted": 1}
+
+    gallery = client.get("/api/gallery", params={"project_tag": "tag-b"}).json()
+    assert [g["card_name"] for g in gallery] == ["Sol Ring"]
+
+    # Idempotent — a re-import adopts nothing new.
+    resp = client.post(
+        "/api/gallery/adopt",
+        json={"project_tag": "tag-b", "entries": [_sol_ring_entry()]},
+    )
+    assert resp.json() == {"adopted": 0}

@@ -142,6 +142,32 @@ export default function DecklistPage() {
     queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
   }
 
+  // Cards can be imported after the same printing was already generated
+  // under another project on this server — those images exist on disk but
+  // this project's gallery has no rows for them, so the deck would sit at
+  // "Not generated yet" until a Generate request happens to skip_existing
+  // its way to them. Adopting on import/load (and again once the server
+  // comes up) surfaces them immediately. Keyed on the identity set, not
+  // `cards` itself, so quantity edits don't re-fire it; best-effort
+  // because a failure only means the status poll shows less, not wrong.
+  const cardIdentities = cards.map(localCardIdentity).sort().join("|");
+  useEffect(() => {
+    if (!projectTag || serverUnavailable || cards.length === 0) return;
+    let cancelled = false;
+    generationApi
+      .adoptGallery(projectTag, cards.map(cardToEntry))
+      .then(({ adopted }) => {
+        if (!cancelled && adopted > 0) {
+          queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectTag, cardIdentities, serverUnavailable]);
+
   const generateAllMutation = useMutation({
     mutationFn: () =>
       generationApi.generate({
