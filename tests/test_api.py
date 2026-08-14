@@ -15,6 +15,7 @@ import io
 import os
 import time
 from contextlib import ExitStack
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -651,6 +652,21 @@ def test_pdf_generate_returns_real_pdf_file(client: TestClient, tmp_path: Path) 
     assert len(resp.content) > 100  # a real, non-trivial PDF, not an empty stub
 
 
+def test_pdf_generate_falls_back_to_a_dated_filename(client: TestClient, tmp_path: Path) -> None:
+    """An Unnamed Project has no project_name, and the opaque project_tag
+    is no name to hand a user — the download would arrive as a 32-char hex
+    string. The dated fallback is shared with the client's save-dialog
+    default (PdfPage.tsx) so the two agree."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf", json=_pdf_layout_body(project_name=""))
+    assert resp.status_code == 200
+    expected = f"proxy-scaler-{date.today().isoformat()}.pdf"
+    assert f'filename="{expected}"' in resp.headers["content-disposition"]
+    assert "tag-a" not in resp.headers["content-disposition"]
+
+
 def test_pdf_preview_page_no_entries_is_400(client: TestClient) -> None:
     resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(entries=[]))
     assert resp.status_code == 400
@@ -893,6 +909,24 @@ def test_pdf_job_lifecycle_start_poll_fetch(client: TestClient, tmp_path: Path) 
     # Evicted on fetch — its bytes must not stay pinned in memory.
     assert client.get(f"/api/pdf/jobs/{job_id}").status_code == 404
     assert client.get(f"/api/pdf/jobs/{job_id}/result").status_code == 404
+
+
+def test_pdf_job_falls_back_to_a_dated_filename(client: TestClient, tmp_path: Path) -> None:
+    """The job route is the one the desktop client actually drives, so it
+    needs the same dated fallback as the synchronous route above."""
+    pdf_jobs._reset_for_tests()
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf/jobs", json=_pdf_layout_body(project_name=""))
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+    assert _await_pdf_job(client, job_id)["status"] == "done"
+
+    resp = client.get(f"/api/pdf/jobs/{job_id}/result")
+    assert resp.status_code == 200
+    expected = f"proxy-scaler-{date.today().isoformat()}.pdf"
+    assert f'filename="{expected}"' in resp.headers["content-disposition"]
 
 
 def test_pdf_job_validation_errors_surface_on_start(client: TestClient) -> None:

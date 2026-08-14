@@ -4,6 +4,7 @@ import base64
 import io
 import re
 import threading
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Response
 from PIL import Image
@@ -43,6 +44,18 @@ router = APIRouter(prefix="/api/pdf", tags=["pdf"])
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
     return slug or "proxy-scaler"
+
+
+def _default_pdf_basename(today: date | None = None) -> str:
+    """Filename stem for a PDF whose project has no name (an Unnamed
+    Project). Never the project_tag: that's an opaque 32-char hex string,
+    which is no name to hand a user saving a file. The desktop client
+    builds the same string for its save-dialog default
+    (pdfFilename.ts::defaultPdfBasename) so the offered name and the one
+    in Content-Disposition agree — bar a remote generation host sitting on
+    the other side of local midnight from the client, where the two dates
+    can differ by a day."""
+    return f"proxy-scaler-{(today or date.today()).isoformat()}"
 
 
 def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
@@ -174,7 +187,7 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
         export_dpi=body.export_dpi,
         show_cut_lines=body.show_cut_lines,
     )
-    filename = f"{_slugify(body.project_name or body.project_tag)}.pdf"
+    filename = f"{_slugify(body.project_name or _default_pdf_basename())}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -236,7 +249,7 @@ def start_pdf_job(body: PdfLayoutIn) -> PdfJobOut:
             status_code=409, detail="A PDF is already being generated — wait for it to finish."
         )
 
-    filename = f"{_slugify(body.project_name or body.project_tag)}.pdf"
+    filename = f"{_slugify(body.project_name or _default_pdf_basename())}.pdf"
     job = pdf_jobs.create_job(filename=filename, total=unique_image_count(pages))
     threading.Thread(
         target=_run_render,

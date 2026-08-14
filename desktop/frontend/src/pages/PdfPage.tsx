@@ -14,6 +14,7 @@ import {
   setDownloadCancel,
   setDownloadPhase,
 } from "../download";
+import { pdfFilename } from "../pdfFilename";
 import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
 
 // Render progress ticks about once a second per card image, so a
@@ -135,7 +136,7 @@ export default function PdfPage() {
     setDownloadError(null);
     setDownloading(true);
     try {
-      await runDownload(`${projectName || "proxy-scaler"}.pdf`, async () => {
+      await runDownload(pdfFilename(projectName), async () => {
         const body = {
           project_tag: projectTag,
           entries,
