@@ -83,10 +83,12 @@ interface ProjectContextValue {
    *  see ARCHITECTURE.md. Null only until a row exists; the first import
    *  creates one (the Unnamed Project), named or not. */
   projectTag: string | null;
+  /** The *stored* name — `''` for the Unnamed Project. Not what is
+   *  currently in the bar's name field: that is local to the field until
+   *  a pause commits it through `rename` (spec §5.4). */
   projectName: string;
   settings: ProjectSettings;
   setSettings: (updater: ProjectSettings | ((s: ProjectSettings) => ProjectSettings)) => void;
-  setProjectName: (name: string) => void;
   decklistText: string;
   cards: CardRow[];
   /** Parses `text` and adds any new cards to `cards` — additive, never
@@ -100,22 +102,25 @@ interface ProjectContextValue {
   importDecklistText: (text: string) => void;
   importingDecklistText: boolean;
   removeCard: (cardId: number) => void;
-  isSaved: boolean;
-  save: () => void;
-  /** Awaitable save, for callers that must not proceed until it lands
-   *  (the connection switcher saves before resetting the whole UI).
-   *  Rejects on failure so the caller can abort. */
-  saveAsync: () => Promise<void>;
+  /** Whether the project has a name. Deliberately not "is saved": since
+   *  the settings amendment (spec §5.2) everything is saved, named or
+   *  not — what varies is whether you can find it again. */
+  isNamed: boolean;
+  /** Names the project, in place: the promotion from Unnamed Project to
+   *  named one, and an UPDATE rather than an INSERT, so the tag — and
+   *  with it every image already generated — survives it.
+   *
+   *  Awaited by its one caller, the bar's name field, which renders the
+   *  rejection message (a collision, typically) beside the field and
+   *  keeps the typed text. Rejecting rather than routing through `error`
+   *  keeps a name the user is still editing out of the bar's general
+   *  error line. */
+  rename: (name: string) => Promise<void>;
   saveAs: (name: string) => void;
   createNew: () => void;
   load: (id: number) => void;
   remove: (id: number) => void;
-  saving: boolean;
   error: string | null;
-  /** Fires on every save attempt (button or Ctrl/Cmd+S), success or
-   *  failure — id is bumped even on a repeat identical outcome so a
-   *  listener keyed on it (e.g. a toast) can tell two saves apart. */
-  saveResult: { id: number; ok: true } | { id: number; ok: false; message: string } | null;
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
@@ -143,8 +148,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [decklistText, setDecklistTextState] = useState("");
   const [cards, setCards] = useState<CardRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [saveResult, setSaveResult] = useState<ProjectContextValue["saveResult"]>(null);
-  const saveResultId = useRef(0);
   // Whether settings.model is still an unreviewed default, i.e. safe for
   // the GPU probe below to revise. Flipped by any deliberate model change
   // — the user picking one, or a saved project supplying its own.
@@ -289,41 +292,41 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setError(null);
   }
 
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const name = projectName.trim();
-      if (!name) throw new Error("Enter a project name before saving.");
-      // Dropped rather than flushed: Save is not a transition, and it
-      // writes these very settings itself a line below — flushing would
-      // only mean two UPDATEs of the same values. One still aimed at "no
-      // row yet" would additionally race the create into a stray row.
-      discardPendingSettingsWrite();
-      const summary =
-        projectId != null
-          ? await projectApi.updateProject(projectId, name, settings)
-          : await projectApi.createProject(name);
-      // create_project only takes a name — push this session's current
-      // settings immediately after, so a brand-new project doesn't lose
-      // whatever the user already configured in the sidebar before ever
-      // clicking Save.
-      if (projectId == null) {
-        await projectApi.updateProject(summary.id, summary.name, settings);
-      }
+  // Naming, which is all that is left of what used to be Save. Where Save
+  // branched create-vs-update on projectId and called create_project when
+  // there wasn't one, this only ever updates: minting a fresh row here
+  // would mint a fresh tag with it and orphan every image already
+  // generated under the old one (spec §2). Nothing about naming is
+  // allowed to move the tag.
+  const renameMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const trimmed = name.trim();
+      // Clearing the field is ignored at the field (spec §5.4) and blank
+      // means "settings only" to update_project, so this is unreachable
+      // rather than a policy — it just refuses to write nothing.
+      if (!trimmed) throw new Error("Project name is required.");
+      // Almost always a no-op since ticket 04: by the time there is
+      // anything worth naming the row exists. A name typed into an app
+      // holding nothing at all is allowed to be what creates it.
+      const id = await ensureProjectRow();
+      // settingsRef, not settings: a settings change made in the same tick
+      // as the commit is in the ref already, while state is a render behind.
+      // The pending settings write is deliberately left alone — it belongs
+      // to the settings gesture, carries these same values, and
+      // update_project keeps the stored name when handed a blank one.
+      const summary = await projectApi.updateProject(id, trimmed, settingsRef.current);
       await projectApi.setLastProjectId(summary.id);
       return summary;
     },
-    onSuccess: (project) => {
-      adoptProjectId(project.id);
-      setProjectTag(project.tag);
-      setProjectName(project.name);
+    onSuccess: (summary) => {
+      // The tag is untouched by construction — this was an UPDATE of the
+      // row the session is already holding.
+      setProjectName(summary.name);
       setError(null);
-      setSaveResult({ id: ++saveResultId.current, ok: true });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
-    onError: (err: Error) => {
-      setError(err.message);
-      setSaveResult({ id: ++saveResultId.current, ok: false, message: err.message });
-    },
+    // No onError: the message is the caller's, surfaced beside the name
+    // field rather than in the bar's general error line.
   });
 
   const saveAsMutation = useMutation({
@@ -504,24 +507,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     projectName,
     settings,
     setSettings: updateSettings,
-    setProjectName,
     decklistText,
     cards,
     importDecklistText: (text: string) => importDecklistMutation.mutate(text),
     importingDecklistText: importDecklistMutation.isPending,
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
-    isSaved: projectId != null,
-    save: () => saveMutation.mutate(),
-    saveAsync: async () => {
-      await saveMutation.mutateAsync();
+    isNamed: projectName.trim().length > 0,
+    rename: async (name: string) => {
+      await renameMutation.mutateAsync(name);
     },
     saveAs: (name: string) => saveAsMutation.mutate(name),
     createNew,
     load: (id: number) => loadMutation.mutate(id),
     remove: (id: number) => deleteMutation.mutate(id),
-    saving: saveMutation.isPending || saveAsMutation.isPending,
     error,
-    saveResult,
   };
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;
