@@ -396,7 +396,7 @@ button:disabled {
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.chip-saved {
+.chip-named {
   background: var(--ok-soft);
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 30%, transparent);
