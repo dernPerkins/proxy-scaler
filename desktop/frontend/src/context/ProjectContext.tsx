@@ -72,7 +72,8 @@ function getDefaultSettings(): ProjectSettings {
 interface ProjectContextValue {
   projectId: number | null;
   /** Opaque tag passed to the generation server to scope tasks/gallery —
-   *  see ARCHITECTURE.md. Null until the project has been saved once. */
+   *  see ARCHITECTURE.md. Null only until a row exists; the first import
+   *  creates one (the Unnamed Project), named or not. */
   projectTag: string | null;
   projectName: string;
   settings: ProjectSettings;
@@ -83,7 +84,11 @@ interface ProjectContextValue {
   /** Parses `text` and adds any new cards to `cards` — additive, never
    *  removes an existing card (see project_store.rs::import_decklist_text).
    *  Also remembers `text` itself as decklistText, purely as a "what did I
-   *  last paste" convenience. */
+   *  last paste" convenience.
+   *
+   *  With no project yet, this is what creates one: the Unnamed Project is
+   *  born on the first import, and projectId/projectTag are non-null from
+   *  then on. */
   importDecklistText: (text: string) => void;
   importingDecklistText: boolean;
   removeCard: (cardId: number) => void;
@@ -239,8 +244,27 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const importDecklistMutation = useMutation({
     mutationFn: async (text: string) => {
-      if (projectId == null) throw new Error("Save the project before importing a decklist.");
-      const newCards = await projectApi.importDecklistText(projectId, text);
+      // The row is born here. With no project yet, importing creates the
+      // Unnamed Project rather than refusing — naming is optional and comes
+      // later, if at all (spec §5.1).
+      let id = projectId;
+      if (id == null) {
+        const unnamed = await projectApi.getOrCreateUnnamedProject();
+        id = unnamed.id;
+        // Adopted straight away rather than in onSuccess: the row exists in
+        // the store from this point on whether or not the import that
+        // follows succeeds, and state that says otherwise would strand it.
+        // projectName is left alone — the row's name really is '', and the
+        // bar's field holds whatever the user is in the middle of typing.
+        setProjectId(unnamed.id);
+        setProjectTag(unnamed.tag);
+        // The Unnamed Project is what the next launch should restore — it
+        // holds the cards about to be imported.
+        await projectApi.setLastProjectId(unnamed.id);
+      }
+      // Note `id`, not projectId: setProjectId lands on a later render, so
+      // reading it back in this tick would still see null.
+      const newCards = await projectApi.importDecklistText(id, text);
       return { text, newCards };
     },
     onSuccess: ({ text, newCards }) => {

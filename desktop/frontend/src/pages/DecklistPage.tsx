@@ -248,10 +248,9 @@ export default function DecklistPage() {
       <aside className="sidebar panel">
         <h3 style={{ marginBottom: 14 }}>Settings</h3>
 
-        {/* Above the field group, and deliberately outside the
-            no-project branch below: switching to an empty server leaves
-            projectId null, and if this lived behind that check there'd be
-            no way to switch back. */}
+        {/* Above the field group, and never behind a project check:
+            switching to an empty server leaves projectId null, and if this
+            were gated on a project there'd be no way to switch back. */}
         <ServerSwitcher />
 
         <div className="field-group">
@@ -405,116 +404,119 @@ export default function DecklistPage() {
       <main className="content">
         <h2>Decklist</h2>
 
-        {projectId == null ? (
+        {/* The import box is unconditional: with no project yet, importing
+            is what creates one (see ProjectContext's importDecklistText).
+            Gating it on projectId would be circular — the row is born at
+            first import, so the box that performs the import can't wait for
+            the row. The readiness note that follows is about the local
+            generation server, which importing doesn't touch — so it sits
+            beside the box rather than in place of it. */}
+        {readiness.status === "starting" && (
           <p className="hint" style={{ marginTop: 10 }}>
-            {readiness.status === "starting"
-              ? "Starting local server — your last project will load automatically."
-              : "Enter a project name in the project bar above and click Save to get started."}
+            Starting local server — your last project will load automatically.
           </p>
-        ) : (
-          <>
-            <div className="import-box panel" style={{ marginTop: 10 }}>
-              <textarea
-                value={decklistDraft}
-                onChange={(e) => setDecklistDraft(e.target.value)}
-                rows={6}
-                style={{ width: "100%" }}
-                placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
-              />
-              <button
-                className="btn-primary"
-                onClick={() => {
-                  importDecklistText(decklistDraft);
-                  setStatus(null);
-                }}
-                disabled={!decklistDraft.trim() || importingDecklistText}
-              >
-                {importingDecklistText ? "Importing…" : "Import cards"}
-              </button>
-              {status && <p className="hint">{status}</p>}
-            </div>
-
-            <div className="decklist-head">
-              <h2>
-                Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
-              </h2>
-              <div className="decklist-actions">
-                <select
-                  value={sortPrimary}
-                  onChange={(e) => setSortPrimary(e.target.value as typeof sortPrimary)}
-                >
-                  <option value="Name">Sort: Name</option>
-                  <option value="Set">Sort: Set</option>
-                  <option value="(none)">Sort: (none)</option>
-                </select>
-                <button
-                  className="btn-primary"
-                  onClick={() => generateAllMutation.mutate()}
-                  disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
-                  title={serverUnavailable ? "Generation server is unreachable" : undefined}
-                >
-                  Generate upscaled images
-                </button>
-              </div>
-            </div>
-
-            {serverUnavailable && (
-              <p className="error-text" style={{ marginTop: 6 }}>
-                Generation server is unreachable — reconnect before generating.
-              </p>
-            )}
-
-            {cards.length === 0 && (
-              <p className="empty-note">
-                No cards yet — paste a decklist above and click Import cards.
-              </p>
-            )}
-
-            {sortedCards.map((card) => {
-              const identity = localCardIdentity(card);
-              let cardGallery = galleryByCard.get(identity) ?? [];
-              let cardTasks = tasksByCard.get(identity) ?? [];
-              if (!card.set_code || !card.collector_number) {
-                // Name-only local card: the generation server always
-                // resolves it to one concrete printing (a real set +
-                // collector_number), so it can never land in the
-                // identity bucket above — match by name instead. See
-                // mergeCardStatus.ts::groupByCardName.
-                const nameKey = card.name.toLowerCase();
-                cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
-                cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
-              }
-              const faceGroups = buildRows(cardGallery, cardTasks);
-              const faces: DisplayFace[] = faceGroups
-                .map(({ items, tasks: faceTasks }) => {
-                  const source = items[0] ?? faceTasks[0];
-                  return {
-                    faceLabel: source?.face_label ?? null,
-                    // Canceled tasks are just queue history, not worth
-                    // surfacing here — the Tasks tab is where cancellation
-                    // state actually matters.
-                    variants: statusForPairs(items, faceTasks).filter(
-                      (v) => v.status !== "canceled",
-                    ),
-                  };
-                })
-                .filter((face) => face.variants.length > 0);
-              return (
-                <CardRowView
-                  key={card.id}
-                  card={card}
-                  faces={faces}
-                  expandedFaces={expandedFaces}
-                  onToggleExpand={toggleExpanded}
-                  onRemove={() => removeCard(card.id)}
-                  onGenerate={() => generateCardMutation.mutate(card)}
-                  onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
-                  disabled={serverUnavailable}
-                />
-              );
-            })}
-          </>
         )}
+
+        <div className="import-box panel" style={{ marginTop: 10 }}>
+          <textarea
+            value={decklistDraft}
+            onChange={(e) => setDecklistDraft(e.target.value)}
+            rows={6}
+            style={{ width: "100%" }}
+            placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
+          />
+          <button
+            className="btn-primary"
+            onClick={() => {
+              importDecklistText(decklistDraft);
+              setStatus(null);
+            }}
+            disabled={!decklistDraft.trim() || importingDecklistText}
+          >
+            {importingDecklistText ? "Importing…" : "Import cards"}
+          </button>
+          {status && <p className="hint">{status}</p>}
+        </div>
+
+        <div className="decklist-head">
+          <h2>
+            Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
+          </h2>
+          <div className="decklist-actions">
+            <select
+              value={sortPrimary}
+              onChange={(e) => setSortPrimary(e.target.value as typeof sortPrimary)}
+            >
+              <option value="Name">Sort: Name</option>
+              <option value="Set">Sort: Set</option>
+              <option value="(none)">Sort: (none)</option>
+            </select>
+            <button
+              className="btn-primary"
+              onClick={() => generateAllMutation.mutate()}
+              disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
+              title={serverUnavailable ? "Generation server is unreachable" : undefined}
+            >
+              Generate upscaled images
+            </button>
+          </div>
+        </div>
+
+        {serverUnavailable && (
+          <p className="error-text" style={{ marginTop: 6 }}>
+            Generation server is unreachable — reconnect before generating.
+          </p>
+        )}
+
+        {cards.length === 0 && (
+          <p className="empty-note">
+            No cards yet — paste a decklist above and click Import cards.
+          </p>
+        )}
+
+        {sortedCards.map((card) => {
+          const identity = localCardIdentity(card);
+          let cardGallery = galleryByCard.get(identity) ?? [];
+          let cardTasks = tasksByCard.get(identity) ?? [];
+          if (!card.set_code || !card.collector_number) {
+            // Name-only local card: the generation server always
+            // resolves it to one concrete printing (a real set +
+            // collector_number), so it can never land in the
+            // identity bucket above — match by name instead. See
+            // mergeCardStatus.ts::groupByCardName.
+            const nameKey = card.name.toLowerCase();
+            cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
+            cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
+          }
+          const faceGroups = buildRows(cardGallery, cardTasks);
+          const faces: DisplayFace[] = faceGroups
+            .map(({ items, tasks: faceTasks }) => {
+              const source = items[0] ?? faceTasks[0];
+              return {
+                faceLabel: source?.face_label ?? null,
+                // Canceled tasks are just queue history, not worth
+                // surfacing here — the Tasks tab is where cancellation
+                // state actually matters.
+                variants: statusForPairs(items, faceTasks).filter(
+                  (v) => v.status !== "canceled",
+                ),
+              };
+            })
+            .filter((face) => face.variants.length > 0);
+          return (
+            <CardRowView
+              key={card.id}
+              card={card}
+              faces={faces}
+              expandedFaces={expandedFaces}
+              onToggleExpand={toggleExpanded}
+              onRemove={() => removeCard(card.id)}
+              onGenerate={() => generateCardMutation.mutate(card)}
+              onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+              disabled={serverUnavailable}
+            />
+          );
+        })}
       </main>
     </div>
   );

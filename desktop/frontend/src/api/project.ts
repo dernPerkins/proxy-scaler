@@ -64,6 +64,12 @@ export interface LoadedProject {
 
 export const projectApi = {
   createProject: (name: string) => invokeCommand<ProjectSummary>("create_project", { name }),
+  // The Unnamed Project — an ordinary row with name = '', created on first
+  // call and returned unchanged afterwards (project_store.rs). Called from
+  // the write paths that need a row to write against, never speculatively:
+  // an app installed and never used holds no row at all.
+  getOrCreateUnnamedProject: () =>
+    invokeCommand<ProjectSummary>("get_or_create_unnamed_project"),
   listProjects: () => invokeCommand<ProjectSummary[]>("list_projects"),
   getProject: (projectId: number) =>
     invokeCommand<LoadedProject>("get_project", { projectId }),
