@@ -57,11 +57,13 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
 
 @router.post("/adopt", response_model=AdoptGalleryOut)
 def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
-    """Copy other projects' finished images for these cards into this
-    project's gallery (see db.adopt_gallery_items). Called by the client
-    after an import / on project load, so already-generated images show
-    without waiting for a Generate request. Idempotent and cheap: pure
-    SQL plus a file-existence check, no Scryfall, no upscaling."""
+    """Register already-existing images for these cards into this
+    project's gallery (see db.adopt_gallery_items): other projects'
+    gallery rows, plus — when output_dir is sent — an on-disk filename
+    scan for images with no row anywhere. Called by the client after an
+    import / on project load, so already-generated images show without
+    waiting for a Generate request. Idempotent and cheap: SQL plus
+    file checks, no Scryfall, no upscaling."""
     entries = [
         DeckEntry(
             quantity=e.quantity,
@@ -73,7 +75,10 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
         for e in body.entries
     ]
     adopted = db.adopt_gallery_items(
-        body.project_tag, entries, db_path=get_db_path()
+        body.project_tag,
+        entries,
+        db_path=get_db_path(),
+        output_dir=Path(body.output_dir) if body.output_dir else None,
     )
     return AdoptGalleryOut(adopted=adopted)
 

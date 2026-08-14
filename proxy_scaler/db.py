@@ -820,26 +820,46 @@ def list_gallery_items(
     return [_gallery_row_to_dict(g) for g in rows]
 
 
+def _variant_key(
+    set_code: str | None, collector_number: Any, face_index: int | None, model: str, dpi: int
+) -> tuple:
+    """Identity of one displayable image variant: a printing's face at one
+    model+dpi. Printing (set+collector), not scryfall_id, so rows recovered
+    from filenames alone (empty scryfall_id) still compare equal to fully
+    resolved rows for the same image."""
+    return ((set_code or "").lower(), str(collector_number), face_index, model, dpi)
+
+
 def adopt_gallery_items(
     project_tag: str,
     entries: list[DeckEntry],
     db_path: Path | str | None = None,
+    output_dir: Path | str | None = None,
 ) -> int:
-    """Copy other projects' finished images for matching cards into this
+    """Register already-existing images for matching cards into this
     project's gallery, so a freshly imported deck shows what already
     exists instead of "Not generated yet" until a Generate is requested.
 
-    Rows are matched by exact printing (set_code + collector_number) when
-    the entry has one, else by card name; for each (scryfall_id,
-    face_index, model, dpi) variant the most recently produced row wins.
-    Variants this project already has are left alone (a re-import must
-    never clobber this project's own results), and rows whose output file
-    is gone from disk are skipped — adopting one would produce a gallery
-    entry that lists as "done" but 404s on view and breaks PDF export.
-    The copy keeps the source row's created_at: adoption isn't
-    production, and the PDF tab's most-recent-wins pick should not see a
-    years-old image as freshly made. Returns the number of rows adopted.
-    """
+    Two passes:
+    1. Copy other projects' gallery rows (full metadata). Matched by exact
+       printing (set_code + collector_number) when the entry has one, else
+       by card name; newest row per variant wins. Rows whose output file
+       is gone from disk are skipped — adopting one would produce a
+       gallery entry that lists as "done" but 404s on view and breaks PDF
+       export.
+    2. Scan output_dir filenames for images with no gallery row anywhere
+       (files predating the gallery table, or produced by the CLI). These
+       register with what the filename proves (printing/face/model/dpi)
+       and an empty scryfall_id/png_url/original_path; the next real
+       generation or skip_existing pass replaces them with full-metadata
+       rows (see upsert_gallery_item). created_at is the file's mtime —
+       when the image was actually produced — which is what the PDF tab's
+       most-recent-wins pick means by recency. Name-only entries can't
+       match here (no printing token to find in the filename).
+
+    Variants this project already has are always left alone: a re-import
+    must never clobber this project's own results. Returns the number of
+    rows adopted."""
     if not project_tag or not entries:
         return 0
     exact = {
@@ -855,39 +875,18 @@ def adopt_gallery_items(
 
     adopted = 0
     with connect(db_path) as conn:
-        rows = conn.execute(
-            # Newest first so the first row seen per variant key is the
-            # winner; NULL created_at (pre-migration-002 rows) sorts last.
-            """
-            SELECT * FROM project_gallery_items
-            WHERE project_tag != ?
-            ORDER BY created_at IS NULL, created_at DESC
-            """,
-            (project_tag,),
-        ).fetchall()
-        seen: set[tuple] = set()
-        for row in rows:
-            matches = (
-                (row["set_code"] or "").lower(),
-                str(row["collector_number"]),
-            ) in exact or (row["card_name"] or "").lower() in names
-            if not matches:
-                continue
-            key = (row["scryfall_id"], row["face_index"], row["model"], row["dpi"])
-            if key in seen:
-                continue
-            seen.add(key)
-            if not Path(row["out_path"]).is_file():
-                continue
-            existing = conn.execute(
-                # `IS ?` not `= ?`: face_index is NULL for single-faced
-                # cards, and NULL never equals NULL (see upsert_gallery_item).
-                "SELECT id FROM project_gallery_items WHERE project_tag = ? "
-                "AND scryfall_id = ? AND face_index IS ? AND model = ? AND dpi = ?",
-                (project_tag, *key),
-            ).fetchone()
-            if existing is not None:
-                continue
+        have = {
+            _variant_key(
+                r["set_code"], r["collector_number"], r["face_index"], r["model"], r["dpi"]
+            )
+            for r in conn.execute(
+                "SELECT set_code, collector_number, face_index, model, dpi "
+                "FROM project_gallery_items WHERE project_tag = ?",
+                (project_tag,),
+            ).fetchall()
+        }
+
+        def insert_row(values: dict[str, Any]) -> None:
             conn.execute(
                 """
                 INSERT INTO project_gallery_items (
@@ -899,26 +898,74 @@ def adopt_gallery_items(
                 """,
                 (
                     project_tag,
-                    row["scryfall_id"],
-                    row["face_index"],
-                    row["face_name"],
-                    row["card_name"],
-                    row["set_code"],
-                    row["collector_number"],
-                    row["face_label"],
-                    row["model"],
-                    row["dpi"],
-                    row["native_scale"],
-                    row["device"],
-                    row["image_filename"],
-                    row["out_path"],
-                    row["original_path"],
-                    row["png_url"],
-                    row["created_at"],
-                    row["total_faces"],
+                    values["scryfall_id"],
+                    values["face_index"],
+                    values["face_name"],
+                    values["card_name"],
+                    values["set_code"],
+                    values["collector_number"],
+                    values["face_label"],
+                    values["model"],
+                    values["dpi"],
+                    values["native_scale"],
+                    values["device"],
+                    values["image_filename"],
+                    values["out_path"],
+                    values["original_path"],
+                    values["png_url"],
+                    values["created_at"],
+                    values["total_faces"],
                 ),
             )
+
+        rows = conn.execute(
+            # Newest first so the first row seen per variant key is the
+            # winner; NULL created_at (pre-migration-002 rows) sorts last.
+            """
+            SELECT * FROM project_gallery_items
+            WHERE project_tag != ?
+            ORDER BY created_at IS NULL, created_at DESC
+            """,
+            (project_tag,),
+        ).fetchall()
+        for row in rows:
+            matches = (
+                (row["set_code"] or "").lower(),
+                str(row["collector_number"]),
+            ) in exact or (row["card_name"] or "").lower() in names
+            if not matches:
+                continue
+            key = _variant_key(
+                row["set_code"], row["collector_number"], row["face_index"],
+                row["model"], row["dpi"],
+            )
+            if key in have:
+                continue
+            if not Path(row["out_path"]).is_file():
+                continue
+            insert_row({k: row[k] for k in row.keys()})
+            have.add(key)
             adopted += 1
+
+        if output_dir is not None:
+            for item in scan_gallery_from_output(output_dir, entries):
+                key = _variant_key(
+                    item["set_code"], item["collector_number"], item["face_index"],
+                    item["model"], item["dpi"],
+                )
+                if key in have:
+                    continue
+                path = Path(item["out_path"])
+                item["created_at"] = (
+                    datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                    .replace(microsecond=0)
+                    .isoformat()
+                )
+                item["total_faces"] = None
+                insert_row(item)
+                have.add(key)
+                adopted += 1
+
         conn.commit()
     return adopted
 
@@ -997,6 +1044,24 @@ def upsert_gallery_item(
     if not project_tag:
         return
     with connect(db_path) as conn:
+        # A fully resolved row supersedes any filename-recovered placeholder
+        # (scryfall_id = '', from adopt_gallery_items' output-dir scan) for
+        # the same printed variant — without this, the first real generation
+        # after an adoption would show the image twice.
+        if result.scryfall_id:
+            conn.execute(
+                "DELETE FROM project_gallery_items WHERE project_tag = ? "
+                "AND scryfall_id = '' AND lower(set_code) = lower(?) "
+                "AND collector_number = ? AND face_index IS ? AND model = ? AND dpi = ?",
+                (
+                    project_tag,
+                    result.set_code,
+                    str(result.collector_number),
+                    result.face_index,
+                    result.model,
+                    result.dpi,
+                ),
+            )
         # Not a plain `ON CONFLICT` upsert: the UNIQUE constraint includes
         # face_index, which is NULL for the common single-faced-card case,
         # and SQLite treats every NULL as distinct in a UNIQUE index — so
@@ -1132,9 +1197,11 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
     if not match:
         return None
     head = match.group("head")
-    # Non-greedy stem so SET (2–6 alnum, starts with a letter) is found early.
+    # Non-greedy stem so SET (2–6 alnum) is found early. Set codes may
+    # start with a digit (40K, 2X2) but always contain a letter — the
+    # lookahead keeps pure-number segments reading as collector numbers.
     set_col = re.match(
-        r"^(?P<stem>.+?)-(?P<set>[A-Za-z][A-Za-z0-9]{1,5})-(?P<collector>.+)$",
+        r"^(?P<stem>.+?)-(?P<set>(?=[0-9]*[A-Za-z])[A-Za-z0-9]{2,6})-(?P<collector>.+)$",
         head,
     )
     if not set_col:

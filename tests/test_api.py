@@ -1004,3 +1004,27 @@ def test_adopt_gallery_surfaces_another_projects_images(
         json={"project_tag": "tag-b", "entries": [_sol_ring_entry()]},
     )
     assert resp.json() == {"adopted": 0}
+
+
+def test_adopt_gallery_scans_output_dir_for_rowless_files(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Images on disk with no gallery row anywhere (pre-reshape or
+    CLI-produced) adopt from their filenames when output_dir is sent."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "Sol_Ring-C21-263-illustrationjanai-1200dpi.png").write_bytes(b"png")
+
+    resp = client.post(
+        "/api/gallery/adopt",
+        json={
+            "project_tag": "tag-x",
+            "entries": [_sol_ring_entry()],
+            "output_dir": str(out),
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"adopted": 1}
+
+    gallery = client.get("/api/gallery", params={"project_tag": "tag-x"}).json()
+    assert [(g["model"], g["dpi"]) for g in gallery] == [("illustrationjanai", 1200)]

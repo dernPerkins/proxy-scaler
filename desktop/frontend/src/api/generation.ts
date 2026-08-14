@@ -101,13 +101,14 @@ export const generationApi = {
 
   listGallery: (projectTag: string) =>
     request<GalleryItem[]>(`/api/gallery?${new URLSearchParams({ project_tag: projectTag })}`),
-  // Copies other projects' finished images for these cards into this
-  // project's gallery, so already-generated cards show as done right
-  // after an import instead of waiting for a Generate request.
-  adoptGallery: (projectTag: string, entries: DeckEntryIn[]) =>
+  // Registers already-existing images for these cards into this project's
+  // gallery (other projects' rows + an output-dir filename scan), so
+  // already-generated cards show as done right after an import instead of
+  // waiting for a Generate request.
+  adoptGallery: (projectTag: string, entries: DeckEntryIn[], outputDir: string) =>
     request<{ adopted: number }>("/api/gallery/adopt", {
       method: "POST",
-      body: JSON.stringify({ project_tag: projectTag, entries }),
+      body: JSON.stringify({ project_tag: projectTag, entries, output_dir: outputDir }),
     }),
   imageUrl: (galleryItemId: number, variant: "full" | "original") =>
     `${getApiBaseUrl()}/api/gallery/${galleryItemId}/${variant}`,

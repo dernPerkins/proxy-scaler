@@ -42,6 +42,10 @@ class ResolveIn(BaseModel):
 class AdoptGalleryIn(BaseModel):
     project_tag: str
     entries: list[DeckEntryIn]
+    # Generation-machine-local path (same meaning as GenerateIn.output_dir);
+    # when present, adoption also scans it for images that exist on disk
+    # with no gallery row anywhere (pre-reshape or CLI-produced files).
+    output_dir: str | None = None
 
 
 class AdoptGalleryOut(BaseModel):

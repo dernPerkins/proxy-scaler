@@ -128,6 +128,14 @@ def test_parse_output_filename() -> None:
     assert janai is not None
     assert janai["model"] == "illustrationjanai"
 
+    # Set codes may start with a digit (40K, 2X2).
+    digit_set = parse_output_filename(
+        "And_They_Shall_Know_No_Fear-40K-9-ultrasharp_v2-1200dpi.png"
+    )
+    assert digit_set is not None
+    assert digit_set["set_code"] == "40k"
+    assert digit_set["collector_number"] == "9"
+
     # Removed models no longer parse.
     assert parse_output_filename("Sol_Ring-C21-263-swinir-600dpi.png") is None
 
@@ -184,6 +192,42 @@ def test_adopt_gallery_items_matches_name_only_entries(db_path: Path, tmp_path: 
     # A different card adopts nothing.
     other = DeckEntry(quantity=1, name="Lightning Bolt")
     assert db_module.adopt_gallery_items("tag-c", [other], db_path=db_path) == 0
+
+
+def test_adopt_gallery_items_scans_output_dir_for_rowless_files(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Files with no gallery row anywhere (pre-reshape or CLI-produced)
+    register from their filename alone, and a later real generation
+    replaces the placeholder instead of duplicating it."""
+    from proxy_scaler.decklist import DeckEntry
+
+    out = tmp_path / "output"
+    out.mkdir()
+    img = out / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"
+    img.write_bytes(b"png")
+
+    entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    assert (
+        db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path, output_dir=out) == 1
+    )
+    [item] = list_gallery_items("tag-b", db_path=db_path)
+    assert item["scryfall_id"] == ""
+    assert item["model"] == "ultrasharp_v2"
+    assert item["dpi"] == 800
+    assert item["created_at"] is not None
+
+    # Idempotent.
+    assert (
+        db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path, output_dir=out) == 0
+    )
+
+    # A real generation for the same variant supersedes the placeholder.
+    db_module.upsert_gallery_item(
+        "tag-b", _result(out_path=img, original_path=img, dpi=800), db_path=db_path
+    )
+    [item] = list_gallery_items("tag-b", db_path=db_path)
+    assert item["scryfall_id"] == "sol-id"
 
 
 def test_adopt_gallery_items_skips_rows_whose_file_is_gone(db_path: Path, tmp_path: Path) -> None:

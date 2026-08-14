@@ -155,7 +155,7 @@ export default function DecklistPage() {
     if (!projectTag || serverUnavailable || cards.length === 0) return;
     let cancelled = false;
     generationApi
-      .adoptGallery(projectTag, cards.map(cardToEntry))
+      .adoptGallery(projectTag, cards.map(cardToEntry), genPaths.output_dir)
       .then(({ adopted }) => {
         if (!cancelled && adopted > 0) {
           queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
@@ -166,7 +166,7 @@ export default function DecklistPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectTag, cardIdentities, serverUnavailable]);
+  }, [projectTag, cardIdentities, serverUnavailable, genPaths.output_dir]);
 
   const generateAllMutation = useMutation({
     mutationFn: () =>
