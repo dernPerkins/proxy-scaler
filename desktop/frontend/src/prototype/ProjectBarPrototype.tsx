@@ -8,7 +8,9 @@
 // tabs, page content and styling. All state is stubbed — no invoke(), no
 // react-query, no persistence. Nothing here is wired to a real mutation.
 //
-// Run: cd desktop/frontend && npm run dev, then open /?variant=A
+// Run: cd desktop/frontend && npm run dev, then open /decklist?variant=A
+// (not /?variant=A — the "/" route is <Navigate to="/decklist" replace />,
+// and a string `to` drops the query string before this gate sees it.)
 //
 // Delete this directory (and the gate in App.tsx) once a variant wins.
 
