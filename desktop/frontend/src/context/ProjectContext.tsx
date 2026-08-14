@@ -85,7 +85,8 @@ interface ProjectContextValue {
   projectTag: string | null;
   /** The *stored* name — `''` for the Unnamed Project. Not what is
    *  currently in the bar's name field: that is local to the field until
-   *  a pause commits it through `rename` (spec §5.4). */
+   *  a pause commits it through `rename` — see ProjectBar.tsx and
+   *  .scratch/optional-projects/spec.md §5.4. */
   projectName: string;
   settings: ProjectSettings;
   setSettings: (updater: ProjectSettings | ((s: ProjectSettings) => ProjectSettings)) => void;
@@ -103,8 +104,9 @@ interface ProjectContextValue {
   importingDecklistText: boolean;
   removeCard: (cardId: number) => void;
   /** Whether the project has a name. Deliberately not "is saved": since
-   *  the settings amendment (spec §5.2) everything is saved, named or
-   *  not — what varies is whether you can find it again. */
+   *  settings began writing through (.scratch/optional-projects/spec.md
+   *  §5.2) everything is saved, named or not — what varies is whether you
+   *  can find it again. */
   isNamed: boolean;
   /** Names the project, in place: the promotion from Unnamed Project to
    *  named one, and an UPDATE rather than an INSERT, so the tag — and
@@ -296,8 +298,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // branched create-vs-update on projectId and called create_project when
   // there wasn't one, this only ever updates: minting a fresh row here
   // would mint a fresh tag with it and orphan every image already
-  // generated under the old one (spec §2). Nothing about naming is
-  // allowed to move the tag.
+  // generated under the old one — the tag is minted by the INSERT itself
+  // (project_store.rs::insert_project). Nothing about naming may move it.
   const renameMutation = useMutation({
     mutationFn: async (name: string) => {
       const trimmed = name.trim();
@@ -305,9 +307,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       // means "settings only" to update_project, so this is unreachable
       // rather than a policy — it just refuses to write nothing.
       if (!trimmed) throw new Error("Project name is required.");
-      // Almost always a no-op since ticket 04: by the time there is
-      // anything worth naming the row exists. A name typed into an app
-      // holding nothing at all is allowed to be what creates it.
+      // Almost always a no-op since the first import began creating the
+      // row: by the time there is anything worth naming, it exists. A name
+      // typed into an app holding nothing at all is allowed to be what
+      // creates it — a name is something to store like any other.
+      //
+      // So a name that then collides leaves the row behind. That residue
+      // is the Unnamed Project, the single row get_or_create hands back to
+      // every later write anyway, and the picker never shows it.
       const id = await ensureProjectRow();
       // settingsRef, not settings: a settings change made in the same tick
       // as the commit is in the ref already, while state is a render behind.

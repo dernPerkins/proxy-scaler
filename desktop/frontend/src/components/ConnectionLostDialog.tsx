@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { useConnection } from "../connection";
 
 // Watches the health ping connection.tsx already runs and tells the user
-// when it stops answering. It offers no save: project data lives in the
-// local store and reaches it on change (see ARCHITECTURE.md), so a server
-// that has gone away can't take any of it with it. Nothing here touches
-// the project at all any more.
+// when it stops answering. It offers no save: this dialog concerns
+// in-flight generation work only, never project data, which was never on
+// the generation server to begin with (ARCHITECTURE.md, "A concrete
+// consequence worth knowing"). Nothing here touches the project at all
+// any more.
 export default function ConnectionLostDialog() {
   const connection = useConnection();
   const { mode, remoteHealthy, host, port } = connection;

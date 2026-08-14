@@ -7,7 +7,7 @@ import { useServerReadiness } from "../config";
 // Long enough that typing "Krenko Goblins" is one commit rather than two,
 // short enough that the chip flips while the user is still looking at the
 // field — with no Save button, that flip is the only confirmation the name
-// landed (decision 08).
+// landed (.scratch/optional-projects/decisions/08-saved-unsaved-vocabulary.md).
 const NAME_COMMIT_DEBOUNCE_MS = 500;
 
 // Always-visible, not a tab — matches ui/projects.py::render_project_bar's
@@ -32,12 +32,15 @@ export default function ProjectBar() {
   const committing = useRef(false);
   const lastProjectId = useRef(project.projectId);
 
-  // Load, New, Delete and Duplicate all swap the project out from under a
-  // field that may be holding text typed for the outgoing one, so the
-  // draft follows them. Keyed on the id rather than on the stored name:
-  // the name changing on its own is this field's own commit landing, and
-  // adopting it would pull the field back to text the user may already
-  // have typed past.
+  // Load, Delete and Duplicate all swap the project out from under a field
+  // that may be holding text typed for the outgoing one, so the draft
+  // follows them. Keyed on the id rather than on the stored name: the name
+  // changing on its own is this field's own commit landing, and adopting it
+  // would pull the field back to text the user may already have typed past.
+  //
+  // New is handled at its button instead — from a project that has no row
+  // yet the id is null on both sides of it, so there is no change here to
+  // notice.
   useEffect(() => {
     const switched = lastProjectId.current !== project.projectId;
     lastProjectId.current = project.projectId;
@@ -70,10 +73,11 @@ export default function ProjectBar() {
   async function commitName(name: string) {
     cancelPendingCommit();
     const trimmed = name.trim();
-    // Clearing the field is ignored rather than treated as un-naming: the
-    // UPDATE to '' would violate UNIQUE whenever an Unnamed Project exists,
-    // and Delete is the gesture for getting rid of a project. Blur puts the
-    // stored name back.
+    // Clearing the field is ignored rather than treated as un-naming
+    // (.scratch/optional-projects/spec.md §5.4): the UPDATE to '' would
+    // violate UNIQUE (project_store.rs:22) whenever an Unnamed Project
+    // exists, and Delete is the gesture for getting rid of a project. Blur
+    // puts the stored name back.
     if (!trimmed || trimmed === project.projectName) return;
     committing.current = true;
     try {
@@ -121,7 +125,19 @@ export default function ProjectBar() {
       />
       {nameError && <span className="error-text">{nameError}</span>}
 
-      <button onClick={project.createNew}>New</button>
+      <button
+        onClick={() => {
+          // A queued commit belongs to the slate being discarded: left
+          // alone it would name it half a second later, and from a project
+          // with no row yet nothing else here would notice New at all.
+          cancelPendingCommit();
+          setNameDraft("");
+          setNameError(null);
+          project.createNew();
+        }}
+      >
+        New
+      </button>
       <button onClick={() => setShowSaveAs((v) => !v)}>Save As…</button>
 
       {showSaveAs && (
