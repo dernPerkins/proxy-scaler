@@ -50,7 +50,7 @@ def test_enqueue_face_queues_one_task_per_dpi(db_path: Path, tmp_path: Path) -> 
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi_targets=[600, 800],
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -80,7 +80,7 @@ def test_enqueue_face_passes_total_faces_through_to_task(
         collector_number="51",
         png_url="https://example.com/delver.png",
         dpi_targets=[800],
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -111,7 +111,7 @@ def test_active_task_keys_reflects_pending_and_running_only(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi_targets=[800],
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -120,7 +120,7 @@ def test_active_task_keys_reflects_pending_and_running_only(
         db_path=db_path,
     )
     active = generation.active_task_keys(tag, db_path=db_path)
-    assert active == {("sol-id", None, 800, "swinir")}
+    assert active == {("sol-id", None, 800, "ultrasharp_v2")}
 
 
 def test_enqueue_decklist_entries_batches_resolve_call(
@@ -136,7 +136,7 @@ def test_enqueue_decklist_entries_batches_resolve_call(
 
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry(), _entry(raw_line="1 Sol Ring again")],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=False,
         tile_size=0,
@@ -168,13 +168,13 @@ def test_enqueue_decklist_entries_skips_existing_output_file(
     )
     output_dir = tmp_path / "out"
     output_dir.mkdir()
-    existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
+    existing_name = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800)
     (output_dir / existing_name).write_bytes(b"fake png")
 
     notes = []
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=True,
         tile_size=0,
@@ -209,14 +209,14 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     )
     output_dir = tmp_path / "out"
     output_dir.mkdir()
-    existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
+    existing_name = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800)
     (output_dir / existing_name).write_bytes(b"fake png")
     cache_dir = tmp_path / "cache"
 
     tag = "proj-tag-backfill"
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=True,
         tile_size=0,
@@ -233,7 +233,7 @@ def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     assert len(items) == 1
     assert items[0]["scryfall_id"] == "sol-id"
     assert items[0]["dpi"] == 800
-    assert items[0]["model"] == "swinir"
+    assert items[0]["model"] == "ultrasharp_v2"
     assert items[0]["out_path"] == str(output_dir / existing_name)
     # The skip_existing branch registers the gallery row directly (no
     # task involved), still carrying total_faces from expand_faces().
@@ -262,7 +262,7 @@ def test_enqueue_decklist_entries_backfill_finds_cached_original(
     )
     output_dir = tmp_path / "out"
     output_dir.mkdir()
-    existing_name = output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
+    existing_name = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800)
     (output_dir / existing_name).write_bytes(b"fake png")
 
     cache_dir = tmp_path / "cache"
@@ -273,7 +273,7 @@ def test_enqueue_decklist_entries_backfill_finds_cached_original(
     tag = "proj-tag-backfill-cached"
     generation.enqueue_decklist_entries(
         [_entry()],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=True,
         tile_size=0,
@@ -308,7 +308,7 @@ def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi_targets=[800],
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -319,7 +319,7 @@ def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
 
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=False,
         tile_size=0,
@@ -353,7 +353,7 @@ def test_enqueue_decklist_entries_skips_active_task_for_tagged_project(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi_targets=[800],
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -365,7 +365,7 @@ def test_enqueue_decklist_entries_skips_active_task_for_tagged_project(
     notes = []
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=False,
         tile_size=0,
@@ -392,7 +392,7 @@ def test_enqueue_decklist_entries_reports_scryfall_failures(
     notes = []
     queued, failed, task_ids = generation.enqueue_decklist_entries(
         [_entry()],
-        model="swinir",
+        model="ultrasharp_v2",
         dpi_targets=[800],
         skip_existing=False,
         tile_size=0,

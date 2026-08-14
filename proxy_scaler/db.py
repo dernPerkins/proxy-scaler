@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from .decklist import DeckEntry
+from .upscale import UpscaleModel
 
 if TYPE_CHECKING:
     from .pipeline import FaceResult
@@ -84,15 +85,18 @@ DEFAULT_DB_PATH = _DATA_ROOT / "proxy_scaler.db"
 WORKER_LOCK_FILE = _DATA_ROOT / "worker.lock"
 WORKER_LOG_FILE = _DATA_ROOT / "worker.log"
 
-# Abandoned_Air_Temple-TLA-263-swinir-600dpi.png
-# Name-SET-COLLECTOR-front-swinir-800dpi.png  (collector may contain hyphens)
+# Abandoned_Air_Temple-TLA-263-ultrasharp_v2-600dpi.png
+# Name-SET-COLLECTOR-front-ultrasharp_v2-800dpi.png  (collector may contain hyphens)
 # Parsed from the right so numeric collectors are not mistaken for set codes.
+# Model slugs come straight from the enum so the alternation can't drift;
+# longest-first guards against any future slug being a prefix of another.
+_MODEL_SLUGS = "|".join(
+    re.escape(m.value) for m in sorted(UpscaleModel, key=lambda m: -len(m.value))
+)
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
     r"(?:-(?P<face>front|back))?"
-    # realesrgan_anime listed before realesrgan since it's a prefix of it.
-    r"-(?P<model>swinir|realesrnet|realesrgan_anime|realesrgan"
-    r"|illustrationjanai|ultrasharp_v2|hat)"
+    rf"-(?P<model>{_MODEL_SLUGS})"
     r"-(?P<dpi>\d+)dpi\.png$",
     re.IGNORECASE,
 )

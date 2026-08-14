@@ -51,7 +51,7 @@ def _face(
     collector: str | None,
     dpi: int,
     *,
-    model: str = "swinir",
+    model: str = "ultrasharp_v2",
     face_label: str | None = None,
     total_faces: int | None = None,
 ) -> FaceResult:
@@ -441,7 +441,7 @@ def test_match_quantities_preferred_dpi_used_when_available() -> None:
 
 def test_match_quantities_preferred_model_used_when_available() -> None:
     gallery = [
-        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="hat"),
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="illustrationjanai"),
         _face(
             "sol-id",
             None,
@@ -461,10 +461,10 @@ def test_match_quantities_preferred_model_used_when_available() -> None:
     )
     assert units[0].best.model == "ultrasharp_v2"
 
-    units_hat, _, _ = match_quantities(
-        entries, gallery, preferred_dpi=800, preferred_model="hat"
+    units_janai, _, _ = match_quantities(
+        entries, gallery, preferred_dpi=800, preferred_model="illustrationjanai"
     )
-    assert units_hat[0].best.model == "hat"
+    assert units_janai[0].best.model == "illustrationjanai"
 
 
 def test_match_quantities_no_duplicate_units_across_models() -> None:
@@ -472,7 +472,7 @@ def test_match_quantities_no_duplicate_units_across_models() -> None:
     PrintUnit — previously group_by_face split by model, causing double
     physical copies of the same face in the PDF."""
     gallery = [
-        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="hat"),
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="illustrationjanai"),
         _face(
             "sol-id",
             None,
@@ -515,7 +515,7 @@ def test_match_quantities_preferred_dpi_picks_most_recent_at_that_dpi() -> None:
     """Within the requested DPI and absent a model preference, the most
     recently produced image wins — regenerating a card is how a user says
     "use this one now"."""
-    older = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="swinir")
+    older = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2")
     newer = _face(
         "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2"
     )
@@ -538,7 +538,7 @@ def test_match_quantities_untimestamped_rows_lose_to_timestamped() -> None:
     """Rows predating the created_at column (db migration 002) carry None.
     They must sort as oldest rather than winning ties by accident, so a
     freshly regenerated image beats a legacy one."""
-    legacy = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="swinir")
+    legacy = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2")
     fresh = _face(
         "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2"
     )
@@ -553,7 +553,7 @@ def test_match_quantities_untimestamped_rows_lose_to_timestamped() -> None:
 def test_match_quantities_preferred_model_beats_recency_at_that_dpi() -> None:
     """An explicit model choice outranks recency — otherwise picking a model
     would appear to do nothing whenever a different one was generated later."""
-    chosen = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="swinir")
+    chosen = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2")
     newer_other = _face(
         "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800, model="ultrasharp_v2"
     )
@@ -563,9 +563,9 @@ def test_match_quantities_preferred_model_beats_recency_at_that_dpi() -> None:
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
     units, _, _missing = match_quantities(
-        entries, [chosen, newer_other], preferred_dpi=800, preferred_model="swinir"
+        entries, [chosen, newer_other], preferred_dpi=800, preferred_model="ultrasharp_v2"
     )
-    assert units[0].best.model == "swinir"
+    assert units[0].best.model == "ultrasharp_v2"
 
 
 # --- Expansion / pagination ------------------------------------------------

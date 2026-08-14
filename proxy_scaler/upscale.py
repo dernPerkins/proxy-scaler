@@ -1,4 +1,4 @@
-"""Multi-model upscaling (Real-ESRGAN, RealESRNet, SwinIR) via Spandrel."""
+"""Multi-model upscaling (Anime Fast, UltraSharpV2, IllustrationJaNai) via Spandrel."""
 
 from __future__ import annotations
 
@@ -26,53 +26,28 @@ if TYPE_CHECKING:
 
 
 class UpscaleModel(str, Enum):
-    REALESRGAN = "realesrgan"
-    REALESRNET = "realesrnet"
-    SWINIR = "swinir"
-    REALESRGAN_ANIME = "realesrgan_anime"
     REALESRGAN_ANIME_FAST = "realesrgan_anime_fast"
     ILLUSTRATIONJANAI = "illustrationjanai"
-    ULTRASHARP = "ultrasharp"
     ULTRASHARP_V2 = "ultrasharp_v2"
-    HAT = "hat"
 
     @property
     def label(self) -> str:
         return {
-            UpscaleModel.REALESRGAN: "Real-ESRGAN (fast, sharper / more invented detail)",
-            UpscaleModel.REALESRNET: "RealESRNet (less hallucination, better for text)",
-            UpscaleModel.SWINIR: "SwinIR classical (fidelity-first, slower)",
-            UpscaleModel.REALESRGAN_ANIME: (
-                "Real-ESRGAN Anime (official, tuned for illustrated/non-photo art)"
-            ),
             UpscaleModel.REALESRGAN_ANIME_FAST: (
                 "Real-ESRGAN Anime Fast (compact/lightweight, tuned for anime video)"
             ),
             UpscaleModel.ILLUSTRATIONJANAI: (
                 "IllustrationJaNai (trained on digital art/illustrations, not photos)"
             ),
-            UpscaleModel.ULTRASHARP: (
-                "UltraSharp (original, predecessor to UltraSharpV2)"
-            ),
             UpscaleModel.ULTRASHARP_V2: (
                 "UltraSharpV2 (general-purpose, strong on illustration/artwork)"
             ),
-            UpscaleModel.HAT: "HAT (newer transformer architecture, high fidelity)",
         }[self]
 
     @property
     def supported_scales(self) -> tuple[int, ...]:
-        if self in (
-            UpscaleModel.REALESRNET,
-            UpscaleModel.REALESRGAN_ANIME,
-            UpscaleModel.REALESRGAN_ANIME_FAST,
-            UpscaleModel.ILLUSTRATIONJANAI,
-            UpscaleModel.ULTRASHARP,
-            UpscaleModel.ULTRASHARP_V2,
-            UpscaleModel.HAT,
-        ):
-            return (4,)
-        return (2, 4)
+        # Every current model is x4-only.
+        return (4,)
 
 
 # Transformer/attention-heavy architectures that can OOM a ~12GB GPU on a
@@ -83,9 +58,7 @@ class UpscaleModel(str, Enum):
 HEAVY_MODELS = frozenset(
     {
         UpscaleModel.ILLUSTRATIONJANAI,
-        UpscaleModel.ULTRASHARP,
         UpscaleModel.ULTRASHARP_V2,
-        UpscaleModel.HAT,
     }
 )
 DEFAULT_TILE_SIZE = 384
@@ -108,32 +81,8 @@ class _WeightSpec:
 
 # Official release weights loadable by Spandrel
 _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
-    (UpscaleModel.REALESRGAN, 2): _WeightSpec(
-        "RealESRGAN_x2plus.pth",
-        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
-    ),
-    (UpscaleModel.REALESRGAN, 4): _WeightSpec(
-        "RealESRGAN_x4plus.pth",
-        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-    ),
-    (UpscaleModel.REALESRNET, 4): _WeightSpec(
-        "RealESRNet_x4plus.pth",
-        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth",
-    ),
-    (UpscaleModel.SWINIR, 2): _WeightSpec(
-        "001_classicalSR_DF2K_s64w8_SwinIR-M_x2.pth",
-        "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/001_classicalSR_DF2K_s64w8_SwinIR-M_x2.pth",
-    ),
-    (UpscaleModel.SWINIR, 4): _WeightSpec(
-        "001_classicalSR_DF2K_s64w8_SwinIR-M_x4.pth",
-        "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/001_classicalSR_DF2K_s64w8_SwinIR-M_x4.pth",
-    ),
-    (UpscaleModel.REALESRGAN_ANIME, 4): _WeightSpec(
-        "RealESRGAN_x4plus_anime_6B.pth",
-        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
-    ),
     # Official release — the "Compact" (SRVGGNetCompact) architecture,
-    # much smaller/faster than the RRDBNet-based anime model above.
+    # much smaller/faster than the RRDBNet-based anime models.
     (UpscaleModel.REALESRGAN_ANIME_FAST, 4): _WeightSpec(
         "realesr-animevideov3.pth",
         "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
@@ -147,28 +96,10 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
         "4x_IllustrationJaNai_V1_DAT2_190k.pth",
         "https://huggingface.co/tomjackson2023/upscale_models/resolve/main/4x_IllustrationJaNai_V1_DAT2_190k.pth",
     ),
-    # Original 4x-UltraSharp (Kim2091), predecessor to UltraSharpV2 above.
-    # Official host is Mega.nz only, which our simple streaming downloader
-    # can't handle (same limitation as IllustrationJaNai/HAT below) — using
-    # a verified third-party HuggingFace mirror instead. If this mirror
-    # disappears, search for "4x-UltraSharp.pth" on huggingface.co for a
-    # replacement (multiple community mirrors exist).
-    (UpscaleModel.ULTRASHARP, 4): _WeightSpec(
-        "4x-UltraSharp.pth",
-        "https://huggingface.co/lowlione/4x-UltraSharp.pth/resolve/main/4x-UltraSharp.pth",
-    ),
     # CC-BY-NC-SA-4.0 (non-commercial). Officially hosted by the creator.
     (UpscaleModel.ULTRASHARP_V2, 4): _WeightSpec(
         "4x-UltraSharpV2.safetensors",
         "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors",
-    ),
-    # Official author hosts on Google Drive only (same limitation as
-    # IllustrationJaNai above) — using a third-party HuggingFace mirror.
-    # If this mirror disappears, search for "Real_HAT_GAN_SRx4" on
-    # huggingface.co for a replacement.
-    (UpscaleModel.HAT, 4): _WeightSpec(
-        "Real_HAT_GAN_SRx4.pth",
-        "https://huggingface.co/jaideepsingh/upscale_models/resolve/main/HAT/Real_HAT_GAN_SRx4.pth",
     ),
 }
 
@@ -325,7 +256,7 @@ class Upscaler:
 
     def __init__(
         self,
-        model: UpscaleModel | str = UpscaleModel.REALESRGAN,
+        model: UpscaleModel | str = UpscaleModel.ULTRASHARP_V2,
         scale: int = 4,
         weights_dir: Path | str = "weights",
         tile: int = 0,

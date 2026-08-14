@@ -58,7 +58,7 @@ def _fake_task(project_tag: str | None, **overrides) -> TaskRow:
         collector_number="263",
         png_url="",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir="",
         cache_dir="",
@@ -75,7 +75,7 @@ def _fake_task(project_tag: str | None, **overrides) -> TaskRow:
 
 def _result(**overrides) -> FaceResult:
     kwargs = dict(
-        out_path=Path("/o/Sol_Ring-C21-263-swinir-800dpi.png"),
+        out_path=Path("/o/Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"),
         original_path=Path("/c/orig.png"),
         scryfall_id="sol-id",
         face_index=None,
@@ -85,46 +85,51 @@ def _result(**overrides) -> FaceResult:
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
     )
     kwargs.update(overrides)
     return FaceResult(**kwargs)
 
 
 def test_parse_output_filename() -> None:
-    meta = parse_output_filename("Abandoned_Air_Temple-TLA-263-swinir-600dpi.png")
+    meta = parse_output_filename("Abandoned_Air_Temple-TLA-263-ultrasharp_v2-600dpi.png")
     assert meta is not None
     assert meta["set_code"] == "tla"
     assert meta["collector_number"] == "263"
-    assert meta["model"] == "swinir"
+    assert meta["model"] == "ultrasharp_v2"
     assert meta["dpi"] == 600
     assert meta["face_label"] is None
 
     dfc = parse_output_filename(
-        "Dion_Bahamuts_Dominant-FIN-376-front-swinir-800dpi.png"
+        "Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-800dpi.png"
     )
     assert dfc is not None
     assert dfc["face_label"] == "front"
     assert dfc["face_index"] == 0
 
     hyphen_collector = parse_output_filename(
-        "Knight_Exemplar-PLST-DDG-14-swinir-600dpi.png"
+        "Knight_Exemplar-PLST-DDG-14-ultrasharp_v2-600dpi.png"
     )
     assert hyphen_collector is not None
     assert hyphen_collector["set_code"] == "plst"
     assert hyphen_collector["collector_number"] == "DDG-14"
 
-    # Underscored model values (e.g. from the newer model options) must not
-    # be truncated by a shorter alternative sharing a prefix
-    # (realesrgan_anime vs realesrgan).
-    anime = parse_output_filename("Sol_Ring-C21-263-realesrgan_anime-800dpi.png")
-    assert anime is not None
-    assert anime["model"] == "realesrgan_anime"
-    assert anime["dpi"] == 800
+    # Underscored model slugs must parse whole, never truncated at an
+    # underscore (this regressed when realesrgan_anime_fast was missing
+    # from the alternation and half-matched realesrgan_anime).
+    anime_fast = parse_output_filename(
+        "Sol_Ring-C21-263-realesrgan_anime_fast-800dpi.png"
+    )
+    assert anime_fast is not None
+    assert anime_fast["model"] == "realesrgan_anime_fast"
+    assert anime_fast["dpi"] == 800
 
-    hat = parse_output_filename("Sol_Ring-C21-263-hat-1200dpi.png")
-    assert hat is not None
-    assert hat["model"] == "hat"
+    janai = parse_output_filename("Sol_Ring-C21-263-illustrationjanai-1200dpi.png")
+    assert janai is not None
+    assert janai["model"] == "illustrationjanai"
+
+    # Removed models no longer parse.
+    assert parse_output_filename("Sol_Ring-C21-263-swinir-600dpi.png") is None
 
 
 def test_scan_gallery_from_output(tmp_path: Path) -> None:
@@ -132,8 +137,8 @@ def test_scan_gallery_from_output(tmp_path: Path) -> None:
 
     out = tmp_path / "output"
     out.mkdir()
-    (out / "Sol_Ring-C21-263-swinir-600dpi.png").write_bytes(b"a")
-    (out / "Sol_Ring-C21-263-swinir-800dpi.png").write_bytes(b"b")
+    (out / "Sol_Ring-C21-263-ultrasharp_v2-600dpi.png").write_bytes(b"a")
+    (out / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png").write_bytes(b"b")
     entries = parse_decklist_text("1 Sol Ring (c21) 263\n")
     gallery = scan_gallery_from_output(out, entries)
     assert len(gallery) == 2
@@ -155,7 +160,7 @@ def _enqueue_sol_ring(db_path: Path, **overrides) -> int:
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         output_dir="/tmp/out",
         cache_dir="/tmp/cache",
         weights_dir="/tmp/weights",
@@ -377,7 +382,7 @@ def test_init_db_bridges_already_current_unversioned_db(tmp_path: Path) -> None:
         """,
         (
             "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
-            "https://example.com/sol.png", 800, "swinir", "/tmp/out",
+            "https://example.com/sol.png", 800, "ultrasharp_v2", "/tmp/out",
             "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
         ),
     )
@@ -389,7 +394,7 @@ def test_init_db_bridges_already_current_unversioned_db(tmp_path: Path) -> None:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            "tag-a", "sol-id", "swinir", 800, "sol.png",
+            "tag-a", "sol-id", "ultrasharp_v2", 800, "sol.png",
             "/tmp/out/sol.png", "/tmp/cache/sol.png",
             "https://example.com/sol.png",
         ),
@@ -526,7 +531,7 @@ def test_migration_003_adds_total_faces_to_existing_rows_as_null(tmp_path: Path)
         """,
         (
             "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
-            "https://example.com/sol.png", 800, "swinir", "/tmp/out",
+            "https://example.com/sol.png", 800, "ultrasharp_v2", "/tmp/out",
             "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
         ),
     )
@@ -538,7 +543,7 @@ def test_migration_003_adds_total_faces_to_existing_rows_as_null(tmp_path: Path)
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            "tag-a", "sol-id", "swinir", 800, "sol.png",
+            "tag-a", "sol-id", "ultrasharp_v2", 800, "sol.png",
             "/tmp/out/sol.png", "/tmp/cache/sol.png",
             "https://example.com/sol.png",
         ),

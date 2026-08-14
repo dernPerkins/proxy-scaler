@@ -192,7 +192,9 @@ pub fn parse_decklist_text(text: &str) -> Vec<DeckEntry> {
     let set_collector_re =
         regex::Regex::new(r"^(?P<name>.+?)\s+\((?P<set>[A-Za-z0-9]+)\)\s+(?P<collector>\S+)\s*$")
             .expect("static regex");
-    let qty_re = regex::Regex::new(r"^(?P<qty>\d+)\s+(?P<rest>.+)$").expect("static regex");
+    // Optional x after the count covers the "4x Lightning Bolt" style many
+    // deck-site exports use — mirrors decklist.py's _QTY_RE.
+    let qty_re = regex::Regex::new(r"^(?P<qty>\d+)[xX]?\s+(?P<rest>.+)$").expect("static regex");
 
     text.lines()
         .filter_map(|line| parse_line(line, &set_collector_re, &qty_re))
@@ -793,6 +795,23 @@ pub fn remove_card(app: AppHandle, card_id: i64) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_card_quantity(app: AppHandle, card_id: i64, quantity: i64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    set_card_quantity_in(&conn, card_id, quantity)
+}
+
+// Clamped to a minimum of 1 — deleting a card is remove_card's job, and a
+// zero-quantity row would silently drop the card from PDF export.
+fn set_card_quantity_in(conn: &Connection, card_id: i64, quantity: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE project_cards SET quantity = ?1 WHERE id = ?2",
+        params![quantity.max(1), card_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // --- app_settings ---------------------------------------------------------
 //
 // One key/value table for the handful of app-wide preferences that aren't
@@ -1231,6 +1250,33 @@ mod tests {
 
         assert_eq!(err, "Project name is required.");
         assert!(list_project_summaries(&conn).expect("list").is_empty());
+    }
+
+    #[test]
+    fn parse_decklist_accepts_x_after_quantity() {
+        let entries = parse_decklist_text("4x Lightning Bolt\n2X Sol Ring (c21) 263\n4 Plains");
+        assert_eq!(entries.len(), 3);
+        assert_eq!((entries[0].quantity, entries[0].name.as_str()), (4, "Lightning Bolt"));
+        assert_eq!((entries[1].quantity, entries[1].name.as_str()), (2, "Sol Ring"));
+        assert_eq!(entries[1].set_code.as_deref(), Some("c21"));
+        assert_eq!((entries[2].quantity, entries[2].name.as_str()), (4, "Plains"));
+    }
+
+    #[test]
+    fn set_card_quantity_updates_and_clamps_to_one() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263").expect("import");
+        let card_id = cards[0].id;
+
+        set_card_quantity_in(&conn, card_id, 4).expect("update");
+        assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(4));
+
+        set_card_quantity_in(&conn, card_id, 0).expect("clamp zero");
+        assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(1));
+
+        set_card_quantity_in(&conn, card_id, -3).expect("clamp negative");
+        assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(1));
     }
 }
 

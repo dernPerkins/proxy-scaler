@@ -4,6 +4,7 @@ import { generationApi } from "../api/generation";
 import type { CardRow } from "../api/project";
 import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
 import CompareDialog from "../components/CompareDialog";
+import NumberInput from "../components/NumberInput";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import { DPI_OPTIONS } from "../constants";
@@ -20,30 +21,20 @@ import {
   type VariantStatus,
 } from "../mergeCardStatus";
 
-// Purely presentational grouping of the "Upscale model" dropdown — the
-// API's own flat list (proxy_scaler/upscale.py's UpscaleModel enum order)
-// is unchanged, and so is whatever settings.model already holds; this
-// only reorders/annotates how the options are *displayed*. Recommended
-// entries are pinned in this exact order with a short device hint
-// appended to their label; everything else keeps the API's own order
-// under "Extra".
-const RECOMMENDED_MODELS: { value: string; suffix: string }[] = [
-  { value: "ultrasharp_v2", suffix: " (on GPU)" },
-  { value: "realesrgan_anime_fast", suffix: " (on CPU)" },
-];
+// Purely presentational device hints appended to the "Upscale model"
+// dropdown labels — the API's own flat list (proxy_scaler/upscale.py's
+// UpscaleModel enum order) is unchanged, and so is whatever
+// settings.model already holds.
+const MODEL_LABEL_SUFFIXES: Record<string, string> = {
+  ultrasharp_v2: " (best on GPU)",
+  realesrgan_anime_fast: " (best on CPU)",
+};
 
-function groupModelOptions(models: ModelOption[]): {
-  recommended: ModelOption[];
-  extra: ModelOption[];
-} {
-  const byValue = new Map(models.map((m) => [m.value, m]));
-  const recommended = RECOMMENDED_MODELS.flatMap(({ value, suffix }) => {
-    const m = byValue.get(value);
-    return m ? [{ value: m.value, label: m.label + suffix }] : [];
-  });
-  const recommendedValues = new Set(RECOMMENDED_MODELS.map((r) => r.value));
-  const extra = models.filter((m) => !recommendedValues.has(m.value));
-  return { recommended, extra };
+function annotateModelOptions(models: ModelOption[]): ModelOption[] {
+  return models.map((m) => ({
+    value: m.value,
+    label: m.label + (MODEL_LABEL_SUFFIXES[m.value] ?? ""),
+  }));
 }
 
 // Generation-machine-local filesystem paths — meaningless as portable
@@ -98,6 +89,7 @@ export default function DecklistPage() {
     importDecklistText,
     importingDecklistText,
     removeCard,
+    setCardQuantity,
   } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -261,31 +253,11 @@ export default function DecklistPage() {
               onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
               disabled={modelsQuery.isLoading || modelsQuery.isError}
             >
-              {(() => {
-                const { recommended, extra } = groupModelOptions(modelsQuery.data ?? []);
-                return (
-                  <>
-                    {recommended.length > 0 && (
-                      <optgroup label="Recommended">
-                        {recommended.map((m) => (
-                          <option key={m.value} value={m.value}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    {extra.length > 0 && (
-                      <optgroup label="Extra">
-                        {extra.map((m) => (
-                          <option key={m.value} value={m.value}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </>
-                );
-              })()}
+              {annotateModelOptions(modelsQuery.data ?? []).map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
             </select>
           </label>
           {/* Without this, a stuck/failed local-server start (or any other
@@ -418,6 +390,11 @@ export default function DecklistPage() {
         )}
 
         <div className="import-box panel" style={{ marginTop: 10 }}>
+          <p className="hint">
+            One card per line — best format:{" "}
+            <code>4 Card Name (set) 123</code>. Set and collector number are
+            optional; <code>4x</code> works too.
+          </p>
           <textarea
             value={decklistDraft}
             onChange={(e) => setDecklistDraft(e.target.value)}
@@ -511,6 +488,7 @@ export default function DecklistPage() {
               expandedFaces={expandedFaces}
               onToggleExpand={toggleExpanded}
               onRemove={() => removeCard(card.id)}
+              onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
               onGenerate={() => generateCardMutation.mutate(card)}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               disabled={serverUnavailable}
@@ -549,6 +527,7 @@ function CardRowView(props: {
   expandedFaces: Set<string>;
   onToggleExpand: (key: string) => void;
   onRemove: () => void;
+  onSetQuantity: (quantity: number) => void;
   onGenerate: () => void;
   onRegenerate: (galleryItemId: number) => void;
   /** True when the generation server is unreachable — disables
@@ -556,7 +535,8 @@ function CardRowView(props: {
    *  local). */
   disabled: boolean;
 }) {
-  const { card, faces, expandedFaces, onToggleExpand, onRemove, onGenerate, onRegenerate, disabled } = props;
+  const { card, faces, expandedFaces, onToggleExpand, onRemove, onSetQuantity, onGenerate, onRegenerate, disabled } = props;
+  const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
   const hasImages = faces.some((f) => f.variants.some((v) => v.status === "done"));
@@ -584,7 +564,28 @@ function CardRowView(props: {
         <span className="card-name">{card.name}</span>
         <span className="card-meta mono">{(card.set_code ?? "—").toUpperCase()}</span>
         <span className="card-meta mono">{card.collector_number ?? "—"}</span>
-        <span className="card-qty">×{card.quantity ?? 1}</span>
+        <span className="card-qty-stepper">
+          <button
+            className="btn-sm"
+            aria-label="Decrease quantity"
+            disabled={quantity <= 1}
+            onClick={() => onSetQuantity(quantity - 1)}
+          >
+            −
+          </button>
+          <NumberInput
+            value={quantity}
+            min={1}
+            onChange={(v) => onSetQuantity(Math.max(1, Math.round(v)))}
+          />
+          <button
+            className="btn-sm"
+            aria-label="Increase quantity"
+            onClick={() => onSetQuantity(quantity + 1)}
+          >
+            +
+          </button>
+        </span>
         <span className="card-buttons">
           {hasImages && (
             <button className="btn-sm" onClick={() => onToggleExpand(rowKey)}>

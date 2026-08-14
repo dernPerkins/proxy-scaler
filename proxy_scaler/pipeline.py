@@ -90,7 +90,7 @@ class FaceResult:
     collector_number: str
     png_url: str
     dpi: int
-    model: str = UpscaleModel.SWINIR.value
+    model: str = UpscaleModel.ULTRASHARP_V2.value
     face_label: str | None = None
     native_scale: int = 4
     device: str = "unknown"  # "gpu" | "cpu" | "unknown"
@@ -133,7 +133,7 @@ class FaceResult:
             collector_number=data["collector_number"],
             png_url=data["png_url"],
             dpi=dpi,
-            model=data.get("model", UpscaleModel.SWINIR.value),
+            model=data.get("model", UpscaleModel.ULTRASHARP_V2.value),
             face_label=data.get("face_label"),
             native_scale=int(data.get("native_scale", data.get("scale", 4))),
             device=device,
@@ -342,7 +342,7 @@ def _upscalers_for_targets(
 
     tile_size is the raw client value (0 = "auto") — resolved here via
     effective_tile_size() rather than passed straight through, so a
-    memory-hungry model (UltraSharpV2, HAT, IllustrationJaNai) still gets
+    memory-hungry model (UltraSharpV2, IllustrationJaNai) still gets
     tiled by default even when nothing explicit was set. This is the one
     choke point every generation path (process_entries,
     _regenerate_face_from_card/process_task, regenerate_face_multi) funnels
@@ -595,7 +595,7 @@ def process_entries(
     dpi: int = DEFAULT_DPI,
     all_dpis: bool = False,
     dpi_targets: list[int] | None = None,
-    model: UpscaleModel | str = UpscaleModel.SWINIR,
+    model: UpscaleModel | str = UpscaleModel.ULTRASHARP_V2,
     cache_dir: Path = Path("imgcache"),
     weights_dir: Path = Path("weights"),
     skip_existing: bool = False,
@@ -612,7 +612,7 @@ def process_entries(
 
     `tile_size` processes each face in overlapping tiles instead of one
     full-image forward pass — needed to keep memory-hungry transformer
-    models (HAT, DAT-based) within a GPU's VRAM budget. 0 means "auto":
+    models (DAT-based) within a GPU's VRAM budget. 0 means "auto":
     see effective_tile_size() / _upscalers_for_targets() — off for light
     models, a sane default tile size for heavy ones. An explicit non-zero
     value always wins over that default.

@@ -52,7 +52,7 @@ def test_face_group_key_matches_group_by_face_grouping() -> None:
     """face_group_key() is the same identity group_by_face() uses — the UI
     relies on this to mark a face as "loaded" the moment it's generated,
     using the exact key it'll later be looked up under in the gallery."""
-    a = _face("sol-id", None, 800, "hat")
+    a = _face("sol-id", None, 800, "illustrationjanai")
     b = _face("sol-id", None, 1200, "ultrasharp_v2")
     assert face_group_key(a) == face_group_key(b)
     [(key, _items)] = group_by_face([a, b])
@@ -61,9 +61,9 @@ def test_face_group_key_matches_group_by_face_grouping() -> None:
 
 def test_group_by_face_merges_across_models() -> None:
     items = [
-        _face("sol-id", None, 800, "hat"),
+        _face("sol-id", None, 800, "illustrationjanai"),
         _face("sol-id", None, 800, "ultrasharp_v2"),
-        _face("sol-id", None, 1200, "hat"),
+        _face("sol-id", None, 1200, "illustrationjanai"),
     ]
     groups = group_by_face(items)
     assert len(groups) == 1
@@ -71,9 +71,9 @@ def test_group_by_face_merges_across_models() -> None:
     assert len(face_items) == 3
     # sorted by (dpi, model)
     assert [(f.dpi, f.model) for f in face_items] == [
-        (800, "hat"),
+        (800, "illustrationjanai"),
         (800, "ultrasharp_v2"),
-        (1200, "hat"),
+        (1200, "illustrationjanai"),
     ]
 
 
@@ -82,9 +82,9 @@ def test_group_by_face_merges_fresh_and_disk_recovered_entries() -> None:
     real scryfall_id — it must still merge with a freshly-resolved entry for
     the same physical printing (same set/collector), or match_quantities()
     would treat them as two different cards and print the card twice."""
-    fresh = _face("sol-id", None, 800, "swinir")
+    fresh = _face("sol-id", None, 800, "ultrasharp_v2")
     recovered = FaceResult(
-        out_path=Path("/o/Sol_Ring-C21-263-swinir-1200dpi.png"),
+        out_path=Path("/o/Sol_Ring-C21-263-ultrasharp_v2-1200dpi.png"),
         original_path=Path("/c/Sol_Ring-C21-263.png"),
         scryfall_id="",
         face_index=None,
@@ -94,7 +94,7 @@ def test_group_by_face_merges_fresh_and_disk_recovered_entries() -> None:
         collector_number="263",
         png_url="",
         dpi=1200,
-        model="swinir",
+        model="ultrasharp_v2",
     )
     groups = group_by_face([fresh, recovered])
     assert len(groups) == 1
@@ -104,23 +104,23 @@ def test_group_by_face_merges_fresh_and_disk_recovered_entries() -> None:
 
 def test_group_by_face_keeps_different_faces_separate() -> None:
     items = [
-        _face("dfc-id", 0, 800, "swinir", face_label="front"),
-        _face("dfc-id", 1, 800, "swinir", face_label="back"),
+        _face("dfc-id", 0, 800, "ultrasharp_v2", face_label="front"),
+        _face("dfc-id", 1, 800, "ultrasharp_v2", face_label="back"),
     ]
     groups = group_by_face(items)
     assert len(groups) == 2
 
 
 def test_regenerate_face_multi_shares_native_scale_pass(tmp_path, monkeypatch) -> None:
-    """800 and 1200 DPI both resolve to native x4 for SwinIR — the AI
-    upscale pass should only run once, not once per requested DPI."""
+    """800 and 1200 DPI both resolve to native x4 — the AI upscale pass
+    should only run once, not once per requested DPI."""
     original = tmp_path / "orig.png"
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), color=(10, 20, 30)).save(buf, format="PNG")
     original.write_bytes(buf.getvalue())
 
     item = FaceResult(
-        out_path=tmp_path / "out" / "Sol_Ring-C21-263-swinir-800dpi.png",
+        out_path=tmp_path / "out" / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png",
         original_path=original,
         scryfall_id="sol-id",
         face_index=None,
@@ -130,14 +130,14 @@ def test_regenerate_face_multi_shares_native_scale_pass(tmp_path, monkeypatch) -
         collector_number="263",
         png_url="",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
     )
 
     fake_upscaled = Image.new("RGB", (32, 32), color=(40, 50, 60))
     call_count = {"n": 0}
 
     class FakeUpscaler:
-        def __init__(self, model="swinir", scale=4, weights_dir="weights", **_kw):
+        def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
             from proxy_scaler.upscale import UpscaleModel
 
             self.model_id = UpscaleModel(model) if isinstance(model, str) else model
@@ -157,7 +157,7 @@ def test_regenerate_face_multi_shares_native_scale_pass(tmp_path, monkeypatch) -
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights",
-        model="swinir",
+        model="ultrasharp_v2",
     )
 
     assert len(results) == 2
@@ -175,7 +175,7 @@ def test_process_entries_skip_existing_uses_batched_resolve(tmp_path, monkeypatc
 
     out = tmp_path / "out"
     out.mkdir()
-    (out / "Sol_Ring-C21-263-swinir-800dpi.png").write_bytes(b"already-written")
+    (out / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png").write_bytes(b"already-written")
     cache_dir = tmp_path / "cache"
 
     sol_ring_card = {
@@ -219,7 +219,7 @@ def test_process_entries_skip_existing_uses_batched_resolve(tmp_path, monkeypatc
         entries,
         output_dir=out,
         dpi_targets=[800],
-        model="swinir",
+        model="ultrasharp_v2",
         cache_dir=cache_dir,
         skip_existing=True,
     )
@@ -228,7 +228,7 @@ def test_process_entries_skip_existing_uses_batched_resolve(tmp_path, monkeypatc
     assert result.skipped == 1
     assert len(result.wrote) == 1
     assert result.wrote[0].dpi == 800
-    assert result.wrote[0].model == "swinir"
+    assert result.wrote[0].model == "ultrasharp_v2"
     # The original was missing from cache — skip_existing's existing logic
     # still downloads it even though the upscale itself is skipped.
     assert download_calls["n"] == 1
@@ -249,7 +249,7 @@ def _task(tmp_path: Path, **overrides) -> TaskRow:
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=str(tmp_path / "out"),
         cache_dir=str(tmp_path / "cache"),
@@ -267,7 +267,7 @@ def _task(tmp_path: Path, **overrides) -> TaskRow:
 class _FakeUpscaler:
     """Stands in for the real Upscaler — no model weights/GPU needed."""
 
-    def __init__(self, model="swinir", scale=4, weights_dir="weights", **_kw):
+    def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
         from proxy_scaler.upscale import UpscaleModel
 
         self.model_id = UpscaleModel(model) if isinstance(model, str) else model
@@ -295,7 +295,7 @@ def test_process_task_writes_face_result(tmp_path, monkeypatch) -> None:
     result = process_task(task)
 
     assert result.dpi == 800
-    assert result.model == "swinir"
+    assert result.model == "ultrasharp_v2"
     assert result.scryfall_id == "sol-id"
     assert result.out_path.is_file()
     assert result.original_path.is_file()
@@ -380,11 +380,11 @@ def test_upscalers_for_targets_auto_tiles_heavy_models(tmp_path: Path) -> None:
     [upscaler] = heavy.values()
     assert upscaler.tile == DEFAULT_TILE_SIZE
 
-    light = _upscalers_for_targets(UpscaleModel.SWINIR, [800], tmp_path, tile_size=0)
+    light = _upscalers_for_targets(UpscaleModel.REALESRGAN_ANIME_FAST, [800], tmp_path, tile_size=0)
     [upscaler] = light.values()
     assert upscaler.tile == 0
 
-    explicit = _upscalers_for_targets(UpscaleModel.SWINIR, [800], tmp_path, tile_size=128)
+    explicit = _upscalers_for_targets(UpscaleModel.REALESRGAN_ANIME_FAST, [800], tmp_path, tile_size=128)
     [upscaler] = explicit.values()
     assert upscaler.tile == 128
 
@@ -433,7 +433,7 @@ def test_write_dpi_variant_preserves_transparent_corners(tmp_path: Path) -> None
         raw=_rounded_rect_rgba(100, 100, 15),
         original_path=tmp_path / "original.png",
         output_dir=tmp_path / "out",
-        model_id=UpscaleModel.SWINIR,
+        model_id=UpscaleModel.ULTRASHARP_V2,
         dpi=1200,  # differs from raw's native size, forcing the resize path
         native_scale=4,
     )

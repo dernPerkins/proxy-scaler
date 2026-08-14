@@ -17,9 +17,10 @@ def test_defaults():
 
 
 def test_native_scale():
-    assert native_scale_for_dpi(600, UpscaleModel.SWINIR) == 2
-    assert native_scale_for_dpi(800, UpscaleModel.SWINIR) == 4
-    assert native_scale_for_dpi(600, UpscaleModel.REALESRNET) == 4
+    # Every current model is x4-only, at every DPI target.
+    for model in UpscaleModel:
+        for dpi in (600, 800, 1200):
+            assert native_scale_for_dpi(dpi, model) == 4
 
 
 def test_resolve_targets():

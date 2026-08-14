@@ -4,9 +4,11 @@ import { useServerReadiness } from "../config";
 const READY_TOAST_MS = 4000;
 
 // Local mode's server starts in the background (see ConnectGate.tsx) —
-// this is the user-visible signal for when it actually becomes usable,
-// or why it isn't. Renders nothing for "starting"/steady-state "ready":
-// pages show their own "Starting local server…" placeholder for that.
+// this is the user-visible signal that startup is underway, when the
+// server actually becomes usable, or why it isn't. "starting" is only
+// ever set on the local path (remote must already be running to
+// connect), so the starting toast needs no mode check. Renders nothing
+// for steady-state "ready".
 export default function ServerStatusToast() {
   const readiness = useServerReadiness();
   const [showReadyToast, setShowReadyToast] = useState(false);
@@ -22,6 +24,15 @@ export default function ServerStatusToast() {
   useEffect(() => {
     if (readiness.status === "error") setDismissedError(false);
   }, [readiness.status]);
+
+  if (readiness.status === "starting") {
+    return (
+      <div className="toast toast-starting">
+        <span className="dot" />
+        <span className="toast-body">Starting generation server…</span>
+      </div>
+    );
+  }
 
   if (readiness.status === "ready" && showReadyToast) {
     return (

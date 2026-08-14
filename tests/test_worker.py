@@ -28,7 +28,7 @@ def _enqueue(db_path: Path, **overrides) -> int:
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         output_dir=str(db_path.parent / "out"),
         cache_dir=str(db_path.parent / "cache"),
         weights_dir=str(db_path.parent / "weights"),
@@ -53,7 +53,7 @@ def test_process_one_marks_task_done_on_success(tmp_path, monkeypatch) -> None:
     )
 
     class FakeUpscaler:
-        def __init__(self, model="swinir", scale=4, weights_dir="weights", **_kw):
+        def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
             from proxy_scaler.upscale import UpscaleModel
 
             self.model_id = UpscaleModel(model) if isinstance(model, str) else model

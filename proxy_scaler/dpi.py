@@ -18,16 +18,11 @@ def target_pixels(dpi: int) -> tuple[int, int]:
 
 
 def native_scale_for_dpi(dpi: int, model: UpscaleModel) -> int:
-    """Which Real-ESRGAN/SwinIR factor to run before optional Lanczos resize.
+    """Native upscale factor to run before the exact-pixel Lanczos resize.
 
-    600 DPI ≈ x2 from Scryfall; 800/1200 use x4 then resize to exact pixels.
-    RealESRNet is x4-only, so 600 DPI is derived from x4 + downscale.
+    Every current model is x4-only, so all DPI targets derive from x4
+    (600/800 DPI downscale from it).
     """
-    if dpi <= 600 and 2 in model.supported_scales:
-        return 2
-    if 4 in model.supported_scales:
-        return 4
-    # Fallback to whatever the model offers
     return model.supported_scales[-1]
 
 

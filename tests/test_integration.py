@@ -110,7 +110,7 @@ def test_cli_writes_outputs_with_mocks(tmp_path, monkeypatch):
     fake_upscaled = Image.new("RGB", (16, 16), color=(40, 50, 60))
 
     class FakeUpscaler:
-        def __init__(self, model="swinir", scale=4, weights_dir="weights", **_kw):
+        def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
             from proxy_scaler.upscale import UpscaleModel
 
             self.model_id = UpscaleModel(model) if isinstance(model, str) else model
@@ -133,14 +133,14 @@ def test_cli_writes_outputs_with_mocks(tmp_path, monkeypatch):
             "--dpi",
             "800",
             "--model",
-            "swinir",
+            "ultrasharp_v2",
         ]
     )
     assert rc == 0
     names = sorted(p.name for p in out.glob("*.png"))
-    assert "Sol_Ring-C21-263-swinir-800dpi.png" in names
-    assert "Dion_Bahamuts_Dominant-FIN-376-front-swinir-800dpi.png" in names
-    assert "Bahamut_Warden_of_Light-FIN-376-back-swinir-800dpi.png" in names
+    assert "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png" in names
+    assert "Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-800dpi.png" in names
+    assert "Bahamut_Warden_of_Light-FIN-376-back-ultrasharp_v2-800dpi.png" in names
     assert len(names) == 3
 
 
@@ -170,7 +170,7 @@ def test_cli_preserves_alpha_through_resize_and_save(tmp_path, monkeypatch):
             fake_upscaled.putpixel((x, y), (0, 0, 0, 0))
 
     class FakeUpscaler:
-        def __init__(self, model="swinir", scale=4, weights_dir="weights", **_kw):
+        def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
             from proxy_scaler.upscale import UpscaleModel
 
             self.model_id = UpscaleModel(model) if isinstance(model, str) else model
@@ -193,7 +193,7 @@ def test_cli_preserves_alpha_through_resize_and_save(tmp_path, monkeypatch):
             "--dpi",
             "800",
             "--model",
-            "swinir",
+            "ultrasharp_v2",
         ]
     )
     assert rc == 0

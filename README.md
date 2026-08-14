@@ -17,7 +17,7 @@ yourself) is covered under [Command-line / library use](#command-line--library-u
 1. Import a decklist
 2. Resolve each line on Scryfall (exact set/collector, or fuzzy name)
 3. Download PNG(s) — double-faced cards produce **front and back** images
-4. Upscale to a target print DPI (default **1200 DPI** with **SwinIR**)
+4. Upscale to a target print DPI (default **1200 DPI** with **UltraSharpV2**)
 5. Either export a print-ready PDF directly (bleed, cut guides, page
    layout, quantities) or hand the raw PNGs to something else, e.g.
    uploading `output/` into proxxied
@@ -210,7 +210,7 @@ with no GPU at all — just slower.
 If you hit an MPS operator error on Apple Silicon:
 
 ```bash
-PYTORCH_ENABLE_MPS_FALLBACK=1 proxy-scaler cards.txt --model swinir
+PYTORCH_ENABLE_MPS_FALLBACK=1 proxy-scaler cards.txt --model ultrasharp_v2
 ```
 
 ## Command-line / library use
@@ -264,14 +264,14 @@ layout tool like proxxied instead.
 ### CLI
 
 ```bash
-proxy-scaler cards.example.txt -o output/ --model swinir --dpi 1200
-proxy-scaler cards.txt -o output/ --model swinir --all-dpis
-python -m proxy_scaler cards.txt --model ultrasharp_v2 --dpi 800
+proxy-scaler cards.example.txt -o output/ --model ultrasharp_v2 --dpi 1200
+proxy-scaler cards.txt -o output/ --model ultrasharp_v2 --all-dpis
+python -m proxy_scaler cards.txt --model realesrgan_anime_fast --dpi 800
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--model` | `swinir` | Any model from the [Upscale models](#upscale-models) table below |
+| `--model` | `ultrasharp_v2` | Any model from the [Upscale models](#upscale-models) table below |
 | `--dpi` | `1200` | `600`, `800`, or `1200` |
 | `--all-dpis` | off | Write 600 + 800 + 1200 for each face |
 | `-o` / `--output` | `output/` | Upscaled PNGs |
@@ -279,7 +279,7 @@ python -m proxy_scaler cards.txt --model ultrasharp_v2 --dpi 800
 | `--weights-dir` | `weights/` | Model weight files |
 | `--skip-existing` | off | Don't overwrite existing output files |
 
-Filenames include model + DPI, e.g. `Sol_Ring-C21-263-swinir-1200dpi.png`.
+Filenames include model + DPI, e.g. `Sol_Ring-C21-263-ultrasharp_v2-1200dpi.png`.
 
 Weights download automatically into `weights/` on first use (via
 [Spandrel](https://github.com/chaiNNer-org/spandrel)).
@@ -288,17 +288,12 @@ Weights download automatically into `weights/` on first use (via
 
 | Model | Notes |
 |-------|--------|
-| `swinir` (default) | Classical SwinIR (DF2K); fidelity-first, slower |
-| `realesrnet` | Less hallucination; often cleaner text/symbols (x4-native) |
-| `realesrgan` | Fast; invents more detail |
-| `realesrgan_anime` | Official Real-ESRGAN variant tuned for illustrated/non-photo art (x4-native) |
-| `illustrationjanai` | Trained on digital art/illustrations rather than photos (x4-native, CC-BY-NC-SA-4.0) |
-| `ultrasharp_v2` | General-purpose DAT model, strong on illustration/artwork (x4-native, CC-BY-NC-SA-4.0) |
-| `hat` | Newer transformer architecture (Hybrid Attention Transformer), high fidelity (x4-native) |
+| `ultrasharp_v2` (default) | General-purpose DAT model, strong on illustration/artwork; best on GPU (CC-BY-NC-SA-4.0) |
+| `illustrationjanai` | Trained on digital art/illustrations rather than photos (CC-BY-NC-SA-4.0) |
+| `realesrgan_anime_fast` | Compact/lightweight Real-ESRGAN variant tuned for anime; fast enough for CPU-only machines |
 
-The first three are trained mainly on photographic benchmark datasets. Since
-MTG card art is illustrated, not photographic, the last four are worth trying
-if the photo-trained models introduce artifacts on card art specifically.
+All three are trained on illustrated rather than photographic material — a
+good match for MTG card art — and all are x4-native.
 
 ## Target DPI
 
@@ -306,7 +301,7 @@ At standard card size (2.5″×3.5″):
 
 | DPI | Pixels | How produced |
 |-----|--------|----------------|
-| 600 | 1500×2100 | Native x2 when available, else x4 + Lanczos |
+| 600 | 1500×2100 | Native x4 + Lanczos resize |
 | 800 | 2000×2800 | Native x4 + Lanczos resize |
 | 1200 (default) | 3000×4200 | Native x4 + Lanczos resize |
 
@@ -317,8 +312,8 @@ At standard card size (2.5″×3.5″):
 If Scryfall provides per-face `image_uris` (transform, MDFC, etc.), both faces are written:
 
 ```
-Dion_Bahamuts_Dominant-FIN-376-front-swinir-1200dpi.png
-Bahamut_Warden_of_Light-FIN-376-back-swinir-1200dpi.png
+Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-1200dpi.png
+Bahamut_Warden_of_Light-FIN-376-back-ultrasharp_v2-1200dpi.png
 ```
 
 Split / flip / adventure cards share one front image and produce a single file.

@@ -82,7 +82,7 @@ def _write_gallery_item(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
     )
     task_kwargs = dict(
         id=1,
@@ -97,7 +97,7 @@ def _write_gallery_item(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
@@ -140,7 +140,7 @@ def _write_gallery_item_with_transparent_corner(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
     )
     task = db.TaskRow(
         id=1,
@@ -155,7 +155,7 @@ def _write_gallery_item_with_transparent_corner(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
@@ -343,7 +343,7 @@ def test_generate_enqueues_tasks_for_pushed_entries(
         json={
             "project_tag": "tag-a",
             "entries": [_sol_ring_entry()],
-            "model": "swinir",
+            "model": "ultrasharp_v2",
             "dpi_targets": [800],
             "skip_existing": False,
             "output_dir": str(tmp_path / "out"),
@@ -374,7 +374,7 @@ def test_generate_requires_at_least_one_dpi(client: TestClient, tmp_path: Path) 
         json={
             "project_tag": "tag-a",
             "entries": [_sol_ring_entry()],
-            "model": "swinir",
+            "model": "ultrasharp_v2",
             "dpi_targets": [],
             "output_dir": str(tmp_path / "out"),
             "cache_dir": str(tmp_path / "cache"),
@@ -390,7 +390,7 @@ def test_generate_requires_at_least_one_entry(client: TestClient, tmp_path: Path
         json={
             "project_tag": "tag-a",
             "entries": [],
-            "model": "swinir",
+            "model": "ultrasharp_v2",
             "dpi_targets": [800],
             "output_dir": str(tmp_path / "out"),
             "cache_dir": str(tmp_path / "cache"),
@@ -406,7 +406,7 @@ def test_task_cancel(client: TestClient, tmp_path: Path) -> None:
         json={
             "project_tag": "tag-a",
             "entries": [_sol_ring_entry()],
-            "model": "swinir",
+            "model": "ultrasharp_v2",
             "dpi_targets": [800],
             "skip_existing": False,
             "output_dir": str(tmp_path / "out"),
@@ -428,7 +428,7 @@ def test_cancel_all_tasks_cancels_only_pending(client: TestClient, tmp_path: Pat
         json={
             "project_tag": "tag-a",
             "entries": [_sol_ring_entry()],
-            "model": "swinir",
+            "model": "ultrasharp_v2",
             "dpi_targets": [800],
             "skip_existing": False,
             "output_dir": str(tmp_path / "out"),
@@ -448,7 +448,7 @@ def test_cancel_all_tasks_cancels_only_pending(client: TestClient, tmp_path: Pat
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
@@ -481,7 +481,7 @@ def _enqueue_for_tag(tmp_path: Path, db_path: str, project_tag: str, **overrides
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
@@ -499,7 +499,7 @@ def _enqueue_and_fail(tmp_path: Path, db_path: str, *, model: str, dpi: int) -> 
 
 def test_task_retry_requeues_failed_task(client: TestClient, tmp_path: Path) -> None:
     db_path = os.environ["PROXY_SCALER_DB_PATH"]
-    task_id = _enqueue_and_fail(tmp_path, db_path, model="swinir", dpi=800)
+    task_id = _enqueue_and_fail(tmp_path, db_path, model="ultrasharp_v2", dpi=800)
 
     resp = client.post(f"/api/tasks/{task_id}/retry")
     assert resp.status_code == 200
@@ -515,13 +515,13 @@ def test_task_retry_requeues_failed_task(client: TestClient, tmp_path: Path) -> 
 
 def test_retry_all_only_matches_project_model_and_dpi(client: TestClient, tmp_path: Path) -> None:
     db_path = os.environ["PROXY_SCALER_DB_PATH"]
-    matching_id = _enqueue_and_fail(tmp_path, db_path, model="swinir", dpi=800)
-    wrong_dpi_id = _enqueue_and_fail(tmp_path, db_path, model="swinir", dpi=1200)
-    wrong_model_id = _enqueue_and_fail(tmp_path, db_path, model="ultrasharp_v2", dpi=800)
+    matching_id = _enqueue_and_fail(tmp_path, db_path, model="ultrasharp_v2", dpi=800)
+    wrong_dpi_id = _enqueue_and_fail(tmp_path, db_path, model="ultrasharp_v2", dpi=1200)
+    wrong_model_id = _enqueue_and_fail(tmp_path, db_path, model="illustrationjanai", dpi=800)
 
     resp = client.post(
         "/api/tasks/retry-all",
-        params={"project_tag": "tag-a", "model": "swinir", "dpi": [800]},
+        params={"project_tag": "tag-a", "model": "ultrasharp_v2", "dpi": [800]},
     )
     assert resp.status_code == 200
     assert resp.json() == {"retried": 1}
@@ -593,7 +593,7 @@ def test_regenerate_gallery_item_redoes_exact_variant(
     new_task = client.get(f"/api/tasks/{body['task_ids'][0]}").json()
     assert new_task["scryfall_id"] == "sol-id"
     assert new_task["dpi"] == 800
-    assert new_task["model"] == "swinir"
+    assert new_task["model"] == "ultrasharp_v2"
     assert new_task["project_tag"] == "tag-a"
 
 
@@ -736,7 +736,7 @@ def test_clear_generated_data_with_project_tag_clears_records_too(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
@@ -754,7 +754,7 @@ def test_clear_generated_data_with_project_tag_clears_records_too(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=1200,
-        model="swinir",
+        model="ultrasharp_v2",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),

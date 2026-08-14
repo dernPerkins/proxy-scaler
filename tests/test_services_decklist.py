@@ -33,7 +33,7 @@ def _task(**overrides) -> TaskRow:
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
         tile_size=0,
         output_dir="/tmp/out",
         cache_dir="/tmp/cache",
@@ -50,7 +50,7 @@ def _task(**overrides) -> TaskRow:
 
 def _face(**overrides) -> FaceResult:
     kwargs = dict(
-        out_path=Path("/o/Sol_Ring-C21-263-swinir-800dpi.png"),
+        out_path=Path("/o/Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"),
         original_path=Path("/c/Sol_Ring-C21-263.png"),
         scryfall_id="sol-id",
         face_index=None,
@@ -60,7 +60,7 @@ def _face(**overrides) -> FaceResult:
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="swinir",
+        model="ultrasharp_v2",
     )
     kwargs.update(overrides)
     return FaceResult(**kwargs)
@@ -125,27 +125,27 @@ def test_status_for_pairs_done_wins_over_task_history() -> None:
     """A done FaceResult always wins over any task history for the same
     (dpi, model) pair — a task record for a pair that's since succeeded is
     just history, not current state."""
-    done = _face(dpi=800, model="swinir")
-    stale_failed_task = _task(dpi=800, model="swinir", status="failed", error="old")
+    done = _face(dpi=800, model="ultrasharp_v2")
+    stale_failed_task = _task(dpi=800, model="ultrasharp_v2", status="failed", error="old")
     rows = status_for_pairs([done], [stale_failed_task])
-    assert rows == [(800, "swinir", "done", None)]
+    assert rows == [(800, "ultrasharp_v2", "done", None)]
 
 
 def test_status_for_pairs_uses_newest_task_when_no_done_variant() -> None:
-    older = _task(id=1, dpi=800, model="swinir", status="failed", error="first")
-    newer = _task(id=2, dpi=800, model="swinir", status="pending", error=None)
+    older = _task(id=1, dpi=800, model="ultrasharp_v2", status="failed", error="first")
+    newer = _task(id=2, dpi=800, model="ultrasharp_v2", status="pending", error=None)
     # face_tasks is documented as already created_at DESC — newest first.
     rows = status_for_pairs([], [newer, older])
-    assert rows == [(800, "swinir", "pending", None)]
+    assert rows == [(800, "ultrasharp_v2", "pending", None)]
 
 
 def test_status_for_pairs_separates_distinct_dpi_model_pairs() -> None:
-    done_800 = _face(dpi=800, model="swinir")
-    task_1200 = _task(dpi=1200, model="realesrgan", status="running")
+    done_800 = _face(dpi=800, model="ultrasharp_v2")
+    task_1200 = _task(dpi=1200, model="realesrgan_anime_fast", status="running")
     rows = status_for_pairs([done_800], [task_1200])
     assert rows == [
-        (800, "swinir", "done", None),
-        (1200, "realesrgan", "running", None),
+        (800, "ultrasharp_v2", "done", None),
+        (1200, "realesrgan_anime_fast", "running", None),
     ]
 
 

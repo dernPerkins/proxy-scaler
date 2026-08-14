@@ -10,7 +10,9 @@ from pathlib import Path
 _SET_COLLECTOR_RE = re.compile(
     r"^(?P<name>.+?)\s+\((?P<set>[A-Za-z0-9]+)\)\s+(?P<collector>\S+)\s*$"
 )
-_QTY_RE = re.compile(r"^(?P<qty>\d+)\s+(?P<rest>.+)$")
+# Optional x after the count covers the "4x Lightning Bolt" style many
+# deck-site exports use.
+_QTY_RE = re.compile(r"^(?P<qty>\d+)[xX]?\s+(?P<rest>.+)$")
 
 # Common section headers / noise lines to skip
 _SKIP_LINES = {

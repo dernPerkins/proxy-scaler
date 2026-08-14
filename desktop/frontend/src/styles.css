@@ -529,7 +529,7 @@ button:disabled {
 }
 .card-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px 84px 40px auto;
+  grid-template-columns: minmax(0, 1fr) 62px 84px 106px auto;
   gap: 12px;
   align-items: center;
 }
@@ -543,10 +543,25 @@ button:disabled {
   color: var(--text-muted);
   font-size: 12.5px;
 }
-.card-qty {
-  color: var(--text-muted);
+.card-qty-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.card-qty-stepper input {
+  width: 40px;
+  padding: 3px 4px;
   font-size: 12.5px;
-  text-align: right;
+  text-align: center;
+  /* The native spinner arrows are redundant next to the −/+ buttons and
+     don't fit a field this narrow. */
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.card-qty-stepper input::-webkit-outer-spin-button,
+.card-qty-stepper input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
 }
 .card-buttons {
   display: flex;
@@ -834,6 +849,20 @@ tbody tr:last-child td {
 }
 .toast-err .dot {
   background: var(--err);
+}
+.toast-starting .dot {
+  background: var(--run);
+  animation: toast-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes toast-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 .toast-body {
   flex: 1;

@@ -104,6 +104,9 @@ interface ProjectContextValue {
   importDecklistText: (text: string) => void;
   importingDecklistText: boolean;
   removeCard: (cardId: number) => void;
+  /** Sets a card's copy count. Values below 1 are clamped to 1 — removal
+   *  is removeCard's job. */
+  setCardQuantity: (cardId: number, quantity: number) => void;
   /** Whether the project has a name. Deliberately not "is saved": since
    *  settings began writing through (.scratch/optional-projects/spec.md
    *  §5.2) everything is saved, named or not — what varies is whether you
@@ -460,6 +463,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  const setCardQuantityMutation = useMutation({
+    mutationFn: async ({ cardId, quantity }: { cardId: number; quantity: number }) => {
+      await projectApi.setCardQuantity(cardId, quantity);
+      // Mirror the Rust side's min-1 clamp so local state can't disagree
+      // with what was actually stored.
+      return { cardId, quantity: Math.max(1, quantity) };
+    },
+    onSuccess: ({ cardId, quantity }) => {
+      setCards((prev) =>
+        prev.map((c) => (c.id === cardId ? { ...c, quantity } : c))
+      );
+    },
+  });
+
   // Deleting the Unnamed Project row is the whole of "discard" — there is
   // no separate mint step, because ensureProjectRow's get_or_create hands
   // back a fresh row, and with it a fresh tag, at the next import
@@ -681,6 +698,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     importDecklistText: (text: string) => importDecklistMutation.mutate(text),
     importingDecklistText: importDecklistMutation.isPending,
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
+    setCardQuantity: (cardId: number, quantity: number) =>
+      setCardQuantityMutation.mutate({ cardId, quantity }),
     isNamed: projectName.trim().length > 0,
     rename: async (name: string) => {
       await renameMutation.mutateAsync(name);

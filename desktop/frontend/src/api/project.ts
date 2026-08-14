@@ -85,6 +85,9 @@ export const projectApi = {
   importDecklistText: (projectId: number, text: string) =>
     invokeCommand<CardRow[]>("import_decklist_text", { projectId, text }),
   removeCard: (cardId: number) => invokeCommand<void>("remove_card", { cardId }),
+  // Clamped to a minimum of 1 on the Rust side; removal stays removeCard's job.
+  setCardQuantity: (cardId: number, quantity: number) =>
+    invokeCommand<void>("set_card_quantity", { cardId, quantity }),
 
   getLastProjectId: () => invokeCommand<number | null>("get_last_project_id"),
   setLastProjectId: (projectId: number) =>

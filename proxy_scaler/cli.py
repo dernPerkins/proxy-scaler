@@ -36,10 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         choices=model_choices,
-        default=UpscaleModel.SWINIR.value,
+        default=UpscaleModel.ULTRASHARP_V2.value,
         help=(
-            "Upscale model: swinir (default, fidelity-first), realesrnet, "
-            "or realesrgan. RealESRNet is x4-native only."
+            "Upscale model: ultrasharp_v2 (default, general-purpose), "
+            "illustrationjanai, or realesrgan_anime_fast."
         ),
     )
     p.add_argument(

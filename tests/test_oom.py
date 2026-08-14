@@ -74,7 +74,7 @@ def test_device_backend_keeps_backends_distinct() -> None:
 
 def test_upscale_falls_back_to_cpu_after_oom(tmp_path) -> None:
     """GPU OOM should clear cache and retry once on CPU (no tile retries)."""
-    up = Upscaler(model=UpscaleModel.SWINIR, scale=4, weights_dir=tmp_path, tile=0)
+    up = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0)
     up._descriptor = MagicMock()
 
     class _CudaDev:
@@ -125,7 +125,7 @@ def test_upscale_falls_back_to_cpu_after_oom(tmp_path) -> None:
 
 def test_upscale_preserves_alpha_corner(tmp_path) -> None:
     """Original alpha (rounded-corner transparency) should survive the RGB-only model."""
-    up = Upscaler(model=UpscaleModel.SWINIR, scale=4, weights_dir=tmp_path, tile=0)
+    up = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0)
     up._descriptor = MagicMock()
     up._device = torch.device("cpu")
 
@@ -155,7 +155,7 @@ def test_upscale_preserves_alpha_corner(tmp_path) -> None:
 
 def test_upscale_no_alpha_source_stays_rgb(tmp_path) -> None:
     """Plain RGB sources (no alpha channel) are returned unchanged, no crash."""
-    up = Upscaler(model=UpscaleModel.SWINIR, scale=4, weights_dir=tmp_path, tile=0)
+    up = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0)
     up._descriptor = MagicMock()
     up._device = torch.device("cpu")
 
@@ -181,11 +181,11 @@ def test_tiled_inference_matches_full_pass(tmp_path) -> None:
     validates the tile/pad/crop/stitch math has no off-by-one gaps or
     double-counted overlap, for both an exact tile multiple and a
     non-multiple (ragged last tile) image size."""
-    up = Upscaler(model=UpscaleModel.SWINIR, scale=2, weights_dir=tmp_path, tile=8, tile_pad=2)
+    up = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=8, tile_pad=2)
     up._device = torch.device("cpu")
 
     def fake_descriptor(tensor: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.interpolate(tensor, scale_factor=2, mode="nearest")
+        return torch.nn.functional.interpolate(tensor, scale_factor=4, mode="nearest")
 
     torch.manual_seed(0)
     for h, w in [(16, 16), (20, 14)]:  # exact multiple, then ragged
@@ -198,7 +198,7 @@ def test_tiled_inference_matches_full_pass(tmp_path) -> None:
 
 def test_run_inference_tiling_gate(tmp_path) -> None:
     """Tiling only kicks in when tile>0 AND the image exceeds the tile size."""
-    up = Upscaler(model=UpscaleModel.SWINIR, scale=2, weights_dir=tmp_path, tile=8)
+    up = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=8)
     up._device = torch.device("cpu")
     small = torch.rand(1, 3, 6, 6)  # smaller than tile=8
     large = torch.rand(1, 3, 20, 20)
@@ -211,7 +211,7 @@ def test_run_inference_tiling_gate(tmp_path) -> None:
         tiled_mock.assert_called_once()
 
     # tile=0 (disabled) never tiles regardless of image size.
-    up_off = Upscaler(model=UpscaleModel.SWINIR, scale=2, weights_dir=tmp_path, tile=0)
+    up_off = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0)
     up_off._device = torch.device("cpu")
     with patch.object(up_off, "_tiled_inference") as tiled_mock:
         descriptor = MagicMock(return_value=torch.rand(1, 3, 40, 40))

@@ -9,7 +9,6 @@ from proxy_scaler.upscale import UpscaleModel
 
 def test_effective_tile_size_heavy_model_auto_default():
     # Not manually set (0) — heavy models fall back to DEFAULT_TILE_SIZE.
-    assert _effective_tile_size(UpscaleModel.HAT, 0) > 0
     assert _effective_tile_size(UpscaleModel.ILLUSTRATIONJANAI, 0) > 0
     assert _effective_tile_size(UpscaleModel.ULTRASHARP_V2, 0) > 0
 
@@ -17,15 +16,12 @@ def test_effective_tile_size_heavy_model_auto_default():
 def test_effective_tile_size_light_model_stays_off_by_default():
     # Not manually set (0) — lighter models are left untouched (no
     # regression risk for models that already work fine).
-    assert _effective_tile_size(UpscaleModel.SWINIR, 0) == 0
-    assert _effective_tile_size(UpscaleModel.REALESRGAN, 0) == 0
-    assert _effective_tile_size(UpscaleModel.REALESRNET, 0) == 0
-    assert _effective_tile_size(UpscaleModel.REALESRGAN_ANIME, 0) == 0
+    assert _effective_tile_size(UpscaleModel.REALESRGAN_ANIME_FAST, 0) == 0
 
 
 def test_effective_tile_size_explicit_override_always_wins():
-    assert _effective_tile_size(UpscaleModel.SWINIR, 256) == 256
-    assert _effective_tile_size(UpscaleModel.HAT, 512) == 512
+    assert _effective_tile_size(UpscaleModel.REALESRGAN_ANIME_FAST, 256) == 256
+    assert _effective_tile_size(UpscaleModel.ULTRASHARP_V2, 512) == 512
 
 
 def test_parse_exact_printing():
@@ -65,6 +61,20 @@ def test_parse_name_only():
     assert not e.has_exact_printing
 
 
+def test_parse_qty_with_x_suffix():
+    # The "4x Lightning Bolt" style many deck-site exports use.
+    e = parse_line("4x Lightning Bolt")
+    assert e is not None
+    assert e.quantity == 4
+    assert e.name == "Lightning Bolt"
+
+    upper = parse_line("2X Sol Ring (c21) 263")
+    assert upper is not None
+    assert upper.quantity == 2
+    assert upper.name == "Sol Ring"
+    assert upper.set_code == "c21"
+
+
 def test_parse_skip_headers():
     assert parse_line("Deck") is None
     assert parse_line("") is None
@@ -88,16 +98,16 @@ def test_output_filename():
         == "Dion_Bahamuts_Dominant-FIN-376-front.png"
     )
     assert (
-        output_filename("Sol Ring", "c21", "263", None, "swinir")
-        == "Sol_Ring-C21-263-swinir.png"
+        output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2")
+        == "Sol_Ring-C21-263-ultrasharp_v2.png"
     )
     assert (
-        output_filename("Sol Ring", "c21", "263", None, "swinir", 800)
-        == "Sol_Ring-C21-263-swinir-800dpi.png"
+        output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800)
+        == "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"
     )
     assert (
-        output_filename("Sol Ring", "c21", "263", "front", "realesrgan", 1200)
-        == "Sol_Ring-C21-263-front-realesrgan-1200dpi.png"
+        output_filename("Sol Ring", "c21", "263", "front", "illustrationjanai", 1200)
+        == "Sol_Ring-C21-263-front-illustrationjanai-1200dpi.png"
     )
 
 
