@@ -603,12 +603,27 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   );
 
   // Auto-load on startup: the project the user most recently touched (see
-  // set_last_project_id, called on every save/load below), falling back
-  // to the most-recently-updated project if there's no "last" pointer yet
-  // (e.g. first launch after an upgrade) or it points at a project that's
-  // since been deleted. Runs once on mount only; a project explicitly
-  // loaded/created/deleted afterward should never be silently overridden
-  // by this.
+  // set_last_project_id, called on every save/load below). Two ways of
+  // having no project to restore look alike here and deliberately are not
+  // (issue 15):
+  //
+  // - No "last" pointer at all — a store that predates the pointer, e.g.
+  //   first launch after an upgrade. Nothing was ever chosen, so the
+  //   most-recently-updated named project is the best guess available.
+  // - A pointer to a project that no longer exists. Only discard and the
+  //   bar's delete remove rows, and both leave the app on a blank slate —
+  //   so the blank slate is what was last touched (map constraint 7), and
+  //   launch restores it by loading nothing. Falling back to a named
+  //   project here would resurrect exactly what the user just discarded
+  //   their way out of.
+  //
+  // The dead pointer is never rewritten here: it is the durable record
+  // that the last touch was a deletion, and the next load, import, or
+  // save overwrites it anyway. (The no-pointer branch does end up writing
+  // one, via the load it triggers.)
+  //
+  // Runs once on mount only; a project explicitly loaded/created/deleted
+  // afterward should never be silently overridden by this.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -619,10 +634,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           try {
             const project = await projectApi.getProject(lastId);
             if (!cancelled) applyLoaded(project);
-            return;
           } catch {
-            // Stale pointer (project deleted) — fall through to latest.
+            // Dead pointer: the project was deleted, and the deletion left
+            // a blank slate. Restore it by loading nothing.
           }
+          return;
         }
         const projects = await projectApi.listProjects();
         if (cancelled || projects.length === 0) return;
