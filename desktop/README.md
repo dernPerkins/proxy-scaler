@@ -97,13 +97,19 @@ For the server app: `make server-app-dev`, or `make server-app` then
   the sidecar reports ready? Watch the `cargo tauri dev` terminal for
   `[proxy-scaler-serve] PROXY_SCALER_READY`, and for stderr if it hangs.
 - **Generate + download a PDF, and download a generated image.** Downloads
-  go through Tauri's native save dialog (`main.rs::save_file`,
-  `frontend/src/download.ts`) rather than the browser — WKWebView on macOS
+  go through Tauri's native save dialog (`main.rs::pick_save_path` +
+  `download_to_path`, `frontend/src/download.ts`) rather than the
+  browser — WKWebView on macOS
   doesn't reliably honor the HTML `download` attribute, so an image link
   navigated instead of saving and a PDF blob link did nothing. Confirm
   both prompt a real "Save As" and produce a file.
-- **Saved projects survive a restart.** Save a project, fully quit,
-  relaunch — it should still be there, along with its PDF layout settings.
+- **Projects survive a restart, named or not.** Import a decklist without
+  naming anything, fully quit, relaunch — the cards *and* the settings
+  should still be there. There is no Save button: settings write through
+  on change. Then type a name and repeat.
+- **Naming keeps the images.** Generate from an unnamed project, then name
+  it. Every generated image must still be attached — naming is an `UPDATE`
+  that preserves `project_tag`, and this is the check that proves it.
 - **Closing the window stops everything.** After closing, check
   `ps aux | grep -E "uvicorn|proxy_scaler"` — the sidecar *and* the API
   server and worker underneath it should all be gone, not just the window.

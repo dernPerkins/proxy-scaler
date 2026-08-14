@@ -38,6 +38,11 @@ settings) live in a local SQLite file on the machine running the client,
 independent of which generation server is currently connected — switching
 Local/Remote mid-session never touches your project data.
 
+Naming a project is optional and there is nothing to save: paste a
+decklist and go, and everything is persisted as you work. Type a name
+when you want the project to be findable later — it keeps the images you
+have already generated.
+
 **PDF generation** is a full tab of its own: page size presets or custom
 dimensions, columns/rows, bleed, spacing, position offset, cut-guide
 width/length, and a preferred model/DPI for picking among

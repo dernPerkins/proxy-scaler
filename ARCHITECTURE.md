@@ -24,20 +24,34 @@ log` if this document and the code ever disagree — the code wins.
 ## The core split
 
 See [ADR-0001](./docs/adr/0001-split-project-and-generation-concerns.md)
-for why the split happened and what it costs to reverse. The three terms
-that matter throughout this document:
+for why the split happened and what it costs to reverse. The terms that
+matter throughout this document:
 
 - **Project** — a decklist workspace: its raw text, unresolved card list,
   and per-project preferences (model, DPI targets, tile size, PDF
   layout). Always lives on the machine running the desktop client, never
-  on a generation server.
+  on a generation server. A name is optional — see **Unnamed Project**.
+- **Unnamed Project** — an ordinary `projects` row whose `name` is `''`.
+  One concept, two states, not a second noun: it has a real id, a real
+  `tag`, and its own persisted cards and settings. At most one exists at
+  a time (`name TEXT NOT NULL UNIQUE` does the enforcing), and it is
+  hidden from the picker by `WHERE name <> ''`. Naming it *is* saving it.
+  See [ADR-0002](./docs/adr/0002-projects-are-optional-and-promotion-preserves-project-tag.md).
 - **Generation server** — the Python FastAPI + worker pair that resolves
   cards against Scryfall, downloads, upscales, and assembles PDFs. Has no
   concept of a "project."
-- **`project_tag`** — an opaque string a Project mints once and attaches
-  to every generation request, used purely to scope/filter that project's
-  tasks and images. Deliberately *not* a foreign key; the generation side
-  has no projects table to point at.
+- **`project_tag`** — an opaque string minted when a Project row is
+  created, attached to every generation request, used purely to
+  scope/filter that project's tasks and images. Deliberately *not* a
+  foreign key; the generation side has no projects table to point at.
+  One tag per row, for that row's whole life: **naming an Unnamed
+  Project is an `UPDATE` that never touches `tag`**, so images generated
+  before the name stay attached. A tag ends when its row is deleted —
+  by `delete_project` or `clear_all_projects`, named or not, and by New
+  or discard from an Unnamed Project — and the next write path to need a
+  row (a decklist import *or* a settings change) lazily creates one with
+  a fresh tag. So a tag is minted per row, not once per named project:
+  over a session a user can mint, discard, and mint again several times.
 
 `generation_tasks.project_id` was already nullable and never joined
 before the split — the split just makes that looseness the *only*
@@ -124,8 +138,10 @@ traffic lives on the generation side, collapsed into one step instead of
 the old architecture's two separate resolutions (once at decklist import,
 again at generate time):
 
-1. User edits decklist text in a project. The Rust project store parses
-   it locally (`parse_decklist_text` — a direct Rust port of the old
+1. User pastes decklist text and imports. If there is no project yet,
+   `get_or_create_unnamed_project` creates one first — nothing has to be
+   named or saved to get this far. The Rust project store parses the
+   text locally (`parse_decklist_text` — a direct Rust port of the old
    `proxy_scaler/decklist.py`, two regexes, no network) and stores the
    raw, **unresolved** lines (quantity + name + optional set/collector).
 2. The frontend calls `POST /api/resolve` (debounced, on decklist
@@ -152,15 +168,29 @@ generation-server state.
 
 | Command | Purpose |
 |---|---|
-| `create_project` | New project (name, empty decklist, default settings) |
-| `list_projects` | Summaries for the project picker |
-| `get_project` | Full record: name, decklist text, unresolved card list, settings |
-| `update_project` | Rename / update settings |
-| `delete_project` | Delete one project (cascades to its cards) |
-| `clear_all_projects` | Delete everything, confirm-gated |
-| `set_decklist_text` | Replace decklist text; re-parses and re-stores card lines |
+| `get_or_create_unnamed_project` | The Unnamed Project's summary (id + tag), creating the row on first call. Called from the write paths — never from `open_db`, which runs on every command and must not write |
+| `create_project` | New **named** project (name, empty decklist, default settings). Still rejects an empty name: it always INSERTs, so an Unnamed Project reaching it would mint a second tag |
+| `list_projects` | Summaries for the project picker. `WHERE name <> ''` — the Unnamed Project is deliberately absent. Any future query that lists or counts projects needs the same clause; nothing in the schema enforces it |
+| `get_project` | Full record: name, decklist text, unresolved card list, settings. By id, so the Unnamed Project loads like any other |
+| `update_project` | Write name + settings. Also the **promotion** path: naming an Unnamed Project is an `UPDATE ... SET name = ?` that never touches `tag`. Accepts `''` (the row must be writable before it is named) but never *un-names* — a blank name leaves the stored one alone, and the UNIQUE constraint is the collision check |
+| `delete_project` | Delete one project (cascades to its cards). Also the whole of "discard": deleting the Unnamed Project row is what New/discard does |
+| `clear_all_projects` | Delete everything, confirm-gated. Bare `DELETE FROM projects` — takes the Unnamed Project with it |
+| `import_decklist_text` | Add parsed card lines to a project, additively, de-duped by set+collector (or name); also mirrors the pasted text back onto the row |
 | `remove_card` | Drop one parsed line from a project |
-| `get_last_project_id` / `set_last_project_id` | Auto-load-on-launch support |
+| `get_last_project_id` / `set_last_project_id` | Auto-load-on-launch support (`app_settings`) |
+| `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
+| `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
+
+Settings reach SQLite by **write-through on change**, not by an explicit
+Save — the shipped UI has no Save button. That covers the Unnamed
+Project and named Projects alike, and it is what makes "nothing is
+unsaved" literally true. The quit prompt (`components/QuitPrompt.tsx`,
+driven by `main.rs`'s `CloseRequested` handler) therefore offers naming,
+not saving; **macOS Cmd+Q and menu Quit fire no close event at all and
+skip it deliberately** — see ADR-0002. Its two transport commands
+(`quit_prompt_listening` / `answer_quit_prompt`) live in `main.rs`, not
+here: they carry the modal's answer back to the close handler and touch
+no project data.
 
 Project settings that live here: `model`, `dpi_targets`, `skip_existing`,
 `tile_size` — genuine per-project preferences. Deliberately **not**
@@ -220,3 +250,13 @@ Consequences section. This is why the "connection lost" dialog
 generation work, not project data: losing the thing your project lived
 on used to mean losing your edits, and now it structurally can't,
 because project data was never there to begin with.
+
+Both dialogs used to hedge against that anyway, and no longer do.
+`ConnectionLostDialog` offered a save button and `SwitchServerDialog`
+offered save-before-switching (with a `canSave` prop plumbed through
+`ServerSwitcher.tsx`); both are gone, along with the strings that framed
+a connection event as a threat to project data. Nothing is unsaved on
+either path — for named Projects or Unnamed ones — so there is nothing
+to offer. If a future dialog reaches for `useProject()` to warn about
+losing work over a connection event, that is the mistake this section
+exists to catch.

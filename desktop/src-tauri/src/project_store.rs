@@ -4,9 +4,9 @@
 // process — see ARCHITECTURE.md for why this lives here instead of on
 // the generation server. Scryfall resolution, the download+upscale
 // pipeline, and the task queue stay server-side, scoped by this table's
-// `tag` column (an opaque string minted once per project and passed to
-// the generation server as `project_tag` — plain scoping, not a foreign
-// key).
+// `tag` column (an opaque string minted once per row — naming a project
+// preserves it, deleting the row ends it — and passed to the generation
+// server as `project_tag`: plain scoping, not a foreign key).
 use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
