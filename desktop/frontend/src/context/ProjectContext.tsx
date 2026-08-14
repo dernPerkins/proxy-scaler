@@ -45,6 +45,14 @@ function recommendedDefaultModel(): string {
   return getConnectionMode() === "local" ? FAST_MODEL : HEAVY_MODEL;
 }
 
+// Settings writes are debounced because their callers are sliders and
+// number inputs — the Decklist sidebar's DPI/tile controls, the whole of
+// PdfPage's layout panel (`updateLayout`) — which fire a setter per frame
+// of a drag. One UPDATE per frame is not something to ask SQLite for; one
+// trailing write per gesture is. Keyed on nothing: settings are a single
+// object, so the last write wins by construction.
+const SETTINGS_WRITE_DEBOUNCE_MS = 400;
+
 function getDefaultSettings(): ProjectSettings {
   return {
     model: recommendedDefaultModel(),
@@ -141,25 +149,138 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // the GPU probe below to revise. Flipped by any deliberate model change
   // — the user picking one, or a saved project supplying its own.
   const modelIsDefault = useRef(true);
+  // projectId and settings are mirrored into refs because the write paths
+  // below are async: a setState lands on a later render, so a write firing
+  // in the same tick that changed them would otherwise read stale values —
+  // ask for a second Unnamed Project, or persist the settings from before
+  // the edit that scheduled the write.
+  const projectIdRef = useRef<number | null>(null);
+  const settingsRef = useRef<ProjectSettings>(settings);
+  // The debounced settings write, and the project it is for. The target is
+  // captured when the write is scheduled, not read when it fires, so an
+  // edit made in one project can never land on whichever project is open
+  // 400ms later. A null target means the edit was made before any row
+  // existed, and firing it is what creates the Unnamed Project.
+  const pendingSettingsWrite = useRef<{ projectId: number | null; settings: ProjectSettings } | null>(
+    null,
+  );
+  const settingsWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settingsWriteChain = useRef<Promise<void>>(Promise.resolve());
+
+  function adoptProjectId(id: number | null) {
+    projectIdRef.current = id;
+    setProjectId(id);
+  }
+
+  function applySettings(next: ProjectSettings) {
+    settingsRef.current = next;
+    setSettings(next);
+  }
+
+  // The row every write needs, created on first demand rather than at
+  // launch: the Unnamed Project is born the first time there is something
+  // to store — a decklist import, or a settings change with no cards at
+  // all — and an app that has been installed and never used holds no row.
+  //
+  // Shared by both write paths, so whichever the user reaches first is the
+  // one that creates the row.
+  async function ensureProjectRow(): Promise<number> {
+    const existing = projectIdRef.current;
+    if (existing != null) return existing;
+    const unnamed = await projectApi.getOrCreateUnnamedProject();
+    // Adopted straight away rather than in a mutation's onSuccess: the row
+    // exists in the store from this point on whether or not the write that
+    // follows succeeds, and state that says otherwise would strand it.
+    // projectName is left alone — the row's name really is '', and the
+    // bar's field holds whatever the user is in the middle of typing.
+    adoptProjectId(unnamed.id);
+    setProjectTag(unnamed.tag);
+    // The Unnamed Project is what the next launch should restore.
+    await projectApi.setLastProjectId(unnamed.id);
+    return unnamed.id;
+  }
+
+  function discardPendingSettingsWrite() {
+    if (settingsWriteTimer.current != null) {
+      clearTimeout(settingsWriteTimer.current);
+      settingsWriteTimer.current = null;
+    }
+    pendingSettingsWrite.current = null;
+  }
+
+  function scheduleSettingsWrite(next: ProjectSettings) {
+    // Restarted, not extended: a drag schedules one write, at its end.
+    discardPendingSettingsWrite();
+    pendingSettingsWrite.current = { projectId: projectIdRef.current, settings: next };
+    settingsWriteTimer.current = setTimeout(flushSettingsWrite, SETTINGS_WRITE_DEBOUNCE_MS);
+  }
+
+  function flushSettingsWrite() {
+    const pending = pendingSettingsWrite.current;
+    discardPendingSettingsWrite();
+    if (pending == null) return;
+    // Chained rather than fired loose so two writes can't overlap and leave
+    // the store holding the older object.
+    settingsWriteChain.current = settingsWriteChain.current.then(async () => {
+      let target = pending.projectId;
+      try {
+        target ??= await ensureProjectRow();
+        // The empty name means "settings only": update_project keeps the
+        // stored name when handed a blank one (project_store.rs::
+        // update_project_row), so a slider drag can never also commit
+        // whatever half-typed text is sitting in the bar's name field.
+        // Naming stays an act of its own.
+        await projectApi.updateProject(target, "", pending.settings);
+      } catch (err) {
+        // A write already in flight can't be called back, so it can land
+        // against a row Delete has just removed — update_project fails
+        // reading the summary back. That's the user's own doing and not
+        // something to report; only a failure against the project still
+        // open in front of them is worth an error line.
+        if (target != null && target !== projectIdRef.current) return;
+        // Otherwise: must not throw into the render path — the user's edit
+        // stands in React state exactly as typed, and the failure surfaces
+        // through the same error line every other project operation uses.
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+
+  // Called by anything that swaps out the current project — load, New,
+  // delete, Save As. A pending edit was made *in* the outgoing project, so
+  // it is flushed rather than dropped when it has a row to land on, and
+  // discarded when it doesn't: its target was a blank slate that this
+  // transition has just replaced, and creating a row for it now would leave
+  // a stray Unnamed Project behind.
+  function settleSettingsWriteBeforeTransition() {
+    if (pendingSettingsWrite.current?.projectId != null) flushSettingsWrite();
+    else discardPendingSettingsWrite();
+  }
 
   // Exposed instead of the raw setter so the model can't be quietly
   // overwritten after the user has expressed a preference. Every other
   // setting passes through untouched.
+  //
+  // This is also the write: settings reach SQLite from here, not from an
+  // explicit Save, for the Unnamed Project and named Projects alike (spec
+  // §5.2). One ProjectSettings object covers the sidebar and the entire
+  // PDF layout, so PDF-tab tweaks now persist too.
   function updateSettings(
     updater: ProjectSettings | ((s: ProjectSettings) => ProjectSettings),
   ) {
-    setSettings((prev) => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      if (next.model !== prev.model) modelIsDefault.current = false;
-      return next;
-    });
+    const prev = settingsRef.current;
+    const next = typeof updater === "function" ? updater(prev) : updater;
+    if (next.model !== prev.model) modelIsDefault.current = false;
+    applySettings(next);
+    scheduleSettingsWrite(next);
   }
 
   function applyLoaded(project: LoadedProject) {
-    setProjectId(project.id);
+    settleSettingsWriteBeforeTransition();
+    adoptProjectId(project.id);
     setProjectTag(project.tag);
     setProjectName(project.name);
-    setSettings(project.settings);
+    applySettings(project.settings);
     // A saved project's stored model is an explicit choice, whatever it
     // happens to be — never second-guess it when the probe lands.
     modelIsDefault.current = false;
@@ -172,6 +293,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     mutationFn: async () => {
       const name = projectName.trim();
       if (!name) throw new Error("Enter a project name before saving.");
+      // Dropped rather than flushed: Save is not a transition, and it
+      // writes these very settings itself a line below — flushing would
+      // only mean two UPDATEs of the same values. One still aimed at "no
+      // row yet" would additionally race the create into a stray row.
+      discardPendingSettingsWrite();
       const summary =
         projectId != null
           ? await projectApi.updateProject(projectId, name, settings)
@@ -187,7 +313,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return summary;
     },
     onSuccess: (project) => {
-      setProjectId(project.id);
+      adoptProjectId(project.id);
       setProjectTag(project.tag);
       setProjectName(project.name);
       setError(null);
@@ -204,6 +330,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     mutationFn: async (name: string) => {
       const trimmed = name.trim();
       if (!trimmed) throw new Error("Name required.");
+      // The copy carries the current settings; the original keeps them too.
+      settleSettingsWriteBeforeTransition();
       const summary = await projectApi.createProject(trimmed);
       await projectApi.updateProject(summary.id, summary.name, settings);
       if (decklistText) {
@@ -232,7 +360,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     mutationFn: (id: number) => projectApi.deleteProject(id),
     onSuccess: (_data, id) => {
       if (projectId === id) {
-        setProjectId(null);
+        // Discarded rather than settled: the row this write targets is the
+        // one that was just deleted.
+        discardPendingSettingsWrite();
+        adoptProjectId(null);
         setProjectTag(null);
         setProjectName("");
         setDecklistTextState("");
@@ -244,26 +375,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const importDecklistMutation = useMutation({
     mutationFn: async (text: string) => {
-      // The row is born here. With no project yet, importing creates the
-      // Unnamed Project rather than refusing — naming is optional and comes
-      // later, if at all (spec §5.1).
-      let id = projectId;
-      if (id == null) {
-        const unnamed = await projectApi.getOrCreateUnnamedProject();
-        id = unnamed.id;
-        // Adopted straight away rather than in onSuccess: the row exists in
-        // the store from this point on whether or not the import that
-        // follows succeeds, and state that says otherwise would strand it.
-        // projectName is left alone — the row's name really is '', and the
-        // bar's field holds whatever the user is in the middle of typing.
-        setProjectId(unnamed.id);
-        setProjectTag(unnamed.tag);
-        // The Unnamed Project is what the next launch should restore — it
-        // holds the cards about to be imported.
-        await projectApi.setLastProjectId(unnamed.id);
-      }
-      // Note `id`, not projectId: setProjectId lands on a later render, so
-      // reading it back in this tick would still see null.
+      // The row can be born here. With no project yet, importing creates
+      // the Unnamed Project rather than refusing — naming is optional and
+      // comes later, if at all (spec §5.1).
+      //
+      // Note the returned `id`, not projectId: setProjectId lands on a
+      // later render, so reading it back in this tick would still see null.
+      const id = await ensureProjectRow();
       const newCards = await projectApi.importDecklistText(id, text);
       return { text, newCards };
     },
@@ -283,15 +401,39 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   });
 
   function createNew() {
-    setProjectId(null);
+    settleSettingsWriteBeforeTransition();
+    adoptProjectId(null);
     setProjectTag(null);
     setProjectName("");
-    setSettings(getDefaultSettings());
+    applySettings(getDefaultSettings());
     modelIsDefault.current = true;
     setDecklistTextState("");
     setCards([]);
     setError(null);
   }
+
+  // The debounce leaves a window — up to SETTINGS_WRITE_DEBOUNCE_MS — in
+  // which a settings change exists only in React state. Quitting inside it
+  // would lose the edit, which is exactly what "settings persist on change"
+  // promises not to do, so hand the pending write off the moment the window
+  // is on its way out. Both signals are best-effort: the webview may be
+  // torn down before the invoke lands, and macOS Cmd+Q fires neither (spec
+  // §6). They shrink the window; they don't close it.
+  useEffect(() => {
+    function flushOnTheWayOut() {
+      flushSettingsWrite();
+    }
+    window.addEventListener("pagehide", flushOnTheWayOut);
+    window.addEventListener("blur", flushOnTheWayOut);
+    return () => {
+      window.removeEventListener("pagehide", flushOnTheWayOut);
+      window.removeEventListener("blur", flushOnTheWayOut);
+      // A provider being torn down with a write still queued: land it now,
+      // since nothing after this point will.
+      flushSettingsWrite();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The /api/device answer arrives long after this provider mounts —
   // torch's cold import means the probe can take tens of seconds, while
@@ -308,10 +450,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     () =>
       subscribeProbedDevice(() => {
         if (!modelIsDefault.current) return;
-        setSettings((s) => {
-          const recommended = recommendedDefaultModel();
-          return s.model === recommended ? s : { ...s, model: recommended };
-        });
+        const recommended = recommendedDefaultModel();
+        if (settingsRef.current.model === recommended) return;
+        // Not routed through updateSettings, so it schedules no write: this
+        // is a guess being corrected rather than a user edit, and persisting
+        // it would mint an Unnamed Project row on launch for an app nobody
+        // has touched yet. If the row does already exist, the correction
+        // reaches the store with the user's next settings change.
+        applySettings({ ...settingsRef.current, model: recommended });
       }),
     [],
   );
