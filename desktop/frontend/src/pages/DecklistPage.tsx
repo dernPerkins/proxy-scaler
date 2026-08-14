@@ -485,13 +485,20 @@ export default function DecklistPage() {
                 cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
               }
               const faceGroups = buildRows(cardGallery, cardTasks);
-              const faces: DisplayFace[] = faceGroups.map(({ items, tasks: faceTasks }) => {
-                const source = items[0] ?? faceTasks[0];
-                return {
-                  faceLabel: source?.face_label ?? null,
-                  variants: statusForPairs(items, faceTasks),
-                };
-              });
+              const faces: DisplayFace[] = faceGroups
+                .map(({ items, tasks: faceTasks }) => {
+                  const source = items[0] ?? faceTasks[0];
+                  return {
+                    faceLabel: source?.face_label ?? null,
+                    // Canceled tasks are just queue history, not worth
+                    // surfacing here — the Tasks tab is where cancellation
+                    // state actually matters.
+                    variants: statusForPairs(items, faceTasks).filter(
+                      (v) => v.status !== "canceled",
+                    ),
+                  };
+                })
+                .filter((face) => face.variants.length > 0);
               return (
                 <CardRowView
                   key={card.id}
