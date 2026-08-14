@@ -24,14 +24,6 @@ dependencies = [
 # API server/worker are guaranteed cleaned up even if the supervisor itself
 # is force-killed. Falls back to a taskkill-based best-effort without it.
 win32 = ["pywin32; sys_platform == 'win32'"]
-# Alternate HTML->PDF comparison pipeline (proxy_scaler/pdf_html.py), a
-# second rendering path alongside the default fpdf2 one so the two can be
-# compared before deciding which to keep. Not a hard dependency: WeasyPrint
-# needs native system libs (Pango/cairo/gdk-pixbuf), and PyInstaller
-# packaging is deliberately deferred until fpdf2-vs-HTML is settled — no
-# point solving frozen-build packaging for a method that might get
-# discarded. Dev-only for now: pip install -e ".[html-pdf]"
-html-pdf = ["weasyprint>=61"]
 
 [project.scripts]
 proxy-scaler = "proxy_scaler.cli:main"

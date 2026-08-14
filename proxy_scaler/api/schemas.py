@@ -5,8 +5,6 @@ checked as both sides evolve."""
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel
 
 
@@ -186,14 +184,6 @@ class PdfPreviewOut(BaseModel):
     # resolution, so the UI must surface them as an error — otherwise they
     # would silently vanish from the sheet.
     missing_at_dpi: list[str] = []
-
-
-class PdfJobIn(PdfLayoutIn):
-    """Same layout request as a synchronous render, plus which pipeline to
-    use — the two render methods differ only in engine, so they share one
-    job lifecycle rather than duplicating routes."""
-
-    method: Literal["fpdf2", "html"] = "fpdf2"
 
 
 class PdfJobOut(BaseModel):

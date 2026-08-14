@@ -159,12 +159,10 @@ export interface PdfLayoutRequest {
   preferred_model?: string | null;
 }
 
-// Mirrors PdfJobIn/PdfJobOut/PdfJobStatusOut. A render job exists because
-// building a sheet costs ~0.7s per unique card image, so the client needs
-// something to poll instead of one long opaque POST.
-export type PdfRenderMethod = "fpdf2" | "html";
-
-export type PdfJobRequest = PdfLayoutRequest & { method?: PdfRenderMethod };
+// Mirrors PdfJobOut/PdfJobStatusOut. A render job exists because building
+// a sheet costs ~0.7s per unique card image, so the client needs something
+// to poll instead of one long opaque POST.
+export type PdfJobRequest = PdfLayoutRequest;
 
 export interface PdfJobStarted {
   job_id: string;

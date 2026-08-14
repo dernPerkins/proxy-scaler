@@ -12,7 +12,6 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
     DeckEntryIn,
-    PdfJobIn,
     PdfJobOut,
     PdfJobStatusOut,
     PdfLayoutIn,
@@ -36,7 +35,6 @@ from proxy_scaler.pdf_layout import (
     resolve_page_layout,
     unique_image_count,
 )
-from proxy_scaler.pdf_html import WeasyPrintUnavailable, build_pdf_html
 from proxy_scaler.pipeline import FaceResult, ensure_original_thumbnail
 
 router = APIRouter(prefix="/api/pdf", tags=["pdf"])
@@ -184,27 +182,6 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
     )
 
 
-@router.post("/html")
-def generate_pdf_html(body: PdfLayoutIn) -> Response:
-    """Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — a
-    second rendering path for comparing against the default fpdf2 one
-    above. 503s with a clear message rather than crashing when weasyprint
-    isn't installed on this server (see pyproject.toml's html-pdf extra)."""
-    layout, pages, _missing, _missing_at_dpi = _prepare(body)
-    if not pages:
-        raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
-    try:
-        pdf_bytes = build_pdf_html(pages, layout=layout, export_dpi=body.export_dpi)
-    except WeasyPrintUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    filename = f"{_slugify(body.project_name or body.project_tag)}-html.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
 # --- Render jobs -----------------------------------------------------------
 #
 # The synchronous routes above stay as they are (CLI/scripted callers, and
@@ -215,7 +192,7 @@ def generate_pdf_html(body: PdfLayoutIn) -> Response:
 # runs on its own thread and the client polls (completed, total).
 
 
-def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfJobIn) -> None:
+def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfLayoutIn) -> None:
     """Render thread body. Owns the job's terminal state: every exit path
     (success, cancel, failure) marks the job, or the client would poll a
     "rendering" job forever."""
@@ -226,14 +203,12 @@ def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfJobIn) -> No
         pdf_jobs.set_progress(job_id, completed)
 
     try:
-        render = build_pdf_html if body.method == "html" else build_pdf
-        kwargs = {} if body.method == "html" else {"show_cut_lines": body.show_cut_lines}
-        pdf_bytes = render(
+        pdf_bytes = build_pdf(
             pages,
             layout=layout,
             export_dpi=body.export_dpi,
             on_progress=on_progress,
-            **kwargs,
+            show_cut_lines=body.show_cut_lines,
         )
         pdf_jobs.finish(job_id, pdf_bytes)
     except PdfRenderCanceled:
@@ -243,7 +218,7 @@ def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfJobIn) -> No
 
 
 @router.post("/jobs", response_model=PdfJobOut, status_code=202)
-def start_pdf_job(body: PdfJobIn) -> PdfJobOut:
+def start_pdf_job(body: PdfLayoutIn) -> PdfJobOut:
     """Start a background render and return its id.
 
     _prepare() runs synchronously here on purpose: it's cheap (a DB read
@@ -261,8 +236,7 @@ def start_pdf_job(body: PdfJobIn) -> PdfJobOut:
             status_code=409, detail="A PDF is already being generated — wait for it to finish."
         )
 
-    suffix = "-html" if body.method == "html" else ""
-    filename = f"{_slugify(body.project_name or body.project_tag)}{suffix}.pdf"
+    filename = f"{_slugify(body.project_name or body.project_tag)}.pdf"
     job = pdf_jobs.create_job(filename=filename, total=unique_image_count(pages))
     threading.Thread(
         target=_run_render,

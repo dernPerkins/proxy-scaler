@@ -392,7 +392,7 @@ def test_upscalers_for_targets_auto_tiles_heavy_models(tmp_path: Path) -> None:
 def _rounded_rect_rgba(w: int, h: int, radius: int) -> Image.Image:
     """Realistic rounded-rect alpha: a quarter-circle cutout at all 4
     corners, matching real Scryfall/upscaled card geometry -- same fixture
-    shape as test_pdf_layout.py's/test_pdf_html.py's own helper."""
+    shape as test_pdf_layout.py's own helper."""
     img = Image.new("RGBA", (w, h), (10, 20, 30, 255))
     px = img.load()
     corners = [(0, 0), (w - radius, 0), (0, h - radius), (w - radius, h - radius)]

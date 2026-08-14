@@ -675,36 +675,6 @@ def test_pdf_preview_page_empty_when_nothing_generated(client: TestClient) -> No
     assert body["slots"] == []
 
 
-def test_pdf_html_returns_real_pdf_file(client: TestClient, tmp_path: Path) -> None:
-    pytest.importorskip("weasyprint")
-    db_path = os.environ["PROXY_SCALER_DB_PATH"]
-    _write_gallery_item(tmp_path, db_path, "tag-a")
-
-    resp = client.post("/api/pdf/html", json=_pdf_layout_body(project_name="Deck"))
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "application/pdf"
-    assert "Deck-html.pdf" in resp.headers["content-disposition"]
-    assert len(resp.content) > 100
-
-
-def test_pdf_html_503_when_weasyprint_unavailable(client: TestClient, tmp_path: Path) -> None:
-    from proxy_scaler.pdf_html import WeasyPrintUnavailable
-
-    db_path = os.environ["PROXY_SCALER_DB_PATH"]
-    _write_gallery_item(tmp_path, db_path, "tag-a")
-
-    # Patched where the route resolves it (`from ... import build_pdf_html`
-    # binds a new name in routers.pdf's own namespace) — patching
-    # proxy_scaler.pdf_html.build_pdf_html instead wouldn't affect the
-    # already-imported reference the route actually calls.
-    with patch(
-        "proxy_scaler.api.routers.pdf.build_pdf_html",
-        side_effect=WeasyPrintUnavailable("nope"),
-    ):
-        resp = client.post("/api/pdf/html", json=_pdf_layout_body())
-    assert resp.status_code == 503
-
-
 def test_clear_generated_data(client: TestClient, tmp_path: Path) -> None:
     output_dir = tmp_path / "out"
     cache_dir = tmp_path / "cache"

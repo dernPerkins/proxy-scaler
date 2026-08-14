@@ -14,7 +14,7 @@ import {
   setDownloadCancel,
   setDownloadPhase,
 } from "../download";
-import type { DeckEntryIn, PdfLayoutRequest, PdfRenderMethod } from "../api/types";
+import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -130,19 +130,17 @@ export default function PdfPage() {
    * for the URL, so the user can choose up front and walk away instead of
    * being interrupted by a dialog once the render finally lands.
    */
-  async function handleDownload(method: PdfRenderMethod) {
+  async function handleDownload() {
     if (projectTag == null || serverUnavailable) return;
     setDownloadError(null);
     setDownloading(true);
-    const suffix = method === "html" ? "-html" : "";
     try {
-      await runDownload(`${projectName || "proxy-scaler"}${suffix}.pdf`, async () => {
+      await runDownload(`${projectName || "proxy-scaler"}.pdf`, async () => {
         const body = {
           project_tag: projectTag,
           entries,
           project_name: projectName,
           ...layout,
-          method,
         };
         const started = await generationApi.startPdfJob(body);
         setDownloadPhase({ kind: "rendering", completed: 0, total: started.total });
@@ -478,22 +476,11 @@ export default function PdfPage() {
         <div className="summary-row">
           <button
             className="btn-primary"
-            onClick={() => handleDownload("fpdf2")}
+            onClick={() => handleDownload()}
             disabled={downloading || entries.length === 0 || serverUnavailable}
             title={serverUnavailable ? "Generation server is unreachable" : undefined}
           >
             {downloading ? "Generating…" : "Generate & Download PDF"}
-          </button>
-          {/* Alternate HTML->PDF pipeline via WeasyPrint, for comparing
-              output quality against the default fpdf2 method above — see
-              pdf_html.py. 503s with a clear message when the connected
-              server doesn't have the optional html-pdf extra installed. */}
-          <button
-            onClick={() => handleDownload("html")}
-            disabled={downloading || entries.length === 0 || serverUnavailable}
-            title={serverUnavailable ? "Generation server is unreachable" : undefined}
-          >
-            {downloading ? "Generating…" : "Download PDF (HTML/WeasyPrint)"}
           </button>
           {downloadError && <span className="error-text">{downloadError}</span>}
         </div>

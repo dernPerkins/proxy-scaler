@@ -119,9 +119,6 @@ export const generationApi = {
   // entirely in Rust (see download.ts::runDownload) — the finished PDF is
   // exactly the kind of large payload that must not transit the webview.
   pdfUrl: () => `${getApiBaseUrl()}/api/pdf`,
-  // Alternate HTML->PDF pipeline via WeasyPrint (see pdf_html.py) — 503s
-  // when the server doesn't have the optional html-pdf extra installed.
-  pdfHtmlUrl: () => `${getApiBaseUrl()}/api/pdf/html`,
 
   // --- Render jobs ---
   // Rendering costs ~0.7s per unique card image server-side, so the UI

@@ -409,8 +409,8 @@ async fn download_to_path(
     let response = request.send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         let status = response.status();
-        // Keep the server's own message — /api/pdf/html returns a 503 with
-        // actionable text when the optional WeasyPrint extra is missing.
+        // Keep the server's own message — its error responses carry
+        // actionable text that a bare status code would throw away.
         let detail = response.text().await.unwrap_or_default();
         return Err(if detail.is_empty() {
             format!("Server returned {status}")
