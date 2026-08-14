@@ -294,7 +294,15 @@ export default function PdfPage() {
             </label>
           </div>
 
-          <label className="field">
+          {/* The preview approximates bleed by edge-extending a small
+              cached thumbnail, while the real render extends the
+              full-resolution art — close, but not identical. Flagged in
+              the UI rather than chased, since keeping the two pipelines
+              pixel-identical isn't worth the coupling. */}
+          <label
+            className="field"
+            title="Not accurate to what you'll see in the final generated PDF currently."
+          >
             <span>Bleed (mm)</span>
             <NumberInput
               step={0.1}
