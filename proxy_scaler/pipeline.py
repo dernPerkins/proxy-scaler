@@ -221,14 +221,23 @@ _THUMB_QUALITY_STEPS = (85, 70, 55, 40)  # last is the floor, always accepted
 
 def _generate_original_thumbnail(original_path: Path, thumb_path: Path) -> None:
     """Small JPEG preview thumbnail from a cached original PNG, for the PDF
-    layout preview only — not print-quality. Plain white-background
-    RGBA->RGB flatten, deliberately NOT pdf_layout.flatten_corner_alpha:
-    this tile is shown on its own in the UI, not composited against a
-    printed page background, so the rounded-corner artifact that helper
-    exists for doesn't apply here, and skipping it keeps this cheap since
-    it runs on every fresh download."""
-    with Image.open(original_path) as img:
-        img = img.convert("RGBA")
+    layout preview grid (pdf.py::preview_page) — not print-quality.
+
+    Corner-flattened the same way build_pdf() flattens its full-size
+    images, and in the same order (BEFORE resizing — resizing while the
+    corners are still transparent lets LANCZOS blend transparent RGB into
+    the opaque body at the boundary, baking in a smear). The preview grid
+    composites these thumbnails edge-to-edge against their neighbours, so
+    without this the raw rounded-corner transparency flattens to a white
+    notch at every corner, visible as a light cross at each 4-card
+    junction — this used to be skipped on the theory that the tile was
+    shown standalone, but preview_page() is its only caller and it never
+    is. Deferred import: pdf_layout imports this module, so importing it
+    back at module scope here would be circular."""
+    from .pdf_layout import flatten_corner_alpha
+
+    with Image.open(original_path) as raw:
+        img = flatten_corner_alpha(raw.convert("RGBA"))
         w, h = img.size
         scale = _THUMB_MAX_DIM / max(w, h)
         img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)

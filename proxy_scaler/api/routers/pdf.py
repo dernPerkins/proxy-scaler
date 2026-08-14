@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import io
 import re
 import threading
 
 from fastapi import APIRouter, HTTPException, Response
+from PIL import Image
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
@@ -22,7 +24,11 @@ from proxy_scaler.decklist import DeckEntry
 from proxy_scaler import pdf_jobs
 from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler.pdf_layout import (
+    CARD_HEIGHT_MM,
+    CARD_WIDTH_MM,
+    MM_PER_IN,
     PageLayout,
+    add_bleed,
     build_pdf,
     expand_print_slots,
     match_quantities,
@@ -109,11 +115,23 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
     slots: list[PdfPageSlotOut] = []
     for face in first_page:
         thumb_path = ensure_original_thumbnail(face.original_path)
-        data_url = (
-            "data:image/jpeg;base64," + base64.b64encode(thumb_path.read_bytes()).decode("ascii")
-            if thumb_path is not None
-            else None
-        )
+        data_url = None
+        if thumb_path is not None:
+            # add_bleed here (not baked into the cached thumbnail, which
+            # is bleed-agnostic on purpose) is what makes the preview's
+            # bleed slider actually extend the art outward instead of
+            # just growing the CSS box it's stretched into — matching
+            # build_pdf()'s real per-page bleed step. Cheap: this runs on
+            # an already-small (~220px) thumbnail, at most cols*rows of
+            # them per request.
+            with Image.open(thumb_path) as thumb:
+                preview_dpi = max(thumb.width, thumb.height) / (
+                    max(CARD_WIDTH_MM, CARD_HEIGHT_MM) / MM_PER_IN
+                )
+                bled = add_bleed(thumb, dpi=preview_dpi, bleed_mm=body.bleed_mm)
+            buf = io.BytesIO()
+            bled.save(buf, format="JPEG", quality=85)
+            data_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
         slots.append(
             PdfPageSlotOut(
                 card_name=face.card_name,

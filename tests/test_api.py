@@ -10,6 +10,8 @@ test_services_generation.py does — no real network calls."""
 
 from __future__ import annotations
 
+import base64
+import io
 import os
 import time
 from contextlib import ExitStack
@@ -110,6 +112,114 @@ def _write_gallery_item(
     db.upsert_gallery_item_for_task(task, result, db_path=db_path)
     [item] = db.list_gallery_items(project_tag, db_path=db_path)
     return item
+
+
+def _write_gallery_item_with_transparent_corner(
+    tmp_path: Path, db_path: Path, project_tag: str
+) -> dict:
+    """Same as _write_gallery_item, but the source PNG has a real
+    transparent rounded-corner arc (like an actual Scryfall card image)
+    instead of a flat opaque rectangle — needed to exercise
+    flatten_corner_alpha's behavior end-to-end through the preview API."""
+    img_path = tmp_path / "sol_ring.png"
+    img = Image.new("RGBA", (200, 280), (10, 20, 30, 255))
+    px = img.load()
+    for y in range(12):
+        for x in range(12 - y):
+            px[x, y] = (0, 0, 0, 0)  # transparent top-left corner arc
+    img.save(img_path, format="PNG")
+    result = FaceResult(
+        out_path=img_path,
+        original_path=img_path,
+        scryfall_id="sol-id",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+    )
+    task = db.TaskRow(
+        id=1,
+        project_tag=project_tag,
+        status="done",
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="swinir",
+        tile_size=0,
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        error=None,
+        created_at="2026-01-01T00:00:00Z",
+        started_at=None,
+        completed_at=None,
+        total_faces=None,
+    )
+    db.upsert_gallery_item_for_task(task, result, db_path=db_path)
+    [item] = db.list_gallery_items(project_tag, db_path=db_path)
+    return item
+
+
+def _decode_data_url(data_url: str) -> Image.Image:
+    assert data_url.startswith("data:image/jpeg;base64,")
+    raw = base64.b64decode(data_url.split(",", 1)[1])
+    return Image.open(io.BytesIO(raw)).convert("RGB")
+
+
+def test_pdf_preview_page_thumbnail_has_no_white_corner_hole(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Regression guard: the preview grid composites thumbnails
+    edge-to-edge, so a rounded-corner arc left transparent (and flattened
+    to plain white) shows up as a visible white notch at every card
+    corner. The corner pixel must be flattened to the card's own edge
+    color, not white — see pipeline.py::_generate_original_thumbnail."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item_with_transparent_corner(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(cols=1, rows=1))
+    assert resp.status_code == 200
+    [slot] = resp.json()["slots"]
+    img = _decode_data_url(slot["thumbnail_data_url"])
+    r, g, b = img.getpixel((0, 0))
+    # Nowhere near white (255,255,255) — should read close to the card's
+    # own body color (10, 20, 30), not the old white-background flatten.
+    assert (r, g, b) != (255, 255, 255)
+    assert r < 100 and g < 100 and b < 100
+
+
+def test_pdf_preview_page_bleed_grows_the_actual_image(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Regression guard: raising bleed_mm must genuinely edge-extend the
+    preview art (matching build_pdf's real add_bleed step), not just grow
+    the CSS box the same static image gets stretched into — the reported
+    bug was that increasing bleed only made cards look bigger with no
+    real bleed content."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    small = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(cols=1, rows=1, bleed_mm=0.5)
+    )
+    large = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(cols=1, rows=1, bleed_mm=6.0)
+    )
+    assert small.status_code == 200 and large.status_code == 200
+    small_img = _decode_data_url(small.json()["slots"][0]["thumbnail_data_url"])
+    large_img = _decode_data_url(large.json()["slots"][0]["thumbnail_data_url"])
+    assert large_img.width > small_img.width
+    assert large_img.height > small_img.height
 
 
 def test_health(client: TestClient) -> None:
