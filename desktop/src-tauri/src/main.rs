@@ -61,8 +61,8 @@ use tokio::sync::{oneshot, Mutex, Notify};
 
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project, get_last_project_id,
-    get_project, import_decklist_text, list_projects, list_recent_hosts, remove_card,
-    remove_recent_host, set_last_project_id, update_project,
+    get_or_create_unnamed_project, get_project, import_decklist_text, list_projects,
+    list_recent_hosts, remove_card, remove_recent_host, set_last_project_id, update_project,
 };
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
@@ -532,6 +532,7 @@ fn main() {
             download_to_path,
             cancel_download,
             create_project,
+            get_or_create_unnamed_project,
             list_projects,
             get_project,
             update_project,

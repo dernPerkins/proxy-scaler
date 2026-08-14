@@ -449,42 +449,110 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
     })
 }
 
-// --- Tauri commands -------------------------------------------------------
-
-#[tauri::command]
-pub fn create_project(app: AppHandle, name: String) -> Result<ProjectSummary, String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("Project name is required.".to_string());
-    }
-    let conn = open_db(&app)?;
+/// INSERTs a project row and returns its id. The tag is minted by the
+/// INSERT itself, so a Project's row and its tag are always born together
+/// — named or not. Callers map the UNIQUE violation, since what a
+/// duplicate name means differs between them.
+fn insert_project(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
     let now = now_timestamp();
     conn.execute(
         "INSERT INTO projects (tag, name, import_decklist_text, created_at, updated_at)
          VALUES (lower(hex(randomblob(16))), ?1, '', ?2, ?2)",
-        params![trimmed, now],
+        params![name, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn summary_for_id(conn: &Connection, project_id: i64) -> Result<ProjectSummary, String> {
+    conn.query_row(
+        "SELECT id, tag, name, updated_at FROM projects WHERE id = ?1",
+        params![project_id],
+        row_to_summary,
     )
-    .map_err(|e| {
+    .map_err(|e| e.to_string())
+}
+
+// --- The Unnamed Project --------------------------------------------------
+//
+// An Unnamed Project is an ordinary `projects` row whose name is the empty
+// string — one concept in two states, not a second noun. Naming it *is*
+// saving it, and because promotion is an UPDATE (see update_project below)
+// the tag it was born with survives, along with everything the generation
+// server has already produced under that tag.
+//
+// At most one can exist: `name TEXT NOT NULL UNIQUE` (:22) means `''`
+// belongs to exactly one row, so the invariant is the schema's job rather
+// than a convention. See docs — .scratch/optional-projects/decisions/01.
+
+/// The id of the Unnamed Project row, creating it if there isn't one.
+///
+/// Deliberately *not* called from `open_db` — that runs on every command
+/// and must not write. Creation happens lazily, on the write paths that
+/// actually need a row (first decklist import, first settings change), so
+/// an app installed and never used holds no row at all.
+///
+/// Named `_id` rather than sharing the command's name below, which returns
+/// the whole summary because the frontend needs the tag too.
+fn get_or_create_unnamed_project_id(conn: &Connection) -> Result<i64, String> {
+    let existing: Option<i64> = conn
+        .query_row("SELECT id FROM projects WHERE name = ''", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    // The same INSERT a named Project gets, tag included: an Unnamed
+    // Project is a full-fledged row, not a stub to be filled in later.
+    insert_project(conn, "").map_err(|e| e.to_string())
+}
+
+// --- Tauri commands -------------------------------------------------------
+
+/// Returns the Unnamed Project, creating it on first call. The frontend
+/// needs both the id and the tag before it can import or generate, so this
+/// hands back the whole summary rather than just the id.
+#[tauri::command]
+pub fn get_or_create_unnamed_project(app: AppHandle) -> Result<ProjectSummary, String> {
+    let conn = open_db(&app)?;
+    let id = get_or_create_unnamed_project_id(&conn)?;
+    summary_for_id(&conn, id)
+}
+
+fn create_project_row(conn: &Connection, name: &str) -> Result<ProjectSummary, String> {
+    let trimmed = name.trim();
+    // Kept as-is now that update_project accepts `''`: nothing should reach
+    // an Unnamed Project through create_project, which always INSERTs and
+    // would therefore mint a second tag.
+    if trimmed.is_empty() {
+        return Err("Project name is required.".to_string());
+    }
+    let id = insert_project(conn, trimmed).map_err(|e| {
         if e.to_string().contains("UNIQUE") {
             format!("A project named {trimmed:?} already exists.")
         } else {
             e.to_string()
         }
     })?;
-    let id = conn.last_insert_rowid();
-    conn.query_row(
-        "SELECT id, tag, name, updated_at FROM projects WHERE id = ?1",
-        params![id],
-        row_to_summary,
-    )
-    .map_err(|e| e.to_string())
+    summary_for_id(conn, id)
 }
 
 #[tauri::command]
-pub fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
+pub fn create_project(app: AppHandle, name: String) -> Result<ProjectSummary, String> {
     let conn = open_db(&app)?;
+    create_project_row(&conn, &name)
+}
+
+fn list_project_summaries(conn: &Connection) -> Result<Vec<ProjectSummary>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, tag, name, updated_at FROM projects ORDER BY updated_at DESC")
+        // `WHERE name <> ''` hides the Unnamed Project from the picker,
+        // where it would otherwise show as a blank entry. Nothing in the
+        // schema enforces this — any future query that lists or counts
+        // projects needs the same clause. It is the one part of the
+        // Unnamed Project design carried by convention.
+        .prepare(
+            "SELECT id, tag, name, updated_at FROM projects
+             WHERE name <> '' ORDER BY updated_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], row_to_summary)
@@ -493,23 +561,31 @@ pub fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
 }
 
 #[tauri::command]
+pub fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
+    let conn = open_db(&app)?;
+    list_project_summaries(&conn)
+}
+
+#[tauri::command]
 pub fn get_project(app: AppHandle, project_id: i64) -> Result<LoadedProject, String> {
     let conn = open_db(&app)?;
     load_project(&conn, project_id)
 }
 
-#[tauri::command]
-pub fn update_project(
-    app: AppHandle,
+/// Writes a project's name and settings. This is also the promotion path:
+/// naming an Unnamed Project is an ordinary `UPDATE ... SET name = ?` that
+/// never touches `tag`, so images already generated stay attached.
+///
+/// An empty name is accepted — the Unnamed Project has to be writable
+/// before it is named. The UNIQUE constraint still does the collision
+/// check, which is why there is no second one here.
+fn update_project_row(
+    conn: &Connection,
     project_id: i64,
-    name: String,
-    settings: ProjectSettings,
+    name: &str,
+    settings: &ProjectSettings,
 ) -> Result<ProjectSummary, String> {
     let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("Project name is required.".to_string());
-    }
-    let conn = open_db(&app)?;
     let now = now_timestamp();
     conn.execute(
         "UPDATE projects SET name = ?1, model = ?2, dpi_targets = ?3, skip_existing = ?4,
@@ -550,12 +626,18 @@ pub fn update_project(
             e.to_string()
         }
     })?;
-    conn.query_row(
-        "SELECT id, tag, name, updated_at FROM projects WHERE id = ?1",
-        params![project_id],
-        row_to_summary,
-    )
-    .map_err(|e| e.to_string())
+    summary_for_id(conn, project_id)
+}
+
+#[tauri::command]
+pub fn update_project(
+    app: AppHandle,
+    project_id: i64,
+    name: String,
+    settings: ProjectSettings,
+) -> Result<ProjectSummary, String> {
+    let conn = open_db(&app)?;
+    update_project_row(&conn, project_id, &name, &settings)
 }
 
 #[tauri::command]
@@ -816,4 +898,109 @@ pub fn remove_recent_host(app: AppHandle, host: String, port: u16) -> Result<Vec
     hosts.retain(|h| !(h.host == host && h.port == port));
     write_recent_hosts(&conn, &hosts)?;
     Ok(hosts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The `_row`/`_id` helpers above exist so these can run against a plain
+    // Connection — the #[tauri::command] wrappers need an AppHandle and a
+    // real app data dir, neither of which a unit test has.
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(SCHEMA).expect("apply schema");
+        conn
+    }
+
+    fn summary(conn: &Connection, id: i64) -> ProjectSummary {
+        summary_for_id(conn, id).expect("summary")
+    }
+
+    #[test]
+    fn get_or_create_unnamed_project_is_idempotent() {
+        let conn = test_conn();
+        let first = get_or_create_unnamed_project_id(&conn).expect("first call");
+        let first_tag = summary(&conn, first).tag;
+
+        let second = get_or_create_unnamed_project_id(&conn).expect("second call");
+
+        assert_eq!(first, second, "the same row should be returned");
+        assert_eq!(first_tag, summary(&conn, second).tag, "the tag should not be re-minted");
+    }
+
+    #[test]
+    fn get_or_create_unnamed_project_mints_a_tag() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let created = summary(&conn, id);
+
+        assert_eq!(created.name, "");
+        assert_eq!(created.tag.len(), 32, "lower(hex(randomblob(16))) is 32 hex chars");
+        assert!(created.tag.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn the_unnamed_project_is_invisible_to_the_picker() {
+        let conn = test_conn();
+        get_or_create_unnamed_project_id(&conn).expect("create");
+
+        assert!(
+            list_project_summaries(&conn).expect("list").is_empty(),
+            "an otherwise-empty store should still list no projects"
+        );
+
+        create_project_row(&conn, "Krenko").expect("create named");
+        let listed = list_project_summaries(&conn).expect("list");
+        assert_eq!(
+            listed.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["Krenko"]
+        );
+    }
+
+    #[test]
+    fn update_project_accepts_an_empty_name() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+
+        let updated = update_project_row(&conn, id, "", &ProjectSettings::default()).expect("update");
+
+        assert_eq!(updated.name, "");
+    }
+
+    #[test]
+    fn naming_an_unnamed_project_preserves_its_tag() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let minted_tag = summary(&conn, id).tag;
+
+        update_project_row(&conn, id, "", &ProjectSettings::default()).expect("write while unnamed");
+        let named = update_project_row(&conn, id, "Krenko", &ProjectSettings::default()).expect("name it");
+
+        assert_eq!(named.name, "Krenko");
+        assert_eq!(named.tag, minted_tag, "promotion is an UPDATE, so the tag survives");
+        assert_eq!(named.id, id, "promotion must not create a second row");
+    }
+
+    #[test]
+    fn naming_onto_an_existing_name_reports_the_collision() {
+        let conn = test_conn();
+        create_project_row(&conn, "Krenko").expect("create named");
+        let id = get_or_create_unnamed_project_id(&conn).expect("create unnamed");
+
+        let err = update_project_row(&conn, id, "Krenko", &ProjectSettings::default())
+            .expect_err("UNIQUE should reject the duplicate name");
+
+        assert_eq!(err, "A project named \"Krenko\" already exists.");
+    }
+
+    #[test]
+    fn create_project_still_rejects_an_empty_name() {
+        let conn = test_conn();
+
+        let err = create_project_row(&conn, "   ").expect_err("empty name should be rejected");
+
+        assert_eq!(err, "Project name is required.");
+        assert!(list_project_summaries(&conn).expect("list").is_empty());
+    }
 }
