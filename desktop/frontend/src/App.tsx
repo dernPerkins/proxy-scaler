@@ -1,4 +1,5 @@
-import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useSearchParams } from "react-router-dom";
+import ProjectBarPrototype from "./prototype/ProjectBarPrototype";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
@@ -19,6 +20,12 @@ import TasksPage from "./pages/TasksPage";
 // genuinely unaffected by which generation server is connected, so
 // there's nothing about it that a connection change needs to reset.
 export default function App() {
+  // THROWAWAY: ?variant=A|B|C swaps the real ProjectBar for the prototype
+  // variants (src/prototype/ProjectBarPrototype.tsx). Dev-only, so a stray
+  // merge can't ship it. Delete this and the import once a variant wins.
+  const [searchParams] = useSearchParams();
+  const prototyping = import.meta.env.DEV && searchParams.get("variant") !== null;
+
   return (
     <ProjectProvider>
       <div className="app">
@@ -26,7 +33,7 @@ export default function App() {
         <SaveShortcutToast />
         <ConnectionLostDialog />
         <DownloadProgressModal />
-        <ProjectBar />
+        {prototyping ? <ProjectBarPrototype /> : <ProjectBar />}
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual
             location matching needed. */}
