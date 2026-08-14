@@ -29,7 +29,17 @@ export default function ProjectBar() {
   const [nameDraft, setNameDraft] = useState(project.projectName);
   const [nameError, setNameError] = useState<string | null>(null);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const committing = useRef(false);
+  // What that timer is holding, so something other than the timer can land
+  // it — see flushPendingNameCommit.
+  const queuedName = useRef<string | null>(null);
+  // Commits run one after another rather than overlapping, and the chain is
+  // what "the name has landed" means to a caller waiting on it. Never
+  // rejects: commitName renders its own failures beside the field.
+  const commitChain = useRef<Promise<void>>(Promise.resolve());
+  // A count rather than a flag, because commits can now queue behind one
+  // another: the one in front finishing must not clear the state the
+  // draft-reset effect reads while a second is still to run.
+  const inFlightCommits = useRef(0);
   const lastProjectId = useRef(project.projectId);
 
   // Load, Delete and Duplicate all swap the project out from under a field
@@ -48,9 +58,9 @@ export default function ProjectBar() {
     // Naming an app that held no row yet creates one, which moves the id
     // without being a switch at all — and the stored name is still '' at
     // that point, so adopting it would wipe the name being committed.
-    if (committing.current || !switched) return;
-    // `committing` only covers the row being born from *this field's* own
-    // commit. Any write path can create it — an import, a slider drag, the
+    if (inFlightCommits.current > 0 || !switched) return;
+    // A commit in flight only covers the row being born from *this field's*
+    // own commit. Any write path can create it — an import, a slider drag, the
     // startup restore — and gaining a first row is never a switch either:
     // there is no outgoing project to follow. Without this, typing a name
     // and then clicking Import within the debounce cancels the queued
@@ -73,6 +83,25 @@ export default function ProjectBar() {
   // A commit still queued when the bar goes away has nowhere to land.
   useEffect(() => cancelPendingCommit, []);
 
+  // The context holds the stored name and knows nothing of this field's
+  // timer, so hand it a way to land one: flushPendingWrites means *all*
+  // pending writes, and the quit path awaits it before releasing a teardown
+  // that ends in std::process::exit
+  // (.scratch/optional-projects/issues/14-flush-the-name-debounce-at-quit.md).
+  //
+  // Registered once, but called through a ref so the flush that runs is the
+  // current render's — it compares the draft against today's stored name,
+  // not the one this component mounted with.
+  const flushLatest = useRef(flushPendingNameCommit);
+  useEffect(() => {
+    flushLatest.current = flushPendingNameCommit;
+  });
+  useEffect(() => {
+    project.registerNameCommitFlush(() => flushLatest.current());
+    return () => project.registerNameCommitFlush(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function closeDuplicateField() {
     setShowDuplicate(false);
     setDuplicateName("");
@@ -83,15 +112,17 @@ export default function ProjectBar() {
       clearTimeout(commitTimer.current);
       commitTimer.current = null;
     }
+    queuedName.current = null;
   }
 
   // Restarted per keystroke, so a name is written once, when typing stops.
   function scheduleCommit(name: string) {
     cancelPendingCommit();
+    queuedName.current = name;
     commitTimer.current = setTimeout(() => void commitName(name), NAME_COMMIT_DEBOUNCE_MS);
   }
 
-  async function commitName(name: string) {
+  function commitName(name: string): Promise<void> {
     cancelPendingCommit();
     const trimmed = name.trim();
     // Clearing the field is ignored rather than treated as un-naming
@@ -99,20 +130,48 @@ export default function ProjectBar() {
     // violate UNIQUE (project_store.rs:22) whenever an Unnamed Project
     // exists, and Delete is the gesture for getting rid of a project. Blur
     // puts the stored name back.
-    if (!trimmed || trimmed === project.projectName) return;
-    committing.current = true;
-    try {
-      await project.rename(trimmed);
-      setNameError(null);
-    } catch (err) {
-      // Only ever after a settle, never mid-keystroke — this is the point
-      // of the debounce. Typing toward "Krenko Goblins" would otherwise
-      // collide on "Krenko" on the way past. The typed text stays; nothing
-      // was committed.
-      setNameError(err instanceof Error ? err.message : String(err));
-    } finally {
-      committing.current = false;
-    }
+    if (!trimmed || trimmed === project.projectName) return commitChain.current;
+    // Counted up here, synchronously, rather than inside the chained
+    // callback: the draft-reset effect reads it to tell "the row is being
+    // born from this field's own commit" from a project switch, and the
+    // rename that creates the row can be under way before the callback
+    // ahead of it in the chain has finished.
+    inFlightCommits.current += 1;
+    commitChain.current = commitChain.current.then(async () => {
+      try {
+        await project.rename(trimmed);
+        setNameError(null);
+      } catch (err) {
+        // Only ever after a settle, never mid-keystroke — this is the point
+        // of the debounce. Typing toward "Krenko Goblins" would otherwise
+        // collide on "Krenko" on the way past. The typed text stays; nothing
+        // was committed.
+        //
+        // Swallowed rather than rethrown, which is also what lets the quit
+        // path await this: a collision landing as the app closes keeps the
+        // stored name and lets the quit go ahead, because the alternative
+        // is refusing to close over a message the user is given no chance
+        // to read
+        // (.scratch/optional-projects/decisions/08-saved-unsaved-vocabulary.md,
+        // amendment).
+        setNameError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlightCommits.current -= 1;
+      }
+    });
+    return commitChain.current;
+  }
+
+  // Lands whatever the field has queued, for a caller that needs the name
+  // in the store before it does something irreversible — the quit path,
+  // which awaits this through the context's flushPendingWrites before it
+  // releases Rust's teardown, and the pagehide listener beside it. Resolves
+  // once the queued commit *and* anything already in flight ahead of it
+  // have finished; resolves immediately when the field is idle.
+  function flushPendingNameCommit(): Promise<void> {
+    const queued = queuedName.current;
+    if (queued != null) return commitName(queued);
+    return commitChain.current;
   }
 
   const projects = projectsQuery.data ?? [];

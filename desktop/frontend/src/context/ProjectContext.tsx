@@ -120,13 +120,22 @@ interface ProjectContextValue {
    *  error line. */
   rename: (name: string) => Promise<void>;
   saveAs: (name: string) => void;
-  /** Lands the debounced settings write now, if one is queued, and
-   *  resolves once it — and anything already in flight ahead of it — has
-   *  reached the store. For the way out of the app: the quit prompt
-   *  (QuitPrompt.tsx) promises everything is already stored, and a
-   *  settings change made inside the last SETTINGS_WRITE_DEBOUNCE_MS would
-   *  otherwise still be sitting in a timer when the process exits. */
+  /** Lands *every* debounced write now — settings here, and the name the
+   *  bar's field has queued (registerNameCommitFlush) — and resolves
+   *  once they, and anything already in flight ahead of them, have reached
+   *  the store. For the way out of the app: the quit prompt
+   *  (QuitPrompt.tsx) promises everything is already stored, and a change
+   *  made inside the last debounce window would otherwise still be sitting
+   *  in a timer when the process exits. */
   flushPendingWrites: () => Promise<void>;
+  /** The name field's debounce lives in ProjectBar, not here, so the bar
+   *  hands over a way to land whatever it has queued: called with a flush
+   *  on mount, with null on unmount. Only one field exists, so the last
+   *  registration wins.
+   *
+   *  The flush must not reject — flushPendingWrites is awaited on the
+   *  shutdown path, where a throw would cost the quit its answer. */
+  registerNameCommitFlush: (flush: (() => Promise<void>) | null) => void;
   /** New *is* discard: from an Unnamed Project it deletes the row (and
    *  fires the tag's discard at the connected server), from a named Project
    *  it only detaches to a blank slate. Holding cards, the discard asks
@@ -192,6 +201,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // delete that failed leaves the row for get_or_create to find, which is
   // the honest answer to "what row is there now".
   const rowDeleteInFlight = useRef<Promise<void>>(Promise.resolve());
+  // Lands the name the bar's field has queued, or null while no bar is
+  // mounted — see registerNameCommitFlush. Held rather than owned because
+  // the debounce belongs to the field: what is typed is the field's until
+  // it commits, and the context only ever holds the stored name.
+  const nameCommitFlush = useRef<(() => Promise<void>) | null>(null);
 
   function adoptProjectId(id: number | null) {
     projectIdRef.current = id;
@@ -524,18 +538,38 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // promises not to do, so hand the pending write off the moment the window
   // is on its way out. Both signals are best-effort: the webview may be
   // torn down before the invoke lands, and macOS Cmd+Q fires neither (spec
-  // §6). They shrink the window; they don't close it.
+  // §6). They shrink the window; they don't close it. The quit path is
+  // where a pending write is actually awaited (flushPendingWrites).
   useEffect(() => {
-    function flushOnTheWayOut() {
+    function flushSettingsOnTheWayOut() {
       flushSettingsWrite();
     }
-    window.addEventListener("pagehide", flushOnTheWayOut);
-    window.addEventListener("blur", flushOnTheWayOut);
+    // pagehide takes the name field's debounce with it; blur deliberately
+    // does not. A settings value is complete at every keystroke, so landing
+    // it early costs nothing — a name is composed over time, and committing
+    // one because the user alt-tabbed would rename the project to whatever
+    // half of it had been typed. Decision 08 accepts an accidental rename
+    // from a stray keystroke in a focused field; losing window focus is not
+    // that, and spec §5.4 wants a collision reported only once typing has
+    // settled. pagehide means the document is going away, which is the one
+    // moment a partial name beats no name at all.
+    function flushEverythingOnTheWayOut() {
+      flushSettingsWrite();
+      // Same contract as the awaited call in flushPendingWrites, which
+      // cannot be honoured by awaiting here: nothing may reject into a
+      // listener.
+      void nameCommitFlush.current?.().catch(() => {});
+    }
+    window.addEventListener("pagehide", flushEverythingOnTheWayOut);
+    window.addEventListener("blur", flushSettingsOnTheWayOut);
     return () => {
-      window.removeEventListener("pagehide", flushOnTheWayOut);
-      window.removeEventListener("blur", flushOnTheWayOut);
+      window.removeEventListener("pagehide", flushEverythingOnTheWayOut);
+      window.removeEventListener("blur", flushSettingsOnTheWayOut);
       // A provider being torn down with a write still queued: land it now,
-      // since nothing after this point will.
+      // since nothing after this point will. Settings only, and not for
+      // want of trying — ProjectBar unmounts before its provider does, and
+      // takes both its queued commit and its registration with it, so
+      // there is provably no name left here to land.
       flushSettingsWrite();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -625,6 +659,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       // The chain, not just the write this scheduled: an edit from a
       // moment earlier may still be in flight, and it is the same store.
       await settingsWriteChain.current;
+      // After the settings write rather than alongside it: from a project
+      // with no row yet, both of them call ensureProjectRow, and run
+      // together they would both find projectIdRef still null and ask for
+      // the row twice. The store settles that race by itself
+      // (project_store.rs::get_or_create_unnamed_project_id), so this is
+      // ordering rather than safety — sequentially the first adopts the id
+      // and the second simply finds it.
+      try {
+        await nameCommitFlush.current?.();
+      } catch {
+        // The registered flush is supposed to swallow its own failures
+        // (ProjectBar renders a collision beside the field). Belt and
+        // braces, because the caller is the quit path: a throw here would
+        // cost invokeAnswerQuitPrompt its turn and leave the app hanging
+        // until Rust's timeout gives up on it.
+      }
+    },
+    registerNameCommitFlush: (flush) => {
+      nameCommitFlush.current = flush;
     },
     createNew,
     load: (id: number) => loadMutation.mutate(id),

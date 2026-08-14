@@ -11,8 +11,9 @@ import {
 // (.scratch/optional-projects/spec.md §6). An offer, never a toll gate:
 // both buttons quit, and the work survives either way — cards and settings
 // are written through as they are made (§5.2), and the handler below lands
-// the last debounced one before it answers, so there is nothing here to
-// rescue. What a name buys is finding this project again in the Load list,
+// every debounced write still in a timer — settings, and a name typed into
+// the bar — before it answers, so there is nothing here to rescue. What a
+// name buys is finding this project again in the Load list,
 // which is why none of the copy below says "unsaved".
 //
 // Discard is deliberately not offered here; it stays an in-app action on
@@ -93,10 +94,16 @@ export default function QuitPrompt() {
         if (asked.current) return;
         asked.current = true;
         // Before either answer, because both of them end in the process
-        // exiting: a settings change from the last few hundred
-        // milliseconds is still in a debounce timer, and the copy below
-        // promises it is already stored.
+        // exiting: a settings change — or a name typed into the bar — from
+        // the last few hundred milliseconds is still in a debounce timer,
+        // and the copy below promises it is already stored.
         await latest.current.flushPendingWrites();
+        // Read after the flush, and knowingly a render behind it: a name
+        // that just landed has set state that React may not have committed
+        // yet, so an Unnamed Project named inside the last 500ms can still
+        // be offered this prompt. Harmless in both directions — the name is
+        // in the store either way, and "Not now" is one keystroke away —
+        // and not worth a round of machinery to chase.
         const { isNamed, cardCount } = latest.current;
         const skip =
           isNamed || cardCount === 0 || (await (suppressed.current ?? Promise.resolve(false)));
