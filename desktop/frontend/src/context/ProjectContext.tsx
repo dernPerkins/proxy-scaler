@@ -120,6 +120,13 @@ interface ProjectContextValue {
    *  error line. */
   rename: (name: string) => Promise<void>;
   saveAs: (name: string) => void;
+  /** Lands the debounced settings write now, if one is queued, and
+   *  resolves once it — and anything already in flight ahead of it — has
+   *  reached the store. For the way out of the app: the quit prompt
+   *  (QuitPrompt.tsx) promises everything is already stored, and a
+   *  settings change made inside the last SETTINGS_WRITE_DEBOUNCE_MS would
+   *  otherwise still be sitting in a timer when the process exits. */
+  flushPendingWrites: () => Promise<void>;
   /** New *is* discard: from an Unnamed Project it deletes the row (and
    *  fires the tag's discard at the connected server), from a named Project
    *  it only detaches to a blank slate. Holding cards, the discard asks
@@ -613,6 +620,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       await renameMutation.mutateAsync(name);
     },
     saveAs: (name: string) => saveAsMutation.mutate(name),
+    flushPendingWrites: async () => {
+      flushSettingsWrite();
+      // The chain, not just the write this scheduled: an edit from a
+      // moment earlier may still be in flight, and it is the same store.
+      await settingsWriteChain.current;
+    },
     createNew,
     load: (id: number) => loadMutation.mutate(id),
     remove: (id: number) => deleteMutation.mutate(id),

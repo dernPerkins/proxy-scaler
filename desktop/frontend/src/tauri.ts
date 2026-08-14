@@ -17,6 +17,22 @@ interface TauriGlobal {
       handler: (e: { payload: T }) => void,
     ) => Promise<() => void>;
   };
+  // The window handle. Only onCloseRequested is used, and only by
+  // QuitPrompt.tsx — see listenCloseRequested below. It is a listen()
+  // underneath, so like the events above it needs no capability beyond the
+  // `core:default` set in src-tauri/capabilities/default.json.
+  window: {
+    getCurrentWindow: () => {
+      onCloseRequested: (
+        handler: (event: CloseRequestedEvent) => void | Promise<void>,
+      ) => Promise<() => void>;
+    };
+  };
+}
+
+/** The one member of Tauri's CloseRequestedEvent this app uses. */
+export interface CloseRequestedEvent {
+  preventDefault: () => void;
 }
 
 declare global {
@@ -103,6 +119,42 @@ export async function invokeDownloadToPath(args: {
 export async function invokeCancelDownload(downloadId: string): Promise<void> {
   if (!window.__TAURI__) return;
   await window.__TAURI__.core.invoke<void>("cancel_download", { downloadId });
+}
+
+/** Subscribe to the window's close button (the X, alt+F4, a WM close).
+ *  Resolves to an unlisten fn. A no-op in a plain browser tab, which has
+ *  no window of its own to close.
+ *
+ *  The handler MUST call `preventDefault()`. Tauri's wrapper around this
+ *  event calls `destroy()` on the window as soon as a handler returns
+ *  without it — which would tear the window down underneath the Rust-side
+ *  shutdown this app runs from the same event (main.rs::on_window_event).
+ *  Preventing here does not keep the app alive: Rust has already called
+ *  prevent_close() and owns the teardown either way. */
+export async function listenCloseRequested(
+  handler: (event: CloseRequestedEvent) => void | Promise<void>,
+): Promise<() => void> {
+  if (!window.__TAURI__) return () => {};
+  return window.__TAURI__.window.getCurrentWindow().onCloseRequested(handler);
+}
+
+/** Tells Rust a close-request handler is now mounted, so the close path
+ *  has someone to ask. Until this lands, closing the window tears down
+ *  immediately — which is what should happen while the connect gate is up
+ *  and there is no project on screen to name. */
+export async function invokeQuitPromptListening(): Promise<void> {
+  if (!window.__TAURI__) return;
+  await window.__TAURI__.core.invoke<void>("quit_prompt_listening");
+}
+
+/** The webview's side of the close handshake — see main.rs::QuitReply.
+ *  "prompting" says the quit prompt is on screen and the teardown should
+ *  wait for the user; "proceed" releases it. */
+export async function invokeAnswerQuitPrompt(
+  reply: "prompting" | "proceed",
+): Promise<void> {
+  if (!window.__TAURI__) return;
+  await window.__TAURI__.core.invoke<void>("answer_quit_prompt", { reply });
 }
 
 export interface DownloadProgressEvent {

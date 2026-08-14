@@ -90,6 +90,13 @@ export const projectApi = {
   setLastProjectId: (projectId: number) =>
     invokeCommand<void>("set_last_project_id", { projectId }),
 
+  // The quit prompt's "Don't ask again" (see QuitPrompt.tsx). Same
+  // app_settings-backed store as the two calls above; false until the box
+  // is ticked, and until this store has ever been asked.
+  getQuitPromptSuppressed: () => invokeCommand<boolean>("get_quit_prompt_suppressed"),
+  setQuitPromptSuppressed: (suppressed: boolean) =>
+    invokeCommand<void>("set_quit_prompt_suppressed", { suppressed }),
+
   // Remembered remote server address+port pairs (see connection.tsx) — not
   // project data, but the same app_settings-backed store, so it lives here
   // alongside the other app_settings-backed calls above.

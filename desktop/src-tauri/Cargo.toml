@@ -7,6 +7,12 @@ edition = "2021"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+# The close handshake's waiting is the part worth testing (see main.rs's
+# tests) — "rt"/"macros" to run an async test at all, "test-util" for a
+# paused clock so asserting on a 3-second timeout costs no seconds.
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"

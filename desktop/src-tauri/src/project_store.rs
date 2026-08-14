@@ -778,30 +778,85 @@ pub fn remove_card(app: AppHandle, card_id: i64) -> Result<(), String> {
     Ok(())
 }
 
+// --- app_settings ---------------------------------------------------------
+//
+// One key/value table for the handful of app-wide preferences that aren't
+// project data: which project to reopen, which remote hosts to offer, and
+// whether the quit prompt still fires. Every one of them reads and writes
+// it the same way — absent means "not set yet", and a write is an upsert
+// rather than an insert, since these are all set repeatedly.
+
+const LAST_PROJECT_ID_KEY: &str = "last_project_id";
+
+fn read_app_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+fn write_app_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_last_project_id(app: AppHandle) -> Result<Option<i64>, String> {
     let conn = open_db(&app)?;
-    conn.query_row(
-        "SELECT value FROM app_settings WHERE key = 'last_project_id'",
-        [],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(|e| e.to_string())?
-    .map(|v| v.parse::<i64>().map_err(|e| e.to_string()))
-    .transpose()
+    read_app_setting(&conn, LAST_PROJECT_ID_KEY)?
+        .map(|v| v.parse::<i64>().map_err(|e| e.to_string()))
+        .transpose()
 }
 
 #[tauri::command]
 pub fn set_last_project_id(app: AppHandle, project_id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
-    conn.execute(
-        "INSERT INTO app_settings (key, value) VALUES ('last_project_id', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![project_id.to_string()],
+    write_app_setting(&conn, LAST_PROJECT_ID_KEY, &project_id.to_string())
+}
+
+// --- The quit prompt's "don't ask again" ----------------------------------
+//
+// Whether closing the window with an unnamed project holding cards still
+// offers to name it (QuitPrompt.tsx, .scratch/optional-projects/spec.md
+// §6).
+//
+// Absent means "still offer" — a store that predates this setting has not
+// switched anything off. A read that *fails* is a different thing and is
+// reported as one; deciding what to do with that belongs to the caller,
+// and QuitPrompt.tsx's own answer is to keep offering.
+
+const QUIT_PROMPT_SUPPRESSED_KEY: &str = "quit_prompt_suppressed";
+
+fn read_quit_prompt_suppressed(conn: &Connection) -> Result<bool, String> {
+    Ok(read_app_setting(conn, QUIT_PROMPT_SUPPRESSED_KEY)?.as_deref() == Some("1"))
+}
+
+fn write_quit_prompt_suppressed(conn: &Connection, suppressed: bool) -> Result<(), String> {
+    write_app_setting(
+        conn,
+        QUIT_PROMPT_SUPPRESSED_KEY,
+        if suppressed { "1" } else { "0" },
     )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+}
+
+#[tauri::command]
+pub fn get_quit_prompt_suppressed(app: AppHandle) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    read_quit_prompt_suppressed(&conn)
+}
+
+#[tauri::command]
+pub fn set_quit_prompt_suppressed(app: AppHandle, suppressed: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_quit_prompt_suppressed(&conn, suppressed)
 }
 
 // --- Recent remote hosts --------------------------------------------------
@@ -869,25 +924,12 @@ fn hosts_from_text(text: &str) -> Vec<RecentHost> {
 }
 
 fn read_recent_hosts(conn: &Connection) -> Result<Vec<RecentHost>, String> {
-    let text: Option<String> = conn
-        .query_row(
-            "SELECT value FROM app_settings WHERE key = ?1",
-            params![RECENT_HOSTS_KEY],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
+    let text = read_app_setting(conn, RECENT_HOSTS_KEY)?;
     Ok(text.map(|t| hosts_from_text(&t)).unwrap_or_default())
 }
 
 fn write_recent_hosts(conn: &Connection, hosts: &[RecentHost]) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![RECENT_HOSTS_KEY, hosts_to_text(hosts)],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    write_app_setting(conn, RECENT_HOSTS_KEY, &hosts_to_text(hosts))
 }
 
 #[tauri::command]
@@ -1070,6 +1112,46 @@ mod tests {
             .expect_err("UNIQUE should reject the duplicate name");
 
         assert_eq!(err, "A project named \"Krenko\" already exists.");
+    }
+
+    #[test]
+    fn the_quit_prompt_is_offered_by_default() {
+        let conn = test_conn();
+
+        assert!(
+            !read_quit_prompt_suppressed(&conn).expect("read"),
+            "a store that has never been asked offers the prompt"
+        );
+    }
+
+    #[test]
+    fn a_recent_host_survives_the_app_settings_round_trip() {
+        // read_/write_recent_hosts share their SQL with the quit prompt's
+        // setting and last_project_id; this pins the list-shaped one, which
+        // is the only reader that has to decode what it stored.
+        let conn = test_conn();
+        let hosts = vec![
+            RecentHost { host: "10.0.0.5".to_string(), port: 13207 },
+            RecentHost { host: "printbox.local".to_string(), port: 9000 },
+        ];
+
+        write_recent_hosts(&conn, &hosts).expect("write");
+
+        assert_eq!(read_recent_hosts(&conn).expect("read"), hosts);
+    }
+
+    #[test]
+    fn switching_the_quit_prompt_off_and_on_again_rewrites_one_row() {
+        let conn = test_conn();
+
+        write_quit_prompt_suppressed(&conn, true).expect("suppress");
+        assert!(read_quit_prompt_suppressed(&conn).expect("read"));
+
+        // The second write is the one that would fail on the PRIMARY KEY
+        // without ON CONFLICT — and un-ticking the box has to be possible,
+        // or the setting is a one-way door with no UI to reopen it.
+        write_quit_prompt_suppressed(&conn, false).expect("un-suppress");
+        assert!(!read_quit_prompt_suppressed(&conn).expect("read"));
     }
 
     #[test]

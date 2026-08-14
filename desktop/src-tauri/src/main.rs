@@ -50,6 +50,7 @@
 mod project_store;
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,12 +58,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::{oneshot, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project, get_last_project_id,
-    get_or_create_unnamed_project, get_project, import_decklist_text, list_projects,
-    list_recent_hosts, remove_card, remove_recent_host, set_last_project_id, update_project,
+    get_or_create_unnamed_project, get_project, get_quit_prompt_suppressed, import_decklist_text,
+    list_projects, list_recent_hosts, remove_card, remove_recent_host, set_last_project_id,
+    set_quit_prompt_suppressed, update_project,
 };
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
@@ -505,6 +507,119 @@ async fn stop_sidecar(state: &SidecarState) {
     }
 }
 
+// --- The quit prompt ------------------------------------------------------
+//
+// Closing the window with an unnamed project that holds cards offers to
+// name it first (.scratch/optional-projects/spec.md §6). The offer is a
+// React modal rather than a native dialog — a message dialog is
+// buttons-only and cannot collect a name — so the close path has to hand
+// the decision to the webview and wait for it to answer.
+//
+// The shape here is forced by the runtime rather than chosen: the
+// prevent-close decision is read out of its channel with `try_recv()` the
+// instant the window-event closure returns, so `prevent_close()` must be
+// called synchronously and everything that waits has to happen on a
+// spawned task. Full reasoning and the rest of the traps:
+// .scratch/optional-projects/research/tauri-close-confirm.md.
+
+/// Guards teardown against running twice. `prevent_close()` leaves the
+/// window visible and clickable, so a second click on the X re-enters the
+/// close handler — without this it would stop the sidecar and call
+/// `app.exit(0)` underneath the first attempt.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// How long to wait for the webview to say what it is doing about a close
+/// before quitting without it. Only the *first* reply is timed: once the
+/// frontend says the modal is up, the user is reading it and may take as
+/// long as they like.
+///
+/// Giving up is the safe failure rather than a lossy one. Cards and
+/// settings are already persisted, so a prompt that never appears lands on
+/// exactly the "Not now" outcome; the alternative is an app that cannot be
+/// closed at all when the webview never loaded or has wedged.
+const QUIT_PROMPT_ACK: Duration = Duration::from_secs(3);
+
+#[derive(Default)]
+struct QuitPromptState {
+    /// Whether the webview has a close-request handler mounted at all.
+    /// Until it does, nobody can answer and the close path must not wait
+    /// for one: the connect gate is on screen for as long as the local
+    /// sidecar takes to start (up to STARTUP_TIMEOUT), and closing during
+    /// it stays as immediate as it has always been.
+    ///
+    /// A latch, never cleared — the component is mounted for the life of
+    /// the app, and a webview that reloads out from under it is covered by
+    /// QUIT_PROMPT_ACK above rather than by this.
+    listening: AtomicBool,
+    /// The end the webview's answers to the close request currently in
+    /// flight are sent on; `arm_quit_prompt` keeps the receiving end.
+    ///
+    /// A std Mutex rather than tokio's because it is armed from inside the
+    /// window-event closure, which cannot await — and armed there, before
+    /// the task that reads it is even spawned, so an answer can never
+    /// arrive before there is somewhere to put it.
+    replies: std::sync::Mutex<Option<mpsc::UnboundedSender<QuitReply>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum QuitReply {
+    /// The modal is up. The next reply is the answered one, whenever it
+    /// comes.
+    Prompting,
+    /// Nothing to ask — a named project, no cards, or the prompt switched
+    /// off — or the modal has just been answered. Tear down.
+    Proceed,
+}
+
+/// Called by QuitPrompt.tsx once its close-request listener is live.
+#[tauri::command]
+fn quit_prompt_listening(state: State<'_, QuitPromptState>) {
+    state.listening.store(true, Ordering::SeqCst);
+}
+
+/// The webview's side of the close handshake; see QuitPrompt.tsx. Sent at
+/// most twice per close request.
+#[tauri::command]
+fn answer_quit_prompt(state: State<'_, QuitPromptState>, reply: QuitReply) {
+    let Ok(slot) = state.replies.lock() else { return };
+    if let Some(tx) = slot.as_ref() {
+        // A closed receiver just means QUIT_PROMPT_ACK expired first and
+        // teardown is already under way; a late answer changes nothing.
+        let _ = tx.send(reply);
+    }
+}
+
+/// Opens the channel the webview answers this close request on — or None
+/// when there is no listener to ask, which is the answer the close path
+/// needs before it decides to wait for anything.
+fn arm_quit_prompt(state: &QuitPromptState) -> Option<mpsc::UnboundedReceiver<QuitReply>> {
+    if !state.listening.load(Ordering::SeqCst) {
+        return None;
+    }
+    let (tx, rx) = mpsc::unbounded_channel();
+    // A poisoned lock is not worth panicking a close path over: no channel
+    // means no wait, exactly like no listener.
+    let mut slot = state.replies.lock().ok()?;
+    *slot = Some(tx);
+    Some(rx)
+}
+
+/// Waits for the webview to answer `tauri://close-requested`. Returns as
+/// soon as there is nothing (further) to wait for — including when the
+/// frontend never answers at all.
+async fn await_quit_prompt(mut replies: mpsc::UnboundedReceiver<QuitReply>) {
+    match tokio::time::timeout(QUIT_PROMPT_ACK, replies.recv()).await {
+        Ok(Some(QuitReply::Prompting)) => {
+            // Unbounded on purpose: this is a person deciding whether to
+            // name their project, not a machine that can be timed out.
+            let _ = replies.recv().await;
+        }
+        // Proceed, a dropped sender, or silence.
+        _ => {}
+    }
+}
+
 /// Shared by both shutdown triggers below — the window's close button and
 /// Ctrl+C in whatever terminal is running `cargo tauri dev` / the packaged
 /// app. Ctrl+C sends the *process* a SIGINT; that's a completely different
@@ -525,6 +640,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())
         .manage(DownloadCancel::default())
+        .manage(QuitPromptState::default())
         .invoke_handler(tauri::generate_handler![
             start_local_server,
             stop_local_server,
@@ -544,7 +660,11 @@ fn main() {
             set_last_project_id,
             list_recent_hosts,
             add_recent_host,
-            remove_recent_host
+            remove_recent_host,
+            get_quit_prompt_suppressed,
+            set_quit_prompt_suppressed,
+            quit_prompt_listening,
+            answer_quit_prompt
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -557,19 +677,111 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // Synchronously, and first: the runtime reads this decision
+                // the moment the closure returns, so a prevent_close() sent
+                // from the task below would simply never be seen.
                 api.prevent_close();
-                // Hide right away. Cleanup below is not instant — the
-                // sidecar has its own two children to stop — and leaving a
-                // frozen, unresponsive window on screen for those seconds
-                // reads as a hang rather than as a shutdown. The process
-                // still exits only once stop_sidecar has actually
-                // finished; this changes what the user sees, not when the
-                // work completes.
-                let _ = window.hide();
+                if SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                // Armed before the spawn, so the channel is in place by the
+                // time Tauri emits tauri://close-requested to the webview
+                // and the frontend's answer always has somewhere to land.
+                let replies = arm_quit_prompt(&window.state::<QuitPromptState>());
+                let window = window.clone();
                 let app = window.app_handle().clone();
-                tauri::async_runtime::spawn(shutdown_and_exit(app));
+                tauri::async_runtime::spawn(async move {
+                    if let Some(replies) = replies {
+                        await_quit_prompt(replies).await;
+                    }
+                    // Hidden only once the prompt has been answered — it
+                    // has to be on screen while it is being answered. The
+                    // original reason for hiding early still holds for
+                    // everything past this point: cleanup is not instant
+                    // (the sidecar has its own two children to stop), and
+                    // leaving a frozen, unresponsive window on screen for
+                    // those seconds reads as a hang rather than as a
+                    // shutdown. The process still exits only once
+                    // stop_sidecar has actually finished; this changes what
+                    // the user sees, not when the work completes.
+                    let _ = window.hide();
+                    shutdown_and_exit(app).await;
+                });
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The close handshake without Tauri around it: on_window_event arms
+    // exactly this channel, and await_quit_prompt is what its spawned task
+    // waits on before hiding the window and stopping the sidecar.
+    //
+    // Every test runs on a paused clock, so elapsed time is virtual — a
+    // three-second timeout costs no seconds, and "did it wait?" is a real
+    // assertion rather than a stopwatch guess.
+
+    #[test]
+    fn a_close_with_no_listener_yet_has_nothing_to_wait_on() {
+        let state = QuitPromptState::default();
+
+        assert!(
+            arm_quit_prompt(&state).is_none(),
+            "closing the window at the connect gate must stay immediate"
+        );
+
+        state.listening.store(true, Ordering::SeqCst);
+        assert!(arm_quit_prompt(&state).is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_frontend_with_nothing_to_ask_releases_teardown_at_once() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(QuitReply::Proceed).expect("send");
+        let start = tokio::time::Instant::now();
+
+        await_quit_prompt(rx).await;
+
+        assert!(
+            start.elapsed() < QUIT_PROMPT_ACK,
+            "a named project or an empty one must not sit through the wait"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_frontend_stops_holding_the_app_open() {
+        // Sender kept alive: this is a webview that never loaded or has
+        // wedged, not one that dropped the channel.
+        let (_tx, rx) = mpsc::unbounded_channel::<QuitReply>();
+        let start = tokio::time::Instant::now();
+
+        await_quit_prompt(rx).await;
+
+        assert!(start.elapsed() >= QUIT_PROMPT_ACK, "it should have waited first");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_on_screen_is_waited_out_however_long_it_takes() {
+        // Far past the ack: a user reading the offer and typing a name is
+        // not on a deadline.
+        const THINKING: Duration = Duration::from_secs(600);
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(QuitReply::Prompting).expect("send");
+        tokio::spawn(async move {
+            tokio::time::sleep(THINKING).await;
+            tx.send(QuitReply::Proceed).expect("send");
+        });
+        let start = tokio::time::Instant::now();
+
+        await_quit_prompt(rx).await;
+
+        assert!(
+            start.elapsed() >= THINKING,
+            "the second reply is the one that releases teardown"
+        );
+    }
 }
