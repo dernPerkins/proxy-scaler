@@ -175,12 +175,17 @@ export default function PdfPage() {
     }
   }
 
+  // No row yet means nothing has been imported — a name is not what is
+  // missing. The old copy here asked for one and for a Save button, and
+  // both were still on screen after the gates came down: naming is
+  // optional now (spec §5.1) and there is no Save button at all (§5.5).
+  // The row is born at first import, so that is what to point at.
   if (projectId == null) {
     return (
       <div>
         <h2>PDF</h2>
         <p className="hint" style={{ marginTop: 8 }}>
-          Enter a project name in the project bar above and click Save to get started.
+          Import a decklist on the Decklist tab to get started.
         </p>
       </div>
     );

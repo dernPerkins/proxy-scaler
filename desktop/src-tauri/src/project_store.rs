@@ -670,12 +670,16 @@ pub fn update_project(
     update_project_row(&conn, project_id, &name, &settings)
 }
 
-#[tauri::command]
-pub fn delete_project(app: AppHandle, project_id: i64) -> Result<(), String> {
-    let conn = open_db(&app)?;
+fn delete_project_row(conn: &Connection, project_id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn delete_project(app: AppHandle, project_id: i64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    delete_project_row(&conn, project_id)
 }
 
 #[tauri::command]
@@ -694,14 +698,15 @@ pub fn clear_all_projects(app: AppHandle) -> Result<(), String> {
 /// server). import_decklist_text is still overwritten to the latest
 /// pasted text — it's just a convenience mirror of "what did I last paste
 /// into this box", not the canonical card list; project_cards is that.
-#[tauri::command]
-pub fn import_decklist_text(
-    app: AppHandle,
+///
+/// `&mut Connection` rather than `&Connection` because the whole import is
+/// one transaction, and rusqlite takes the connection exclusively for it.
+fn import_decklist_into(
+    conn: &mut Connection,
     project_id: i64,
-    text: String,
+    text: &str,
 ) -> Result<Vec<CardRow>, String> {
-    let mut conn = open_db(&app)?;
-    let entries = parse_decklist_text(&text);
+    let entries = parse_decklist_text(text);
     let now = now_timestamp();
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -767,7 +772,17 @@ pub fn import_decklist_text(
     }
     tx.commit().map_err(|e| e.to_string())?;
 
-    cards_for_project(&conn, project_id)
+    cards_for_project(conn, project_id)
+}
+
+#[tauri::command]
+pub fn import_decklist_text(
+    app: AppHandle,
+    project_id: i64,
+    text: String,
+) -> Result<Vec<CardRow>, String> {
+    let mut conn = open_db(&app)?;
+    import_decklist_into(&mut conn, project_id, &text)
 }
 
 #[tauri::command]
@@ -1154,6 +1169,60 @@ mod tests {
         assert!(!read_quit_prompt_suppressed(&conn).expect("read"));
     }
 
+    // The store-visible half of the spec's end-to-end script
+    // (.scratch/optional-projects/spec.md §10, steps 1-4 and 6), walked as
+    // one sequence rather than as separate cases. The tests above each pin
+    // one transition; this pins that they compose — in particular that a
+    // discard is followed by a *fresh* tag, which only shows up when the
+    // steps run in order. The GUI half of the script (the quit prompt, the
+    // debounce, the picker) still needs a person; see ticket 13.
+    #[test]
+    fn the_verification_script_walks_the_store_from_import_to_discard() {
+        let mut conn = test_conn();
+        // 1. First launch, no projects: importing is what creates the row.
+        let id = get_or_create_unnamed_project_id(&conn).expect("first import creates the row");
+        let first_tag = summary(&conn, id).tag;
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263\n4 Lightning Bolt")
+            .expect("import");
+        assert_eq!(cards.len(), 2, "the cards land on the Unnamed Project");
+        assert!(
+            list_project_summaries(&conn).expect("list").is_empty(),
+            "and the picker still shows nothing"
+        );
+
+        // 3. Collision: "Krenko" is taken, so only the settled name commits.
+        create_project_row(&conn, "Krenko").expect("a named project already exists");
+        update_project_row(&conn, id, "Krenko", &ProjectSettings::default())
+            .expect_err("the name is taken");
+
+        // 2. Generate, then name: the tag — and with it the cards — survives.
+        let named = update_project_row(&conn, id, "Krenko Goblins", &ProjectSettings::default())
+            .expect("the settled name commits");
+        assert_eq!(named.tag, first_tag, "promotion never re-mints the tag");
+        assert_eq!(
+            cards_for_project(&conn, id).expect("cards").len(),
+            2,
+            "and the cards are still attached to it"
+        );
+
+        // 4. Clearing the name reverts rather than un-naming, so the row
+        //    stays findable and the UNIQUE constraint is never tested.
+        let blanked = update_project_row(&conn, id, "", &ProjectSettings::default())
+            .expect("a blank name is ignored, not an error");
+        assert_eq!(blanked.name, "Krenko Goblins");
+
+        // 6. New with cards: the discard deletes the row, and the next
+        //    import mints a tag of its own.
+        delete_project_row(&conn, id).expect("discard");
+        let next_id = get_or_create_unnamed_project_id(&conn).expect("the next import");
+        let next = summary(&conn, next_id);
+        assert_ne!(next.tag, first_tag, "a discarded tag is never handed back");
+        assert!(
+            cards_for_project(&conn, next_id).expect("cards").is_empty(),
+            "and the new slate is empty"
+        );
+    }
+
     #[test]
     fn create_project_still_rejects_an_empty_name() {
         let conn = test_conn();
@@ -1164,3 +1233,4 @@ mod tests {
         assert!(list_project_summaries(&conn).expect("list").is_empty());
     }
 }
+

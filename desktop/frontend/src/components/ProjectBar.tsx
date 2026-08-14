@@ -42,12 +42,24 @@ export default function ProjectBar() {
   // yet the id is null on both sides of it, so there is no change here to
   // notice.
   useEffect(() => {
-    const switched = lastProjectId.current !== project.projectId;
+    const previousId = lastProjectId.current;
+    const switched = previousId !== project.projectId;
     lastProjectId.current = project.projectId;
     // Naming an app that held no row yet creates one, which moves the id
     // without being a switch at all — and the stored name is still '' at
     // that point, so adopting it would wipe the name being committed.
     if (committing.current || !switched) return;
+    // `committing` only covers the row being born from *this field's* own
+    // commit. Any write path can create it — an import, a slider drag, the
+    // startup restore — and gaining a first row is never a switch either:
+    // there is no outgoing project to follow. Without this, typing a name
+    // and then clicking Import within the debounce cancels the queued
+    // commit and blanks the field, losing the name silently.
+    //
+    // An untouched field still takes what arrives, which is how a restored
+    // project's name reaches it (for a newly born row that name is '',
+    // so this is the same no-op either way).
+    if (previousId == null && nameDraft.trim()) return;
     cancelPendingCommit();
     setNameDraft(project.projectName);
     setNameError(null);
