@@ -1,16 +1,14 @@
 import { useEffect, useState } from "react";
 import { useConnection } from "../connection";
-import { useProject } from "../context/ProjectContext";
 
-// Rendered inside ProjectProvider (see App.tsx) specifically so it can
-// reach useProject()'s saveAsync — connection.tsx can't do that itself,
-// since ConnectionProvider sits above ProjectProvider in the tree and has
-// no project to save. This component's only job is bridging the two: it
-// watches the health ping connection.tsx already runs and reacts to it.
+// Watches the health ping connection.tsx already runs and tells the user
+// when it stops answering. It offers no save: project data lives in the
+// local store and reaches it on change (see ARCHITECTURE.md), so a server
+// that has gone away can't take any of it with it. Nothing here touches
+// the project at all any more.
 export default function ConnectionLostDialog() {
   const connection = useConnection();
   const { mode, remoteHealthy, host, port } = connection;
-  const project = useProject();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,24 +28,6 @@ export default function ConnectionLostDialog() {
 
   if (!open) return null;
 
-  const canSave = project.projectId != null || project.projectName.trim().length > 0;
-
-  async function handleSave() {
-    setBusy(true);
-    setError(null);
-    try {
-      await project.saveAsync();
-      setOpen(false);
-    } catch (err) {
-      setError(
-        (err instanceof Error ? err.message : String(err)) +
-          " — the server may still be unreachable.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function handleReconnect() {
     setBusy(true);
     setError(null);
@@ -66,16 +46,9 @@ export default function ConnectionLostDialog() {
         <div className="modal-head">
           <span className="modal-title">Lost connection to the server</span>
         </div>
-        <p style={{ marginBottom: 6 }}>
+        <p style={{ marginBottom: 16 }}>
           Can&apos;t reach {host ? `${host}:${port}` : "the remote server"} anymore — it may have
           stopped, or your network dropped.
-        </p>
-        <p className="hint" style={{ marginBottom: 16 }}>
-          {remoteHealthy
-            ? "Connection recovered — safe to save now."
-            : canSave
-              ? "Would you like to try saving your work?"
-              : "There's no project loaded yet to save."}
         </p>
 
         {error && (
@@ -88,11 +61,6 @@ export default function ConnectionLostDialog() {
           <button onClick={() => setOpen(false)} disabled={busy}>
             Dismiss
           </button>
-          {canSave && (
-            <button onClick={handleSave} disabled={busy}>
-              {busy ? "Saving…" : "Try to save"}
-            </button>
-          )}
           <button className="btn-primary" onClick={handleReconnect} disabled={busy}>
             {busy ? "Reconnecting…" : "Reconnect"}
           </button>

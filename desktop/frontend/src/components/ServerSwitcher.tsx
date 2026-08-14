@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useConnection } from "../connection";
-import { useProject } from "../context/ProjectContext";
 import { isTauri } from "../tauri";
 import SwitchServerDialog from "./SwitchServerDialog";
 
@@ -10,7 +9,6 @@ import SwitchServerDialog from "./SwitchServerDialog";
 // vanish mid-operation.
 export default function ServerSwitcher() {
   const connection = useConnection();
-  const project = useProject();
   const [pending, setPending] = useState<"local" | "remote" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +18,6 @@ export default function ServerSwitcher() {
   if (!isTauri()) return null;
 
   const mode = connection.mode;
-  const canSave = project.projectId != null || project.projectName.trim().length > 0;
 
   function request(target: "local" | "remote") {
     if (target === mode) return;
@@ -28,20 +25,13 @@ export default function ServerSwitcher() {
     setPending(target);
   }
 
-  async function handleConfirm(save: boolean, host: string, port: number) {
+  // No save step ahead of the switch: the project is in the local store
+  // already, whether or not it has a name, and the generation server on
+  // the other side of this toggle never held it.
+  async function handleConfirm(host: string, port: number) {
     if (!pending) return;
     setBusy(true);
     setError(null);
-
-    if (save) {
-      try {
-        await project.saveAsync();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        setBusy(false);
-        return;
-      }
-    }
 
     const message = await connection.switchTo(
       pending === "local" ? { mode: "local" } : { mode: "remote", host, port },
@@ -116,7 +106,6 @@ export default function ServerSwitcher() {
       {pending && (
         <SwitchServerDialog
           target={pending}
-          canSave={canSave}
           busy={busy}
           error={error}
           onCancel={() => {

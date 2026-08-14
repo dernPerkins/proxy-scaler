@@ -5,12 +5,10 @@ import RecentHostsList from "./RecentHostsList";
 
 export interface SwitchServerDialogProps {
   target: "local" | "remote";
-  /** False when there's no project worth saving — hides the save option. */
-  canSave: boolean;
   busy: boolean;
   error: string | null;
   onCancel: () => void;
-  onConfirm: (save: boolean, host: string, port: number) => void;
+  onConfirm: (host: string, port: number) => void;
   /** Previously-used remote servers — see connection.tsx::recentHosts. */
   recentHosts: RecentHost[];
   onRemoveHost: (entry: RecentHost) => void;
@@ -23,7 +21,6 @@ export interface SwitchServerDialogProps {
 // the download-attribute story.
 export default function SwitchServerDialog({
   target,
-  canSave,
   busy,
   error,
   onCancel,
@@ -76,9 +73,10 @@ export default function SwitchServerDialog({
                 <span className="hint" style={{ marginBottom: 4, display: "block" }}>
                   Recent
                 </span>
-                {/* Fill-only: this dialog exists specifically to force the
-                    save-before-switching choice below, so selecting a
-                    saved host must not skip straight to switching.
+                {/* Fill-only: a click that switched servers outright would
+                    be a trap, since the switch resets the UI, so selecting
+                    a saved host fills the address field and waits for the
+                    Switch button.
                     `selected` highlights whichever one now matches the
                     (blank-by-default) address field, as a clearer sign a
                     click did something than the field alone. */}
@@ -97,9 +95,6 @@ export default function SwitchServerDialog({
           </>
         )}
 
-        <p style={{ marginBottom: 6 }}>
-          Would you like to save the project before switching?
-        </p>
         <p className="hint" style={{ marginBottom: 16 }}>
           Switching will cause a reset of the UI.
         </p>
@@ -114,18 +109,13 @@ export default function SwitchServerDialog({
           <button onClick={onCancel} disabled={busy}>
             Cancel
           </button>
-          <button onClick={() => onConfirm(false, host.trim(), port)} disabled={busy || !hostReady}>
-            {busy ? "Switching…" : "Switch without saving"}
+          <button
+            className="btn-primary"
+            onClick={() => onConfirm(host.trim(), port)}
+            disabled={busy || !hostReady}
+          >
+            {busy ? "Switching…" : "Switch"}
           </button>
-          {canSave && (
-            <button
-              className="btn-primary"
-              onClick={() => onConfirm(true, host.trim(), port)}
-              disabled={busy || !hostReady}
-            >
-              Save &amp; switch
-            </button>
-          )}
         </div>
       </div>
     </div>
