@@ -2,15 +2,20 @@
 
 Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), upscale them locally for home proxy printing, and lay them out into a print-ready PDF — cut guides, bleed, and double-faced cards all handled for you. Raw PNGs are also there if you'd rather upload them to a third-party layout tool like [proxxied](https://proxxied.com) instead.
 
-Unlike [mpc-scryfall](https://github.com/fediazgon/mpc-scryfall), this tool does **not** strip copyright text or add MPC bleed padding — it writes clean upscaled PNGs, and its own PDF export adds bleed/guides on top of those, rather than baking anything into the source image.
+## Quick Start
+
+1. Import a decklist with the format "1 Example Card (set) 123" (Archidekt provides this in their Export Options).
+2. Click "Generate upscaled images" and wait till all the tasks are complete.
+3. Click the PDF tab, select your Page Size, click "Generate & Download PDF".
+**And you're done!**
+
+## Gallery
 
 ## Download
 
-Prebuilt desktop app, server app, and Linux package are on
-[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done. See
-[Desktop app](#desktop-app) and [Server](#server) below for what each one
-is and how to use it. Building from source (Python CLI, or the desktop app
-yourself) is covered under [Command-line / library use](#command-line--library-use).
+Prebuilt desktop app, server app, and Linux package: [Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done.
+See [Desktop app](#desktop-app) and [Server](#server) below for what each one is and how to use it.
+Building from source (Python CLI, or the desktop app yourself) is covered under [Command-line / library use](#command-line--library-use).
 
 ### Requirements
 
@@ -33,16 +38,6 @@ models' loader are all bundled. What you need beyond the download:
   (no CUDA toolkit); AMD users should pick the ROCm (Linux) or DirectML
   (Windows) build from the
   [Google Drive folder](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link).
-
-## Pipeline
-
-1. Import a decklist
-2. Resolve each line on Scryfall (exact set/collector, or fuzzy name)
-3. Download PNG(s) — double-faced cards produce **front and back** images
-4. Upscale to a target print DPI (default **1200 DPI** with **UltraSharpV2**)
-5. Either export a print-ready PDF directly (bleed, cut guides, page
-   layout, quantities) or hand the raw PNGs to something else, e.g.
-   uploading `output/` into proxxied
 
 ## Desktop app
 
@@ -83,6 +78,63 @@ the box. AMD works too — ROCm on Linux, DirectML on Windows — see
 
 Building it yourself: [`desktop/README.md`](desktop/README.md) for the dev
 loop, [`docs/releasing.md`](docs/releasing.md) for producing installers.
+
+### Decklist formats
+
+Both formats can be mixed in one file.
+
+**Exact printing (preferred when art matters):**
+
+```
+1 Abandoned Air Temple (tla) 263
+1 Dion, Bahamut's Dominant // Bahamut, Warden of Light (fin) 376
+1 Knight Exemplar (plst) DDG-14
+20 Plains (mh2) 482
+```
+
+**Name only (Arena-style; Scryfall chooses a default printing):**
+
+```
+1 Sol Ring
+4 Lightning Bolt
+```
+
+Skips blank lines, `#` comments, and headers like `Deck` / `Sideboard`.
+
+## Upscale models
+
+| Model | Notes |
+|-------|--------|
+| `ultrasharp_v2` (default) | General-purpose DAT model, strong on illustration/artwork; best on GPU (CC-BY-NC-SA-4.0) |
+| `illustrationjanai` | Trained on digital art/illustrations rather than photos; best on GPU (CC-BY-NC-SA-4.0) |
+| `realesrgan_anime_fast` | Compact/lightweight Real-ESRGAN variant tuned for anime; fast enough for CPU-only machines |
+
+All three are trained on illustrated rather than photographic material — and all are x4-native.
+
+## Target DPI
+
+At standard card size (2.5″×3.5″):
+
+| DPI | Pixels | How produced |
+|-----|--------|----------------|
+| 600 | 1500×2100 | Native x4 + Lanczos resize |
+| 800 | 2000×2800 | Native x4 + Lanczos resize |
+| 1200 (default) | 3000×4200 | Native x4 + Lanczos resize |
+
+`--all-dpis` writes all three for each face (reuses the same native upscale when possible).
+
+## Double-faced cards
+
+If Scryfall provides per-face `image_uris` (transform, MDFC, etc.), both faces are written:
+
+```
+Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-1200dpi.png
+Bahamut_Warden_of_Light-FIN-376-back-ultrasharp_v2-1200dpi.png
+```
+
+Split / flip / adventure cards share one front image and produce a single file.
+
+The PDF Export will print out both sides always, there's potential I'll make this configurable in the future.
 
 ## Server
 
@@ -255,34 +307,6 @@ pip install -e .
 (`GPU_VARIANT=rocm make install` / `GPU_VARIANT=directml make install` if
 you're on AMD — see [GPU support](#gpu-support).)
 
-### Decklist formats
-
-Both formats can be mixed in one file.
-
-**Exact printing (preferred when art matters):**
-
-```
-1 Abandoned Air Temple (tla) 263
-1 Dion, Bahamut's Dominant // Bahamut, Warden of Light (fin) 376
-1 Knight Exemplar (plst) DDG-14
-20 Plains (mh2) 482
-```
-
-**Name only (Arena-style; Scryfall chooses a default printing):**
-
-```
-1 Sol Ring
-4 Lightning Bolt
-```
-
-Skip blank lines, `#` comments, and headers like `Deck` / `Sideboard`.
-
-Quantities are logged but **one unique image per printing/face** is
-written (not 20 Plains files) — the desktop app's PDF export is what
-actually expands a printing back out to its full quantity on the page;
-use the same decklist quantities if uploading raw PNGs to a third-party
-layout tool like proxxied instead.
-
 ### CLI
 
 ```bash
@@ -305,41 +329,3 @@ Filenames include model + DPI, e.g. `Sol_Ring-C21-263-ultrasharp_v2-1200dpi.png`
 
 Weights download automatically into `weights/` on first use (via
 [Spandrel](https://github.com/chaiNNer-org/spandrel)).
-
-## Upscale models
-
-| Model | Notes |
-|-------|--------|
-| `ultrasharp_v2` (default) | General-purpose DAT model, strong on illustration/artwork; best on GPU (CC-BY-NC-SA-4.0) |
-| `illustrationjanai` | Trained on digital art/illustrations rather than photos (CC-BY-NC-SA-4.0) |
-| `realesrgan_anime_fast` | Compact/lightweight Real-ESRGAN variant tuned for anime; fast enough for CPU-only machines |
-
-All three are trained on illustrated rather than photographic material — a
-good match for MTG card art — and all are x4-native.
-
-## Target DPI
-
-At standard card size (2.5″×3.5″):
-
-| DPI | Pixels | How produced |
-|-----|--------|----------------|
-| 600 | 1500×2100 | Native x4 + Lanczos resize |
-| 800 | 2000×2800 | Native x4 + Lanczos resize |
-| 1200 (default) | 3000×4200 | Native x4 + Lanczos resize |
-
-`--all-dpis` writes all three for each face (reuses the same native upscale when possible).
-
-## Double-faced cards
-
-If Scryfall provides per-face `image_uris` (transform, MDFC, etc.), both faces are written:
-
-```
-Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-1200dpi.png
-Bahamut_Warden_of_Light-FIN-376-back-ultrasharp_v2-1200dpi.png
-```
-
-Split / flip / adventure cards share one front image and produce a single file.
-
-The desktop app's PDF export goes further: it tracks how many faces each
-card actually has (from Scryfall), so a double-faced card missing its back
-face gets flagged instead of silently printing half a card.

@@ -190,8 +190,8 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
 
 def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -> None:
     """Mutates `img` in place: for each of the first r rows, fill only that
-    row's leading *transparent* run with the colour of the first opaque
-    pixel it runs into.
+    row's leading *transparent* run with a colour sampled just past the
+    first opaque pixel it runs into.
 
     Per-row and transparency-aware on purpose. A previous version stretched
     one fixed column (x=r) across the full width of every row in the r×r
@@ -200,9 +200,50 @@ def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -
     result as horizontal bands. That was visible in the PDF as smeared
     streaks running out of every card corner. Only genuinely transparent
     pixels should ever be touched here.
+
+    The fill colour comes from a few pixels *past* the arc boundary, not
+    the boundary pixel itself: upscaling smears the black RGB that sits
+    under the transparent corner into the first opaque pixel or two (the
+    upscaled alpha and colour boundaries don't land on exactly the same
+    pixel), so on a light-bordered card the boundary pixel is often
+    near-black. add_bleed() then stretches row 0 / column 0 ~50x into the
+    bleed border, magnifying that one contaminated pixel into a visible
+    black smear sweeping out of the corner. Median-of-three sampling past
+    the halo keeps a single stray art pixel from streaking a whole row.
     """
     px = img.load()
     w, h = img.size
+    # Halo width scales with the upscale factor, and this patch scales
+    # with the image (probe_frac of it) — ~3% of the patch clears the
+    # halo at any DPI while staying well inside the border/art region.
+    skip = max(2, round(min(w, h) * 0.03))
+
+    def _lum(p) -> float:
+        return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
+
+    def _median_color(pixels) -> tuple[int, int, int]:
+        s = sorted(pixels, key=_lum)
+        return s[1][:3]
+
+    def _is_halo(p, sample_lum: float) -> bool:
+        # The artifact signature, and only the artifact signature: the
+        # upscaler blends the black under the transparent corner into the
+        # arc's rim pixels, so a bad pixel is near-black AND markedly
+        # darker than the interior right next to it. Genuinely black
+        # borders fail the second test (their interior is just as dark,
+        # and overwriting would be a no-op anyway), and genuine art
+        # detail fails the first — it stays untouched.
+        pl = _lum(p)
+        return pl < 60 and sample_lum - pl > 60
+
+    # Column-top offsets must be measured before any fill mutates alpha —
+    # the vertical scrub below needs to know where each column's
+    # transparent run originally ended.
+    col_y0 = [
+        next((y for y in range(h) if px[x, y][3] >= alpha_threshold), None)
+        for x in range(min(r, w))
+    ]
+
     for y in range(min(r, h)):
         # Scan the full row, not just the first r pixels: when the probe
         # window is narrower than the corner radius there is no opaque
@@ -211,9 +252,41 @@ def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -
         x0 = next((x for x in range(w) if px[x, y][3] >= alpha_threshold), None)
         if not x0:  # row fully opaque already (x0 == 0), or no opaque pixel found
             continue
-        red, green, blue, _ = px[x0, y]
+        # Sample diagonally inward, not along the row: near the arc's
+        # tangent point the halo band runs almost parallel to the row, so
+        # stepping horizontally can stay inside it indefinitely — stepping
+        # toward the card's interior crosses the band at its ~2px
+        # thickness no matter where on the arc this row lands.
+        color = _median_color(
+            px[min(x0 + skip * k, w - 1), min(y + skip * k, h - 1)] for k in (1, 2, 3)
+        )
+        # Fill the transparent run, then scrub the rim just past it —
+        # but only pixels carrying the black-contamination signature:
+        # they're opaque, so they survive the fill — leaving a thin dark
+        # arc line in the printed card, and (where the arc meets row 0) a
+        # dark streak stretched into the bleed right where the rounding
+        # starts. Anything that isn't the artifact keeps its art.
         for x in range(x0):
-            px[x, y] = (red, green, blue, 255)
+            px[x, y] = (*color, 255)
+        sample_lum = _lum(color)
+        for x in range(x0, min(x0 + skip, w)):
+            if _is_halo(px[x, y], sample_lum):
+                px[x, y] = (*color, 255)
+
+    # Same scrub vertically: the arc's other endpoint meets column 0 on
+    # rows that have no transparent run at all (the row loop skips them),
+    # so their halo only shows up as a column-top run.
+    for x in range(min(r, w)):
+        y0 = col_y0[x]
+        if not y0:
+            continue
+        color = _median_color(
+            px[min(x + skip * k, w - 1), min(y0 + skip * k, h - 1)] for k in (1, 2, 3)
+        )
+        sample_lum = _lum(color)
+        for y in range(y0, min(y0 + skip, h)):
+            if _is_halo(px[x, y], sample_lum):
+                px[x, y] = (*color, 255)
 
 
 def flatten_corner_alpha(
