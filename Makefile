@@ -442,38 +442,26 @@ server-app-dev:
 # .dmg ourselves from what's actually on disk. Nothing here is reachable
 # by Tauri's own dmg step, deliberately.
 
-# Build a .dmg whose window is the standard drag-to-install layout.
+# Build a .dmg whose window is the styled drag-to-install layout: app on
+# the left, /Applications symlink on the right, branded background image
+# with an arrow between them, fixed window size and icon positions.
 #   $(1) .app to ship   $(2) staging dir   $(3) .app's basename
-#   $(4) volume name    $(5) output .dmg
+#   $(4) volume name    $(5) output .dmg   $(6) background png
 #
-# `hdiutil create -srcfolder <the .app>` — what this used to do — makes a
-# volume containing nothing but the .app, so the user has to go find
-# /Applications in another Finder window themselves. Pointing -srcfolder
-# at a *directory* holding the .app plus a symlink to /Applications gives
-# the conventional layout instead: both icons in one window, drag across.
+# All the work lives in packaging/build-dmg-macos.sh. The styling needs a
+# .DS_Store that only Finder can write, so the script mounts a read-write
+# dmg and drives Finder over AppleScript before compressing — meaning it
+# needs a logged-in GUI session, and the first run prompts for permission
+# to control Finder (Privacy & Security > Automation). That fragility used
+# to be the reason these targets shipped the plain unstyled window; the
+# builds already require an interactive Mac for codesigning, so the
+# constraint was being paid for anyway.
 #
-# Deliberately NOT doing the "pretty" version (custom window size,
-# background image, icon positions). That needs a .DS_Store built by
-# driving Finder over AppleScript at build time — fragile, needs a GUI
-# session, and can't be tested anywhere but a Mac with a logged-in user.
-# The symlink is the part that actually removes user work.
-#
-# ditto, not cp -R: it's Apple's own bundle-aware copier (metadata,
-# xattrs, ACLs, symlinks all preserved) and the .app is code-signed by
-# this point, so a copy that quietly drops metadata is a real risk. Costs
-# a full multi-GB copy per dmg; the staging dir is removed straight after.
-# rm -rf runs first as well as last so a previous run that died mid-way
-# (leaving a stale, half-populated stage) can't leak into this one — ditto
-# into an existing destination merges rather than replaces.
+# The background pngs live in desktop/*/dmg/ and are drawn around the icon
+# positions hardcoded in the script — regenerate or re-align them together.
 define build_dmg
-	@echo "==> staging dmg contents (.app + /Applications symlink)"
-	rm -rf "$(2)"
-	mkdir -p "$(2)" dist
-	ditto "$(1)" "$(2)/$(3)"
-	ln -s /Applications "$(2)/Applications"
-	rm -f "$(5)"
-	hdiutil create -volname "$(4)" -srcfolder "$(2)" -ov -format UDZO "$(5)"
-	rm -rf "$(2)"
+	@echo "==> building styled .dmg (background + drag-to-Applications layout)"
+	./packaging/build-dmg-macos.sh "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)"
 endef
 
 macos-release-client:
@@ -483,7 +471,7 @@ ifeq ($(UNAME_S),Darwin)
 	@echo "==> [2/3] patching sidecar into the .app (and re-signing it)"
 	$(MAKE) macos-bundle-client-sidecar
 	@echo "==> [3/3] building .dmg from the patched .app"
-	$(call build_dmg,$(CLIENT_APP_BUNDLE),$(CLIENT_DMG_STAGE),$(CLIENT_APP_NAME),Proxy Scaler,$(CLIENT_DMG))
+	$(call build_dmg,$(CLIENT_APP_BUNDLE),$(CLIENT_DMG_STAGE),$(CLIENT_APP_NAME),Proxy Scaler,$(CLIENT_DMG),desktop/src-tauri/dmg/dmg-background.png)
 	@echo "built: $(CLIENT_DMG)"
 else
 	@echo "error: 'macos-release-client' must be run on macOS" >&2
@@ -497,7 +485,7 @@ ifeq ($(UNAME_S),Darwin)
 	@echo "==> [2/3] patching sidecar into the .app (and re-signing it)"
 	$(MAKE) macos-bundle-server-app-sidecar
 	@echo "==> [3/3] building .dmg from the patched .app"
-	$(call build_dmg,$(SERVER_APP_BUNDLE),$(SERVER_APP_DMG_STAGE),$(SERVER_APP_NAME),Proxy Scaler Server,$(SERVER_APP_DMG))
+	$(call build_dmg,$(SERVER_APP_BUNDLE),$(SERVER_APP_DMG_STAGE),$(SERVER_APP_NAME),Proxy Scaler Server,$(SERVER_APP_DMG),desktop/server-app/dmg/dmg-background.png)
 	@echo "built: $(SERVER_APP_DMG)"
 else
 	@echo "error: 'macos-release-server-app' must be run on macOS" >&2
