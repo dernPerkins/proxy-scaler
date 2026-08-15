@@ -10,10 +10,13 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
 **And you're done!**
 
 ## Gallery
-<img width="1392" height="1012" alt="Decklist View!" src="https://github.com/user-attachments/assets/27b37586-2be4-4893-81c1-acf362217b2b" />
-<img width="1392" height="1012" alt="Compare Your Generation!" src="https://github.com/user-attachments/assets/aac89d74-a7c1-4e56-97ee-2e9305052040" />
-<img width="1392" height="1012" alt="Create Your PDF!" src="https://github.com/user-attachments/assets/066dae89-1887-4e31-88f9-c57303ada714" />
-<img width="672" height="951" alt="Host Your Generation Server!" src="https://github.com/user-attachments/assets/7438adac-746d-48f1-b2d6-81757ca1ee12" />
+<table>
+  <tr>
+    <td valign="top"><img src="https://github.com/user-attachments/assets/27b37586-2be4-4893-81c1-acf362217b2b" alt="Decklist View!" width="100%"></td>
+    <td valign="top"><img src="https://github.com/user-attachments/assets/aac89d74-a7c1-4e56-97ee-2e9305052040" alt="Compare Your Generation!" width="100%"></td>
+    <td valign="top"><img src="https://github.com/user-attachments/assets/066dae89-1887-4e31-88f9-c57303ada714" alt="Create Your PDF!" width="100%"></td>
+  </tr>
+</table>
 
 ## Download
 
@@ -199,6 +202,8 @@ detected and ignored automatically, so systemd and Docker work without
 the check.
 
 ### Server app (Windows/macOS)
+
+<img src="https://github.com/user-attachments/assets/7438adac-746d-48f1-b2d6-81757ca1ee12" alt="Host Your Generation Server!" height="240">
 
 A small status window that runs the server for other machines to connect
 to, and minimises to the tray so it can be left running. Download it from
