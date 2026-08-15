@@ -223,6 +223,58 @@ def test_flatten_corner_alpha() -> None:
     assert flattened.getpixel((w // 2, h // 2)) == (10, 20, 30, 255)
 
 
+def test_flatten_corner_fill_ignores_dark_halo_on_arc() -> None:
+    """Regression guard for the black-smear-in-bleed bug on light cards:
+    upscaling smears the black RGB under the transparent corner into the
+    first opaque pixel or two along the arc, so the fill colour must be
+    sampled past that halo, never from the boundary pixel itself —
+    add_bleed() magnifies whatever lands on row 0 / column 0 ~50x into
+    the bleed border."""
+    w = h = 400
+    radius = 40
+    light = (230, 225, 210)
+    img = Image.new("RGBA", (w, h), (*light, 255))
+    px = img.load()
+    # Transparent quarter-circle cutout at the top-left…
+    for y in range(radius):
+        for x in range(radius):
+            center_dx, center_dy = radius - x, radius - y
+            if center_dx * center_dx + center_dy * center_dy > radius * radius:
+                px[x, y] = (0, 0, 0, 0)
+    # …with a 2px near-black halo on the first opaque pixels along the
+    # arc — in both directions, the way an upscaled light-bordered card
+    # actually arrives. The column-top pixels near (0, radius) sit on
+    # rows with no transparent run at all, so only the vertical scrub
+    # ever reaches them.
+    for y in range(radius):
+        x0 = next(x for x in range(w) if px[x, y][3] == 255)
+        for x in (x0, x0 + 1):
+            px[x, y] = (25, 25, 25, 255)
+    for x in range(radius):
+        y0 = next(y for y in range(h) if px[x, y][3] == 255)
+        for y in (y0, y0 + 1):
+            px[x, y] = (25, 25, 25, 255)
+
+    flattened = flatten_corner_alpha(img)
+
+    def lum(p):
+        return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
+
+    # The whole corner region — filled arc, the arc line itself, and both
+    # spots where the rounding starts — must be opaque and light: no fill
+    # that took the halo colour, and no surviving halo pixels (they're what
+    # add_bleed stretches into black streaks at the arc's endpoints).
+    for y in range(radius + 4):
+        for x in range(radius + 4):
+            p = flattened.getpixel((x, y))
+            assert p[3] == 255, f"({x},{y}) still transparent"
+            assert lum(p) > 150, f"({x},{y}) is halo-dark: {p[:3]}"
+
+    # And the bleed built from it stays light at the corner too.
+    bled = add_bleed(img, dpi=300)
+    assert lum(bled.getpixel((2, 2))) > 150
+
+
 def test_build_pdf_flattens_corners_before_resizing_for_export_dpi(tmp_path) -> None:
     """Regression guard for the corner-smearing bug: resizing an RGBA image
     while its rounded corners are still transparent lets the resample
