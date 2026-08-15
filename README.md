@@ -14,6 +14,7 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
 **And you're done!**
 
 ## Gallery
+
 <table>
   <tr>
     <td valign="top"><img src="https://github.com/user-attachments/assets/27b37586-2be4-4893-81c1-acf362217b2b" alt="Decklist View!" width="100%"></td>
@@ -24,7 +25,8 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
 
 ## Download
 
-Prebuilt desktop app, server app, and Linux package: [Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done.
+[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done.
+Prebuilt desktop app, server app, and Linux package.
 See [Desktop app](#desktop-app) and [Server](#server) below for what each one is and how to use it.
 Building from source (Python CLI, or the desktop app yourself) is covered under [Command-line / library use](#command-line--library-use).
 
