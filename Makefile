@@ -461,7 +461,7 @@ server-app-dev:
 # positions hardcoded in the script — regenerate or re-align them together.
 define build_dmg
 	@echo "==> building styled .dmg (background + drag-to-Applications layout)"
-	./packaging/build-dmg-macos.sh "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)"
+	bash ./packaging/build-dmg-macos.sh "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)"
 endef
 
 macos-release-client:
