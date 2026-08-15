@@ -887,6 +887,16 @@ def adopt_gallery_items(
         }
 
         def insert_row(values: dict[str, Any]) -> None:
+            # Filename-recovered rows have no real scryfall_id. They can't
+            # share '' either: the UNIQUE key is (tag, scryfall_id,
+            # face_index, model, dpi), and while NULL face_index rows never
+            # collide (SQLite treats NULLs as distinct), two different DFCs'
+            # "front" files (face_index 0) at the same model+dpi would. A
+            # per-printing sentinel keeps the key unique and is what
+            # upsert_gallery_item's supersede-DELETE matches on.
+            scryfall_id = values["scryfall_id"] or (
+                f"scan:{(values['set_code'] or '').lower()}:{values['collector_number']}"
+            )
             conn.execute(
                 """
                 INSERT INTO project_gallery_items (
@@ -898,7 +908,7 @@ def adopt_gallery_items(
                 """,
                 (
                     project_tag,
-                    values["scryfall_id"],
+                    scryfall_id,
                     values["face_index"],
                     values["face_name"],
                     values["card_name"],
@@ -1045,13 +1055,15 @@ def upsert_gallery_item(
         return
     with connect(db_path) as conn:
         # A fully resolved row supersedes any filename-recovered placeholder
-        # (scryfall_id = '', from adopt_gallery_items' output-dir scan) for
-        # the same printed variant — without this, the first real generation
-        # after an adoption would show the image twice.
+        # (scryfall_id 'scan:…' — or '' from early builds — from
+        # adopt_gallery_items' output-dir scan) for the same printed variant
+        # — without this, the first real generation after an adoption would
+        # show the image twice.
         if result.scryfall_id:
             conn.execute(
                 "DELETE FROM project_gallery_items WHERE project_tag = ? "
-                "AND scryfall_id = '' AND lower(set_code) = lower(?) "
+                "AND (scryfall_id = '' OR scryfall_id LIKE 'scan:%') "
+                "AND lower(set_code) = lower(?) "
                 "AND collector_number = ? AND face_index IS ? AND model = ? AND dpi = ?",
                 (
                     project_tag,

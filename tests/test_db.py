@@ -212,7 +212,7 @@ def test_adopt_gallery_items_scans_output_dir_for_rowless_files(
         db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path, output_dir=out) == 1
     )
     [item] = list_gallery_items("tag-b", db_path=db_path)
-    assert item["scryfall_id"] == ""
+    assert item["scryfall_id"] == "scan:c21:263"
     assert item["model"] == "ultrasharp_v2"
     assert item["dpi"] == 800
     assert item["created_at"] is not None
@@ -228,6 +228,31 @@ def test_adopt_gallery_items_scans_output_dir_for_rowless_files(
     )
     [item] = list_gallery_items("tag-b", db_path=db_path)
     assert item["scryfall_id"] == "sol-id"
+
+
+def test_adopt_gallery_items_scans_two_dfcs_without_key_collision(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Two different DFCs' front files share (face_index=0, model, dpi);
+    with a common empty scryfall_id they'd violate the gallery UNIQUE key
+    (the NULL-face_index single-faced case never can — SQLite treats NULLs
+    as distinct). The per-printing sentinel keeps them apart."""
+    from proxy_scaler.decklist import DeckEntry
+
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-1200dpi.png").write_bytes(b"a")
+    (out / "Ajani_Nacatl_Pariah-M3C-1-front-ultrasharp_v2-1200dpi.png").write_bytes(b"b")
+
+    entries = [
+        DeckEntry(quantity=1, name="Dion, Bahamut's Dominant", set_code="fin", collector_number="376"),
+        DeckEntry(quantity=1, name="Ajani, Nacatl Pariah", set_code="m3c", collector_number="1"),
+    ]
+    assert (
+        db_module.adopt_gallery_items("tag-b", entries, db_path=db_path, output_dir=out) == 2
+    )
+    ids = {i["scryfall_id"] for i in list_gallery_items("tag-b", db_path=db_path)}
+    assert ids == {"scan:fin:376", "scan:m3c:1"}
 
 
 def test_adopt_gallery_items_skips_rows_whose_file_is_gone(db_path: Path, tmp_path: Path) -> None:
