@@ -3,15 +3,14 @@
 // variant to *print*). Kept in one place so the two lists can't drift.
 export const DPI_OPTIONS = [600, 800, 1200];
 
-// Short human-readable model names for compact spots (deck-list status
-// badges, thumbnail labels). These mirror the display half of
-// UpscaleModel.label in proxy_scaler/upscale.py; raw enum values stay in
-// API calls, filenames, and the Tasks table. Unknown models fall back to
-// their raw id so a new backend model never renders blank.
+// Acronyms for compact spots (deck-list status badges, thumbnail labels)
+// where the full model names wrap; raw enum values stay in API calls,
+// filenames, and the Tasks table. Unknown models fall back to their raw
+// id so a new backend model never renders blank.
 export const MODEL_DISPLAY_NAMES: Record<string, string> = {
-  realesrgan_anime_fast: "Real-ESRGAN Anime Fast",
-  illustrationjanai: "IllustrationJaNai",
-  ultrasharp_v2: "UltraSharpV2",
+  realesrgan_anime_fast: "REAF",
+  illustrationjanai: "IJ",
+  ultrasharp_v2: "USV2",
 };
 
 export function modelDisplayName(model: string): string {
