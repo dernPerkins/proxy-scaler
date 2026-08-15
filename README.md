@@ -2,8 +2,6 @@
 
 ![Discord](https://img.shields.io/discord/1537518890676912218)
 
-<iframe src="https://discord.com/widget?id=1537518890676912218&theme=dark" width="350" height="500" allowtransparency="true" frameborder="0" sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>
-
 Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), upscale them locally for home proxy printing, and lay them out into a print-ready PDF — cut guides, bleed, and double-faced cards all handled for you. Raw PNGs are also there if you'd rather upload them to a third-party layout tool like [proxxied](https://proxxied.com) instead.
 
 ## Quick Start
