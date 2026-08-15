@@ -1,7 +1,7 @@
 [package]
 name = "proxy-scaler-spike"
 version = "0.1.0"
-description = "Phase 0 spike: validate Tauri webview + Streamlit websocket behavior"
+description = "proxy-scaler desktop app: decklist import, upscaled proxy generation, and PDF export"
 edition = "2021"
 
 [build-dependencies]

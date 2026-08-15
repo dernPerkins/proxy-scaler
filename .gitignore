@@ -54,3 +54,4 @@ docs/agents/
 .aider*
 .windsurfrules
 .github/copilot-instructions.md
+docs/adr
