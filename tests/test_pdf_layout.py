@@ -255,7 +255,18 @@ def test_flatten_corner_fill_ignores_dark_halo_on_arc() -> None:
         for y in (y0, y0 + 1):
             px[x, y] = (25, 25, 25, 255)
 
+    # A genuine art pixel sitting inside the scrub band, right past the
+    # halo — clearly not near-black, so the scrub must leave it alone
+    # (only pixels with the black-contamination signature get rewritten).
+    art_y = 5
+    art_x = next(x for x in range(w) if px[x, art_y][3] == 255) + 2
+    px[art_x, art_y] = (255, 140, 0, 255)
+
     flattened = flatten_corner_alpha(img)
+
+    assert flattened.getpixel((art_x, art_y)) == (255, 140, 0, 255), (
+        "scrub overwrote genuine art detail next to the arc"
+    )
 
     def lum(p):
         return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
