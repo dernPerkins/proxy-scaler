@@ -594,7 +594,12 @@ button:disabled {
   margin-top: 12px;
 }
 .thumb {
-  width: 168px;
+  /* Wide enough that the longest label ("1200 DPI · Real-ESRGAN Anime
+     Fast") stays on one line — a wrapped label pushes its image and
+     buttons out of alignment with the other columns. */
+  width: 190px;
+  display: flex;
+  flex-direction: column;
 }
 .thumb-label {
   font-size: 11.5px;
@@ -612,7 +617,8 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  margin-top: 7px;
+  margin-top: auto;
+  padding-top: 7px;
 }
 
 /* ---------- danger zone ---------- */

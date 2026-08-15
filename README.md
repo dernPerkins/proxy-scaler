@@ -12,6 +12,28 @@ Prebuilt desktop app, server app, and Linux package are on
 is and how to use it. Building from source (Python CLI, or the desktop app
 yourself) is covered under [Command-line / library use](#command-line--library-use).
 
+### Requirements
+
+The installers are self-contained — Python, PyTorch, and the upscaling
+models' loader are all bundled. What you need beyond the download:
+
+- **Windows** — you may need the
+  [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+  (x64) if it isn't already installed. Nothing else.
+- **macOS** — Apple Silicon only; nothing to install. GPU acceleration
+  needs macOS 12.3+.
+- **Linux (desktop app / server app)** — needs WebKitGTK and the tray
+  library: `sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0
+  libayatana-appindicator3-1`. Requires a distro at least as new as
+  Ubuntu 22.04 / Debian 12 (glibc ≥ 2.35).
+- **Linux (headless .deb)** — no extra packages; same Ubuntu 22.04 /
+  Debian 12 floor.
+- **GPU acceleration** is optional — CPU-only works out of the box.
+  Nvidia just needs its regular [driver](https://www.nvidia.com/en-us/drivers/)
+  (no CUDA toolkit); AMD users should pick the ROCm (Linux) or DirectML
+  (Windows) build from the
+  [Google Drive folder](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link).
+
 ## Pipeline
 
 1. Import a decklist

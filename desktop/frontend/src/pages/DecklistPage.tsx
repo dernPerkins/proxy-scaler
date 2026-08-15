@@ -7,7 +7,7 @@ import CompareDialog from "../components/CompareDialog";
 import NumberInput from "../components/NumberInput";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
-import { DPI_OPTIONS } from "../constants";
+import { DPI_OPTIONS, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
@@ -637,7 +637,7 @@ function CardRowView(props: {
             {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
             {face.variants.map((v) => (
               <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
-                {v.dpi} · {v.model}
+                {v.dpi} · {modelDisplayName(v.model)}
               </StatusBadge>
             ))}
           </div>
@@ -686,8 +686,8 @@ function CardRowView(props: {
               )}
               {doneVariants.map((v) => (
                 <div key={`${v.dpi}-${v.model}`} className="thumb">
-                  <div className="thumb-label">
-                    {v.dpi} DPI · {v.model}
+                  <div className="thumb-label" title={`${v.dpi} DPI · ${v.model}`}>
+                    {v.dpi} DPI · {modelDisplayName(v.model)}
                   </div>
                   <img
                     src={generationApi.imageUrl(v.galleryItemId, "full")}
@@ -713,7 +713,7 @@ function CardRowView(props: {
                         setCompareTarget({
                           originalUrl: generationApi.imageUrl(v.galleryItemId, "original"),
                           upscaledUrl: generationApi.imageUrl(v.galleryItemId, "full"),
-                          label: `${card.name} — ${v.dpi} DPI · ${v.model}`,
+                          label: `${card.name} — ${v.dpi} DPI · ${modelDisplayName(v.model)}`,
                         })
                       }
                     >
