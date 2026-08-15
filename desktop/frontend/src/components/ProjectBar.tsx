@@ -22,7 +22,6 @@ export default function ProjectBar() {
   });
   const [duplicateName, setDuplicateName] = useState("");
   const [showDuplicate, setShowDuplicate] = useState(false);
-  const [selectedLoadId, setSelectedLoadId] = useState<number | "">("");
   // The two questions this bar asks before destroying something. Both were
   // `window.confirm` until issue 16: native dialogs never appear inside
   // Tauri's WKWebView, so on macOS both gestures went ahead unasked.
@@ -338,9 +337,18 @@ export default function ProjectBar() {
       {projects.length > 0 ? (
         <>
           <div className="divider-v" />
+          {/* A menu, not a selection: picking a project loads it on the
+              spot (every edit is already saved, so there is nothing a
+              separate Load click would be confirming) and the value stays
+              on the placeholder. Delete therefore acts on the *loaded*
+              project — the only "this project" left once selecting means
+              loading — and stays off for the unnamed slate, whose way out
+              is the New button's discard flow, not deletion. */}
           <select
-            value={selectedLoadId}
-            onChange={(e) => setSelectedLoadId(e.target.value ? Number(e.target.value) : "")}
+            value=""
+            onChange={(e) => {
+              if (e.target.value) project.load(Number(e.target.value));
+            }}
           >
             <option value="">Load project…</option>
             {projects.map((p) => (
@@ -350,15 +358,9 @@ export default function ProjectBar() {
             ))}
           </select>
           <button
-            onClick={() => selectedLoadId !== "" && project.load(selectedLoadId)}
-            disabled={selectedLoadId === ""}
-          >
-            Load
-          </button>
-          <button
             className="btn-danger"
             onClick={() => setConfirmingDelete(true)}
-            disabled={selectedLoadId === ""}
+            disabled={project.projectId == null || !project.isNamed}
           >
             Delete
           </button>
@@ -391,27 +393,26 @@ export default function ProjectBar() {
       )}
 
       {/* Names the project, which the native confirm never did — the
-          picker is a dropdown, so "this project" was whatever the user
-          last left selected in it.
+          picker loads on selection, so "this project" is the one
+          currently loaded — the same project the rest of the bar is
+          showing.
 
           The id test is TypeScript's, not a guard against a stale flag:
-          `remove` wants a number and the selection is `number | ""`. Both
+          `remove` wants a number and projectId is `number | null`. Both
           answers below clear confirmingDelete, so it cannot outlive its
-          dialog and spring back on a later selection. */}
-      {confirmingDelete && selectedLoadId !== "" && (
+          dialog. */}
+      {confirmingDelete && project.projectId != null && (
         <ConfirmDialog
           title="Delete this project?"
           confirmLabel="Delete"
           onCancel={() => setConfirmingDelete(false)}
           onConfirm={() => {
             setConfirmingDelete(false);
-            project.remove(selectedLoadId);
-            setSelectedLoadId("");
+            project.remove(project.projectId as number);
           }}
         >
-          {projects.find((p) => p.id === selectedLoadId)?.name ?? `#${selectedLoadId}`} is
-          permanently removed from the database, cards and settings included. This cannot
-          be undone.
+          {project.projectName || `#${project.projectId}`} is permanently removed from
+          the database, cards and settings included. This cannot be undone.
         </ConfirmDialog>
       )}
     </div>
