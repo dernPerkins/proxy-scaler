@@ -95,13 +95,14 @@ interface ProjectContextValue {
   cards: CardRow[];
   /** Parses `text` and adds any new cards to `cards` — additive, never
    *  removes an existing card (see project_store.rs::import_decklist_text).
-   *  Also remembers `text` itself as decklistText, purely as a "what did I
-   *  last paste" convenience.
+   *  Also remembers `text` itself as decklistText — not shown anywhere,
+   *  but Save As replays it to copy the deck into the new project.
    *
    *  With no project yet, this is what creates one: the Unnamed Project is
    *  born on the first import, and projectId/projectTag are non-null from
-   *  then on. */
-  importDecklistText: (text: string) => void;
+   *  then on. Resolves on success so the import box can clear itself;
+   *  rejects on failure (the error is also surfaced via `error`). */
+  importDecklistText: (text: string) => Promise<void>;
   importingDecklistText: boolean;
   removeCard: (cardId: number) => void;
   /** Sets a card's copy count. Values below 1 are clamped to 1 — removal
@@ -695,7 +696,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setSettings: updateSettings,
     decklistText,
     cards,
-    importDecklistText: (text: string) => importDecklistMutation.mutate(text),
+    importDecklistText: async (text: string) => {
+      await importDecklistMutation.mutateAsync(text);
+    },
     importingDecklistText: importDecklistMutation.isPending,
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     setCardQuantity: (cardId: number, quantity: number) =>

@@ -85,7 +85,6 @@ export default function DecklistPage() {
     settings,
     setSettings,
     cards,
-    decklistText,
     importDecklistText,
     importingDecklistText,
     removeCard,
@@ -108,14 +107,13 @@ export default function DecklistPage() {
   // replaced.
   const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => generationApi.listModels() });
 
-  const [decklistDraft, setDecklistDraft] = useState(decklistText);
-  // Keep the draft in sync when a different project loads (or the
-  // current one reloads) — projectId, not decklistText itself, is the
-  // trigger: once a project is open, decklistText only changes via this
-  // page's own importDecklistText call, and re-syncing on every such
-  // change would stomp whatever the user is mid-typing.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => setDecklistDraft(decklistText), [projectId]);
+  // Purely an entry box — never seeded from the project's stored last
+  // paste (the card rows below are the actual deck; decklistText lives on
+  // only as Save As's copy source in ProjectContext). Cleared when a
+  // different project loads so text typed against one deck can't be
+  // imported into another, and cleared again after a successful import.
+  const [decklistDraft, setDecklistDraft] = useState("");
+  useEffect(() => setDecklistDraft(""), [projectId]);
   const [status, setStatus] = useState<string | null>(null);
   const [sortPrimary, setSortPrimary] = useState<"Name" | "Set" | "(none)">("Name");
   const [expandedFaces, setExpandedFaces] = useState<Set<string>>(new Set());
@@ -431,8 +429,12 @@ export default function DecklistPage() {
           <button
             className="btn-primary"
             onClick={() => {
-              importDecklistText(decklistDraft);
               setStatus(null);
+              importDecklistText(decklistDraft)
+                .then(() => setDecklistDraft(""))
+                // A failed import keeps the text for a retry; the error
+                // itself is surfaced via the context's error state.
+                .catch(() => {});
             }}
             disabled={!decklistDraft.trim() || importingDecklistText}
           >
