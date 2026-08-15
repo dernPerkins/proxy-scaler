@@ -980,6 +980,64 @@ def adopt_gallery_items(
     return adopted
 
 
+def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = None) -> int:
+    """Delete this project's gallery rows — and its "done" task records —
+    whose output file no longer exists on disk, so the deck list's badges
+    stop asserting images that can't be served. Output files are shared
+    across projects and carry no tag, so any project (or a manual delete)
+    can remove a file out from under every other project's rows; this runs
+    on project load (via the adopt endpoint) to reconcile.
+
+    Done tasks must go along with the rows: the client's status merge
+    falls back to the newest task's own status for a (face, dpi, model)
+    pair with no gallery row (see clear_project_generation_records), and a
+    completed task's status is literally "done" — pruning only the row
+    would let task history re-assert the same green badge. Pending/running
+    /failed/canceled tasks are left alone: none of them claim an image
+    exists. Returns the total records deleted."""
+    if not project_tag:
+        return 0
+    # Local import: pipeline imports this module at runtime.
+    from .pipeline import output_filename
+
+    pruned = 0
+    with connect(db_path) as conn:
+        stale_rows = [
+            int(r["id"])
+            for r in conn.execute(
+                "SELECT id, out_path FROM project_gallery_items WHERE project_tag = ?",
+                (project_tag,),
+            )
+            if not Path(r["out_path"]).is_file()
+        ]
+        for gid in stale_rows:
+            conn.execute("DELETE FROM project_gallery_items WHERE id = ?", (gid,))
+        pruned += len(stale_rows)
+
+        stale_tasks = []
+        for t in conn.execute(
+            "SELECT id, face_name, set_code, collector_number, face_label, "
+            "model, dpi, output_dir FROM generation_tasks "
+            "WHERE project_tag = ? AND status = 'done'",
+            (project_tag,),
+        ):
+            out = Path(t["output_dir"]) / output_filename(
+                t["face_name"],
+                t["set_code"],
+                t["collector_number"],
+                t["face_label"],
+                t["model"],
+                t["dpi"],
+            )
+            if not out.is_file():
+                stale_tasks.append(int(t["id"]))
+        for tid in stale_tasks:
+            conn.execute("DELETE FROM generation_tasks WHERE id = ?", (tid,))
+        pruned += len(stale_tasks)
+        conn.commit()
+    return pruned
+
+
 def get_gallery_item(
     gallery_item_id: int, db_path: Path | str | None = None
 ) -> dict[str, Any] | None:

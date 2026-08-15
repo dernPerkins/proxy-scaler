@@ -993,7 +993,7 @@ def test_adopt_gallery_surfaces_another_projects_images(
         json={"project_tag": "tag-b", "entries": [_sol_ring_entry()]},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"adopted": 1}
+    assert resp.json() == {"adopted": 1, "pruned": 0}
 
     gallery = client.get("/api/gallery", params={"project_tag": "tag-b"}).json()
     assert [g["card_name"] for g in gallery] == ["Sol Ring"]
@@ -1003,7 +1003,7 @@ def test_adopt_gallery_surfaces_another_projects_images(
         "/api/gallery/adopt",
         json={"project_tag": "tag-b", "entries": [_sol_ring_entry()]},
     )
-    assert resp.json() == {"adopted": 0}
+    assert resp.json() == {"adopted": 0, "pruned": 0}
 
 
 def test_adopt_gallery_scans_output_dir_for_rowless_files(
@@ -1024,7 +1024,45 @@ def test_adopt_gallery_scans_output_dir_for_rowless_files(
         },
     )
     assert resp.status_code == 200
-    assert resp.json() == {"adopted": 1}
+    assert resp.json() == {"adopted": 1, "pruned": 0}
 
     gallery = client.get("/api/gallery", params={"project_tag": "tag-x"}).json()
     assert [(g["model"], g["dpi"]) for g in gallery] == [("illustrationjanai", 1200)]
+
+
+def test_adopt_gallery_prunes_stale_records_on_load(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Output files are shared and tag-less, so another project (or a
+    manual delete) can remove them out from under this project's gallery
+    rows — the reconcile on project load must drop those rows AND the
+    done-task records that would re-assert the same green badge via the
+    client's task-status fallback."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-stale")
+    task_id = _enqueue_and_fail(tmp_path, db_path, model="ultrasharp_v2", dpi=800)
+    # Promote the failed fixture task to done under the stale tag so it
+    # exercises the task-record half of the prune.
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'done', project_tag = 'tag-stale' WHERE id = ?",
+            (task_id,),
+        )
+
+    # Delete the file the row points at.
+    Path(item["out_path"]).unlink()
+
+    resp = client.post(
+        "/api/gallery/adopt",
+        json={"project_tag": "tag-stale", "entries": [_sol_ring_entry()]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pruned"] == 2  # the gallery row + the done task record
+    assert body["adopted"] == 0  # nothing left anywhere to adopt from
+
+    assert client.get("/api/gallery", params={"project_tag": "tag-stale"}).json() == []
+    tasks = client.get("/api/tasks", params={"project_tag": "tag-stale"}).json()
+    assert tasks == []

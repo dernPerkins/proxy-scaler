@@ -50,6 +50,9 @@ class AdoptGalleryIn(BaseModel):
 
 class AdoptGalleryOut(BaseModel):
     adopted: int
+    # Stale records removed for this project_tag (gallery rows + done-task
+    # records whose output file is gone) — see db.prune_stale_gallery_items.
+    pruned: int
 
 
 class ResolvedFaceOut(BaseModel):

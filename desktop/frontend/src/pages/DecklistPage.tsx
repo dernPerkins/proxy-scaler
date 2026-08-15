@@ -140,22 +140,24 @@ export default function DecklistPage() {
     queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
   }
 
-  // Cards can be imported after the same printing was already generated
-  // under another project on this server — those images exist on disk but
-  // this project's gallery has no rows for them, so the deck would sit at
-  // "Not generated yet" until a Generate request happens to skip_existing
-  // its way to them. Adopting on import/load (and again once the server
-  // comes up) surfaces them immediately. Keyed on the identity set, not
-  // `cards` itself, so quantity edits don't re-fire it; best-effort
-  // because a failure only means the status poll shows less, not wrong.
+  // Reconcile the gallery with the server's disk on import/load (and
+  // again once the server comes up). Adoption: images generated under
+  // another project exist on disk but this project has no rows, so the
+  // deck would sit at "Not generated yet" until a Generate request
+  // happens to skip_existing its way to them. Pruning: the reverse lie —
+  // output files are shared and tag-less, so another project clearing
+  // them leaves this project's rows asserting green badges for images
+  // that 404. Keyed on the identity set, not `cards` itself, so quantity
+  // edits don't re-fire it; best-effort because a failure only means the
+  // status poll shows a stale view until the next reconcile.
   const cardIdentities = cards.map(localCardIdentity).sort().join("|");
   useEffect(() => {
     if (!projectTag || serverUnavailable || cards.length === 0) return;
     let cancelled = false;
     generationApi
       .adoptGallery(projectTag, cards.map(cardToEntry), genPaths.output_dir)
-      .then(({ adopted }) => {
-        if (!cancelled && adopted > 0) {
+      .then(({ adopted, pruned }) => {
+        if (!cancelled && (adopted > 0 || pruned > 0)) {
           queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
         }
       })

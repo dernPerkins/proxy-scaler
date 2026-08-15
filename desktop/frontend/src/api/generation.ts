@@ -101,12 +101,13 @@ export const generationApi = {
 
   listGallery: (projectTag: string) =>
     request<GalleryItem[]>(`/api/gallery?${new URLSearchParams({ project_tag: projectTag })}`),
-  // Registers already-existing images for these cards into this project's
-  // gallery (other projects' rows + an output-dir filename scan), so
-  // already-generated cards show as done right after an import instead of
-  // waiting for a Generate request.
+  // Reconciles this project's gallery with the server's disk, both ways:
+  // prunes rows/done-tasks whose files are gone (stale green badges), then
+  // registers already-existing images for these cards (other projects'
+  // rows + an output-dir filename scan), so the deck list reflects
+  // reality right after an import/load without a Generate request.
   adoptGallery: (projectTag: string, entries: DeckEntryIn[], outputDir: string) =>
-    request<{ adopted: number }>("/api/gallery/adopt", {
+    request<{ adopted: number; pruned: number }>("/api/gallery/adopt", {
       method: "POST",
       body: JSON.stringify({ project_tag: projectTag, entries, output_dir: outputDir }),
     }),

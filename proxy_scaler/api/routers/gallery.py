@@ -57,13 +57,18 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
 
 @router.post("/adopt", response_model=AdoptGalleryOut)
 def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
-    """Register already-existing images for these cards into this
-    project's gallery (see db.adopt_gallery_items): other projects'
+    """Reconcile this project's gallery with what actually exists on disk,
+    in both directions. First prune: drop this tag's gallery rows and done-
+    task records whose output file is gone (db.prune_stale_gallery_items) —
+    pruning runs first so a stale row can't block adopting a live
+    replacement. Then adopt (db.adopt_gallery_items): other projects'
     gallery rows, plus — when output_dir is sent — an on-disk filename
     scan for images with no row anywhere. Called by the client after an
-    import / on project load, so already-generated images show without
-    waiting for a Generate request. Idempotent and cheap: SQL plus
-    file checks, no Scryfall, no upscaling."""
+    import / on project load, so badges reflect reality without waiting
+    for a Generate request. Idempotent and cheap: SQL plus file stats, no
+    Scryfall, no upscaling."""
+    db_path = get_db_path()
+    pruned = db.prune_stale_gallery_items(body.project_tag, db_path=db_path)
     entries = [
         DeckEntry(
             quantity=e.quantity,
@@ -77,10 +82,10 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
     adopted = db.adopt_gallery_items(
         body.project_tag,
         entries,
-        db_path=get_db_path(),
+        db_path=db_path,
         output_dir=Path(body.output_dir) if body.output_dir else None,
     )
-    return AdoptGalleryOut(adopted=adopted)
+    return AdoptGalleryOut(adopted=adopted, pruned=pruned)
 
 
 @router.get("/{gallery_item_id}/original")

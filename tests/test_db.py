@@ -744,3 +744,30 @@ def test_migration_runner_applies_steps_in_order_and_is_idempotent(
     db_module._migrate(conn)
     conn.close()
     assert calls == []
+
+
+def test_prune_stale_gallery_items_keeps_live_records(db_path: Path, tmp_path: Path) -> None:
+    """Prune only removes what's actually stale: rows whose file exists
+    and tasks that never claimed an image (pending here) stay."""
+    live = tmp_path / "live.png"
+    live.write_bytes(b"png")
+    gone = tmp_path / "gone.png"  # never written
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=live, original_path=live), db_path=db_path
+    )
+    db_module.upsert_gallery_item(
+        "tag-a",
+        _result(out_path=gone, original_path=gone, dpi=1200),
+        db_path=db_path,
+    )
+    _enqueue_sol_ring(db_path, project_tag="tag-a")  # stays pending
+
+    assert db_module.prune_stale_gallery_items("tag-a", db_path=db_path) == 1
+
+    [kept] = list_gallery_items("tag-a", db_path=db_path)
+    assert kept["out_path"] == str(live)
+    [task] = list_tasks(db_path=db_path)
+    assert task.status == "pending"
+
+    # Second pass is a no-op.
+    assert db_module.prune_stale_gallery_items("tag-a", db_path=db_path) == 0
