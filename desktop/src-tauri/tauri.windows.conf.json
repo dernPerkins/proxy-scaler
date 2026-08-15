@@ -3,6 +3,11 @@
     "targets": ["msi"],
     "resources": {
       "target/release/proxy-scaler-serve": "proxy-scaler-serve"
+    },
+    "windows": {
+      "wix": {
+        "template": "../wix/main.wxs"
+      }
     }
   }
 }

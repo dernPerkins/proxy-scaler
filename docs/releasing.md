@@ -40,10 +40,14 @@ to it. So a GPU variant is chosen at install time, and produces a
 separate artifact:
 
 ```bash
-make install                          # default: CUDA-capable (also fine CPU-only)
+make install                          # default: CUDA-capable on Linux (also fine CPU-only)
 GPU_VARIANT=rocm make install         # AMD on Linux
 GPU_VARIANT=directml make install     # AMD on Windows
 ```
+
+On **Windows** the default install is CPU-only — PyPI's Windows torch
+wheels ship without CUDA — so an Nvidia-on-Windows build needs an extra
+CUDA-wheel step after `make install`; see [Windows](#windows).
 
 Then `make sidecar` freezes whatever is in the venv. Serving both Nvidia
 and AMD users on the same OS means two full build passes with different
@@ -299,56 +303,116 @@ signed.
 
 ## Windows
 
-Run from **Git Bash or MSYS2**, not `cmd`/PowerShell — the Makefile
-detects those environments (`MINGW*`/`MSYS*`/`CYGWIN*`) to find the
-venv's `Scripts/` directory and `.exe` suffixes.
+Every command below runs from **Git Bash or MSYS2** (not
+`cmd`/PowerShell — the Makefile detects those environments to find the
+venv's `Scripts/` directory and `.exe` suffixes), from the repo root.
+
+There are two Windows variants — Nvidia (CUDA) and AMD (DirectML) — and
+the venv holds exactly one at a time, so each is a full pass starting
+from a deleted venv. Both passes write their MSIs to the same
+`target/release/bundle/msi/` paths, so the copy-out step at the end of
+each pass is what keeps them from overwriting each other.
+
+**The MSI is not a single file.** The distributable set is a small
+`.msi` (landing in `target/release/bundle/msi/`) plus `cab1.cab`…
+`cabN.cab` holding the actual payload — which `light.exe` leaves behind
+in `target/release/wix/x64/`, because Tauri only copies the `.msi` out.
+The assemble step at the end of each pass gathers them into one `dist/`
+folder per app. Every file ships together: the `.msi` finds its cabs by
+name in its own directory, so a user who downloads them must put them
+all in one folder before running the installer (and the two apps' cab
+names collide, so client and server sets can never share a folder).
+
+The split comes from `desktop/wix/main.wxs` (wired in via each app's
+`tauri.windows.conf.json`), a copy of Tauri's default WiX template with
+one change: external split cabinets instead of one embedded cabinet. The
+embedded default hard-fails on the ~4GB CUDA sidecar — `light.exe` dies
+with `LGHT0001 Catastrophic failure` in `WixCreateCab`, because both the
+CAB format and the `.msi` container cap out near 2GB.
+
+First time only: `cd desktop/frontend && npm install && cd ../..`
+
+### Pass 1 — Nvidia (CUDA)
 
 ```bash
-make install                 # or: GPU_VARIANT=directml make install PY="py -3.12"
+rm -rf .venv
+make install PY="py -3.12"
+
+# PyPI's *Windows* torch wheels are CPU-only (unlike Linux), so layer the
+# CUDA wheel on top. If pip can't resolve cu126, check pytorch.org's
+# install selector for the current index name.
+.venv/Scripts/pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# CHECKPOINT: must print a "+cu..." version and True. If not, stop —
+# a freeze from this venv would ship a CPU-only server.
+.venv/Scripts/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+
 make sidecar
-cd desktop/src-tauri && cargo tauri build      # client MSI
-cd ../server-app && cargo tauri build          # server app MSI
+cd desktop/src-tauri && cargo tauri build && cd ../..      # client MSI
+cd desktop/server-app && cargo tauri build && cd ../..     # server app MSI
+
+# Assemble each app's distributable set (.msi + its cab files) into its
+# own dist/ folder. The cabs are in wix/x64, NOT next to the built .msi.
+mkdir -p dist/proxy-scaler-client_0.1.0_windows-x64_cuda dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda
+cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_0.1.0_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_0.1.0_windows-x64_cuda/
+cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_0.1.0_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda/
+
+# Zip each folder — the zip is what gets uploaded: one file per app, and
+# nobody can download the .msi without the cabs it needs. (tar here is
+# Windows' built-in bsdtar; -a picks zip format from the output name.)
+tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_cuda.zip -C dist proxy-scaler-client_0.1.0_windows-x64_cuda
+tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_cuda
 ```
 
-Outputs land in each project's `target/release/bundle/msi/`.
+### Pass 2 — AMD (DirectML)
 
-### Interpreter pin
-
-`make install` bootstraps the venv with the `py` launcher rather than
-`python3` — on Windows that name is usually the Microsoft Store alias
-stub, which prints an ad and exits without creating anything.
-
-Pin the version when it matters: **the DirectML variant requires it**,
-because `torch-directml` pins `torch==2.4.1`, which has no wheels for the
-newest Python releases. A bare `py` (newest installed) will fail to
-resolve it:
+The `PY="py -3.12"` pin is load-bearing here: `torch-directml` pins
+`torch==2.4.1`, which has no wheels for the newest Python releases, and
+a bare `py` (newest installed) will fail to resolve it. (`make install`
+uses the `py` launcher rather than `python3` in all cases — on Windows
+`python3` is usually the Microsoft Store alias stub, which prints an ad
+and exits without creating anything.)
 
 ```bash
+rm -rf .venv
 GPU_VARIANT=directml make install PY="py -3.12"
+make sidecar
+
+# CHECKPOINT: this file must exist. PyInstaller has no torch_directml
+# hook, and a freeze without it ships a server that crashes at startup
+# with "Failed to load dynlib/dll ... torch_directml\DirectML.dll" —
+# this happened. If it's missing, fix the collection in
+# desktop/pyinstaller/proxy-scaler-serve.spec before building installers.
+ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/torch_directml/DirectML.dll
+
+cd desktop/src-tauri && cargo tauri build && cd ../..
+cd desktop/server-app && cargo tauri build && cd ../..
+mkdir -p dist/proxy-scaler-client_0.1.0_windows-x64_directml dist/proxy-scaler-server-app_0.1.0_windows-x64_directml
+cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_0.1.0_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_0.1.0_windows-x64_directml/
+cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_0.1.0_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_0.1.0_windows-x64_directml/
+tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_directml.zip -C dist proxy-scaler-client_0.1.0_windows-x64_directml
+tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_directml.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_directml
 ```
 
-### Sidecar placement
+### After both passes
+
+Uninstall any previous Proxy Scaler install, then on a clean machine
+download a zip and **extract it fully** before running the `.msi` — the
+`.msi` alone installs nothing; its payload is the cab files, which must
+sit in the same directory, and running it from inside a zip preview
+window can't see them. Then confirm Local mode reaches the Decklist tab
+without the "Couldn't start the local server" toast. On the CUDA build,
+also confirm the app reports a GPU device rather than CPU.
+
+### Why there's no patch step (unlike macOS)
 
 Windows is the one platform where Tauri's own resource mechanism works
-cleanly: `resource_dir()` there *is* the executable's directory, which is
-exactly where the `current_exe()`-relative lookup checks. So
-`tauri.windows.conf.json` declares the sidecar via `bundle.resources` and
-Tauri places it — no manual patch step, no equivalent of
+cleanly: `resource_dir()` there *is* the executable's directory, exactly
+where the `current_exe()`-relative lookup checks. So
+`tauri.windows.conf.json` declares the sidecar via `bundle.resources`
+(and sets `targets: ["msi"]`, overriding the base config's
+macOS-oriented `["dmg", "app"]`), and Tauri places it — no equivalent of
 `macos-release` needed.
-
-`tauri.windows.conf.json` also sets `targets: ["msi"]`, overriding the
-base config's macOS-oriented `["dmg", "app"]`.
-
-### Unverified
-
-DirectML's `DirectML.dll` is loaded at runtime via
-`torch.ops.load_library`, not as a link-time dependency, and no
-PyInstaller hook exists for `torch_directml`. PyInstaller usually
-collects binaries sitting inside a package directory anyway, but this
-specific case hasn't been confirmed. After a `GPU_VARIANT=directml`
-freeze, check that `DirectML.dll` is present next to `torch_directml/` in
-the frozen `_internal/` tree. If it's missing, add an explicit
-`--add-binary` to `desktop/pyinstaller/proxy-scaler-serve.spec`.
 
 ---
 
@@ -358,7 +422,7 @@ the frozen `_internal/` tree. If it's missing, add an explicit
 2. `make install` if dependencies or `GPU_VARIANT` changed.
 3. `make sidecar` (or `sidecar-release`) if `proxy_scaler/*` changed.
 4. Build: `make release` (Linux) / `make macos-release` (macOS) /
-   `cargo tauri build` (Windows).
+   the per-variant passes in [Windows](#windows).
 5. Verify the artifact actually contains the sidecar — on macOS this is
    the mount-and-`ls` above; elsewhere, check the archive listing.
 6. Install from the artifact on a clean machine and confirm the server
