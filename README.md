@@ -51,6 +51,24 @@ Prebuilt desktop app, server app, and Linux package.
 See [Desktop app](#desktop-app) and [Server](#server) below for what each one is and how to use it.
 Building from source (Python CLI, or the desktop app yourself) is covered under [Command-line / library use](#command-line--library-use).
 
+### Which build?
+
+The Drive folder has one build per OS-and-GPU combination — the GPU
+variant is baked into the filename (`cuda`, `cuda-legacy`, `directml`,
+`rocm`). Pick your row here, then grab the desktop app or server app
+flavor of it as needed:
+
+| Your OS | Your GPU | Build to download |
+|---|---|---|
+| Windows | Nvidia RTX (20-series or newer), or GTX 16-series | `cuda` |
+| Windows | Nvidia GTX 10-series or older | `cuda-legacy` (do **not** use on RTX 50 cards — it crashes) |
+| Windows | AMD or Intel (any DirectX 12 GPU) | `directml` |
+| Windows | None — CPU only | `cuda` (runs fine without a GPU) |
+| macOS | Apple Silicon (M-series) | the `macos-arm64` `.dmg` — GPU acceleration (Metal) is built in |
+| macOS | Intel Mac | not supported |
+| Linux | Nvidia, or CPU only | the standard `linux` build |
+| Linux | AMD | the `rocm` build |
+
 ### Requirements
 
 The installers are self-contained — Python, PyTorch, and the upscaling
@@ -69,9 +87,8 @@ models' loader are all bundled. What you need beyond the download:
   Debian 12 floor.
 - **GPU acceleration** is optional — CPU-only works out of the box.
   Nvidia just needs its regular [driver](https://www.nvidia.com/en-us/drivers/)
-  (no CUDA toolkit); AMD users should pick the ROCm (Linux) or DirectML
-  (Windows) build from the
-  [Google Drive folder](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link).
+  (no CUDA toolkit); make sure you grabbed the right build for your GPU
+  per the [table above](#which-build).
 
 ## Desktop app
 

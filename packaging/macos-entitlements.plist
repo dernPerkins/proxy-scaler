@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements for the PyInstaller sidecar
+     executables (python + proxy-scaler-serve). Notarization requires the
+     hardened runtime, and the hardened runtime by default forbids two
+     things CPython needs:
+       - allow-unsigned-executable-memory: ctypes/cffi build call
+         trampolines in writable+executable pages at runtime
+       - disable-library-validation: torch and friends dlopen dylibs that
+         aren't signed by our team ID
+     Applied only to the sidecar executables by sign-macos.sh; the Tauri
+     binary and plain dylibs are signed without entitlements. Add nothing
+     here without a concrete launch failure in hand — every entry weakens
+     the hardened runtime. -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

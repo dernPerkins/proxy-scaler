@@ -100,6 +100,21 @@ SERVER_APP_NAME := Proxy Scaler Server.app
 # distinction is the whole point of these targets. arm64 vs x86_64 rather
 # than PKG_ARCH's dpkg-flavored names, since dpkg isn't a thing here.
 MACOS_ARCH := $(shell uname -m)
+
+# Developer ID signing + notarization -- both optional. Left unset, the
+# build ad-hoc signs exactly as before: runs locally, but downloaded
+# copies still hit the Gatekeeper "could not verify" warning. Once the
+# Apple Developer cert is in the Mac's login keychain, pass:
+#   MACOS_SIGN_IDENTITY   the full identity string, e.g.
+#                         "Developer ID Application: <name> (<TEAMID>)"
+#                         -- list yours: security find-identity -v -p codesigning
+#   MACOS_NOTARY_PROFILE  keychain profile made once via
+#                         `xcrun notarytool store-credentials`
+# Identity alone: Developer-ID-signed but unnotarized (local testing).
+# Both: signed, notarized, stapled -- warning-free for users.
+# See docs/releasing.md ("Developer ID & notarization").
+MACOS_SIGN_IDENTITY ?=
+MACOS_NOTARY_PROFILE ?=
 CLIENT_DMG := dist/proxy-scaler-client_$(PKG_VERSION)_macos-$(MACOS_ARCH).dmg
 SERVER_APP_DMG := dist/proxy-scaler-server-app_$(PKG_VERSION)_macos-$(MACOS_ARCH).dmg
 
@@ -363,11 +378,17 @@ run:
 # what this restores. Apple has deprecated --deep for signing anyway; the
 # inside-out alternative is documented in docs/releasing.md should this
 # ever stop being enough.
+# With MACOS_SIGN_IDENTITY set, the ad-hoc re-seal is replaced by a full
+# inside-out Developer ID pass (packaging/sign-macos.sh): every sidecar
+# Mach-O re-signed with hardened runtime + entitlements, outer bundle
+# last. Still no --deep, for the dist-info reason above.
 define codesign_app
-	@echo "==> ad-hoc re-signing the bundle (the sidecar copy invalidated Tauri's signature)"
-	codesign --force --sign - "$(1)"
-	codesign --verify --strict "$(1)"
-	@echo "signed (ad-hoc, unnotarized): $(1)"
+	$(if $(MACOS_SIGN_IDENTITY),\
+	bash ./packaging/sign-macos.sh "$(1)" "$(MACOS_SIGN_IDENTITY)",\
+	echo "==> ad-hoc re-signing the bundle (the sidecar copy invalidated Tauri's signature)" \
+	&& codesign --force --sign - "$(1)" \
+	&& codesign --verify --strict "$(1)" \
+	&& echo "signed (ad-hoc, unnotarized): $(1)")
 endef
 
 # macOS only. Tauri v2 has no afterBundleCommand hook, so the sidecar has
@@ -462,6 +483,7 @@ server-app-dev:
 define build_dmg
 	@echo "==> building styled .dmg (background + drag-to-Applications layout)"
 	bash ./packaging/build-dmg-macos.sh "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)"
+	$(if $(MACOS_SIGN_IDENTITY),bash ./packaging/notarize-macos.sh "$(5)" "$(MACOS_SIGN_IDENTITY)" "$(MACOS_NOTARY_PROFILE)")
 endef
 
 macos-release-client:

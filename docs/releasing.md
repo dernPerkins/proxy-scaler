@@ -201,19 +201,30 @@ pointed at a staging directory holding both (built and then deleted under
 that only ever produces a volume containing a lone app icon with nowhere
 to drop it.
 
-There is no custom window size, background image or icon positioning.
-That part lives in a `.DS_Store` that has to be produced by driving
-Finder over AppleScript during the build: it needs a logged-in GUI
-session, breaks in CI, and buys nothing functional. Deliberately skipped.
+The window styling (background image with the drag arrow, fixed window
+size and icon positions) is applied by `packaging/build-dmg-macos.sh`:
+it mounts a read-write dmg and drives Finder over AppleScript to write
+the volume's `.DS_Store`, then compresses to the final UDZO. That means
+the dmg build needs a logged-in GUI session, and the first run prompts
+for permission to control Finder (Privacy & Security → Automation). The
+background pngs live in `desktop/*/dmg/` — authored at 2x with 144-dpi
+metadata so Finder renders them at 1x; image editors can strip that dpi
+chunk on export (GIMP: keep "Save resolution" ticked), which makes the
+background render double-size.
 
 ### Code signing
 
-**Ad-hoc only.** `macos-bundle-{client,server-app}-sidecar` runs
+Two modes, selected by whether `MACOS_SIGN_IDENTITY` is set:
+
+**Default: ad-hoc.** `macos-bundle-{client,server-app}-sidecar` runs
 `codesign --force --sign -` on the `.app` immediately after the
 sidecar is copied in, and verifies it. This is not a substitute for
-notarization — there's still no Developer ID, so Gatekeeper still warns
-on first launch of a downloaded build (right-click → Open). Proper
-notarization needs a paid Apple Developer account.
+notarization — no Developer ID means Gatekeeper still blocks a
+downloaded build ("could not verify … free of malware"; since macOS 15
+the user has to approve it under Privacy & Security → Open Anyway).
+
+**Release: Developer ID + notarization.** See "Developer ID &
+notarization" below.
 
 Why it's needed at all: `cargo tauri build` signs the bundle it just
 produced, and copying a multi-GB directory into `Contents/Resources/`
@@ -247,16 +258,63 @@ Mach-O files arrive already signed. The sidecar copy only broke the
 *outer* seal, which is precisely what this restores. Apple has deprecated
 `--deep` for signing anyway (macOS 13+), in favour of inside-out signing.
 
-If the outer-only signature ever proves insufficient, the replacement is
-an inside-out pass — sign the sidecar's Mach-O files individually, then
-the outer `.app` last, still without `--deep`:
+The inside-out pass that replaces outer-only signing for releases lives
+in `packaging/sign-macos.sh` — sidecar Mach-O files individually, then
+the outer `.app` last, still without `--deep`.
+
+### Developer ID & notarization
+
+Distribution stays exactly as it is — a `.dmg` uploaded wherever we
+like. Notarization is Apple's automated malware scan for apps
+distributed *outside* the App Store; nothing here involves App Store
+review or hosting.
+
+One-time setup on the build Mac (needs the paid Apple Developer
+account):
+
+1. Create a **Developer ID Application** certificate at
+   developer.apple.com → Certificates, and install it in the login
+   keychain (or via Xcode → Settings → Accounts → Manage Certificates).
+   Confirm with `security find-identity -v -p codesigning` — the line
+   you want reads `Developer ID Application: <name> (<TEAMID>)`.
+2. Create an app-specific password at appleid.apple.com, then store
+   notary credentials in the keychain:
+
+   ```bash
+   xcrun notarytool store-credentials proxy-scaler-notary \
+       --apple-id <appleid email> --team-id <TEAMID> \
+       --password <app-specific password>
+   ```
+
+Then a release build is:
 
 ```bash
-find "<app>/Contents/Resources/proxy-scaler-serve" -type f -print0 |
-  while IFS= read -r -d '' f; do
-    file -b "$f" | grep -q Mach-O && codesign --force --sign - "$f"
-  done
-codesign --force --sign - "<app>"
+MACOS_SIGN_IDENTITY="Developer ID Application: <name> (<TEAMID>)" \
+MACOS_NOTARY_PROFILE=proxy-scaler-notary \
+make macos-release
+```
+
+With the identity set, `codesign_app` switches from the ad-hoc re-seal
+to `packaging/sign-macos.sh` (hardened runtime, secure timestamps,
+sidecar entitlements from `packaging/macos-entitlements.plist`), and
+after each dmg is built `packaging/notarize-macos.sh` signs it, submits
+it with `notarytool --wait` (typically a few minutes per dmg), and
+staples the ticket so Gatekeeper can verify offline. Identity without
+profile signs but skips notarization — useful for testing the signing
+pass, not for anything users download.
+
+If notarization is rejected, the script prints the `notarytool log`
+command that fetches Apple's per-file report; the usual culprits are a
+sidecar Mach-O that missed signing or a missing entitlement (the
+sidecar's CPython needs `allow-unsigned-executable-memory` and
+`disable-library-validation` under the hardened runtime; both are in the
+plist).
+
+Verify a finished dmg the way a user's Mac will:
+
+```bash
+spctl --assess --type open --context context:primary-signature -v dist/<name>.dmg
+xcrun stapler validate dist/<name>.dmg
 ```
 
 That's slow (a `file` call per entry across ~10k files) which is why it
