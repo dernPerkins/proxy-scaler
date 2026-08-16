@@ -58,8 +58,33 @@ PKG_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head
 # own filename — these tarballs aren't Debian packages themselves, this
 # just keeps all three artifact names readable side by side in dist/.
 PKG_ARCH := $(shell dpkg --print-architecture 2>/dev/null || uname -m)
-CLIENT_ARCHIVE := dist/proxy-scaler-client_$(PKG_VERSION)_linux-$(PKG_ARCH).tar.gz
-SERVER_APP_ARCHIVE := dist/proxy-scaler-server-app_$(PKG_VERSION)_linux-$(PKG_ARCH).tar.gz
+
+# Linux ships three GPU variants (cuda / cuda-legacy / rocm), so the
+# artifacts carry a variant tag or they'd overwrite each other in dist/.
+# The tag is read from the torch build actually installed in the venv --
+# the sidecar freezes whatever's there, so deriving the name from
+# GPU_VARIANT (a flag someone can forget) could mislabel an artifact;
+# torch/version.py can't. Parsed with sed rather than imported: importing
+# torch costs seconds on every make invocation, reading the file costs
+# nothing. cu13x is the current default wheel line ("cuda"); cu12x is the
+# older-driver build ("cuda-legacy", see GPU_VARIANT below); "unknown"
+# means no venv/torch, in which case the sidecar build would fail first
+# anyway.
+TORCH_BUILD := $(shell sed -n "s/^__version__ = '.*+\([a-z0-9.]*\)'/\1/p" $(firstword $(wildcard $(VENV)/lib/python*/site-packages/torch/version.py) $(wildcard $(VENV)/Lib/site-packages/torch/version.py)) 2>/dev/null)
+ifneq (,$(findstring rocm,$(TORCH_BUILD)))
+LINUX_GPU_TAG := rocm
+else ifneq (,$(findstring cu13,$(TORCH_BUILD)))
+LINUX_GPU_TAG := cuda
+else ifneq (,$(findstring cu12,$(TORCH_BUILD)))
+LINUX_GPU_TAG := cuda-legacy
+else ifneq (,$(TORCH_BUILD))
+LINUX_GPU_TAG := $(TORCH_BUILD)
+else
+LINUX_GPU_TAG := unknown
+endif
+
+CLIENT_ARCHIVE := dist/proxy-scaler-client_$(PKG_VERSION)_linux-$(PKG_ARCH)-$(LINUX_GPU_TAG).tar.gz
+SERVER_APP_ARCHIVE := dist/proxy-scaler-server-app_$(PKG_VERSION)_linux-$(PKG_ARCH)-$(LINUX_GPU_TAG).tar.gz
 # Placed as a sibling of the compiled binary in *both* target profiles —
 # main.rs finds it via std::env::current_exe()'s own directory at runtime.
 # Windows now also gets it via tauri.windows.conf.json's bundle.resources
@@ -128,7 +153,7 @@ SERVER_APP_DMG := dist/proxy-scaler-server-app_$(PKG_VERSION)_macos-$(MACOS_ARCH
 CLIENT_DMG_STAGE := desktop/src-tauri/target/release/dmg-stage
 SERVER_APP_DMG_STAGE := desktop/server-app/target/release/dmg-stage
 
-.PHONY: help install test serve sidecar sidecar-release _sidecar-freeze sidecar-clean \
+.PHONY: help install reinstall test serve sidecar sidecar-release _sidecar-freeze sidecar-clean \
 	build run desktop deb \
 	server-app server-app-dev server-app-run \
 	macos-bundle-client-sidecar macos-bundle-server-app-sidecar \
@@ -190,9 +215,11 @@ help:
 	@echo "                 plan to build the directml variant -- torch-directml"
 	@echo "                 pins torch==2.4.1, which has no wheels for the newest"
 	@echo "                 Python releases"
-	@echo "                 GPU_VARIANT=rocm|directml make install layers on an alternate"
-	@echo "                 torch build (AMD on Linux/Windows respectively) -- see the"
-	@echo "                 GPU_VARIANT comment above the sidecar targets in this Makefile"
+	@echo "                 GPU_VARIANT=rocm|cuda-legacy|directml make install layers on an"
+	@echo "                 alternate torch build (AMD-on-Linux / older-NVIDIA-drivers /"
+	@echo "                 AMD-on-Windows) -- see the GPU_VARIANT comment above the"
+	@echo "                 sidecar targets in this Makefile. Linux artifacts are named"
+	@echo "                 for the variant found in the venv at build time"
 	@echo "test             Run the full pytest suite"
 	@echo "serve            Run the supervisor directly (proxy-scaler-serve)"
 	@echo "frontend-install npm install in desktop/frontend"
@@ -208,6 +235,18 @@ install: $(PYTHON)
 ifneq ($(GPU_VARIANT),)
 	$(PIP) install $(TORCH_INSTALL_ARGS)
 endif
+
+# Switching GPU_VARIANT on an existing venv MUST go through this target,
+# not 'install': pip sees torch already installed, says "Requirement
+# already satisfied", and silently skips the alternate build (which once
+# produced three byte-identical cuda releases wearing three different
+# jobs). Even a forced reinstall isn't enough -- the previous variant's
+# orphaned dep wheels (nvidia-*-cu13 etc.) would stay in site-packages,
+# where PyInstaller's torch hook can sweep them into the freeze. A
+# variant switch is a fresh venv, full stop.
+reinstall:
+	rm -rf $(VENV)
+	$(MAKE) install
 
 # -m rather than the pytest console script: pytest isn't a declared
 # dependency of this project, so `pip install -e .` alone doesn't produce
@@ -233,12 +272,21 @@ sidecar-clean:
 # through the same torch.cuda.* namespace CUDA uses); 'directml' = AMD (or
 # any DirectX12 GPU) on Windows, where no ROCm build exists at all (see
 # upscale.py's torch_directml branch). 'sidecar' never re-resolves
-# dependencies itself, so the variant choice has to happen at 'install'
-# time — run e.g. `GPU_VARIANT=rocm make install sidecar` on the box
-# you're building for.
+# dependencies itself, so the variant choice has to happen at install
+# time — `GPU_VARIANT=rocm make install` into a FRESH venv, or
+# `GPU_VARIANT=rocm make reinstall` to switch an existing one (see
+# reinstall's comment for why plain 'install' can't switch variants).
 GPU_VARIANT ?=
 ifeq ($(GPU_VARIANT),rocm)
-TORCH_INSTALL_ARGS := torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+# rocm7.2 rather than an older line: it's the newest ROCm index carrying
+# the same torch version as the default cu13x build (checked Aug 2026 --
+# rocm6.4 stopped at torch 2.9.x).
+TORCH_INSTALL_ARGS := torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+else ifeq ($(GPU_VARIANT),cuda-legacy)
+# Same torch as the default build, compiled against CUDA 12.6 instead of
+# 13.x: runs on the CUDA 12 driver line (~525+) for users who can't or
+# won't move to the CUDA 13 drivers the default cu13x wheels require.
+TORCH_INSTALL_ARGS := torch torchvision --index-url https://download.pytorch.org/whl/cu126
 else ifeq ($(GPU_VARIANT),directml)
 # torch-directml hard-pins these exact versions in its own package
 # metadata — not a range, an exact pin (confirmed against the published
@@ -543,7 +591,7 @@ ifneq ($(UNAME_S),Linux)
 	@exit 1
 else
 	@echo "==> [4/4] building .deb"
-	./packaging/build-deb.sh
+	GPU_TAG="$(LINUX_GPU_TAG)" ./packaging/build-deb.sh
 endif
 
 # One command, everything upload-ready in dist/. sidecar-release listed

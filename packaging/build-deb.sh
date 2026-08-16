@@ -79,9 +79,16 @@ done
 # from a DEBIAN directory looser than 0775.
 chmod -R go-w "$STAGE"
 
+# GPU_TAG (exported by the Makefile's deb target) names which torch
+# variant the bundled sidecar was frozen with -- cuda / cuda-legacy /
+# rocm. Filename only: the package name and control metadata stay
+# `proxy-scaler`, so the variants correctly conflict with each other on
+# install rather than coexisting.
+OUT_DEB="$OUT_DIR/proxy-scaler_${VERSION}_${ARCH}${GPU_TAG:+-$GPU_TAG}.deb"
+
 # --root-owner-group avoids needing fakeroot just to get root:root
 # ownership in the archive.
-dpkg-deb --build --root-owner-group "$STAGE" "$OUT_DIR/proxy-scaler_${VERSION}_${ARCH}.deb"
+dpkg-deb --build --root-owner-group "$STAGE" "$OUT_DEB"
 
 echo
-echo "built: $OUT_DIR/proxy-scaler_${VERSION}_${ARCH}.deb"
+echo "built: $OUT_DEB"
