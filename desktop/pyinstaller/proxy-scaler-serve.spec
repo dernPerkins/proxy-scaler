@@ -28,8 +28,13 @@
 #
 # torch's hooks come from pyinstaller-hooks-contrib and are
 # auto-discovered once that package is installed in the build venv — no
-# explicit hookspath needed.
+# explicit hookspath needed. torch_directml has no such hook (in
+# pyinstaller-hooks-contrib or anywhere else), so it's collected
+# explicitly below when present.
+import importlib.util
 from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all
 
 # Spec files are exec()'d directly by PyInstaller, not imported as a
 # module — there's no __file__ in this namespace. PyInstaller injects
@@ -49,11 +54,29 @@ HIDDEN_IMPORTS = [
     "uvicorn.lifespan.on",
 ]
 
+# torch_directml (GPU_VARIANT=directml builds only — see the Makefile) has
+# no PyInstaller hook anywhere, and Analysis alone gets it wrong: the
+# pure-Python modules land in the PYZ, but DirectML.dll — loaded at
+# runtime via torch.ops.load_library, invisible to binary dependency
+# analysis — and the torch_directml_native extension's support files are
+# left behind. The installed app then dies in upscale.py::resolve_device
+# with "Failed to load dynlib/dll '..._internal/torch_directml/
+# DirectML.dll'". collect_all() sweeps the whole installed package
+# (DLLs, data, submodules); the find_spec guard keeps default/rocm
+# builds, where the package simply isn't installed, unaffected.
+BINARIES = []
+DATAS = []
+if importlib.util.find_spec("torch_directml") is not None:
+    dml_datas, dml_binaries, dml_hiddenimports = collect_all("torch_directml")
+    DATAS += dml_datas
+    BINARIES += dml_binaries
+    HIDDEN_IMPORTS += dml_hiddenimports
+
 a = Analysis(
     [str(ENTRY_SCRIPT)],
     pathex=[str(ROOT)],
-    binaries=[],
-    datas=[],
+    binaries=BINARIES,
+    datas=DATAS,
     hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},
