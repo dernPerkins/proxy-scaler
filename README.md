@@ -8,7 +8,7 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
 
 ## Quick Start
 
-1. Import a decklist with the format "1 Example Card (set) 123" (Archidekt provides this in their Export Options).
+1. Import a decklist with the format "1 Example Card (set) 123" (on Archidekt and Moxfield, adjust their Export Options to include the set and collector number).
 2. Click "Generate upscaled images" and wait till all the tasks are complete.
 3. Click the PDF tab, select your Page Size, click "Generate & Download PDF".
 **And you're done!**
