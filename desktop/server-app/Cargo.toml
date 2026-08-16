@@ -12,5 +12,10 @@ tauri-build = { version = "2", features = [] }
 # instead of quitting — the whole point of a server app you leave running.
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
+# Second launches focus the existing instance instead of spawning a second
+# supervisor that loses the port-13207 bind race — see main() for the
+# observed failure this prevents.
+tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"

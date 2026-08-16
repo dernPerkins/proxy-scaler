@@ -19,9 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, Notify};
@@ -329,15 +329,122 @@ async fn shutdown_and_exit(app: AppHandle) {
     app.exit(0);
 }
 
+// --- Close behavior ---------------------------------------------------
+//
+// What closing the window does is a real decision for a tray-resident
+// server app, and silently picking "hide to tray" turned out to be a
+// trap: a user who didn't notice the tray icon relaunched the app
+// repeatedly and ended up with three copies fighting over one port. So
+// the first close *asks* (a modal in the window, see ui/index.html),
+// the answer can be remembered, and the remembered value stays visible
+// and editable in the settings panel rather than becoming hidden state.
+//
+// Persisted as a tiny JSON file in the app config dir rather than a
+// settings plugin — one key does not justify a dependency.
+
+const CLOSE_ASK: &str = "ask";
+const CLOSE_TRAY: &str = "tray";
+const CLOSE_QUIT: &str = "quit";
+
+fn settings_file(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("settings.json"))
+}
+
+fn load_close_behavior(app: &AppHandle) -> String {
+    let value = settings_file(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v.get("close_behavior").and_then(|s| s.as_str()).map(String::from));
+    match value.as_deref() {
+        Some(CLOSE_TRAY) => CLOSE_TRAY.into(),
+        Some(CLOSE_QUIT) => CLOSE_QUIT.into(),
+        // Unknown/missing/corrupt all mean "ask" — the safe default.
+        _ => CLOSE_ASK.into(),
+    }
+}
+
+fn save_close_behavior(app: &AppHandle, value: &str) {
+    let Some(path) = settings_file(app) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        path,
+        serde_json::json!({ "close_behavior": value }).to_string(),
+    );
+}
+
+#[tauri::command]
+fn get_close_behavior(app: AppHandle) -> String {
+    load_close_behavior(&app)
+}
+
+#[tauri::command]
+fn set_close_behavior(app: AppHandle, value: String) -> Result<(), String> {
+    match value.as_str() {
+        CLOSE_ASK | CLOSE_TRAY | CLOSE_QUIT => {
+            save_close_behavior(&app, &value);
+            Ok(())
+        }
+        other => Err(format!("unknown close behavior: {other:?}")),
+    }
+}
+
+/// The modal's answer. `remember` writes the choice so the modal never
+/// shows again (until changed in settings); without it this is one-off.
+#[tauri::command]
+async fn resolve_close(app: AppHandle, action: String, remember: bool) -> Result<(), String> {
+    match action.as_str() {
+        CLOSE_TRAY => {
+            if remember {
+                save_close_behavior(&app, CLOSE_TRAY);
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            Ok(())
+        }
+        CLOSE_QUIT => {
+            if remember {
+                save_close_behavior(&app, CLOSE_QUIT);
+            }
+            shutdown_and_exit(app).await;
+            Ok(())
+        }
+        other => Err(format!("unknown close action: {other:?}")),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
+        // First, before any other plugin, per the plugin's own docs — the
+        // whole point is to bail out of a duplicate process as early as
+        // possible. Observed in the wild without this: a user launched
+        // three copies from the tray, and each extra copy spawned its own
+        // supervisor whose uvicorn lost the port-13207 bind race and died
+        // with a confusing generic startup failure. Now a second launch
+        // just surfaces the existing instance's window (which is likely
+        // hidden in the tray — that's what "launch it again" is usually
+        // trying to find) and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .manage(ServerState::default())
         .invoke_handler(tauri::generate_handler![
             get_status,
             set_settings,
             start_server,
-            stop_server
+            stop_server,
+            get_close_behavior,
+            set_close_behavior,
+            resolve_close
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
@@ -366,6 +473,34 @@ fn main() {
                 })
                 .build(app)?;
 
+            // App menu (a menubar on Windows/Linux, the global menu bar
+            // on macOS) with an explicit "Minimize to tray" — the same
+            // action closing the window offers, but discoverable and
+            // unambiguous. Distinct ids from the tray menu's items so
+            // the two handlers can never mistake each other's events.
+            let menu_minimize =
+                MenuItem::with_id(app, "menu-minimize-to-tray", "Minimize to tray", true, None::<&str>)?;
+            let menu_quit = MenuItem::with_id(app, "menu-quit", "Quit", true, None::<&str>)?;
+            let window_submenu = Submenu::with_items(
+                app,
+                "Menu",
+                true,
+                &[&menu_minimize, &PredefinedMenuItem::separator(app)?, &menu_quit],
+            )?;
+            app.set_menu(Menu::with_items(app, &[&window_submenu])?)?;
+            app.on_menu_event(|app, event| match event.id.as_ref() {
+                "menu-minimize-to-tray" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                }
+                "menu-quit" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(shutdown_and_exit(app));
+                }
+                _ => {}
+            });
+
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -376,11 +511,27 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Hide to tray rather than quit — this is a server you
-                // leave running; closing its status window shouldn't stop
-                // serving. Quit lives in the tray menu.
+                // Closing never quits directly — it either hides to tray,
+                // quits gracefully (server stopped first), or asks. The
+                // close is always prevented here; the chosen action then
+                // happens explicitly, so the "ask" modal can also be
+                // cancelled without side effects.
                 api.prevent_close();
-                let _ = window.hide();
+                let app = window.app_handle().clone();
+                match load_close_behavior(&app).as_str() {
+                    CLOSE_TRAY => {
+                        let _ = window.hide();
+                    }
+                    CLOSE_QUIT => {
+                        tauri::async_runtime::spawn(shutdown_and_exit(app));
+                    }
+                    // "ask": the window shows the modal (ui/index.html
+                    // listens for this event) and answers via the
+                    // resolve_close command.
+                    _ => {
+                        let _ = window.emit("close-requested", ());
+                    }
+                }
             }
         })
         .run(tauri::generate_context!())

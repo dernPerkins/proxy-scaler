@@ -307,11 +307,25 @@ Every command below runs from **Git Bash or MSYS2** (not
 `cmd`/PowerShell — the Makefile detects those environments to find the
 venv's `Scripts/` directory and `.exe` suffixes), from the repo root.
 
-There are two Windows variants — Nvidia (CUDA) and AMD (DirectML) — and
-the venv holds exactly one at a time, so each is a full pass starting
-from a deleted venv. Both passes write their MSIs to the same
-`target/release/bundle/msi/` paths, so the copy-out step at the end of
-each pass is what keeps them from overwriting each other.
+There are three Windows variants, and the venv holds exactly one at a
+time, so each is a full pass starting from a deleted venv. All passes
+write their MSIs to the same `target/release/bundle/msi/` paths, so the
+assemble step at the end of each pass is what keeps them from
+overwriting each other.
+
+| Variant | torch wheel | GPUs covered |
+|---|---|---|
+| `cuda` | cu128 (torch 2.11) | all RTX cards (sm_75 Turing → sm_120 Blackwell) |
+| `cuda-legacy` | cu126 (torch 2.13) | GTX 10-series → RTX 40 (sm_50 → sm_90); **crashes on RTX 50** |
+| `directml` | torch-directml | AMD/Intel (any DX12 GPU) |
+
+Two CUDA tiers exist because torch wheels bake in GPU kernels per
+compute capability, and no single wheel covers both a GTX 10-series
+(sm_61) and an RTX 50 (sm_120) — when PyTorch added Blackwell kernels
+in cu128 it dropped everything pre-Turing. Shipping the wrong tier
+fails at generation time with "CUDA error: no kernel image is available
+for execution on the device". After any torch swap, the arch-list
+checkpoint below is what catches this before a multi-GB build.
 
 **The MSI is not a single file.** The distributable set is a small
 `.msi` (landing in `target/release/bundle/msi/`) plus `cab1.cab`…
@@ -332,20 +346,24 @@ CAB format and the `.msi` container cap out near 2GB.
 
 First time only: `cd desktop/frontend && npm install && cd ../..`
 
-### Pass 1 — Nvidia (CUDA)
+### Pass 1 — Nvidia RTX (`cuda`, cu128)
 
 ```bash
 rm -rf .venv
 make install PY="py -3.12"
 
 # PyPI's *Windows* torch wheels are CPU-only (unlike Linux), so layer the
-# CUDA wheel on top. If pip can't resolve cu126, check pytorch.org's
-# install selector for the current index name.
-.venv/Scripts/pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# CUDA wheel on top. torch is pinned because a bare "torch" on these
+# indexes can resolve to an older version (torchvision's joint
+# constraints); bump the pin deliberately, checking what the index
+# actually has first: pip index versions torch --index-url <index>
+.venv/Scripts/pip install --force-reinstall "torch==2.11.0" torchvision --index-url https://download.pytorch.org/whl/cu128
 
-# CHECKPOINT: must print a "+cu..." version and True. If not, stop —
-# a freeze from this venv would ship a CPU-only server.
-.venv/Scripts/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# CHECKPOINT: must print a "+cu..." version, True, and an arch list
+# containing BOTH sm_75 (RTX 20) and sm_120 (RTX 50). If not, stop —
+# a freeze from this venv ships a server that's CPU-only or crashes
+# on whole GPU generations.
+.venv/Scripts/python -c "import torch; print(torch.__version__, torch.cuda.is_available()); print(torch.cuda.get_arch_list())"
 
 make sidecar
 cd desktop/src-tauri && cargo tauri build && cd ../..      # client MSI
@@ -364,7 +382,31 @@ tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_cuda.zip -C dist proxy-s
 tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_cuda
 ```
 
-### Pass 2 — AMD (DirectML)
+### Pass 2 — Nvidia GTX legacy (`cuda-legacy`, cu126)
+
+Identical to Pass 1 except for the wheel index, the checkpoint's
+expected arch list, and `_cuda-legacy` in every artifact name:
+
+```bash
+rm -rf .venv
+make install PY="py -3.12"
+.venv/Scripts/pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# CHECKPOINT: arch list must contain sm_61 (GTX 10-series) — that's the
+# card this whole variant exists for.
+.venv/Scripts/python -c "import torch; print(torch.__version__, torch.cuda.is_available()); print(torch.cuda.get_arch_list())"
+
+make sidecar
+cd desktop/src-tauri && cargo tauri build && cd ../..
+cd desktop/server-app && cargo tauri build && cd ../..
+mkdir -p dist/proxy-scaler-client_0.1.0_windows-x64_cuda-legacy dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy
+cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_0.1.0_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_0.1.0_windows-x64_cuda-legacy/
+cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_0.1.0_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy/
+tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_cuda-legacy.zip -C dist proxy-scaler-client_0.1.0_windows-x64_cuda-legacy
+tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy
+```
+
+### Pass 3 — AMD (DirectML)
 
 The `PY="py -3.12"` pin is load-bearing here: `torch-directml` pins
 `torch==2.4.1`, which has no wheels for the newest Python releases, and
@@ -394,15 +436,58 @@ tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_directml.zip -C dist pro
 tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_directml.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_directml
 ```
 
-### After both passes
+### Single-file setup.exe (the uploaded artifact)
+
+The zips work, but the preferred distributable is one `setup.exe` per
+app per variant: nothing to extract, and nobody can end up with the
+`.msi` separated from its cabs. It's produced by Inno Setup wrapping the
+assembled dist folder — the wrapper extracts the MSI set to `{tmp}` and
+hands off to Windows Installer, so the MSI remains the source of truth
+for install/upgrade/uninstall (see `desktop/inno/setup.iss`).
+
+Why Inno and not WiX's own bootstrapper: Burn's attached container is a
+CAB, so the same 2GB ceiling that forced external cabs kills the bundle
+too — verified failing on both WiX 3.14 (`LGHT0306`) and WiX v5
+(`0x80004005` compressing `bundle-attached.cab`). Inno 6 has no such
+limit (a 2.47GB single exe built and verified).
+
+Install once: `winget install JRSoftware.InnoSetup` — lands in
+`%LOCALAPPDATA%\Programs\Inno Setup 6`.
+
+```bash
+ISCC="$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe"
+
+"$ISCC" "/DAppName=Proxy Scaler" /DAppVersion=0.1.0 \
+  "/DMsiDir=$(pwd)/dist/proxy-scaler-client_0.1.0_windows-x64_cuda" \
+  "/DMsiName=Proxy Scaler_0.1.0_x64_en-US.msi" \
+  "/DIconPath=$(pwd)/desktop/src-tauri/icons/icon.ico" \
+  "/DOutputDir=$(pwd)/dist" \
+  /DOutputBaseName=proxy-scaler-client_0.1.0_windows-x64_cuda-setup \
+  /Q desktop/inno/setup.iss
+
+"$ISCC" "/DAppName=Proxy Scaler Server" /DAppVersion=0.1.0 \
+  "/DMsiDir=$(pwd)/dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda" \
+  "/DMsiName=Proxy Scaler Server_0.1.0_x64_en-US.msi" \
+  "/DIconPath=$(pwd)/desktop/server-app/icons/icon.ico" \
+  "/DOutputDir=$(pwd)/dist" \
+  /DOutputBaseName=proxy-scaler-server-app_0.1.0_windows-x64_cuda-setup \
+  /Q desktop/inno/setup.iss
+```
+
+Repeat per variant by swapping `_cuda` for `_cuda-legacy` / `_directml`
+in `MsiDir` and `OutputBaseName`.
+
+### After the passes
 
 Uninstall any previous Proxy Scaler install, then on a clean machine
 download a zip and **extract it fully** before running the `.msi` — the
 `.msi` alone installs nothing; its payload is the cab files, which must
 sit in the same directory, and running it from inside a zip preview
 window can't see them. Then confirm Local mode reaches the Decklist tab
-without the "Couldn't start the local server" toast. On the CUDA build,
-also confirm the app reports a GPU device rather than CPU.
+without the "Couldn't start the local server" toast. On the CUDA builds,
+also confirm the app reports a GPU device rather than CPU, and run an
+actual generation — the "no kernel image" class of failure only shows up
+when a kernel launches, not at startup.
 
 ### Why there's no patch step (unlike macOS)
 

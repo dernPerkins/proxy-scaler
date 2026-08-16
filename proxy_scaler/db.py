@@ -603,6 +603,24 @@ def enqueue_task(
         return int(cur.lastrowid)
 
 
+def reset_orphaned_running_tasks(db_path: Path | str | None = None) -> int:
+    """Re-queue tasks stuck in 'running' from a worker that died mid-task.
+
+    'running' is only ever set by the single live worker (serialized by
+    the worker lock file), so at worker startup — after the lock is
+    held — any row still 'running' belongs to a dead worker and will
+    otherwise sit in that state forever: claim_next_task() only claims
+    from 'pending', and clients render the orphan as a generation
+    perpetually in progress. Returns the number of tasks re-queued."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE generation_tasks SET status = 'pending', started_at = NULL "
+            "WHERE status = 'running'"
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def claim_next_task(db_path: Path | str | None = None) -> TaskRow | None:
     """Atomically pick the oldest pending task and mark it running. One
     worker process ever calls this, so contention isn't a real concern,

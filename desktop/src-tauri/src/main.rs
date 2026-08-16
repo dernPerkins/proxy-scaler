@@ -636,6 +636,21 @@ async fn shutdown_and_exit(app: AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        // First, before any other plugin, per the plugin's own docs — the
+        // whole point is to bail out of a duplicate process as early as
+        // possible. Without this, a second copy in Local mode spawns a
+        // second supervisor onto port 13207; its uvicorn loses the bind
+        // race and dies, surfacing as a confusing generic startup failure
+        // (the exact multi-instance mess observed in the wild with the
+        // server app). A second launch now just focuses the window the
+        // user already has.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())

@@ -23,6 +23,27 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
   </tr>
 </table>
 
+## Future Features
+
+Planned, in roughly the order they're likely to land:
+
+1. **Back printing** — printing card backs onto the reverse side of each
+   page. I've personally found back printing too finicky to bother with,
+   but plenty of people do use it, and it shouldn't be difficult to add.
+   It would likely mean loading a back image in from your own files.
+2. **Custom image upload** — use an artist's custom cards, or your own
+   images, instead of the Scryfall printing.
+3. **Better project management** — see how much storage space each
+   project is consuming, and clean up the ones you no longer need.
+4. **Editable set / collector number** — change a card's printing from
+   the decklist view; today you're stuck with whatever you imported.
+5. **MPCFill exploration** — browsing and selecting already-created
+   custom art the way other proxy tools do. Custom image upload above is
+   the stop-gap until something like this exists.
+
+Have an opinion on the order, or something missing? That's what the
+[Discord](https://discord.gg/bSshvYpKy) is for.
+
 ## Download
 
 [Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done.

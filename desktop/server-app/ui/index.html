@@ -188,6 +188,38 @@
         margin-top: 6px;
         user-select: all;
       }
+      select {
+        font: inherit;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        padding: 6px 9px;
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+      }
+      /* The hidden attribute only hides via the UA stylesheet's
+         `display: none`, which the `display: flex` above overrides —
+         without this rule the modal renders permanently, starting at
+         page load (shipped exactly once). */
+      .overlay[hidden] {
+        display: none;
+      }
+      .modal {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        width: min(420px, calc(100vw - 40px));
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+      }
       #log {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11.5px;
@@ -232,6 +264,14 @@
         network you trust.
       </div>
       <p class="hint">Settings can only be changed while the server is stopped.</p>
+      <label class="field" style="margin-top: 12px">
+        When closing the window
+        <select id="closeBehavior">
+          <option value="ask">Ask each time</option>
+          <option value="tray">Minimize to tray</option>
+          <option value="quit">Stop the server and quit</option>
+        </select>
+      </label>
     </div>
 
     <div class="panel">
@@ -245,8 +285,27 @@
       <div id="log" style="margin-top: 8px"></div>
     </div>
 
+    <div id="closeModal" class="overlay" hidden>
+      <div class="modal">
+        <strong>Minimize to the tray?</strong>
+        <p class="hint" style="margin: 8px 0 12px">
+          The server keeps running and this window stays available from the tray icon.
+          Choosing “No” stops the server and quits.
+        </p>
+        <label class="check" style="margin-bottom: 14px">
+          <input id="rememberClose" type="checkbox" />
+          Remember my choice
+        </label>
+        <div class="row" style="justify-content: flex-end">
+          <button id="closeQuit">No, quit</button>
+          <button id="closeTray" class="primary">Yes, minimize</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const invoke = window.__TAURI__.core.invoke;
+      const listen = window.__TAURI__.event.listen;
 
       const el = {
         status: document.getElementById("status"),
@@ -257,6 +316,11 @@
         remoteWarning: document.getElementById("remoteWarning"),
         addresses: document.getElementById("addresses"),
         log: document.getElementById("log"),
+        closeBehavior: document.getElementById("closeBehavior"),
+        closeModal: document.getElementById("closeModal"),
+        rememberClose: document.getElementById("rememberClose"),
+        closeTray: document.getElementById("closeTray"),
+        closeQuit: document.getElementById("closeQuit"),
       };
 
       let running = false;
@@ -360,7 +424,59 @@
         }
       });
 
+      // --- Close behavior -------------------------------------------
+      // The Rust side emits "close-requested" only when the persisted
+      // behavior is "ask"; a remembered choice acts without this modal
+      // ever appearing. The settings dropdown edits the same persisted
+      // value, so a remembered answer never becomes invisible state.
+
+      async function refreshCloseBehavior() {
+        try {
+          el.closeBehavior.value = await invoke("get_close_behavior");
+        } catch (err) {
+          showError(String(err));
+        }
+      }
+
+      el.closeBehavior.addEventListener("change", async () => {
+        try {
+          await invoke("set_close_behavior", { value: el.closeBehavior.value });
+        } catch (err) {
+          showError(String(err));
+        }
+      });
+
+      async function answerClose(action) {
+        el.closeModal.hidden = true;
+        try {
+          await invoke("resolve_close", {
+            action,
+            remember: el.rememberClose.checked,
+          });
+        } catch (err) {
+          showError(String(err));
+        }
+        refreshCloseBehavior();
+      }
+
+      el.closeTray.addEventListener("click", () => answerClose("tray"));
+      el.closeQuit.addEventListener("click", () => answerClose("quit"));
+      // Backdrop click / Escape cancel the close entirely — the window
+      // just stays open, nothing is remembered.
+      el.closeModal.addEventListener("click", (e) => {
+        if (e.target === el.closeModal) el.closeModal.hidden = true;
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") el.closeModal.hidden = true;
+      });
+
+      listen("close-requested", () => {
+        el.rememberClose.checked = false;
+        el.closeModal.hidden = false;
+      });
+
       refresh();
+      refreshCloseBehavior();
       setInterval(refresh, 1000);
     </script>
   </body>

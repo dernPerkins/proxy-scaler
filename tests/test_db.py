@@ -337,6 +337,32 @@ def test_claim_returns_oldest_pending_first(db_path: Path) -> None:
     assert claimed.id == first
 
 
+def test_reset_orphaned_running_tasks_requeues_only_running(db_path: Path) -> None:
+    """A task left 'running' by a killed worker gets re-queued at the next
+    worker startup (claim_next_task only claims from 'pending', so without
+    the reset it would sit 'running' forever — rendered by clients as a
+    generation perpetually in progress). Terminal states are untouched."""
+    from proxy_scaler.db import reset_orphaned_running_tasks
+
+    orphan = _enqueue_sol_ring(db_path, collector_number="1")
+    done = _enqueue_sol_ring(db_path, collector_number="2")
+    claimed = claim_next_task(db_path=db_path)
+    assert claimed.id == orphan  # now 'running', simulating a dead worker
+
+    mark_task_done(done, db_path=db_path)
+
+    assert reset_orphaned_running_tasks(db_path=db_path) == 1
+
+    by_id = {t.id: t for t in list_tasks(db_path=db_path)}
+    assert by_id[orphan].status == "pending"
+    assert by_id[orphan].started_at is None
+    assert by_id[done].status == "done"
+
+    # And the re-queued task is claimable again.
+    reclaimed = claim_next_task(db_path=db_path)
+    assert reclaimed is not None and reclaimed.id == orphan
+
+
 def test_mark_task_done_and_failed(db_path: Path) -> None:
     tid_done = _enqueue_sol_ring(db_path, collector_number="1")
     tid_failed = _enqueue_sol_ring(db_path, collector_number="2")

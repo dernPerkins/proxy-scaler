@@ -41,6 +41,11 @@ def main(
     if fd is None:
         print("Another worker is already running; exiting.")
         return
+    # Holding the lock proves no other worker is mid-task, so any
+    # 'running' row is an orphan from a dead worker — re-queue them.
+    requeued = db.reset_orphaned_running_tasks(db_path=db_path)
+    if requeued:
+        print(f"Re-queued {requeued} task(s) orphaned by a previous worker.")
     print("Worker started, polling for tasks…")
     try:
         while True:

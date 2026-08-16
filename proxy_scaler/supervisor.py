@@ -155,11 +155,42 @@ def _spawn(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.P
     return subprocess.Popen(cmd, **kwargs)
 
 
-def _wait_for_health(host: str, port: int, timeout: float) -> bool:
-    """Poll the API server's health endpoint until it responds OK."""
-    url = f"http://{host}:{port}/api/health"
+def _wait_for_health(
+    host: str,
+    port: int,
+    timeout: float,
+    proc: subprocess.Popen | None = None,
+) -> bool:
+    """Poll the API server's health endpoint until it responds OK.
+
+    When `proc` (the API child itself) is given, its exit also ends the
+    wait — immediately, not at the deadline. A child that has already
+    died can never answer a health probe, so continuing to poll for the
+    remaining timeout is pure dead time: observed in the wild as a user
+    who unknowingly launched a second server instance, whose uvicorn lost
+    the port bind and exited in under a second ("[WinError 10048] only
+    one usage of each socket address...") — after which the supervisor
+    still sat out the full 60s before reporting a generic timeout that
+    named neither the exit nor the port conflict. The caller can tell the
+    two failures apart afterward via proc.poll().
+    """
+    # `host` is the BIND host, and the wildcard addresses are not valid
+    # *destinations*: connecting to 0.0.0.0 happens to reach loopback on
+    # Linux (which masked this), but Windows rejects it outright
+    # (WSAEADDRNOTAVAIL). Before this mapping, --bind-all on Windows
+    # meant every health probe failed by construction, and the
+    # supervisor killed a perfectly healthy server at the 60s mark —
+    # observed in the wild as the server app dying with "did not become
+    # healthy in time" whenever "Allow connections from other devices"
+    # was enabled, while the worker was demonstrably completing tasks
+    # the whole time. A wildcard bind always includes loopback, so
+    # probing loopback is correct on every platform.
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    url = f"http://{probe_host}:{port}/api/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             resp = requests.get(url, timeout=2)
             if resp.ok:
@@ -386,15 +417,28 @@ def main(
 
     exit_code = 0
     try:
-        if _wait_for_health(host, port, HEALTH_TIMEOUT_S):
+        if _wait_for_health(host, port, HEALTH_TIMEOUT_S, proc=api_proc):
             print(READY_MARKER)
             sys.stdout.flush()
         else:
-            print(
-                "API server did not become healthy in time; shutting down.",
-                file=sys.stderr,
-            )
-            exit_code = 1
+            # Two distinct failures reach here, and naming which one
+            # matters: the desktop apps surface exactly these stderr lines
+            # as the user-facing startup error.
+            api_code = api_proc.poll()
+            if api_code is not None:
+                print(
+                    f"API server exited during startup (code {api_code}); "
+                    f"shutting down. This usually means port {port} is "
+                    "already in use — is another copy of this server (or "
+                    "the desktop app's own local server) already running?",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "API server did not become healthy in time; shutting down.",
+                    file=sys.stderr,
+                )
+            exit_code = api_code or 1
             shutdown_event.set()
 
         while not shutdown_event.is_set():

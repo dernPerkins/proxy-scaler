@@ -17,6 +17,10 @@ tokio = { version = "1", features = ["macros", "rt", "test-util"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+# Second launches focus the existing window instead of racing it: in Local
+# mode a second copy spawns its own sidecar supervisor onto port 13207,
+# which loses the bind and fails startup confusingly — see main().
+tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["sync", "time", "signal"] }
 # Local project store (see project_store.rs / ARCHITECTURE.md): "bundled"
 # compiles SQLite in rather than requiring a system libsqlite3-dev, which

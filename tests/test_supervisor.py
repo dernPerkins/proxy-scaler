@@ -52,6 +52,80 @@ def test_wait_for_health_times_out(monkeypatch) -> None:
     assert supervisor._wait_for_health("127.0.0.1", 8501, timeout=0.2) is False
 
 
+class _FakeProc:
+    """Stands in for the API child's Popen: poll() returns None while
+    "running", then the exit code from `exits_after` polls onward."""
+
+    def __init__(self, code: int | None, exits_after: int = 0) -> None:
+        self._code = code
+        self._polls_left = exits_after
+
+    def poll(self) -> int | None:
+        if self._polls_left > 0:
+            self._polls_left -= 1
+            return None
+        return self._code
+
+
+def test_wait_for_health_bails_out_when_child_already_exited(monkeypatch) -> None:
+    """The bug this guards against: a second instance's uvicorn loses the
+    port bind and exits in under a second, yet the supervisor sat out the
+    full health timeout before reporting a generic failure. A dead child
+    can never answer a probe, so the wait must end on the first poll —
+    without a single HTTP request being made."""
+    calls = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        calls["n"] += 1
+        raise requests.ConnectionError("never up")
+
+    monkeypatch.setattr(supervisor.requests, "get", fake_get)
+
+    start = time.monotonic()
+    result = supervisor._wait_for_health(
+        "127.0.0.1", 8501, timeout=30.0, proc=_FakeProc(code=1)
+    )
+    assert result is False
+    assert calls["n"] == 0
+    assert time.monotonic() - start < 5.0, "should not have waited out the timeout"
+
+
+def test_wait_for_health_bails_out_when_child_exits_mid_wait(monkeypatch) -> None:
+    def fake_get(url, timeout=None):
+        raise requests.ConnectionError("never up")
+
+    monkeypatch.setattr(supervisor.requests, "get", fake_get)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _s: None)
+
+    start = time.monotonic()
+    result = supervisor._wait_for_health(
+        "127.0.0.1", 8501, timeout=30.0, proc=_FakeProc(code=1, exits_after=3)
+    )
+    assert result is False
+    assert time.monotonic() - start < 5.0, "should not have waited out the timeout"
+
+
+def test_wait_for_health_live_child_does_not_short_circuit(monkeypatch) -> None:
+    """A running child (poll() → None) must leave the wait exactly as it
+    was: still polling until the endpoint answers."""
+    calls = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.ConnectionError("not up yet")
+        return _FakeResponse(ok=True)
+
+    monkeypatch.setattr(supervisor.requests, "get", fake_get)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _s: None)
+
+    result = supervisor._wait_for_health(
+        "127.0.0.1", 8501, timeout=5.0, proc=_FakeProc(code=None)
+    )
+    assert result is True
+    assert calls["n"] == 3
+
+
 def test_child_command_not_frozen_uses_module_flag(monkeypatch) -> None:
     """Regression guard for a real shipped bug: outside a frozen build,
     sys.executable is a genuine Python interpreter, so children are
