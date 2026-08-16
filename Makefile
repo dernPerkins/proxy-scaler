@@ -229,12 +229,18 @@ help:
 $(PYTHON):
 	$(PY) -m venv $(VENV)
 
+# The variant torch installs BEFORE `pip install -e .`, not after: -e .
+# resolves pyproject's torch>=2.1 dependency, and if no torch is present
+# yet it pulls PyPI's default build -- after which the variant install
+# below is a "Requirement already satisfied" no-op and the venv silently
+# stays on the default. Installed first, the variant build satisfies the
+# dependency and -e . leaves it alone.
 install: $(PYTHON)
 	$(PYTHON) -m pip install --upgrade pip
-	$(PIP) install -e .
 ifneq ($(GPU_VARIANT),)
 	$(PIP) install $(TORCH_INSTALL_ARGS)
 endif
+	$(PIP) install -e .
 
 # Switching GPU_VARIANT on an existing venv MUST go through this target,
 # not 'install': pip sees torch already installed, says "Requirement
