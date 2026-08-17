@@ -46,14 +46,14 @@ Have an opinion on the order, or something missing? That's what the
 
 ## Download
 
-[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link) — download, install, done.
+[proxy-scaler.com](https://proxy-scaler.com/#download) — download, install, done.
 Prebuilt desktop app, server app, and Linux package.
 See [Desktop app](#desktop-app) and [Server](#server) below for what each one is and how to use it.
 Building from source (Python CLI, or the desktop app yourself) is covered under [Command-line / library use](#command-line--library-use).
 
 ### Which build?
 
-The Drive folder has one build per OS-and-GPU combination — the GPU
+The download page has one build per OS-and-GPU combination — the GPU
 variant is baked into the filename (`cuda`, `cuda-legacy`, `directml`,
 `rocm`). Pick your row here, then grab the desktop app or server app
 flavor of it as needed:
@@ -251,7 +251,7 @@ the check.
 
 A small status window that runs the server for other machines to connect
 to, and minimises to the tray so it can be left running. Download it from
-[Google Drive](https://drive.google.com/drive/folders/1uqiXgRyMGbvMknasZXFH2d9jXbCa1ian?usp=drive_link),
+[proxy-scaler.com](https://proxy-scaler.com/#download),
 or build it yourself — see [`docs/releasing.md`](docs/releasing.md), which
 covers the per-OS steps (macOS in particular needs `make macos-release`
 rather than a bare `cargo tauri build`).

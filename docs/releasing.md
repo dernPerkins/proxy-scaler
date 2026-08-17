@@ -28,9 +28,10 @@ correctly is a per-platform concern, and it's where every packaging bug
 in this project has come from so far.
 
 **Artifacts are ~3.5–4.2GB each.** That's over GitHub's hard 2GB
-per-file release-asset limit, so releases are distributed via Google
-Drive rather than attached to a GitHub release. Splitting into <2GB
-chunks would also work but hasn't been needed.
+per-file release-asset limit, so releases are distributed from the R2
+bucket behind dl.proxy-scaler.com rather than attached to a GitHub
+release. Splitting into <2GB chunks would also work but hasn't been
+needed.
 
 ## GPU variants
 
@@ -571,4 +572,8 @@ macOS-oriented `["dmg", "app"]`), and Tauri places it — no equivalent of
 6. Install from the artifact on a clean machine and confirm the server
    starts (Local mode reaching the Decklist tab without the "Couldn't
    start the local server" toast).
-7. Upload to Google Drive and update the README link if it changed.
+7. Upload to the R2 bucket behind dl.proxy-scaler.com (`rclone copy
+   dist/ R2:proxy-scaler-site --include "proxy-scaler*"` once an `R2:`
+   remote is configured) and update the download buttons on the
+   [site](https://github.com/dernPerkins/proxy-scaler-site) if artifact
+   names changed.
