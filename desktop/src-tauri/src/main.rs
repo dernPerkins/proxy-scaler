@@ -362,6 +362,31 @@ async fn pick_save_path(app: AppHandle, suggested_name: String) -> Result<Option
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
+/// Opens a generation directory for the user: a local absolute path in
+/// the OS file manager, or an `sftp://host/path` URL for a Remote
+/// server's directory (best-effort — errors if the OS has no sftp
+/// handler; Linux file managers do natively, Windows/macOS need
+/// WinSCP/Cyberduck-style tools). Those two shapes are the whole
+/// allowlist, so the webview can't use this to launch arbitrary
+/// `http:`/`file:` targets.
+#[tauri::command]
+fn open_directory(app: AppHandle, target: String) -> Result<(), String> {
+    if target.starts_with("sftp://") {
+        #[allow(deprecated)]
+        return app.shell().open(&target, None).map_err(|e| e.to_string());
+    }
+    let dir = std::path::PathBuf::from(&target);
+    if !dir.is_absolute() {
+        return Err(format!("refusing to open non-absolute path: {target}"));
+    }
+    // output/ doesn't exist until the first generation finishes, and
+    // "open" on a missing path is a confusing silent no-op — create it
+    // so the click always lands somewhere.
+    std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {target}: {e}"))?;
+    #[allow(deprecated)]
+    app.shell().open(dir.to_string_lossy(), None).map_err(|e| e.to_string())
+}
+
 /// Fetch `url` straight to `path`, emitting `download-progress` as it
 /// goes. Returns Ok(false) if the user canceled mid-transfer.
 ///
@@ -660,6 +685,7 @@ fn main() {
             start_local_server,
             stop_local_server,
             pick_save_path,
+            open_directory,
             download_to_path,
             cancel_download,
             create_project,

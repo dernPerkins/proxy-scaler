@@ -11,6 +11,7 @@ from proxy_scaler.api.schemas import (
     ClearGeneratedOut,
     DeviceOut,
     DiscardTagOut,
+    GenPathsOut,
     ModelOptionOut,
 )
 from proxy_scaler.pipeline import clear_generated_data
@@ -61,6 +62,28 @@ def get_device() -> DeviceOut:
     recommendedDefaultModel)."""
     device = resolve_device()
     return DeviceOut(kind=device_kind(device), backend=device_backend(device))
+
+
+# Must match DEFAULT_GEN_PATHS in desktop/frontend/src/pages/DecklistPage.tsx —
+# the client sends these same relative names in every generate/regenerate/
+# clear request, and this endpoint reports where they actually land.
+DEFAULT_OUTPUT_DIR = "output"
+DEFAULT_CACHE_DIR = "imgcache"
+DEFAULT_WEIGHTS_DIR = "weights"
+
+
+@router.get("/paths", response_model=GenPathsOut)
+def get_paths() -> GenPathsOut:
+    """Absolute resolved locations of the generation directories. The
+    relative defaults resolve against this process's cwd (supervisor.py
+    sets that to db.default_data_dir() for frozen runs; dev runs use the
+    repo root), so only the server can answer this — and in Remote mode
+    the answer describes the remote machine's filesystem."""
+    return GenPathsOut(
+        output_dir=str(Path(DEFAULT_OUTPUT_DIR).resolve()),
+        cache_dir=str(Path(DEFAULT_CACHE_DIR).resolve()),
+        weights_dir=str(Path(DEFAULT_WEIGHTS_DIR).resolve()),
+    )
 
 
 @router.post("/generated-data/clear", response_model=ClearGeneratedOut)

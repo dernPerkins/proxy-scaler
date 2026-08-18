@@ -264,6 +264,15 @@ class ClearGeneratedOut(BaseModel):
     notes: list[str]
 
 
+class GenPathsOut(BaseModel):
+    # Absolute paths as resolved on the generation server's machine — in
+    # Remote mode these describe the remote host's filesystem, not the
+    # client's.
+    output_dir: str
+    cache_dir: str
+    weights_dir: str
+
+
 class DiscardTagOut(BaseModel):
     # How many pending tasks the discard canceled. The client fires
     # discard fire-and-forget and ignores the body; this is here so a

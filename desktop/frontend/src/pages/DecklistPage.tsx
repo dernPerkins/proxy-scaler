@@ -10,6 +10,7 @@ import StatusBadge from "../components/StatusBadge";
 import { DPI_OPTIONS, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
+import { invokeOpenDirectory, isTauri } from "../tauri";
 import { useProject } from "../context/ProjectContext";
 import { runDownload, useDownloadStatus } from "../download";
 import {
@@ -37,18 +38,14 @@ function annotateModelOptions(models: ModelOption[]): ModelOption[] {
   }));
 }
 
-// Generation-machine-local filesystem paths — meaningless as portable
-// project data (a path valid on this machine means nothing against a
-// Remote host), so unlike model/dpi_targets/skip_existing/tile_size
-// these live only in this page's own state, not in project.settings.
-// See ARCHITECTURE.md.
-interface GenPaths {
-  output_dir: string;
-  cache_dir: string;
-  weights_dir: string;
-}
-
-const DEFAULT_GEN_PATHS: GenPaths = {
+// Generation-machine-local directory names, fixed and not
+// user-configurable: every generate/regenerate/clear request sends these
+// same relative names, and the server resolves them against its own cwd.
+// misc.py's /api/paths mirrors them and reports where they actually land
+// (the sidebar shows that, read-only). Not in project.settings either —
+// a path valid on one machine means nothing against a Remote host. See
+// ARCHITECTURE.md.
+const DEFAULT_GEN_PATHS = {
   output_dir: "output",
   cache_dir: "imgcache",
   weights_dir: "weights",
@@ -117,7 +114,14 @@ export default function DecklistPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [sortPrimary, setSortPrimary] = useState<"Name" | "Set" | "(none)">("Name");
   const [expandedFaces, setExpandedFaces] = useState<Set<string>>(new Set());
-  const [genPaths, setGenPaths] = useState<GenPaths>(DEFAULT_GEN_PATHS);
+
+  // Where the fixed generation directories resolve on the connected
+  // server's machine — display-only. Invalidated on server switch in
+  // connection.tsx, since the answer is per-server.
+  const pathsQuery = useQuery({
+    queryKey: ["gen-paths"],
+    queryFn: () => generationApi.getPaths(),
+  });
 
   // Local card data (decklist text -> CardRow[]) is invoke-based and only
   // changes on an explicit mutation — no polling needed, it can't go
@@ -155,7 +159,7 @@ export default function DecklistPage() {
     if (!projectTag || serverUnavailable || cards.length === 0) return;
     let cancelled = false;
     generationApi
-      .adoptGallery(projectTag, cards.map(cardToEntry), genPaths.output_dir)
+      .adoptGallery(projectTag, cards.map(cardToEntry), DEFAULT_GEN_PATHS.output_dir)
       .then(({ adopted, pruned }) => {
         if (!cancelled && (adopted > 0 || pruned > 0)) {
           queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
@@ -166,7 +170,7 @@ export default function DecklistPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectTag, cardIdentities, serverUnavailable, genPaths.output_dir]);
+  }, [projectTag, cardIdentities, serverUnavailable]);
 
   const generateAllMutation = useMutation({
     mutationFn: () =>
@@ -177,9 +181,9 @@ export default function DecklistPage() {
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
-        output_dir: genPaths.output_dir,
-        cache_dir: genPaths.cache_dir,
-        weights_dir: genPaths.weights_dir,
+        output_dir: DEFAULT_GEN_PATHS.output_dir,
+        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
+        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
       }),
     onSuccess: (result) => {
       setStatus(
@@ -201,9 +205,9 @@ export default function DecklistPage() {
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
-        output_dir: genPaths.output_dir,
-        cache_dir: genPaths.cache_dir,
-        weights_dir: genPaths.weights_dir,
+        output_dir: DEFAULT_GEN_PATHS.output_dir,
+        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
+        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
       }),
     onSuccess: invalidateStatus,
     onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
@@ -213,9 +217,9 @@ export default function DecklistPage() {
     mutationFn: (galleryItemId: number) =>
       generationApi.regenerateGalleryItem(galleryItemId, {
         tile_size: settings.tile_size,
-        output_dir: genPaths.output_dir,
-        cache_dir: genPaths.cache_dir,
-        weights_dir: genPaths.weights_dir,
+        output_dir: DEFAULT_GEN_PATHS.output_dir,
+        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
+        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
       }),
     onSuccess: invalidateStatus,
     onError: (err: Error) => setStatus(`Regenerate failed: ${err.message}`),
@@ -225,8 +229,8 @@ export default function DecklistPage() {
   const clearGeneratedMutation = useMutation({
     mutationFn: () =>
       generationApi.clearGeneratedData(
-        genPaths.output_dir,
-        genPaths.cache_dir,
+        DEFAULT_GEN_PATHS.output_dir,
+        DEFAULT_GEN_PATHS.cache_dir,
         projectTag ?? undefined,
       ),
     onSuccess: () => {
@@ -235,6 +239,57 @@ export default function DecklistPage() {
     },
     onError: (err: Error) => setStatus(`Clear failed: ${err.message}`),
   });
+
+  function openDirectory(label: string, path: string) {
+    let target = path;
+    if (connection.mode === "remote") {
+      // The path describes the remote server's filesystem, so open it
+      // over sftp:// instead — best-effort: Linux file managers handle
+      // the scheme natively (GVFS/KIO, using ~/.ssh/config), Windows/
+      // macOS only via WinSCP/Cyberduck-style tools. A Windows server
+      // reports C:\Users\...; OpenSSH's sftp accepts that as /C:/Users/...
+      const posix = path.replace(/\\/g, "/");
+      target = `sftp://${connection.host}${posix.startsWith("/") ? posix : `/${posix}`}`;
+    }
+    invokeOpenDirectory(target).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      const hint =
+        connection.mode === "remote"
+          ? " — copy the path and browse it over SSH instead."
+          : "";
+      setStatus(`Couldn't open ${label.toLowerCase()}: ${msg}${hint}`);
+    });
+  }
+
+  // Read-only row for one generation directory: the server's resolved
+  // absolute path, clickable to open (file manager locally, sftp for a
+  // remote server). Plain text in a browser dev tab, where there's no
+  // Tauri command to invoke.
+  function dirRow(label: string, path: string | undefined) {
+    return (
+      <div className="field">
+        <span>{label}</span>
+        {path == null ? (
+          <span className="hint">…</span>
+        ) : isTauri() ? (
+          <button
+            type="button"
+            className="path-link mono"
+            title={
+              connection.mode === "remote"
+                ? "Open over SFTP (requires SSH access to the server)"
+                : "Open in file manager"
+            }
+            onClick={() => openDirectory(label, path)}
+          >
+            {path}
+          </button>
+        ) : (
+          <span className="path-text mono">{path}</span>
+        )}
+      </div>
+    );
+  }
 
   function toggleDpi(dpi: number) {
     setSettings((s) => ({
@@ -342,35 +397,16 @@ export default function DecklistPage() {
             />
           </label>
 
-          <label className="field">
-            <span>Output directory</span>
-            <input
-              value={genPaths.output_dir}
-              onChange={(e) => setGenPaths((p) => ({ ...p, output_dir: e.target.value }))}
-            />
-          </label>
-
-          <label className="field">
-            <span>Cache directory</span>
-            <input
-              value={genPaths.cache_dir}
-              onChange={(e) => setGenPaths((p) => ({ ...p, cache_dir: e.target.value }))}
-            />
-          </label>
-
-          <label className="field">
-            <span>Weights directory</span>
-            <input
-              value={genPaths.weights_dir}
-              onChange={(e) => setGenPaths((p) => ({ ...p, weights_dir: e.target.value }))}
-            />
-          </label>
+          {dirRow("Output directory", pathsQuery.data?.output_dir)}
+          {dirRow("Cache directory", pathsQuery.data?.cache_dir)}
+          {dirRow("Weights directory", pathsQuery.data?.weights_dir)}
         </div>
 
         <div className="danger-zone">
           <h3>Danger zone</h3>
           <p className="hint">
-            Deletes the output and cache directories above. Model weights are kept.
+            Deletes the generated images and download cache (the output and cache directories
+            shown above). Model weights are kept.
           </p>
           <label className="check">
             <input

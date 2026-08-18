@@ -319,6 +319,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     queryClient.invalidateQueries({ queryKey: ["worker-status"] });
     queryClient.invalidateQueries({ queryKey: ["pdf-preview"] });
     queryClient.invalidateQueries({ queryKey: ["models"] });
+    queryClient.invalidateQueries({ queryKey: ["gen-paths"] });
     return null;
   }
 
@@ -333,6 +334,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       queryClient.invalidateQueries({ queryKey: ["worker-status"] });
       queryClient.invalidateQueries({ queryKey: ["pdf-preview"] });
       queryClient.invalidateQueries({ queryKey: ["models"] });
+      queryClient.invalidateQueries({ queryKey: ["gen-paths"] });
     }
     return ok;
   }

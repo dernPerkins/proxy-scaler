@@ -208,6 +208,29 @@ input[type="checkbox"] {
   gap: 12px;
 }
 
+/* Read-only generation-directory rows in the decklist sidebar. App-data
+   paths are long (~/.local/share/proxy-scaler/output) and would overflow
+   the sidebar without the break-all. */
+.path-link {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  word-break: break-all;
+}
+.path-link:hover {
+  text-decoration: underline;
+}
+.path-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+  user-select: text;
+}
+
 /* Recent-servers list (RecentHostsList.tsx) — used below the address
    field in both ConnectGate.tsx and SwitchServerDialog.tsx. */
 .host-list {

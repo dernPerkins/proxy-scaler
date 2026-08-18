@@ -196,8 +196,14 @@ Project settings that live here: `model`, `dpi_targets`, `skip_existing`,
 `tile_size` — genuine per-project preferences. Deliberately **not**
 here: `output_dir`/`cache_dir`/`weights_dir`. Those are filesystem paths
 meaningful only on whichever machine is generating — a path valid on
-your Mac is meaningless against a Remote Linux host — so they're
-generation-server-side defaults instead of portable project data.
+your Mac is meaningless against a Remote Linux host — and they aren't
+user-configurable at all: the client always sends the fixed relative
+names in `DecklistPage.tsx`'s `DEFAULT_GEN_PATHS` (`output` /
+`imgcache` / `weights`), the server resolves them against its own cwd
+and reports the result via `GET /api/paths`, and the sidebar shows them
+read-only with an open-in-file-manager action (local server) or a
+best-effort `sftp://` open (remote server, via `main.rs`'s
+`open_directory` command).
 
 ### HTTP (generation server — `proxy_scaler/api/`)
 
@@ -217,6 +223,7 @@ string, not a database relationship.
 | `GET /api/gallery/{id}/original` \| `/full` | Serve image bytes |
 | `POST /api/pdf` | Assemble a PDF from `project_tag` + layout + card list **with quantities** (quantity is project data the generation server has no other way to know) |
 | `GET /api/models` | Enumerate upscale models (static, unchanged) |
+| `GET /api/paths` | Absolute resolved output/cache/weights dirs on the generation machine (fixed relative names resolved against the server's cwd) |
 | `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine |
 | `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session: cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
 | `GET /api/health` | Supervisor readiness probe |

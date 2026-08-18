@@ -10,6 +10,7 @@ import type {
   GalleryItem,
   GenerateRequest,
   GenerateResult,
+  GenPathsInfo,
   ModelOption,
   PdfJobRequest,
   PdfJobStarted,
@@ -60,6 +61,11 @@ export const generationApi = {
   // /api/health on the Python side is that nothing should route through
   // this until the server is already known to be up).
   getDevice: () => request<Device>("/api/device"),
+
+  // Where the fixed generation directories actually live on the server's
+  // machine — the client only ever knows the relative names it sends
+  // (DEFAULT_GEN_PATHS); the server resolves them against its own cwd.
+  getPaths: () => request<GenPathsInfo>("/api/paths"),
 
   resolve: (entries: DeckEntryIn[]) =>
     request<ResolveResult>("/api/resolve", {

@@ -124,7 +124,14 @@ export default function TasksPage() {
             <tbody>
               {tasks.map((task) => (
                 <tr key={task.id}>
-                  <td>{task.card_name}</td>
+                  <td>
+                    {task.card_name}
+                    {task.face_label && (
+                      <span className="variant-face" style={{ marginLeft: 6 }} title={task.face_name}>
+                        {task.face_label}
+                      </span>
+                    )}
+                  </td>
                   <td className="mono">{task.dpi}</td>
                   <td className="mono">{task.model}</td>
                   <td>

@@ -302,6 +302,22 @@ def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
     assert resp.json() == {"kind": "cpu", "backend": "cpu"}
 
 
+def test_get_paths_resolves_against_server_cwd(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    # The relative defaults ("output" etc.) are meaningful only relative
+    # to the serving process's cwd — that resolution contract is the whole
+    # point of the endpoint, so pin it by moving the cwd.
+    monkeypatch.chdir(tmp_path)
+    resp = client.get("/api/paths")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "output_dir": str(tmp_path / "output"),
+        "cache_dir": str(tmp_path / "imgcache"),
+        "weights_dir": str(tmp_path / "weights"),
+    }
+
+
 def test_resolve_returns_canonical_identity(client: TestClient) -> None:
     resp = client.post("/api/resolve", json={"entries": [_sol_ring_entry()]})
     assert resp.status_code == 200

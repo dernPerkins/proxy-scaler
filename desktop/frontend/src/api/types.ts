@@ -92,6 +92,15 @@ export interface RegenerateGalleryItemRequest {
   weights_dir: string;
 }
 
+export interface GenPathsInfo {
+  // Absolute paths as resolved on the generation server's machine — in
+  // Remote mode these describe the remote host's filesystem, not this
+  // one's. See misc.py::get_paths.
+  output_dir: string;
+  cache_dir: string;
+  weights_dir: string;
+}
+
 export interface GenerateResult {
   queued: number;
   failed: number;

@@ -90,6 +90,19 @@ export async function invokePickSavePath(suggestedName: string): Promise<string 
   return window.__TAURI__.core.invoke<string | null>("pick_save_path", { suggestedName });
 }
 
+/** Opens a generation directory for the user (see main.rs::open_directory).
+ *  `target` is either a local absolute path (Local mode — opens in the OS
+ *  file manager, creating the directory first if needed) or an
+ *  `sftp://host/path` URL (Remote mode — best-effort, requires SSH access
+ *  to the server and an OS sftp handler). Anything else is rejected
+ *  Rust-side. */
+export async function invokeOpenDirectory(target: string): Promise<void> {
+  if (!window.__TAURI__) {
+    throw new Error("Not running inside Tauri");
+  }
+  await window.__TAURI__.core.invoke<void>("open_directory", { target });
+}
+
 // Rust fetches the URL and streams it to `path` (see
 // main.rs::download_to_path), reporting via `download-progress` events.
 // Only a URL crosses the IPC boundary — deliberately not the bytes: an
