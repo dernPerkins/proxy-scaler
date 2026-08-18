@@ -259,36 +259,39 @@ export default function DecklistPage() {
     });
   }
 
-  // Read-only row for one generation directory: the server's resolved
-  // absolute path, clickable to open (file manager locally, an SSH
-  // terminal for a remote server). Plain text in a browser dev tab,
+  // Button for one generation directory — opens it (file manager
+  // locally, an SSH terminal for a remote server). The resolved absolute
+  // path lives in the tooltip rather than the button face; disabled
+  // until the server has reported it. Plain text in a browser dev tab,
   // where there's no Tauri command to invoke.
   function dirRow(label: string, path: string | undefined) {
+    if (!isTauri()) {
+      return (
+        <div className="field">
+          <span>{label}</span>
+          <span className="path-text mono">{path ?? "…"}</span>
+        </div>
+      );
+    }
+    const title =
+      path == null
+        ? "Waiting for the server…"
+        : connection.mode === "remote"
+          ? `${path} — opens an SSH terminal on the server`
+          : path;
     return (
-      <div className="field">
+      <button
+        type="button"
+        className="path-link"
+        disabled={path == null}
+        title={title}
+        onClick={() => path != null && openDirectory(label, path)}
+      >
         <span>{label}</span>
-        {path == null ? (
-          <span className="hint">…</span>
-        ) : isTauri() ? (
-          <button
-            type="button"
-            className="path-link mono"
-            title={
-              connection.mode === "remote"
-                ? "Open an SSH terminal here (uses your ssh config)"
-                : "Open in file manager"
-            }
-            onClick={() => openDirectory(label, path)}
-          >
-            <span>{path}</span>
-            <span className="path-open-icon" aria-hidden="true">
-              ↗
-            </span>
-          </button>
-        ) : (
-          <span className="path-text mono">{path}</span>
-        )}
-      </div>
+        <span className="path-open-icon" aria-hidden="true">
+          ↗
+        </span>
+      </button>
     );
   }
 
@@ -398,16 +401,16 @@ export default function DecklistPage() {
             />
           </label>
 
-          {dirRow("Output directory", pathsQuery.data?.output_dir)}
-          {dirRow("Cache directory", pathsQuery.data?.cache_dir)}
-          {dirRow("Weights directory", pathsQuery.data?.weights_dir)}
+          {dirRow("Output Directory", pathsQuery.data?.output_dir)}
+          {dirRow("Cache Directory", pathsQuery.data?.cache_dir)}
+          {dirRow("Weights Directory", pathsQuery.data?.weights_dir)}
         </div>
 
         <div className="danger-zone">
           <h3>Danger zone</h3>
           <p className="hint">
             Deletes the generated images and download cache (the output and cache directories
-            shown above). Model weights are kept.
+            above). Model weights are kept.
           </p>
           <label className="check">
             <input
