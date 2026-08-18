@@ -400,7 +400,7 @@ export default function DecklistPage() {
             />
           </label>
 
-          <div className="field">
+          <div className="field divided">
             <span>Directories</span>
             {dirRow("Output", pathsQuery.data?.output_dir)}
             {dirRow("Cache", pathsQuery.data?.cache_dir)}

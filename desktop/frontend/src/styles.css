@@ -208,6 +208,14 @@ input[type="checkbox"] {
   gap: 12px;
 }
 
+/* Starts a new sidebar section: same separator treatment as
+   .danger-zone. */
+.field.divided {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
 /* Open-directory buttons in the decklist sidebar (base `button` rule
    supplies border/background/hover); the resolved absolute path is in
    the tooltip, not the button face. */
