@@ -463,9 +463,25 @@ fn spawn_terminal(cmd: &[String]) -> Result<(), String> {
         .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
         .collect::<Vec<_>>()
         .join(" ");
+    let line = shell_line.replace('\\', "\\\\").replace('"', "\\\"");
+    // The `is running` split matters: when Terminal isn't running yet,
+    // `activate` launches it, and the launch itself opens Terminal's
+    // default window — a bare `do script` then adds a *second* window,
+    // leaving a stray empty zsh behind the ssh one. `in window 1` reuses
+    // the launch-created window instead, so exactly one window appears
+    // either way. (`is running` doesn't launch the app to answer.)
     let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
-        shell_line.replace('\\', "\\\\").replace('"', "\\\"")
+        "if application \"Terminal\" is running then\n\
+         tell application \"Terminal\"\n\
+         activate\n\
+         do script \"{line}\"\n\
+         end tell\n\
+         else\n\
+         tell application \"Terminal\"\n\
+         activate\n\
+         do script \"{line}\" in window 1\n\
+         end tell\n\
+         end if"
     );
     std::process::Command::new("osascript")
         .args(["-e", &script])
