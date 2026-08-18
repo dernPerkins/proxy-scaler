@@ -267,10 +267,9 @@ export default function DecklistPage() {
   function dirRow(label: string, path: string | undefined) {
     if (!isTauri()) {
       return (
-        <div className="field">
-          <span>{label}</span>
-          <span className="path-text mono">{path ?? "…"}</span>
-        </div>
+        <span className="path-text mono">
+          {label}: {path ?? "…"}
+        </span>
       );
     }
     const title =
@@ -401,9 +400,12 @@ export default function DecklistPage() {
             />
           </label>
 
-          {dirRow("Output Directory", pathsQuery.data?.output_dir)}
-          {dirRow("Cache Directory", pathsQuery.data?.cache_dir)}
-          {dirRow("Weights Directory", pathsQuery.data?.weights_dir)}
+          <div className="field">
+            <span>Directories</span>
+            {dirRow("Output", pathsQuery.data?.output_dir)}
+            {dirRow("Cache", pathsQuery.data?.cache_dir)}
+            {dirRow("Weights", pathsQuery.data?.weights_dir)}
+          </div>
         </div>
 
         <div className="danger-zone">
