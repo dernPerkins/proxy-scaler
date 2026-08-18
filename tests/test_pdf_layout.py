@@ -170,6 +170,52 @@ def test_draw_cut_marks_uses_both_colors() -> None:
     assert pdf.draw_color.b == pytest.approx(b, abs=1e-6)
 
 
+def test_draw_cut_marks_ink_stays_off_the_cards() -> None:
+    """Every guide stroke must sit fully outside every card's trim box —
+    flush against it is fine (that's the design: card edge, then guide),
+    but any ink inside the box would survive a clean cut as a colored
+    hairline on the card's border."""
+    from proxy_scaler.pdf_layout import _draw_cut_marks
+
+    class _RecordingPdf:
+        def __init__(self) -> None:
+            self.line_width = 0.0
+            self.strokes: list[tuple[float, float, float, float]] = []
+
+        def set_line_width(self, w: float) -> None:
+            self.line_width = w
+
+        def set_draw_color(self, *_: int) -> None:
+            pass
+
+        def line(self, x1: float, y1: float, x2: float, y2: float) -> None:
+            half = self.line_width / 2
+            self.strokes.append(
+                (min(x1, x2) - half, min(y1, y2) - half, max(x1, x2) + half, max(y1, y2) + half)
+            )
+
+    layout = _a4_portrait_layout()
+    pdf = _RecordingPdf()
+    _draw_cut_marks(pdf, layout)  # type: ignore[arg-type]
+    assert pdf.strokes
+
+    xs = _card_trim_edges(layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm)
+    ys = _card_trim_edges(layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm)
+    eps = 1e-9
+    for col in range(layout.cols):
+        for row in range(layout.rows):
+            bx0, bx1 = xs[2 * col], xs[2 * col + 1]
+            by0, by1 = ys[2 * row], ys[2 * row + 1]
+            for sx0, sy0, sx1, sy1 in pdf.strokes:
+                overlap_x = min(sx1, bx1) - max(sx0, bx0)
+                overlap_y = min(sy1, by1) - max(sy0, by0)
+                assert not (overlap_x > eps and overlap_y > eps), (
+                    f"stroke ({sx0:.4f}, {sy0:.4f})-({sx1:.4f}, {sy1:.4f}) "
+                    f"overlaps card ({col},{row}) trim box "
+                    f"({bx0:.4f}, {by0:.4f})-({bx1:.4f}, {by1:.4f})"
+                )
+
+
 # --- Corner flatten / bleed ----------------------------------------------
 
 

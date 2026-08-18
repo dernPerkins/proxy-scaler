@@ -42,7 +42,7 @@ PAGE_SIZE_PRESETS_MM: dict[str, tuple[float, float]] = {
 # Outer guide lines run from the page edge to the card grid block — full,
 # dark, and continuous (there's no card content there to obscure, and a
 # continuous line is what you actually align a paper cutter against).
-_OUTER_LINE_WIDTH_MM = 0.1
+# Same stroke width as the green marks (PageLayout.guide_width_pt).
 _OUTER_LINE_COLOR = (0, 0, 0)
 
 # Inner crop marks sit at each card's own trim corner — a small green "+".
@@ -159,13 +159,33 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
     one per card's own trim edge; small green "+" crop marks at each card's
     own trim-corner (the grid is regular, so the full xs × ys cross product
     is exactly every card's 4 corners, no card ever gets a mark that isn't
-    its own)."""
-    xs = _card_trim_edges(layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm)
-    ys = _card_trim_edges(layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm)
+    its own).
+
+    Every guide is nudged OUTWARD from its card by half its stroke width.
+    A stroke centered on the trim coordinate puts half its ink inside the
+    card, where it survives a clean cut as a hairline along the card's
+    border; nudged, the stroke's inner edge sits exactly on the trim line
+    (card edge, then guide) and a perfectly cut card carries no guide ink.
+    Which way is outward falls out of _card_trim_edges' ordering: even
+    indices are leading (left/top) edges, odd are trailing (right/bottom)."""
+    width_mm = layout.guide_width_pt / 72 * MM_PER_IN
+    half = width_mm / 2
+    xs = [
+        x - half if i % 2 == 0 else x + half
+        for i, x in enumerate(
+            _card_trim_edges(layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm)
+        )
+    ]
+    ys = [
+        y - half if i % 2 == 0 else y + half
+        for i, y in enumerate(
+            _card_trim_edges(layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm)
+        )
+    ]
     grid_x0, grid_x1 = xs[0], xs[-1]
     grid_y0, grid_y1 = ys[0], ys[-1]
 
-    pdf.set_line_width(_OUTER_LINE_WIDTH_MM)
+    pdf.set_line_width(width_mm)
     pdf.set_draw_color(*_OUTER_LINE_COLOR)
     for x in xs:
         if grid_y0 > 0:
@@ -178,8 +198,6 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
         if grid_x1 < layout.page_w_mm:
             pdf.line(grid_x1, y, layout.page_w_mm, y)
 
-    mark_width_mm = layout.guide_width_pt / 72 * MM_PER_IN
-    pdf.set_line_width(mark_width_mm)
     pdf.set_draw_color(*_MARK_COLOR)
     for x in xs:
         for y in ys:

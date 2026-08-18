@@ -106,7 +106,7 @@ def discard_tag(project_tag: str) -> DiscardTagOut:
     queued work and forget its generation records.
 
     It never deletes files, and that's the whole reason it isn't a flag on
-    /api/generated-data/clear (which unconditionally rmtree's the output
+    /api/generated-data/clear (which unconditionally empties the output
     and cache dirs first). Output filenames carry no tag — output_filename
     takes none — so the images are shared across every Project, and
     deleting them per-tag would delete files other Projects' gallery rows

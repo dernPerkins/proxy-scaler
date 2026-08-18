@@ -4,10 +4,10 @@ import type { PdfPagePreview as PdfPagePreviewData } from "../api/types";
 const PANEL_WIDTH_PX = 360;
 const MM_PER_IN = 25.4;
 
-// Matches pdf_layout.py's own hardcoded _OUTER_LINE_WIDTH_MM /
-// _OUTER_LINE_COLOR / _MARK_COLOR — not user-configurable there either,
-// so not exposed via the API; just mirrored as constants here.
-const OUTER_LINE_WIDTH_MM = 0.1;
+// Matches pdf_layout.py's own hardcoded _OUTER_LINE_COLOR / _MARK_COLOR —
+// not user-configurable there either, so not exposed via the API; just
+// mirrored as constants here. Both line kinds share the user-configurable
+// guide_width_pt stroke width.
 const OUTER_LINE_COLOR = "#000";
 const MARK_COLOR = "rgb(0, 170, 80)";
 
@@ -59,22 +59,30 @@ function cardTrimEdges(count: number, cellMm: number, bleedMm: number, originMm:
 
 // Mirrors pdf_layout.py::_draw_cut_marks: outer lines from the page edge
 // to the card grid block, plus a small "+" crop mark at every card's own
-// trim corner (the full xs x ys cross product).
+// trim corner (the full xs x ys cross product). Like the PDF, every guide
+// is nudged outward from its card by half the true (mm) stroke width, so
+// the ink's inner edge sits on the trim line instead of straddling it —
+// even indices in cardTrimEdges are leading (left/top) edges, odd are
+// trailing (right/bottom).
 function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: number }) {
-  const xs = cardTrimEdges(preview.cols, preview.cell_w_mm, preview.bleed_mm, preview.margin_x_mm);
-  const ys = cardTrimEdges(preview.rows, preview.cell_h_mm, preview.bleed_mm, preview.margin_y_mm);
+  const guideWidthMm = (preview.guide_width_pt / 72) * MM_PER_IN;
+  const halfMm = guideWidthMm / 2;
+  const xs = cardTrimEdges(preview.cols, preview.cell_w_mm, preview.bleed_mm, preview.margin_x_mm)
+    .map((x, i) => (i % 2 === 0 ? x - halfMm : x + halfMm));
+  const ys = cardTrimEdges(preview.rows, preview.cell_h_mm, preview.bleed_mm, preview.margin_y_mm)
+    .map((y, i) => (i % 2 === 0 ? y - halfMm : y + halfMm));
   const gridX0 = xs[0];
   const gridX1 = xs[xs.length - 1];
   const gridY0 = ys[0];
   const gridY1 = ys[ys.length - 1];
-  // Real print widths (0.1mm / a fraction of a point) are effectively
-  // hairlines even before scaling down to a ~360px on-screen panel —
-  // sub-pixel CSS widths get anti-aliased into near-invisibility (or
-  // rounded to 0) by the browser, unlike a physical print device.
-  // Clamped to a visible minimum here; the actual PDF output is
-  // unaffected, this only touches the on-screen approximation.
-  const outerWidthPx = Math.max(1, OUTER_LINE_WIDTH_MM * scale);
-  const markWidthPx = Math.max(1, ((preview.guide_width_pt / 72) * MM_PER_IN) * scale);
+  // Real print widths (a fraction of a point) are effectively hairlines
+  // even before scaling down to a ~360px on-screen panel — sub-pixel CSS
+  // widths get anti-aliased into near-invisibility (or rounded to 0) by
+  // the browser, unlike a physical print device. Clamped to a visible
+  // minimum here (the outward nudge above still uses the true mm width);
+  // the actual PDF output is unaffected, this only touches the on-screen
+  // approximation.
+  const strokeWidthPx = Math.max(1, guideWidthMm * scale);
   const markLenMm = preview.guide_length_mm;
 
   const lines: ReactNode[] = [];
@@ -83,24 +91,24 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
   for (const x of xs) {
     if (gridY0 > 0) {
       lines.push(
-        <Line key={key++} x1={x * scale} y1={0} x2={x * scale} y2={gridY0 * scale} widthPx={outerWidthPx} color={OUTER_LINE_COLOR} />,
+        <Line key={key++} x1={x * scale} y1={0} x2={x * scale} y2={gridY0 * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
       );
     }
     if (gridY1 < preview.page_h_mm) {
       lines.push(
-        <Line key={key++} x1={x * scale} y1={gridY1 * scale} x2={x * scale} y2={preview.page_h_mm * scale} widthPx={outerWidthPx} color={OUTER_LINE_COLOR} />,
+        <Line key={key++} x1={x * scale} y1={gridY1 * scale} x2={x * scale} y2={preview.page_h_mm * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
       );
     }
   }
   for (const y of ys) {
     if (gridX0 > 0) {
       lines.push(
-        <Line key={key++} x1={0} y1={y * scale} x2={gridX0 * scale} y2={y * scale} widthPx={outerWidthPx} color={OUTER_LINE_COLOR} />,
+        <Line key={key++} x1={0} y1={y * scale} x2={gridX0 * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
       );
     }
     if (gridX1 < preview.page_w_mm) {
       lines.push(
-        <Line key={key++} x1={gridX1 * scale} y1={y * scale} x2={preview.page_w_mm * scale} y2={y * scale} widthPx={outerWidthPx} color={OUTER_LINE_COLOR} />,
+        <Line key={key++} x1={gridX1 * scale} y1={y * scale} x2={preview.page_w_mm * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
       );
     }
   }
@@ -113,7 +121,7 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
           y1={y * scale}
           x2={(x + markLenMm) * scale}
           y2={y * scale}
-          widthPx={markWidthPx}
+          widthPx={strokeWidthPx}
           color={MARK_COLOR}
         />,
       );
@@ -124,7 +132,7 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
           y1={(y - markLenMm) * scale}
           x2={x * scale}
           y2={(y + markLenMm) * scale}
-          widthPx={markWidthPx}
+          widthPx={strokeWidthPx}
           color={MARK_COLOR}
         />,
       );

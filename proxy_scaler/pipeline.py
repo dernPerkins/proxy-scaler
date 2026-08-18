@@ -189,15 +189,25 @@ class PipelineResult:
 def clear_generated_data(
     *dirs: Path,
 ) -> list[str]:
-    """Delete generated output/cache directories. Returns human-readable notes."""
+    """Delete the contents of generated output/cache directories, keeping
+    the directories themselves. Returns human-readable notes.
+
+    The roots must stay alive: they sit inside the repo, and uvicorn's
+    --reload stat-watcher rglobs the reload dir every second — a watched
+    directory disappearing mid-scan raises FileNotFoundError and takes the
+    whole dev server down."""
     notes: list[str] = []
     for path in dirs:
         path = Path(path)
         if not path.exists():
             notes.append(f"skipped missing: {path}")
             continue
-        shutil.rmtree(path)
-        notes.append(f"deleted: {path}")
+        for child in path.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        notes.append(f"cleared: {path}")
     return notes
 
 

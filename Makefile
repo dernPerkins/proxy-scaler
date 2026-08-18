@@ -69,8 +69,11 @@ PKG_ARCH := $(shell dpkg --print-architecture 2>/dev/null || uname -m)
 # nothing. cu13x is the current default wheel line ("cuda"); cu12x is the
 # older-driver build ("cuda-legacy", see GPU_VARIANT below); "unknown"
 # means no venv/torch, in which case the sidecar build would fail first
-# anyway.
-TORCH_BUILD := $(shell sed -n "s/^__version__ = '.*+\([a-z0-9.]*\)'/\1/p" $(firstword $(wildcard $(VENV)/lib/python*/site-packages/torch/version.py) $(wildcard $(VENV)/Lib/site-packages/torch/version.py)) 2>/dev/null)
+# anyway. The trailing /dev/null in firstword is load-bearing: with no
+# venv (e.g. mid-`make reinstall`) the wildcards expand to nothing, and a
+# file-less sed would sit reading the terminal's stdin — hanging make at
+# parse time before any recipe runs.
+TORCH_BUILD := $(shell sed -n "s/^__version__ = '.*+\([a-z0-9.]*\)'/\1/p" $(firstword $(wildcard $(VENV)/lib/python*/site-packages/torch/version.py) $(wildcard $(VENV)/Lib/site-packages/torch/version.py) /dev/null) 2>/dev/null)
 ifneq (,$(findstring rocm,$(TORCH_BUILD)))
 LINUX_GPU_TAG := rocm
 else ifneq (,$(findstring cu13,$(TORCH_BUILD)))
@@ -691,7 +694,7 @@ init-db:
 	$(PYTHON) -c "from proxy_scaler import db; db.init_db()"
 
 api-dev: init-db
-	$(VENV_BIN)/uvicorn$(EXE) proxy_scaler.api:app --reload --host $(HOST) --port $(PORT)
+	$(VENV_BIN)/uvicorn$(EXE) proxy_scaler.api:app --reload --reload-dir proxy_scaler --host $(HOST) --port $(PORT)
 
 worker-dev: init-db
 	$(PYTHON) -m proxy_scaler.worker
