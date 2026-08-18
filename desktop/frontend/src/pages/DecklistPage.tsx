@@ -10,7 +10,7 @@ import StatusBadge from "../components/StatusBadge";
 import { DPI_OPTIONS, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
-import { invokeOpenDirectory, isTauri } from "../tauri";
+import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
 import { useProject } from "../context/ProjectContext";
 import { runDownload, useDownloadStatus } from "../download";
 import {
@@ -241,30 +241,28 @@ export default function DecklistPage() {
   });
 
   function openDirectory(label: string, path: string) {
-    let target = path;
-    if (connection.mode === "remote") {
-      // The path describes the remote server's filesystem, so open it
-      // over sftp:// instead — best-effort: Linux file managers handle
-      // the scheme natively (GVFS/KIO, using ~/.ssh/config), Windows/
-      // macOS only via WinSCP/Cyberduck-style tools. A Windows server
-      // reports C:\Users\...; OpenSSH's sftp accepts that as /C:/Users/...
-      const posix = path.replace(/\\/g, "/");
-      target = `sftp://${connection.host}${posix.startsWith("/") ? posix : `/${posix}`}`;
-    }
-    invokeOpenDirectory(target).catch((err: unknown) => {
+    // Local: OS file manager. Remote: a terminal window ssh'd into the
+    // server and cd'd to the directory — deliberately not an sftp:// URL
+    // handed to the OS, whose scheme handler is a lottery (VLC commonly
+    // claims sftp:// on Linux and "opens" the directory as a playlist).
+    const opening =
+      connection.mode === "remote"
+        ? invokeOpenRemoteTerminal(connection.host, path)
+        : invokeOpenDirectory(path);
+    opening.catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       const hint =
         connection.mode === "remote"
-          ? " — copy the path and browse it over SSH instead."
+          ? " — copy the path and ssh in manually instead."
           : "";
       setStatus(`Couldn't open ${label.toLowerCase()}: ${msg}${hint}`);
     });
   }
 
   // Read-only row for one generation directory: the server's resolved
-  // absolute path, clickable to open (file manager locally, sftp for a
-  // remote server). Plain text in a browser dev tab, where there's no
-  // Tauri command to invoke.
+  // absolute path, clickable to open (file manager locally, an SSH
+  // terminal for a remote server). Plain text in a browser dev tab,
+  // where there's no Tauri command to invoke.
   function dirRow(label: string, path: string | undefined) {
     return (
       <div className="field">
@@ -277,7 +275,7 @@ export default function DecklistPage() {
             className="path-link mono"
             title={
               connection.mode === "remote"
-                ? "Open over SFTP (requires SSH access to the server)"
+                ? "Open an SSH terminal here (uses your ssh config)"
                 : "Open in file manager"
             }
             onClick={() => openDirectory(label, path)}

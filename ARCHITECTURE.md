@@ -201,9 +201,11 @@ user-configurable at all: the client always sends the fixed relative
 names in `DecklistPage.tsx`'s `DEFAULT_GEN_PATHS` (`output` /
 `imgcache` / `weights`), the server resolves them against its own cwd
 and reports the result via `GET /api/paths`, and the sidebar shows them
-read-only with an open-in-file-manager action (local server) or a
-best-effort `sftp://` open (remote server, via `main.rs`'s
-`open_directory` command).
+read-only with an open-in-file-manager action (local server, `main.rs`'s
+`open_directory`) or a terminal window ssh'd into the server and cd'd to
+the directory (remote server, `main.rs`'s `open_remote_terminal` —
+deliberately not an `sftp://` URL handed to the OS, whose scheme handler
+is a lottery: VLC commonly claims it on Linux).
 
 ### HTTP (generation server — `proxy_scaler/api/`)
 

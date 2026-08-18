@@ -90,17 +90,26 @@ export async function invokePickSavePath(suggestedName: string): Promise<string 
   return window.__TAURI__.core.invoke<string | null>("pick_save_path", { suggestedName });
 }
 
-/** Opens a generation directory for the user (see main.rs::open_directory).
- *  `target` is either a local absolute path (Local mode — opens in the OS
- *  file manager, creating the directory first if needed) or an
- *  `sftp://host/path` URL (Remote mode — best-effort, requires SSH access
- *  to the server and an OS sftp handler). Anything else is rejected
- *  Rust-side. */
+/** Opens a local generation directory in the OS file manager, creating it
+ *  first if needed (see main.rs::open_directory). Local absolute paths
+ *  only — anything else is rejected Rust-side; remote directories go
+ *  through invokeOpenRemoteTerminal. */
 export async function invokeOpenDirectory(target: string): Promise<void> {
   if (!window.__TAURI__) {
     throw new Error("Not running inside Tauri");
   }
   await window.__TAURI__.core.invoke<void>("open_directory", { target });
+}
+
+/** Opens a terminal window running an SSH session to `host`, cd'd into
+ *  `path` on the remote machine (see main.rs::open_remote_terminal).
+ *  Best-effort: needs an ssh client, key access per ~/.ssh/config, and —
+ *  on Linux — a findable terminal emulator ($TERMINAL or a common one). */
+export async function invokeOpenRemoteTerminal(host: string, path: string): Promise<void> {
+  if (!window.__TAURI__) {
+    throw new Error("Not running inside Tauri");
+  }
+  await window.__TAURI__.core.invoke<void>("open_remote_terminal", { host, path });
 }
 
 // Rust fetches the URL and streams it to `path` (see

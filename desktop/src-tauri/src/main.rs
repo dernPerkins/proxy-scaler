@@ -362,19 +362,12 @@ async fn pick_save_path(app: AppHandle, suggested_name: String) -> Result<Option
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-/// Opens a generation directory for the user: a local absolute path in
-/// the OS file manager, or an `sftp://host/path` URL for a Remote
-/// server's directory (best-effort — errors if the OS has no sftp
-/// handler; Linux file managers do natively, Windows/macOS need
-/// WinSCP/Cyberduck-style tools). Those two shapes are the whole
-/// allowlist, so the webview can't use this to launch arbitrary
-/// `http:`/`file:` targets.
+/// Opens a local generation directory in the OS file manager. Absolute
+/// paths only — the webview can't use this to launch arbitrary
+/// `http:`/`file:` targets. Remote directories go through
+/// open_remote_terminal instead.
 #[tauri::command]
 fn open_directory(app: AppHandle, target: String) -> Result<(), String> {
-    if target.starts_with("sftp://") {
-        #[allow(deprecated)]
-        return app.shell().open(&target, None).map_err(|e| e.to_string());
-    }
     let dir = std::path::PathBuf::from(&target);
     if !dir.is_absolute() {
         return Err(format!("refusing to open non-absolute path: {target}"));
@@ -385,6 +378,100 @@ fn open_directory(app: AppHandle, target: String) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {target}: {e}"))?;
     #[allow(deprecated)]
     app.shell().open(dir.to_string_lossy(), None).map_err(|e| e.to_string())
+}
+
+/// Opens an interactive SSH session to `host` in a new terminal window,
+/// cd'd into `path` — the Remote-mode counterpart of open_directory.
+/// An earlier shape handed the OS an `sftp://host/path` URL instead, but
+/// scheme-handler registration is a lottery: on Linux VLC commonly claims
+/// sftp://, which "opens" the directory as a media playlist. A terminal
+/// running ssh is predictable. Username/keys come from ~/.ssh/config,
+/// same as any manual ssh.
+#[tauri::command]
+fn open_remote_terminal(host: String, path: String) -> Result<(), String> {
+    // The host came from the connect dialog, but don't let a string
+    // starting with '-' be parsed as an ssh option.
+    if host.is_empty() || host.starts_with('-') {
+        return Err(format!("refusing to ssh to suspicious host: {host}"));
+    }
+    // POSIX-quote the path, cd, then hand over to the user's login shell.
+    // Best-effort on a non-POSIX remote (Windows OpenSSH defaults to
+    // cmd.exe) — the session still opens, just not cd'd.
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    let remote_cmd = format!("cd {quoted}; exec \"$SHELL\" -l");
+    let ssh: Vec<String> = vec!["ssh".into(), "-t".into(), host, remote_cmd];
+    spawn_terminal(&ssh)
+}
+
+/// Launches `cmd` (an argv, not a shell string) in a new terminal window.
+#[cfg(target_os = "linux")]
+fn spawn_terminal(cmd: &[String]) -> Result<(), String> {
+    // No portable "the terminal" on Linux: honor $TERMINAL first, then
+    // walk the common emulators. Each entry pairs the program with the
+    // flag that makes it exec an argv (kitty takes one directly).
+    // spawn() success only proves the binary launched — good enough for
+    // best-effort; the terminal itself shows any ssh failure.
+    let mut candidates: Vec<(String, Vec<&str>)> = Vec::new();
+    if let Ok(term) = std::env::var("TERMINAL") {
+        if !term.is_empty() {
+            candidates.push((term, vec!["-e"]));
+        }
+    }
+    for (prog, args) in [
+        ("x-terminal-emulator", vec!["-e"]),
+        ("gnome-terminal", vec!["--"]),
+        ("konsole", vec!["-e"]),
+        ("xfce4-terminal", vec!["-x"]),
+        ("kitty", vec![]),
+        ("alacritty", vec!["-e"]),
+        ("xterm", vec!["-e"]),
+    ] {
+        candidates.push((prog.to_string(), args));
+    }
+    let mut errs = Vec::new();
+    for (prog, pre) in candidates {
+        match std::process::Command::new(&prog).args(&pre).args(cmd).spawn() {
+            Ok(_) => return Ok(()),
+            Err(e) => errs.push(format!("{prog}: {e}")),
+        }
+    }
+    Err(format!("no terminal emulator found ({})", errs.join("; ")))
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_terminal(cmd: &[String]) -> Result<(), String> {
+    // Windows Terminal if installed, else a plain conhost window via
+    // `cmd /c start`. Windows 10+ ships the OpenSSH client.
+    if std::process::Command::new("wt.exe").args(cmd).spawn().is_ok() {
+        return Ok(());
+    }
+    std::process::Command::new("cmd")
+        .args(["/C", "start", ""]) // "" fills start's title slot
+        .args(cmd)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_terminal(cmd: &[String]) -> Result<(), String> {
+    // Terminal.app has no "run this argv" CLI; AppleScript is the
+    // supported route. Quote each arg for the shell line, then escape
+    // that line for the AppleScript string literal.
+    let shell_line = cmd
+        .iter()
+        .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
+        shell_line.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Fetch `url` straight to `path`, emitting `download-progress` as it
@@ -686,6 +773,7 @@ fn main() {
             stop_local_server,
             pick_save_path,
             open_directory,
+            open_remote_terminal,
             download_to_path,
             cancel_download,
             create_project,
