@@ -202,7 +202,7 @@ def test_cli_preserves_alpha_through_resize_and_save(tmp_path, monkeypatch):
     assert len(names) == 1
     with Image.open(names[0]) as im:
         assert im.mode == "RGBA"
-        assert im.size == (2000, 2800)
+        assert im.size == (1984, 2772)
         # Deep inside the scaled-up transparent corner.
         assert im.getpixel((100, 100))[3] < 10
         # Deep inside the opaque region on the far side.

@@ -77,10 +77,10 @@ def _face(
 
 def test_page_layout_letter_a4_defaults_fit() -> None:
     expected = {
-        ("letter", "landscape"): (279.4, 215.9, 8.7, 17.05),
-        ("letter", "portrait"): (215.9, 279.4, 9.7, 3.35),
-        ("a4", "landscape"): (297.0, 210.0, 17.5, 14.1),
-        ("a4", "portrait"): (210.0, 297.0, 6.75, 12.15),
+        ("letter", "landscape"): (279.4, 215.9, 9.7, 17.95),
+        ("letter", "portrait"): (215.9, 279.4, 10.45, 4.7),
+        ("a4", "landscape"): (297.0, 210.0, 18.5, 15.0),
+        ("a4", "portrait"): (210.0, 297.0, 7.5, 13.5),
     }
     for (paper, orientation), (page_w, page_h, margin_x, margin_y) in expected.items():
         w, h = PAGE_SIZE_PRESETS_MM[paper]

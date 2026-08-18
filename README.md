@@ -166,13 +166,13 @@ All three are trained on illustrated rather than photographic material — and a
 
 ## Target DPI
 
-At standard card size (2.5″×3.5″):
+At standard card size (63×88mm):
 
 | DPI | Pixels | How produced |
 |-----|--------|----------------|
-| 600 | 1500×2100 | Native x4 + Lanczos resize |
-| 800 | 2000×2800 | Native x4 + Lanczos resize |
-| 1200 (default) | 3000×4200 | Native x4 + Lanczos resize |
+| 600 | 1488×2079 | Native x4 + Lanczos resize |
+| 800 | 1984×2772 | Native x4 + Lanczos resize |
+| 1200 (default) | 2976×4157 | Native x4 + Lanczos resize |
 
 `--all-dpis` writes all three for each face (reuses the same native upscale when possible).
 

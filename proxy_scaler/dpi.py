@@ -1,11 +1,16 @@
-"""Print DPI targets for standard MTG card size (2.5\" × 3.5\")."""
+"""Print DPI targets for standard MTG card size (63 × 88 mm)."""
 
 from __future__ import annotations
 
 from .upscale import UpscaleModel
 
-CARD_WIDTH_IN = 2.5
-CARD_HEIGHT_IN = 3.5
+MM_PER_IN = 25.4
+
+# Real MTG cards measure 63 × 88 mm — slightly smaller than the nominal
+# 2.5″ × 3.5″ (63.5 × 88.9 mm) poker size. The inch-derived size prints
+# cards ~0.9 mm too tall against a real card.
+CARD_WIDTH_MM = 63.0
+CARD_HEIGHT_MM = 88.0
 
 # User-facing DPI choices
 DPI_OPTIONS: tuple[int, ...] = (600, 800, 1200)
@@ -14,7 +19,10 @@ DEFAULT_DPI = 1200
 
 def target_pixels(dpi: int) -> tuple[int, int]:
     """Exact pixel size for a given print DPI at card dimensions."""
-    return (round(CARD_WIDTH_IN * dpi), round(CARD_HEIGHT_IN * dpi))
+    return (
+        round(CARD_WIDTH_MM / MM_PER_IN * dpi),
+        round(CARD_HEIGHT_MM / MM_PER_IN * dpi),
+    )
 
 
 def native_scale_for_dpi(dpi: int, model: UpscaleModel) -> int:

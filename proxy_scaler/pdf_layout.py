@@ -15,9 +15,8 @@ from fpdf import FPDF
 from PIL import Image
 
 from .decklist import DeckEntry
+from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
-
-MM_PER_IN = 25.4
 
 # fpdf2 embeds raw PIL images losslessly (FlateDecode/zlib), which compresses
 # photographic card art poorly (~1.5-3x) and produces huge files — a 9-card
@@ -30,8 +29,8 @@ MM_PER_IN = 25.4
 _JPEG_QUALITY = 92
 BLEED_MM = 1.0
 
-CARD_WIDTH_MM = 63.5
-CARD_HEIGHT_MM = 88.9
+# CARD_WIDTH_MM / CARD_HEIGHT_MM / MM_PER_IN live in dpi.py (imported above)
+# so the mm trim box and the pixel raster can't drift apart.
 
 # Portrait-native (width, height) — a starting point for the UI's page-size
 # preset dropdown; actual page dimensions are freely user-editable from here.
