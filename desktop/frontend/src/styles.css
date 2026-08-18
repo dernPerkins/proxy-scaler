@@ -208,21 +208,29 @@ input[type="checkbox"] {
   gap: 12px;
 }
 
-/* Read-only generation-directory rows in the decklist sidebar. App-data
-   paths are long (~/.local/share/proxy-scaler/output) and would overflow
-   the sidebar without the break-all. */
+/* Read-only generation-directory rows in the decklist sidebar — proper
+   buttons (base `button` rule supplies border/background/hover), path
+   text left-aligned with a trailing open-indicator. App-data paths are
+   long (~/.local/share/proxy-scaler/output) and would overflow the
+   sidebar without the wrap + break-all. */
 .path-link {
-  background: none;
-  border: none;
-  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
   text-align: left;
   font-size: 12px;
-  color: var(--accent);
-  cursor: pointer;
+  white-space: normal;
   word-break: break-all;
 }
-.path-link:hover {
-  text-decoration: underline;
+.path-link .path-open-icon {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+.path-link:hover:not(:disabled) .path-open-icon {
+  color: var(--accent);
 }
 .path-text {
   font-size: 12px;

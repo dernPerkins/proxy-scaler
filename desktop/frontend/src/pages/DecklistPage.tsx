@@ -280,7 +280,10 @@ export default function DecklistPage() {
             }
             onClick={() => openDirectory(label, path)}
           >
-            {path}
+            <span>{path}</span>
+            <span className="path-open-icon" aria-hidden="true">
+              ↗
+            </span>
           </button>
         ) : (
           <span className="path-text mono">{path}</span>
