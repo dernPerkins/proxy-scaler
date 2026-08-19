@@ -474,10 +474,14 @@ button:disabled {
 }
 /* The app-version readout at the far end of the tab bar (App.tsx's
    AppVersion) — present but ignorable, hence muted and pushed clear of
-   the tabs themselves. */
+   the tabs themselves. Flex because an "Update to vX.Y.Z" button sits to
+   the label's left whenever the boot check found an update. */
 .tabs-version {
   margin-left: auto;
   align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding-right: 4px;
   font-size: 12px;
   color: var(--text-muted);

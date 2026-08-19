@@ -7,6 +7,7 @@
 // Field names are snake_case because they mirror the Rust structs
 // serialized across the IPC boundary verbatim.
 
+import { useSyncExternalStore } from "react";
 import { invokeCommand, isTauri } from "./tauri";
 
 export interface UpdateArtifact {
@@ -64,4 +65,57 @@ export async function setUpdateSkippedVersion(version: string): Promise<void> {
 /** This build's own version (compile-time constant from Cargo.toml). */
 export async function getAppVersion(): Promise<string> {
   return invokeCommand<string>("get_app_version");
+}
+
+// --- Shared "an update exists" store ----------------------------------------
+//
+// The boot check runs once, in UpdatePrompt, but its answer matters in two
+// places: the prompt itself and App.tsx's "Update to vX.Y.Z" button in the
+// tab bar. The button is the persistent affordance — "Skip this version" /
+// "Later" only suppress the boot MODAL, and without the button a skipped
+// update would be unreachable except by going to the website. Same
+// module-level-store shape as config.ts's serverVersion.
+
+let availableUpdate: UpdateInfo | null = null;
+// Bumped by requestUpdatePrompt(); UpdatePrompt watches it and re-opens
+// the offer. A counter rather than a boolean so every click is a fresh
+// signal — a boolean already `true` from a dismissed request would make
+// the next click a no-op.
+let promptRequestSeq = 0;
+let updateListeners: Array<() => void> = [];
+
+function notifyUpdateStore(): void {
+  for (const listener of updateListeners) listener();
+}
+
+export function subscribeUpdateStore(callback: () => void): () => void {
+  updateListeners.push(callback);
+  return () => {
+    updateListeners = updateListeners.filter((l) => l !== callback);
+  };
+}
+
+export function setAvailableUpdate(info: UpdateInfo): void {
+  availableUpdate = info;
+  notifyUpdateStore();
+}
+
+export function getAvailableUpdate(): UpdateInfo | null {
+  return availableUpdate;
+}
+
+export function useAvailableUpdate(): UpdateInfo | null {
+  return useSyncExternalStore(subscribeUpdateStore, getAvailableUpdate);
+}
+
+/** Ask UpdatePrompt to show the offer again (the tab-bar button's click).
+ *  A no-op when no update is known — the button only renders when one is. */
+export function requestUpdatePrompt(): void {
+  if (!availableUpdate) return;
+  promptRequestSeq += 1;
+  notifyUpdateStore();
+}
+
+export function getPromptRequestSeq(): number {
+  return promptRequestSeq;
 }

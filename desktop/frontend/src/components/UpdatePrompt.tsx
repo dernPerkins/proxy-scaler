@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { invokeCancelDownload, invokeDownloadToPath, isTauri, listenDownloadProgress } from "../tauri";
 import {
   checkForUpdate,
+  getAvailableUpdate,
+  getPromptRequestSeq,
   getUpdateSkippedVersion,
   launchInstaller,
+  setAvailableUpdate,
   setUpdateSkippedVersion,
+  subscribeUpdateStore,
   type UpdateInfo,
 } from "../update";
 
@@ -73,8 +77,13 @@ export default function UpdatePrompt() {
       try {
         const info = await checkForUpdate();
         if (!info || cancelled) return;
-        // "Skip this version" is exactly one release wide: a newer
-        // release than the skipped one comes through unhindered.
+        // Published unconditionally — even for a skipped release: the
+        // tab bar's "Update to vX.Y.Z" button (App.tsx) is the persistent
+        // way back to a dismissed or skipped update, so it must know
+        // regardless of what the modal does.
+        setAvailableUpdate(info);
+        // "Skip this version" is exactly one release wide, and only
+        // suppresses this automatic boot-time MODAL — never the button.
         const skipped = await getUpdateSkippedVersion().catch(() => null);
         if (cancelled || info.latest === skipped) return;
         setState({ kind: "offer", info });
@@ -86,6 +95,17 @@ export default function UpdatePrompt() {
       cancelled = true;
     };
   }, []);
+
+  // The tab-bar button's re-open signal (update.ts::requestUpdatePrompt).
+  // Functional setState so a click can never clobber an in-flight
+  // download or an error the user is reading — it only opens from hidden.
+  const promptRequestSeq = useSyncExternalStore(subscribeUpdateStore, getPromptRequestSeq);
+  useEffect(() => {
+    if (promptRequestSeq === 0) return;
+    const info = getAvailableUpdate();
+    if (!info) return;
+    setState((prev) => (prev.kind === "hidden" ? { kind: "offer", info } : prev));
+  }, [promptRequestSeq]);
 
   if (state.kind === "hidden") return null;
   const { info } = state;
