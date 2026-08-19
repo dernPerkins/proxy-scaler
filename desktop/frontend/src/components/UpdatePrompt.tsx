@@ -33,10 +33,12 @@ type PromptState =
   | { kind: "downloading"; info: UpdateInfo; downloaded: number; total: number | null }
   | { kind: "error"; info: UpdateInfo; message: string };
 
-// The boot-time update offer. Mounted once in App.tsx; checks the release
-// manifest exactly once per launch (Rust side — see update.rs) and shows
-// nothing at all in the overwhelmingly common cases: up to date, offline,
-// or the user already skipped this release. An in-app modal rather than a
+// The boot-time update offer. Mounted once in main.tsx, ABOVE
+// ConnectGate — the check fires on launch, not on picking Local/Remote,
+// so the offer can be on screen while the picker still is. It checks the
+// release manifest exactly once per launch (Rust side — see update.rs)
+// and shows nothing at all in the overwhelmingly common cases: up to
+// date, offline, or the user already skipped this release. An in-app modal rather than a
 // native dialog for the same reason as ConfirmDialog — native dialogs
 // never appear inside Tauri's WKWebView on macOS.
 //

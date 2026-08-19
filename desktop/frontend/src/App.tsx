@@ -5,7 +5,6 @@ import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
 import QuitPrompt from "./components/QuitPrompt";
 import ServerStatusToast from "./components/ServerStatusToast";
-import UpdatePrompt from "./components/UpdatePrompt";
 import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
@@ -47,7 +46,6 @@ export default function App() {
         <VersionMismatchToast />
         <ConnectionLostDialog />
         <DownloadProgressModal />
-        <UpdatePrompt />
         {/* Mounted for its close-request listener, not for what it draws:
             it renders nothing until the window is actually closing. */}
         <QuitPrompt />

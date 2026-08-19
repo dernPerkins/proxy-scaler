@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
+import UpdatePrompt from "./components/UpdatePrompt";
 import ConnectGate from "./ConnectGate";
 import { ConnectionProvider } from "./connection";
 import "./styles.css";
@@ -21,6 +22,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           also be switched mid-session from the Decklist settings sidebar —
           it isn't a launch-only decision any more. */}
       <ConnectionProvider>
+        {/* Above ConnectGate on purpose: the update check must fire on
+            LAUNCH, not on picking Local/Remote — the offer should be on
+            screen even while the picker is. Safe up here because it
+            talks only to Tauri commands (the manifest fetch happens in
+            Rust), so it needs no connection, router, or query client —
+            the wrong-base-URL hazard the gate exists for can't touch it. */}
+        <UpdatePrompt />
         <ConnectGate>
           <BrowserRouter>
             <App />
