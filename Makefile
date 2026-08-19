@@ -86,6 +86,36 @@ else
 LINUX_GPU_TAG := unknown
 endif
 
+# What GPU stack this venv's torch actually is, baked into the frozen
+# sidecar as a one-line `gpu-variant` marker file (see _sidecar-freeze).
+# The desktop app reads it at runtime to pick the matching artifact out of
+# the update manifest (update.rs) — without it, an installed app has no
+# idea which of the per-variant installers it came from. Deliberately NOT
+# just LINUX_GPU_TAG: that chain maps every cu12x to "cuda-legacy", which
+# is right for Linux (default line is cu13x) but wrong on Windows, where
+# cu128 IS the current default "cuda" line (see docs/releasing.md's three
+# Windows passes) — so cu128 is matched before the cu12 legacy catch-all.
+# torch_directml is detected by presence rather than torch's version
+# suffix: its pinned torch is a plain CPU wheel ("+cpu"), so the suffix
+# says nothing. macOS has no GPU variants — one build per arch.
+ifeq ($(UNAME_S),Darwin)
+SIDECAR_VARIANT := default
+else ifneq (,$(firstword $(wildcard $(VENV)/lib/python*/site-packages/torch_directml) $(wildcard $(VENV)/Lib/site-packages/torch_directml)))
+SIDECAR_VARIANT := directml
+else ifneq (,$(findstring rocm,$(TORCH_BUILD)))
+SIDECAR_VARIANT := rocm
+else ifneq (,$(findstring cu13,$(TORCH_BUILD)))
+SIDECAR_VARIANT := cuda
+else ifneq (,$(findstring cu128,$(TORCH_BUILD)))
+SIDECAR_VARIANT := cuda
+else ifneq (,$(findstring cu12,$(TORCH_BUILD)))
+SIDECAR_VARIANT := cuda-legacy
+else ifneq (,$(TORCH_BUILD))
+SIDECAR_VARIANT := $(TORCH_BUILD)
+else
+SIDECAR_VARIANT := unknown
+endif
+
 CLIENT_ARCHIVE := dist/proxy-scaler-client_$(PKG_VERSION)_linux-$(PKG_ARCH)-$(LINUX_GPU_TAG).tar.gz
 SERVER_APP_ARCHIVE := dist/proxy-scaler-server-app_$(PKG_VERSION)_linux-$(PKG_ARCH)-$(LINUX_GPU_TAG).tar.gz
 # Placed as a sibling of the compiled binary in *both* target profiles —
@@ -162,6 +192,7 @@ SERVER_APP_DMG_STAGE := desktop/server-app/target/release/dmg-stage
 	macos-bundle-client-sidecar macos-bundle-server-app-sidecar \
 	macos-release macos-release-client macos-release-server-app \
 	release release-bg release-status release-client-archive release-server-app-archive \
+	set-version check-version manifest \
 	init-db api-dev worker-dev frontend-install frontend-dev frontend-build
 
 help:
@@ -211,6 +242,16 @@ help:
 	@echo "                 disconnect -- logs to dist/.release.log, exit code to"
 	@echo "                 dist/.release.exit. Safe to close the terminal right after."
 	@echo "release-status   Check progress/completion of a 'release-bg' run"
+	@echo ""
+	@echo "--- versioning + update manifest ---"
+	@echo "set-version      Rewrite the version everywhere it lives:"
+	@echo "                 make set-version VERSION=0.2.0"
+	@echo "check-version    Fail if the seven version copies have drifted"
+	@echo "                 (runs automatically at the start of release targets)"
+	@echo "manifest         Build/refresh dist/latest.json (size + sha256 per"
+	@echo "                 artifact) for the in-app update check -- automatic at"
+	@echo "                 the end of 'release'/'macos-release', standalone for"
+	@echo "                 the Windows passes. NOTES=\"...\" sets the notes text"
 	@echo ""
 	@echo "--- misc ---"
 	@echo "install          Create $(VENV) and pip install -e ."
@@ -342,6 +383,14 @@ _sidecar-freeze: sidecar-clean
 	$(PYTHON) -m PyInstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
+	# The variant marker rides inside the onedir bundle, so every staged
+	# copy (client, server-app, .app Resources, deb) carries it for free —
+	# update.rs reads it to pick this install's artifact out of the update
+	# manifest. Written here, at the single point every packaging path
+	# funnels through, from the SAME venv the freeze just consumed, so it
+	# can't describe a different torch than the one actually shipped.
+	printf '%s\n' "$(SIDECAR_VARIANT)" > desktop/pyinstaller/dist/proxy-scaler-serve/gpu-variant
+	@echo "gpu-variant marker: $(SIDECAR_VARIANT)"
 
 sidecar: _sidecar-freeze
 	# Parent dirs only — each destination itself must NOT exist, so that
@@ -574,7 +623,7 @@ endif
 # Both macOS artifacts, assuming 'make sidecar' has already run. The
 # macOS counterpart to Linux's 'release' -- deliberately not called
 # 'release', which stays Linux-only (it ends in 'deb').
-macos-release: macos-release-client macos-release-server-app
+macos-release: check-version macos-release-client macos-release-server-app manifest
 	@echo ""
 	@echo "macOS release artifacts:"
 	@ls -1 dist/*.dmg
@@ -603,6 +652,38 @@ else
 	GPU_TAG="$(LINUX_GPU_TAG)" ./packaging/build-deb.sh
 endif
 
+# --- versioning + update manifest --------------------------------------
+#
+# The version lives in seven files (pyproject, __init__.py, two
+# tauri.conf.json, two Cargo.toml, frontend package.json) and NOTHING in
+# the build system forces them to agree — see packaging/set-version.py
+# for the full list and why each copy matters. set-version rewrites them
+# all; check-version fails on drift and gates the release targets below,
+# so a release can no longer ship installers reporting one version and an
+# API reporting another. PY (the bootstrap interpreter) rather than
+# $(PYTHON): these scripts are stdlib-only, and version bumps shouldn't
+# require a built venv.
+set-version:
+ifndef VERSION
+	@echo "usage: make set-version VERSION=x.y.z" >&2
+	@exit 1
+else
+	$(PY) packaging/set-version.py $(VERSION)
+endif
+
+check-version:
+	$(PY) packaging/set-version.py --check
+
+# Build/refresh dist/latest.json — the update manifest the desktop app
+# checks on boot, with size + sha256 computed for every artifact found in
+# dist/ (see packaging/generate-manifest.py for the merge semantics that
+# accumulate entries across the Linux/macOS/Windows build machines). Runs
+# automatically at the end of 'release' and 'macos-release'; standalone
+# for the manual Windows passes. NOTES="..." sets the release-notes text
+# shown in the app's update prompt.
+manifest:
+	$(PY) packaging/generate-manifest.py $(if $(NOTES),--notes "$(NOTES)")
+
 # One command, everything upload-ready in dist/. sidecar-release listed
 # first and explicitly (rather than left implicit via the other three's
 # own prereqs) so it's guaranteed to run exactly once, before any of them,
@@ -616,7 +697,7 @@ release:
 	@echo "error: 'release' $(LINUX_ONLY_MSG)" >&2
 	@exit 1
 else
-release: sidecar-release release-client-archive release-server-app-archive deb
+release: check-version sidecar-release release-client-archive release-server-app-archive deb manifest
 	@echo ""
 	@echo "release artifacts:"
 	@ls -1 dist/

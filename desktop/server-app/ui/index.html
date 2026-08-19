@@ -236,7 +236,17 @@
     </style>
   </head>
   <body>
-    <h1>Proxy Scaler Server</h1>
+    <h1>
+      Proxy Scaler Server
+      <span id="version" style="font-size: 12px; font-weight: 400; color: var(--text-muted)"></span>
+    </h1>
+
+    <!-- Populated by the boot-time manifest check (check_update_notice in
+         main.rs); hidden means up to date, offline, or the check couldn't
+         run — all deliberately indistinguishable. The full in-app update
+         flow lives in the desktop client; here a pointer at the download
+         page is the whole feature. -->
+    <div id="updateNotice" class="warn" style="margin-bottom: 14px" hidden></div>
 
     <div class="panel">
       <div class="row">
@@ -474,6 +484,36 @@
         el.rememberClose.checked = false;
         el.closeModal.hidden = false;
       });
+
+      // --- Version + update notice ----------------------------------
+      // One-shot on load, both best-effort: a failure just leaves the
+      // header bare / the notice hidden, never an error on screen.
+
+      (async () => {
+        try {
+          document.getElementById("version").textContent =
+            "v" + (await invoke("get_app_version"));
+        } catch {}
+      })();
+
+      (async () => {
+        try {
+          const notice = await invoke("check_update_notice");
+          if (!notice) return;
+          const div = document.getElementById("updateNotice");
+          div.innerHTML = "";
+          div.append(
+            `Proxy Scaler ${notice.latest} is available (this is ${notice.current}) — `,
+          );
+          const link = document.createElement("a");
+          link.href = notice.notes_url;
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          link.textContent = "open the download page";
+          div.append(link, ".");
+          div.hidden = false;
+        } catch {}
+      })();
 
       refresh();
       refreshCloseBehavior();

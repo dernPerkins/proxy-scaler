@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+import proxy_scaler
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
@@ -13,6 +14,7 @@ from proxy_scaler.api.schemas import (
     DiscardTagOut,
     GenPathsOut,
     ModelOptionOut,
+    VersionOut,
 )
 from proxy_scaler.pipeline import clear_generated_data
 from proxy_scaler.upscale import (
@@ -30,6 +32,19 @@ def health() -> dict:
     """Replaces Streamlit's /_stcore/health for supervisor.py's health
     check."""
     return {"status": "ok"}
+
+
+@router.get("/version", response_model=VersionOut)
+def get_version() -> VersionOut:
+    """This server's release version, for the client's drift warning —
+    a Remote-mode client and its server are updated on different
+    machines, and nothing else tells the user they've diverged. Reads
+    proxy_scaler.__version__ rather than importlib.metadata because the
+    frozen PyInstaller build ships no dist-info for this package (see
+    desktop/pyinstaller/proxy-scaler-serve.spec's copy_metadata note);
+    packaging/set-version.py keeps it in lockstep with pyproject.toml.
+    Clients tolerate this endpoint's absence (older servers 404 here)."""
+    return VersionOut(version=proxy_scaler.__version__)
 
 
 @router.get("/models", response_model=list[ModelOptionOut])

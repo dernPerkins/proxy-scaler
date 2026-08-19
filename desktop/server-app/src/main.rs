@@ -417,6 +417,103 @@ async fn resolve_close(app: AppHandle, action: String, remember: bool) -> Result
     }
 }
 
+// --- Update notice ---------------------------------------------------------
+//
+// The lightweight sibling of the client's full update flow
+// (desktop/src-tauri/src/update.rs): fetch the same release manifest,
+// compare versions, and — at most — tell the user a newer release exists
+// so the status window can link them to the download page. Deliberately
+// no in-app download here: this surface is low-traffic, the client is
+// where that flow earns its keep, and a "go get it" line is enough for a
+// server box. Keep the version-compare semantics in sync with update.rs
+// if either changes.
+
+const MANIFEST_URL: &str = "https://dl.proxy-scaler.com/latest.json";
+const MANIFEST_SCHEMA: u64 = 1;
+const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(serde::Deserialize)]
+struct Manifest {
+    #[serde(default)]
+    schema: u64,
+    version: String,
+    #[serde(default)]
+    notes_url: String,
+}
+
+#[derive(Serialize)]
+struct UpdateNotice {
+    current: String,
+    latest: String,
+    notes_url: String,
+}
+
+/// "x.y.z" as a comparable triple; anything else is None and never
+/// triggers a notice — a malformed manifest fails toward silence.
+fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.trim().split('.');
+    let triple = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(triple)
+}
+
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// None for ANY reason there's nothing to say — up to date, offline,
+/// malformed manifest. Runs unprompted on window load, so a machine with
+/// no internet must never see an error for it.
+#[tauri::command]
+async fn check_update_notice() -> Result<Option<UpdateNotice>, String> {
+    let url =
+        std::env::var("PROXY_SCALER_UPDATE_URL").unwrap_or_else(|_| MANIFEST_URL.to_string());
+    let fetch = async {
+        let client = reqwest::Client::builder()
+            .timeout(MANIFEST_FETCH_TIMEOUT)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("manifest fetch returned {}", response.status()));
+        }
+        let body = response.bytes().await.map_err(|e| e.to_string())?;
+        serde_json::from_slice::<Manifest>(&body).map_err(|e| e.to_string())
+    };
+    let manifest = match fetch.await {
+        Ok(m) => m,
+        Err(reason) => {
+            eprintln!("[update] check skipped: {reason}");
+            return Ok(None);
+        }
+    };
+    if manifest.schema > MANIFEST_SCHEMA {
+        return Ok(None);
+    }
+    let current_text = env!("CARGO_PKG_VERSION");
+    let (Some(current), Some(latest)) =
+        (parse_version(current_text), parse_version(&manifest.version))
+    else {
+        return Ok(None);
+    };
+    if latest <= current {
+        return Ok(None);
+    }
+    Ok(Some(UpdateNotice {
+        current: current_text.to_string(),
+        latest: manifest.version,
+        notes_url: if manifest.notes_url.is_empty() {
+            "https://www.proxy-scaler.com/#download".to_string()
+        } else {
+            manifest.notes_url
+        },
+    }))
+}
+
 fn main() {
     tauri::Builder::default()
         // First, before any other plugin, per the plugin's own docs — the
@@ -444,7 +541,9 @@ fn main() {
             stop_server,
             get_close_behavior,
             set_close_behavior,
-            resolve_close
+            resolve_close,
+            get_app_version,
+            check_update_notice
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;

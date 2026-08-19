@@ -4,6 +4,7 @@ import { generationApi } from "./api/generation";
 import { projectApi, type RecentHost } from "./api/project";
 import {
   clearProbedDevice,
+  clearServerVersion,
   getApiBaseUrl,
   getConnectionMode,
   setApiBaseUrl,
@@ -12,6 +13,7 @@ import {
   setServerError,
   setServerReady,
   setServerStarting,
+  setServerVersion,
 } from "./config";
 import { invokeStartLocalServer, invokeStopLocalServer, isTauri } from "./tauri";
 
@@ -177,6 +179,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
   }
 
+  // Same fire-and-forget discipline as probeGpu, same call sites. The
+  // answer feeds VersionMismatchToast — in Remote mode the client and
+  // server are updated on different machines, and this is the only thing
+  // that tells the user they've diverged. A failure (older server with no
+  // /api/version — it 404s — or a network hiccup) leaves the version
+  // unknown, and unknown deliberately never warns.
+  function probeServerVersion(): void {
+    generationApi
+      .getServerVersion()
+      .then((v) => setServerVersion(v.version))
+      .catch(() => {});
+  }
+
   // Heartbeat for remote mode only — local's liveness is already implied
   // by the sidecar process this app itself spawned and watches. A remote
   // server has no such signal: if it stops, nothing here notices unless
@@ -219,8 +234,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // Every target switch starts from "GPU status unknown" — see
     // clearProbedDevice's own comment for why leaving the previous
     // server's answer in place until the new probe resolves is actively
-    // wrong, not just stale.
+    // wrong, not just stale. The server version resets for the same
+    // reason: the old server's version must not be compared against a
+    // connection it no longer describes.
     clearProbedDevice();
+    clearServerVersion();
 
     if (target.mode === "remote") {
       setApiBaseUrl(`http://${target.host}:${target.port}`);
@@ -242,6 +260,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // no visible cause.
       setServerReady();
       probeGpu();
+      probeServerVersion();
       setMode("remote");
       setHost(target.host);
       setPort(target.port);
@@ -257,6 +276,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         setApiBaseUrl(url);
         setServerReady();
         probeGpu();
+        probeServerVersion();
       })
       .catch((err) => {
         setServerError(err instanceof Error ? err.message : String(err));

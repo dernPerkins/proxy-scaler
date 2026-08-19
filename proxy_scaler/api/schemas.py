@@ -13,6 +13,15 @@ class ModelOptionOut(BaseModel):
     label: str
 
 
+class VersionOut(BaseModel):
+    # The server's own release version (proxy_scaler.__version__ — kept in
+    # lockstep with every other copy by packaging/set-version.py). The
+    # client compares this against its own version to warn about
+    # client/server drift, which Remote mode makes possible: the two are
+    # updated on different machines.
+    version: str
+
+
 class DeviceOut(BaseModel):
     kind: str  # "gpu" | "cpu" — see upscale.py's device_kind()
     # The real torch backend behind `kind`: "cuda" | "mps" | "privateuseone"

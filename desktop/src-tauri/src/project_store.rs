@@ -893,6 +893,28 @@ pub fn set_quit_prompt_suppressed(app: AppHandle, suppressed: bool) -> Result<()
     write_quit_prompt_suppressed(&conn, suppressed)
 }
 
+// --- The update prompt's "skip this version" -------------------------------
+//
+// Which release the user has explicitly declined (UpdatePrompt.tsx), so
+// the boot-time update check stops offering that one — and only that one:
+// the next release supersedes the skip by simply not matching it, no
+// expiry logic needed. "Later" deliberately writes nothing, so the offer
+// returns next launch. Absent means "never skipped anything".
+
+const UPDATE_SKIPPED_VERSION_KEY: &str = "update_skipped_version";
+
+#[tauri::command]
+pub fn get_update_skipped_version(app: AppHandle) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    read_app_setting(&conn, UPDATE_SKIPPED_VERSION_KEY)
+}
+
+#[tauri::command]
+pub fn set_update_skipped_version(app: AppHandle, version: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, UPDATE_SKIPPED_VERSION_KEY, &version)
+}
+
 // --- Recent remote hosts --------------------------------------------------
 //
 // A plain list of remote server address+port pairs the user has

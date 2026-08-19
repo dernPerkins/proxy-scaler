@@ -28,6 +28,10 @@ tokio = { version = "1", features = ["sync", "time", "signal"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
+# Parsing the update manifest (update.rs) — reqwest is built without its
+# "json" feature here, so the body is read as bytes and fed to serde_json
+# directly. Already in the dependency tree via tauri itself.
+serde_json = "1"
 # Downloads are fetched here in Rust, never in the webview — see
 # main.rs::download_to_file for why. rustls rather than the default
 # native-tls so this doesn't need a system OpenSSL to build.
@@ -35,3 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # StreamExt, for consuming reqwest's chunked body stream so a download can
 # report progress as it goes instead of only when it completes.
 futures-util = { version = "0.3", default-features = false }
+# Integrity check on downloaded installers (update.rs::launch_installer):
+# a truncated/corrupted multi-GB download must be caught before it's
+# handed to an installer that's about to replace a working install.
+sha2 = "0.10"

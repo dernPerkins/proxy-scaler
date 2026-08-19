@@ -62,6 +62,11 @@ export const generationApi = {
   // this until the server is already known to be up).
   getDevice: () => request<Device>("/api/device"),
 
+  // The connected server's release version, for the drift warning
+  // (connection.tsx's probe -> VersionMismatchToast). Older servers 404
+  // here — the probe swallows that as "unknown", never as a mismatch.
+  getServerVersion: () => request<{ version: string }>("/api/version"),
+
   // Where the fixed generation directories actually live on the server's
   // machine — the client only ever knows the relative names it sends
   // (DEFAULT_GEN_PATHS); the server resolves them against its own cwd.

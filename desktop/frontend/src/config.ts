@@ -87,6 +87,44 @@ export function clearProbedDevice(): void {
   for (const listener of deviceListeners) listener(probedDevice);
 }
 
+// Set by connection.tsx's fire-and-forget /api/version probe, cleared at
+// the start of every applyTarget() for the same stale-answer reason as
+// clearProbedDevice above. null means "not known" — the probe hasn't
+// answered yet, or the server predates the /api/version endpoint (its
+// 404 is swallowed) — and null must never trigger the drift warning:
+// "unknown" is not "mismatched". VersionMismatchToast is the consumer.
+let serverVersion: string | null = null;
+let versionListeners: Array<() => void> = [];
+
+function notifyServerVersion(): void {
+  for (const listener of versionListeners) listener();
+}
+
+export function getServerVersion(): string | null {
+  return serverVersion;
+}
+
+export function setServerVersion(version: string): void {
+  serverVersion = version;
+  notifyServerVersion();
+}
+
+export function clearServerVersion(): void {
+  serverVersion = null;
+  notifyServerVersion();
+}
+
+export function subscribeServerVersion(callback: () => void): () => void {
+  versionListeners.push(callback);
+  return () => {
+    versionListeners = versionListeners.filter((l) => l !== callback);
+  };
+}
+
+export function useServerVersion(): string | null {
+  return useSyncExternalStore(subscribeServerVersion, getServerVersion);
+}
+
 // Server-readiness gate. Local mode's sidecar can take real time to
 // start (cold model-loading, disk I/O) — rather than block the whole UI
 // behind a "Connecting…" screen, ConnectGate renders the app immediately

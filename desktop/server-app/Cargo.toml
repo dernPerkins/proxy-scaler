@@ -19,3 +19,9 @@ tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The boot-time update notice (check_update_notice in main.rs) fetches
+# the release manifest here in Rust, matching the client's reasoning
+# (desktop/src-tauri/src/update.rs): reqwest is CORS-exempt, so the
+# manifest host needs no CORS setup. Same rustls-not-OpenSSL choice as
+# the client's Cargo.toml.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

@@ -33,6 +33,47 @@ bucket behind dl.proxy-scaler.com rather than attached to a GitHub
 release. Splitting into <2GB chunks would also work but hasn't been
 needed.
 
+## Versioning & the update manifest
+
+**Bump the version first, in one command.** The version lives in seven
+files (pyproject.toml, `proxy_scaler/__init__.py`, both
+`tauri.conf.json`s, both `Cargo.toml`s, the frontend `package.json`) and
+nothing structural keeps them in agreement — installed apps report the
+Cargo/tauri copies, the API's `/api/version` reports the Python copy,
+and artifact filenames use pyproject's. So:
+
+```bash
+make set-version VERSION=0.2.0    # step zero of every release
+make check-version                # verify; also runs automatically at the
+                                  # start of 'release' and 'macos-release'
+```
+
+`check-version` failing the release targets is deliberate: a drifted
+release is how you ship installers that claim one version while the app
+reports another — and it breaks the update check, which compares these
+numbers.
+
+**The update manifest (`dist/latest.json`)** is what installed apps poll
+on boot (`GET https://dl.proxy-scaler.com/latest.json` — see
+`desktop/src-tauri/src/update.rs`) to offer the user an update. It
+carries the latest version, release notes, and per-artifact
+`size`/`sha256` (computed for you — the client refuses to launch an
+installer that doesn't match them). `packaging/generate-manifest.py`
+builds it by scanning `dist/`:
+
+- Runs automatically at the end of `make release` and `make macos-release`.
+- Run `make manifest` by hand after the Windows passes.
+- It **merges**: each run adds/replaces entries for the artifacts present
+  in its own `dist/` and keeps the rest, because the three platforms
+  build on different machines. Seed `dist/latest.json` from the previous
+  machine (or from R2) to accumulate the full set.
+- `NOTES="Fixed X, added Y" make manifest` sets the release-notes text
+  shown inside the app's update prompt.
+
+Upload `latest.json` to R2 **last**, after every artifact it references
+is uploaded — from the moment it lands, installed apps will offer
+downloads from the URLs inside it.
+
 ## GPU variants
 
 `torch` builds for different GPU vendors are mutually exclusive — ROCm
@@ -563,17 +604,29 @@ macOS-oriented `["dmg", "app"]`), and Tauri places it — no equivalent of
 ## Checklist
 
 1. `git pull` on the build machine.
-2. `make install` if dependencies or `GPU_VARIANT` changed.
-3. `make sidecar` (or `sidecar-release`) if `proxy_scaler/*` changed.
-4. Build: `make release` (Linux) / `make macos-release` (macOS) /
+2. `make set-version VERSION=x.y.z` (once, on one machine, committed —
+   the other build machines pick it up via `git pull`). `make release` /
+   `make macos-release` fail on version drift; run `make check-version`
+   to see it directly.
+3. `make install` if dependencies or `GPU_VARIANT` changed.
+4. `make sidecar` (or `sidecar-release`) if `proxy_scaler/*` changed —
+   and always after a version bump, so `/api/version` reports the new one.
+5. Build: `make release` (Linux) / `make macos-release` (macOS) /
    the per-variant passes in [Windows](#windows).
-5. Verify the artifact actually contains the sidecar — on macOS this is
+6. Verify the artifact actually contains the sidecar — on macOS this is
    the mount-and-`ls` above; elsewhere, check the archive listing.
-6. Install from the artifact on a clean machine and confirm the server
+7. Install from the artifact on a clean machine and confirm the server
    starts (Local mode reaching the Decklist tab without the "Couldn't
    start the local server" toast).
-7. Upload to the R2 bucket behind dl.proxy-scaler.com (`rclone copy
+8. `make manifest` after the Windows passes (Linux/macOS release targets
+   already ran it) — seeding `dist/latest.json` from the previous build
+   machine so entries accumulate; see
+   [Versioning & the update manifest](#versioning--the-update-manifest).
+9. Upload to the R2 bucket behind dl.proxy-scaler.com (`rclone copy
    dist/ R2:proxy-scaler-site --include "proxy-scaler*"` once an `R2:`
    remote is configured) and update the download buttons on the
    [site](https://github.com/dernPerkins/proxy-scaler-site) if artifact
    names changed.
+10. Upload `dist/latest.json` to the same bucket **last** — installed
+    apps start offering the update the moment it lands, so every URL it
+    references must already resolve.

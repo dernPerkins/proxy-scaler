@@ -472,6 +472,16 @@ button:disabled {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }
+/* The app-version readout at the far end of the tab bar (App.tsx's
+   AppVersion) — present but ignorable, hence muted and pushed clear of
+   the tabs themselves. */
+.tabs-version {
+  margin-left: auto;
+  align-self: center;
+  padding-right: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
 
 /* ---------- status badges ---------- */
 

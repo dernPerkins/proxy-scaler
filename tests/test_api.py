@@ -229,6 +229,17 @@ def test_health(client: TestClient) -> None:
     assert resp.json() == {"status": "ok"}
 
 
+def test_version_reports_the_package_version(client: TestClient) -> None:
+    """The client's drift warning compares its own version against this —
+    it must track proxy_scaler.__version__ (the copy set-version.py keeps
+    in lockstep with pyproject), not a second hand-maintained string."""
+    import proxy_scaler
+
+    resp = client.get("/api/version")
+    assert resp.status_code == 200
+    assert resp.json() == {"version": proxy_scaler.__version__}
+
+
 def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
     """Regression guard: the frontend's model dropdown must read this
     list, not hardcode it — a hardcoded copy in the React rewrite

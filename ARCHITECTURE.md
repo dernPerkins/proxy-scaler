@@ -180,6 +180,19 @@ generation-server state.
 | `get_last_project_id` / `set_last_project_id` | Auto-load-on-launch support (`app_settings`) |
 | `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
 | `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
+| `get_update_skipped_version` / `set_update_skipped_version` | The update prompt's "Skip this version" (`app_settings`) — suppresses exactly one release; the next one supersedes the skip by not matching it |
+
+The update mechanism itself lives in `desktop/src-tauri/src/update.rs`
+(`check_for_update` / `launch_installer`, driven by
+`components/UpdatePrompt.tsx` on boot): the manifest at
+`https://dl.proxy-scaler.com/latest.json` (built by
+`packaging/generate-manifest.py`, see `docs/releasing.md`) is fetched in
+Rust — CORS-exempt, so the host needs no CORS setup — compared against
+`CARGO_PKG_VERSION`, and matched to this build via platform + arch + the
+`gpu-variant` marker the Makefile bakes into the frozen sidecar. The
+in-app download reuses `download_to_path`; `launch_installer` verifies
+size + sha256 before handing the file to the OS installer and exiting.
+Linux (tarball/.deb) and dev builds get a download-page link instead.
 
 Settings reach SQLite by **write-through on change**, not by an explicit
 Save — the shipped UI has no Save button. That covers the Unnamed
@@ -229,6 +242,7 @@ string, not a database relationship.
 | `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine |
 | `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session: cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
 | `GET /api/health` | Supervisor readiness probe |
+| `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |
 
 ## Frontend data flow (`desktop/frontend/src`)
 

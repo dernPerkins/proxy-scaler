@@ -48,6 +48,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod project_store;
+mod update;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,10 +63,12 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project, get_last_project_id,
-    get_or_create_unnamed_project, get_project, get_quit_prompt_suppressed, import_decklist_text,
-    list_projects, list_recent_hosts, remove_card, remove_recent_host, set_card_quantity,
-    set_last_project_id, set_quit_prompt_suppressed, update_project,
+    get_or_create_unnamed_project, get_project, get_quit_prompt_suppressed,
+    get_update_skipped_version, import_decklist_text, list_projects, list_recent_hosts,
+    remove_card, remove_recent_host, set_card_quantity, set_last_project_id,
+    set_quit_prompt_suppressed, set_update_skipped_version, update_project,
 };
+use update::{check_for_update, launch_installer};
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
 // The single source of truth for the local sidecar's port: passed to it
@@ -121,32 +124,10 @@ async fn start_local_server(
     }
 
     let exe_name = format!("proxy-scaler-serve{}", std::env::consts::EXE_SUFFIX);
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| format!("failed to resolve current executable path: {e}"))?
-        .parent()
-        .ok_or_else(|| "current executable has no parent directory".to_string())?
-        .to_path_buf();
-    // Two candidate locations, first one that exists wins:
-    //   - a sibling of this binary — dev builds (target/{debug,release}/)
-    //     and the shipped Windows/Linux layout.
-    //   - ../Resources/ — inside a macOS .app. Contents/MacOS is defined by
-    //     Apple's bundle format as executables-*only*, and codesign enforces
-    //     it: a PyInstaller onedir tree there fails to sign outright, with
-    //     "code object is not signed at all" on the first non-code file it
-    //     meets (hyphenation dictionaries, .dist-info metadata, ...).
-    //     Contents/Resources is where non-code belongs — sealed by hash
-    //     rather than treated as code. See docs/releasing.md.
-    // Checking both keeps one lookup correct everywhere instead of
-    // cfg!(target_os)-ing it, and means a mis-placed sidecar reports where
-    // it actually looked rather than a bare spawn failure.
-    let candidates = [
-        exe_dir.join("proxy-scaler-serve").join(&exe_name),
-        exe_dir
-            .join("..")
-            .join("Resources")
-            .join("proxy-scaler-serve")
-            .join(&exe_name),
-    ];
+    let candidates: Vec<_> = sidecar_dir_candidates()?
+        .into_iter()
+        .map(|dir| dir.join(&exe_name))
+        .collect();
     let exe_path = candidates
         .iter()
         .find(|p| p.is_file())
@@ -287,6 +268,46 @@ async fn start_local_server(
 
 fn local_url() -> String {
     format!("http://127.0.0.1:{LOCAL_PORT}")
+}
+
+/// The two places the frozen sidecar directory can live, relative to this
+/// binary — first one that has what the caller wants wins. Shared by the
+/// spawn path above and update.rs's gpu-variant marker lookup, so the two
+/// can never disagree about where the sidecar is:
+///   - a sibling of this binary — dev builds (target/{debug,release}/)
+///     and the shipped Windows/Linux layout.
+///   - ../Resources/ — inside a macOS .app. Contents/MacOS is defined by
+///     Apple's bundle format as executables-*only*, and codesign enforces
+///     it: a PyInstaller onedir tree there fails to sign outright, with
+///     "code object is not signed at all" on the first non-code file it
+///     meets (hyphenation dictionaries, .dist-info metadata, ...).
+///     Contents/Resources is where non-code belongs — sealed by hash
+///     rather than treated as code. See docs/releasing.md.
+/// Checking both keeps one lookup correct everywhere instead of
+/// cfg!(target_os)-ing it, and means a mis-placed sidecar reports where
+/// it actually looked rather than a bare spawn failure.
+fn sidecar_dir_candidates() -> Result<Vec<std::path::PathBuf>, String> {
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("failed to resolve current executable path: {e}"))?
+        .parent()
+        .ok_or_else(|| "current executable has no parent directory".to_string())?
+        .to_path_buf();
+    Ok(vec![
+        exe_dir.join("proxy-scaler-serve"),
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join("proxy-scaler-serve"),
+    ])
+}
+
+/// This build's own version, for the UI's version display and the
+/// client/server drift comparison (connection.tsx). Baked in at compile
+/// time from Cargo.toml — one of the seven copies packaging/set-version.py
+/// keeps in lockstep — rather than read from anywhere at runtime.
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Stops the local server without exiting the app — used by the
@@ -810,7 +831,12 @@ fn main() {
             get_quit_prompt_suppressed,
             set_quit_prompt_suppressed,
             quit_prompt_listening,
-            answer_quit_prompt
+            answer_quit_prompt,
+            get_app_version,
+            get_update_skipped_version,
+            set_update_skipped_version,
+            check_for_update,
+            launch_installer
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
