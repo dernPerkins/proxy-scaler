@@ -38,7 +38,7 @@ function AppVersion() {
   return (
     <span className="tabs-version">
       {update && (
-        <button className="btn-sm" onClick={requestUpdatePrompt}>
+        <button className="btn-sm btn-ok" onClick={requestUpdatePrompt}>
           Update to v{update.latest}
         </button>
       )}

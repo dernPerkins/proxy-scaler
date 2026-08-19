@@ -187,7 +187,7 @@ CLIENT_DMG_STAGE := desktop/src-tauri/target/release/dmg-stage
 SERVER_APP_DMG_STAGE := desktop/server-app/target/release/dmg-stage
 
 .PHONY: help install reinstall test serve sidecar sidecar-release _sidecar-freeze sidecar-clean \
-	build run desktop deb \
+	build run desktop deb deb-stage-clean \
 	server-app server-app-dev server-app-run \
 	macos-bundle-client-sidecar macos-bundle-server-app-sidecar \
 	macos-release macos-release-client macos-release-server-app \
@@ -234,6 +234,8 @@ help:
 	@echo ""
 	@echo "--- headless server packaging (Linux only) ---"
 	@echo "deb              Build the .deb server package into dist/ (run 'make sidecar' first)"
+	@echo "deb-stage-clean  Remove the .deb staging tree (15GB+ under /tmp -- kept after"
+	@echo "                 builds for inspection; run this to reclaim the space)"
 	@echo ""
 	@echo "--- everything at once, ready to upload (Linux only) ---"
 	@echo "release          sidecar-release + client + server-app + deb, all landing in dist/"
@@ -312,6 +314,14 @@ sidecar-clean:
 	rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build
 	rm -rf $(SIDECAR_DEBUG_DIR) $(SIDECAR_RELEASE_DIR)
 	rm -rf $(SERVER_APP_DEBUG_DIR) $(SERVER_APP_RELEASE_DIR)
+
+# The .deb staging tree (build-deb.sh) is left in place after builds so a
+# failed or suspect package can be inspected -- but it's a full dereferenced
+# copy of the torch bundle (15GB+) sitting on whatever filesystem holds
+# /tmp, which on a typical single-drive host is the root drive. Run this
+# when that space matters. Same path resolution as build-deb.sh.
+deb-stage-clean:
+	rm -rf "$${PROXY_SCALER_DEB_STAGE:-$${TMPDIR:-/tmp}/proxy-scaler-deb-stage}"
 
 # GPU_VARIANT picks which torch build 'install' layers on top of the base
 # `pip install -e .` — a mutually-exclusive alternate build (not an

@@ -354,6 +354,17 @@ button:disabled {
   border-color: var(--err);
 }
 
+/* btn-danger's mirror image: the green for an action that's good news —
+   today that's the tab bar's "Update to vX.Y.Z" (App.tsx::AppVersion). */
+.btn-ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong));
+}
+.btn-ok:hover:not(:disabled) {
+  background: var(--ok-soft);
+  border-color: var(--ok);
+}
+
 .btn-sm {
   padding: 3px 9px;
   font-size: 12.5px;

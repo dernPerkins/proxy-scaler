@@ -155,6 +155,9 @@ make release-status   # progress, or exit code once finished
   inside the repo. `dpkg-deb` refuses to build from a directory looser
   than 0775, and a repo checkout on a FUSE/NTFS mount reports 0777 no
   matter what you `chmod` it to. Override with `PROXY_SCALER_DEB_STAGE`.
+  The stage (a 15GB+ dereferenced copy of the torch bundle) is left in
+  place after the build for inspection — on a single-drive host that's
+  15GB+ of the root drive. Run `make deb-stage-clean` to reclaim it.
 - Sidecar staging tries hardlinks (`cp -al`) first and falls back to a
   dereferencing copy. On filesystems that refuse hardlinks you'll see a
   wall of `cp: cannot create hard link ... Operation not permitted`
