@@ -279,6 +279,10 @@ pub async fn launch_installer(
     } else if cfg!(target_os = "macos") {
         // Mount the dmg; the user drags to Applications themselves — the
         // same styled drag-across window a fresh install uses.
+        // allow(deprecated): same call and same reasoning as main.rs's
+        // open_directory — staying on the shell plugin's open rather than
+        // adding tauri-plugin-opener as a second dependency for one call.
+        #[allow(deprecated)]
         app.shell()
             .open(file_path.to_string_lossy(), None)
             .map_err(|e| format!("couldn't open the installer image: {e}"))?;
