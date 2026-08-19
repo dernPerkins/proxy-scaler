@@ -494,6 +494,30 @@ def test_cancel_all_tasks_cancels_only_pending(client: TestClient, tmp_path: Pat
     assert resp.json() == {"canceled": 0}
 
 
+def test_cancel_all_include_running_requires_held_worker(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """include_running is only safe while the worker is held (a held
+    worker has claimed nothing, so 'running' rows are provable orphans);
+    against a possibly-live worker it must be refused, or the worker would
+    overwrite 'canceled' with 'done'/'failed' when the task finishes."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    orphan_id = _enqueue_for_tag(tmp_path, db_path, "tag-a")
+    assert db.claim_next_task(db_path=db_path).id == orphan_id  # -> 'running'
+
+    resp = client.post("/api/tasks/cancel-all", params={"include_running": True})
+    assert resp.status_code == 409
+    assert client.get(f"/api/tasks/{orphan_id}").json()["status"] == "running"
+
+    db.set_worker_hold(True, db_path=db_path)
+    resp = client.post("/api/tasks/cancel-all", params={"include_running": True})
+    assert resp.status_code == 200
+    assert resp.json() == {"canceled": 1}
+    task = client.get(f"/api/tasks/{orphan_id}").json()
+    assert task["status"] == "canceled"
+    assert task["started_at"] is None
+
+
 def _enqueue_for_tag(tmp_path: Path, db_path: str, project_tag: str, **overrides) -> int:
     """Queue one pending task straight into the DB, skipping /api/generate
     (and its Scryfall round trip) — for tests that only care about the
@@ -560,7 +584,24 @@ def test_retry_all_only_matches_project_model_and_dpi(client: TestClient, tmp_pa
 def test_worker_status_not_running(client: TestClient) -> None:
     resp = client.get("/api/worker/status")
     assert resp.status_code == 200
-    assert resp.json() == {"running": False}
+    assert resp.json() == {"running": False, "held": False}
+
+
+def test_worker_status_reports_hold_and_release_clears_it(client: TestClient) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    db.set_worker_hold(True, db_path=db_path)
+
+    resp = client.get("/api/worker/status")
+    assert resp.json()["held"] is True
+
+    resp = client.post("/api/worker/release")
+    assert resp.status_code == 200
+    assert resp.json() == {"released": True}
+    assert client.get("/api/worker/status").json()["held"] is False
+
+    # Idempotent — a repeat release just reports there was nothing held.
+    resp = client.post("/api/worker/release")
+    assert resp.json() == {"released": False}
 
 
 def test_gallery_list_empty_project(client: TestClient) -> None:

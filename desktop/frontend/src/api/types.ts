@@ -131,6 +131,10 @@ export interface Task {
 
 export interface WorkerStatus {
   running: boolean;
+  // True while the worker is started-but-held (the desktop spawn passes
+  // --hold-worker; ResumeTasksPrompt releases it). Optional because older
+  // or remote servers don't send it — undefined reads as not held.
+  held?: boolean;
 }
 
 export interface GalleryItem {

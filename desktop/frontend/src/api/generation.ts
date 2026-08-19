@@ -99,8 +99,14 @@ export const generationApi = {
   getTask: (id: number) => request<Task>(`/api/tasks/${id}`),
   cancelTask: (id: number) =>
     request<{ canceled: boolean }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
-  cancelAllTasks: () =>
-    request<{ canceled: number }>("/api/tasks/cancel-all", { method: "POST" }),
+  // includeRunning also cancels orphaned 'running' rows — the server only
+  // allows it while the worker is held (409 otherwise), i.e. from
+  // ResumeTasksPrompt's startup flow.
+  cancelAllTasks: (includeRunning = false) =>
+    request<{ canceled: number }>(
+      `/api/tasks/cancel-all${includeRunning ? "?include_running=true" : ""}`,
+      { method: "POST" },
+    ),
   retryTask: (id: number) =>
     request<{ retried: boolean }>(`/api/tasks/${id}/retry`, { method: "POST" }),
   retryAllTasks: (projectTag: string, model: string, dpis: number[]) => {
@@ -109,6 +115,10 @@ export const generationApi = {
     return request<{ retried: number }>(`/api/tasks/retry-all?${search}`, { method: "POST" });
   },
   workerStatus: () => request<WorkerStatus>("/api/worker/status"),
+  // Releases a worker the supervisor started held (--hold-worker).
+  // Idempotent; released:false just means there was no hold to clear.
+  releaseWorker: () =>
+    request<{ released: boolean }>("/api/worker/release", { method: "POST" }),
 
   listGallery: (projectTag: string) =>
     request<GalleryItem[]>(`/api/gallery?${new URLSearchParams({ project_tag: projectTag })}`),

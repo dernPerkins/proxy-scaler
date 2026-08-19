@@ -179,6 +179,14 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
 
 CREATE INDEX IF NOT EXISTS idx_gallery_project_tag
     ON project_gallery_items(project_tag);
+
+-- Cross-process control flags shared between the API server and the
+-- worker (separate processes whose only common ground is this database).
+-- Currently just 'worker_hold' — see set_worker_hold/get_worker_hold.
+CREATE TABLE IF NOT EXISTS worker_control (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -454,6 +462,19 @@ def _migration_003_add_total_faces(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migration_004_add_worker_control(conn: sqlite3.Connection) -> None:
+    """Add the worker_control key-value table — the channel through which
+    the API server releases a worker that the supervisor started held (the
+    desktop client spawns its sidecar with --hold-worker so leftover tasks
+    from the last session don't start processing before the user has been
+    asked). IF NOT EXISTS keeps it a no-op on a database where _SCHEMA
+    already created the table."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS worker_control ("
+        "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+
+
 # Ordered oldest-to-newest. _migrate() below walks this list and applies
 # whichever steps are newer than a database's current PRAGMA user_version,
 # one at a time in order — so a database several versions behind replays
@@ -478,8 +499,14 @@ _MIGRATIONS: list[Migration] = [
         "DFC-completeness checks without a live Scryfall call",
         _migration_003_add_total_faces,
     ),
+    Migration(
+        4,
+        "add worker_control key-value table for the startup worker "
+        "hold/release handshake between the API server and the worker",
+        _migration_004_add_worker_control,
+    ),
 ]
-SCHEMA_VERSION = 3  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 4  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -489,6 +516,7 @@ _KNOWN_TABLES = frozenset(
     {
         "generation_tasks",
         "project_gallery_items",
+        "worker_control",
         "projects",
         "project_cards",
         "app_settings",
@@ -684,13 +712,25 @@ def cancel_task(task_id: int, db_path: Path | str | None = None) -> bool:
         return cur.rowcount > 0
 
 
-def cancel_all_tasks(db_path: Path | str | None = None) -> int:
+def cancel_all_tasks(
+    db_path: Path | str | None = None, *, include_running: bool = False
+) -> int:
     """Cancel every still-pending task, across all projects. Returns the
-    number canceled."""
+    number canceled.
+
+    include_running additionally cancels 'running' rows (clearing their
+    started_at, since nothing is actually running them). Only valid while
+    the worker is held (see get_worker_hold): a held worker has claimed
+    nothing, so any 'running' row is a provable orphan from a dead worker
+    — whereas against a live worker the row may be genuinely in flight,
+    and the worker would overwrite 'canceled' with 'done'/'failed' when it
+    finishes. The API layer enforces that precondition."""
+    statuses = "('pending', 'running')" if include_running else "('pending')"
     with connect(db_path) as conn:
         cur = conn.execute(
-            "UPDATE generation_tasks SET status = 'canceled', completed_at = ? "
-            "WHERE status = 'pending'",
+            "UPDATE generation_tasks SET status = 'canceled', "
+            "started_at = NULL, completed_at = ? "
+            f"WHERE status IN {statuses}",
             (_utc_now(),),
         )
         conn.commit()
@@ -1277,6 +1317,55 @@ def is_worker_running(lock_path: Path | str | None = None) -> bool:
         return True
     release_worker_lock(fd)
     return False
+
+
+# --- Worker hold/release -------------------------------------------------
+#
+# The desktop client spawns its local sidecar with --hold-worker so
+# leftover tasks from the last session don't start processing the moment
+# the app launches — the worker waits (see worker._wait_while_held) until
+# the client has asked the user to resume or cancel them, then releases it
+# via POST /api/worker/release. The API server and the worker are separate
+# processes whose only common ground is this database, hence a DB flag
+# rather than a signal or pipe. The supervisor writes the initial state
+# before spawning either child, so a non-held start (headless, standalone
+# server, remote) actively clears any stale hold.
+
+_WORKER_HOLD_KEY = "worker_hold"
+
+
+def set_worker_hold(held: bool, db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO worker_control (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_WORKER_HOLD_KEY, "1" if held else "0"),
+        )
+        conn.commit()
+
+
+def get_worker_hold(db_path: Path | str | None = None) -> bool:
+    """Whether the worker is currently held. Absent row reads as not held
+    — the flag only exists at all on databases the supervisor has touched
+    since the hold feature landed."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM worker_control WHERE key = ?",
+            (_WORKER_HOLD_KEY,),
+        ).fetchone()
+    return row is not None and row["value"] == "1"
+
+
+def release_worker_hold(db_path: Path | str | None = None) -> bool:
+    """Clear the hold. Returns whether it was actually held (False makes a
+    repeat release an idempotent no-op)."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE worker_control SET value = '0' WHERE key = ? AND value = '1'",
+            (_WORKER_HOLD_KEY,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def parse_output_filename(name: str) -> dict[str, Any] | None:

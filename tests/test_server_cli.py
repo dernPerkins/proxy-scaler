@@ -40,6 +40,7 @@ def recorded_main(monkeypatch) -> _RecordingMain:
         "PROXY_SCALER_DB_PATH",
         "PROXY_SCALER_WORKER_LOCK_PATH",
         "PROXY_SCALER_DATA_DIR",
+        "PROXY_SCALER_HOLD_WORKER",
     ):
         monkeypatch.delenv(var, raising=False)
     return recorder
@@ -117,6 +118,26 @@ def test_explicit_db_path_beats_data_dir(recorded_main, tmp_path, monkeypatch) -
     assert recorded_main.kwargs["db_path"] == "/tmp/explicit.db"
     # ...but the lock still comes from the data dir, since nothing set it.
     assert recorded_main.kwargs["worker_lock_path"] == str(tmp_path / "worker.lock")
+
+
+def test_hold_worker_defaults_off(recorded_main) -> None:
+    """Headless/standalone starts must keep processing immediately — the
+    hold is strictly opt-in for the desktop app's embedded spawn."""
+    supervisor.cli_main([])
+    assert recorded_main.kwargs["hold_worker"] is False
+
+
+def test_hold_worker_flag_and_env_var(recorded_main, monkeypatch) -> None:
+    supervisor.cli_main(["--hold-worker"])
+    assert recorded_main.kwargs["hold_worker"] is True
+
+    monkeypatch.setenv("PROXY_SCALER_HOLD_WORKER", "1")
+    supervisor.cli_main([])
+    assert recorded_main.kwargs["hold_worker"] is True
+
+    monkeypatch.setenv("PROXY_SCALER_HOLD_WORKER", "0")
+    supervisor.cli_main([])
+    assert recorded_main.kwargs["hold_worker"] is False
 
 
 def test_no_stdin_shutdown_flag_disables_the_watcher(recorded_main) -> None:

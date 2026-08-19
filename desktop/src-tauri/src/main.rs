@@ -152,7 +152,14 @@ async fn start_local_server(
         .command(exe_path)
         // Explicit, not assumed: see LOCAL_PORT's own comment above for
         // the exact bug this prevents.
-        .args(["--port", port_arg.as_str()])
+        //
+        // --hold-worker: the worker starts held — leftover tasks from the
+        // last session must not begin processing before the frontend has
+        // asked the user to resume or cancel them (ResumeTasksPrompt
+        // releases via POST /api/worker/release). Only this embedded
+        // spawn passes it; the standalone server app and headless
+        // installs keep processing immediately.
+        .args(["--port", port_arg.as_str(), "--hold-worker"])
         .spawn()
         .map_err(|e| format!("failed to spawn local server: {e}"))?;
     *guard = Some(child);

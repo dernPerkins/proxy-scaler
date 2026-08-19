@@ -19,6 +19,26 @@ from pathlib import Path
 from . import db, pipeline
 
 POLL_INTERVAL_S = 2.0
+HOLD_POLL_INTERVAL_S = 0.5
+
+
+def _wait_while_held(
+    db_path: Path | str | None = None,
+    *,
+    poll_interval: float = HOLD_POLL_INTERVAL_S,
+) -> None:
+    """Block while the supervisor-set hold flag is up (see db.py's
+    worker hold/release section). Called with the worker lock already
+    held — deliberately, so is_worker_running() stays true and no second
+    worker can start while this one waits — and before the orphan reset,
+    so leftover 'running' rows stay provable orphans that the client's
+    held-mode cancel-all is allowed to cancel."""
+    if not db.get_worker_hold(db_path=db_path):
+        return
+    print("Worker held: waiting for the client to resume or cancel leftover tasks…")
+    while db.get_worker_hold(db_path=db_path):
+        time.sleep(poll_interval)
+    print("Worker released.")
 
 
 def _process_one(task: db.TaskRow, *, db_path: Path | str | None = None) -> None:
@@ -41,6 +61,7 @@ def main(
     if fd is None:
         print("Another worker is already running; exiting.")
         return
+    _wait_while_held(db_path=db_path)
     # Holding the lock proves no other worker is mid-task, so any
     # 'running' row is an orphan from a dead worker — re-queue them.
     requeued = db.reset_orphaned_running_tasks(db_path=db_path)

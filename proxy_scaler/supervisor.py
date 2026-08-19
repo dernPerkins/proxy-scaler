@@ -337,6 +337,7 @@ def main(
     db_path: Path | str | None = None,
     worker_lock_path: Path | str | None = None,
     watch_stdin: bool = True,
+    hold_worker: bool = False,
 ) -> int:
     """Start the API server + the worker as managed children, block until
     shutdown, then stop both cleanly. Returns a process exit code."""
@@ -347,6 +348,13 @@ def main(
     # paper over the race. Initialize it here, before spawning either
     # child, so there's no race at all.
     db.init_db(db_path)
+    # Written before either child spawns — the worker only ever reads the
+    # flag, so there's no held-vs-release race — and written on EVERY
+    # start, so a non-held start (headless, standalone server app) actively
+    # clears a hold left behind by a crashed desktop session. Only the
+    # desktop client passes hold_worker; see db.py's worker hold/release
+    # section for the full handshake.
+    db.set_worker_hold(hold_worker, db_path=db_path)
 
     worker_env: dict[str, str] = {}
     if db_path is not None:
@@ -540,6 +548,18 @@ def cli_main(argv: list[str] | None = None) -> int:
             "/dev/null, so service managers rarely need this explicitly."
         ),
     )
+    parser.add_argument(
+        "--hold-worker",
+        action="store_true",
+        help=(
+            "Start the worker held: it won't touch the task queue until "
+            "released via POST /api/worker/release. Passed by the desktop "
+            "app's embedded server so leftover tasks from a previous "
+            "session don't start processing before the user is asked to "
+            "resume or cancel them. Not for headless use — nothing will "
+            "process until something calls the release endpoint."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.bind_all:
@@ -576,12 +596,17 @@ def cli_main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+    hold_worker = args.hold_worker or os.environ.get(
+        "PROXY_SCALER_HOLD_WORKER", ""
+    ).lower() in ("1", "true")
+
     return main(
         host=host,
         port=port,
         db_path=db_path,
         worker_lock_path=worker_lock_path,
         watch_stdin=not args.no_stdin_shutdown,
+        hold_worker=hold_worker,
     )
 
 

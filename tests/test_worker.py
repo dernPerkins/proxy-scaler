@@ -8,12 +8,20 @@ calls internally, in a short deterministic sequence.
 from __future__ import annotations
 
 import io
+import threading
 from pathlib import Path
 
 from PIL import Image
 
-from proxy_scaler.db import claim_next_task, enqueue_task, get_task, init_db
-from proxy_scaler.worker import _process_one
+from proxy_scaler.db import (
+    claim_next_task,
+    enqueue_task,
+    get_task,
+    init_db,
+    release_worker_hold,
+    set_worker_hold,
+)
+from proxy_scaler.worker import _process_one, _wait_while_held
 
 
 def _enqueue(db_path: Path, **overrides) -> int:
@@ -92,3 +100,25 @@ def test_process_one_marks_task_failed_on_exception(tmp_path, monkeypatch) -> No
     assert failed.status == "failed"
     assert failed.error
     assert failed.completed_at is not None
+
+
+def test_wait_while_held_returns_immediately_when_not_held(tmp_path) -> None:
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    # No hold row at all (headless/remote shape) — must not block.
+    _wait_while_held(db_path=db_path)
+
+
+def test_wait_while_held_blocks_until_released(tmp_path) -> None:
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    set_worker_hold(True, db_path=db_path)
+
+    # The release arrives from "the API server" (another thread here)
+    # while the worker-side wait is polling.
+    releaser = threading.Timer(0.1, release_worker_hold, kwargs={"db_path": db_path})
+    releaser.start()
+    try:
+        _wait_while_held(db_path=db_path, poll_interval=0.02)
+    finally:
+        releaser.cancel()

@@ -119,3 +119,41 @@ export function requestUpdatePrompt(): void {
 export function getPromptRequestSeq(): number {
   return promptRequestSeq;
 }
+
+// --- Boot-dialog sequencing --------------------------------------------------
+//
+// Two dialogs can want the screen at launch: UpdatePrompt (boot update
+// check, mounted above ConnectGate) and ResumeTasksPrompt (leftover tasks
+// from the last session, mounted in App). They must never stack; the
+// update comes first. These two flags are what ResumeTasksPrompt waits
+// on — deferring it is free, because the worker stays held (nothing
+// processes) until it acts. UpdatePrompt publishes both.
+
+// True once the boot check has finished — an update was offered, there
+// was none, the check failed (offline), or the version was skipped. In a
+// plain browser tab (no Tauri) UpdatePrompt's boot effect bails without
+// checking, so it settles the flag immediately there too.
+let bootUpdateCheckSettled = false;
+// True while any UpdatePrompt modal state (offer/downloading/error) is on
+// screen — boot-triggered or re-opened from the tab-bar button.
+let updatePromptOpen = false;
+
+export function setBootUpdateCheckSettled(): void {
+  if (bootUpdateCheckSettled) return;
+  bootUpdateCheckSettled = true;
+  notifyUpdateStore();
+}
+
+export function getBootUpdateCheckSettled(): boolean {
+  return bootUpdateCheckSettled;
+}
+
+export function setUpdatePromptOpen(open: boolean): void {
+  if (updatePromptOpen === open) return;
+  updatePromptOpen = open;
+  notifyUpdateStore();
+}
+
+export function getUpdatePromptOpen(): boolean {
+  return updatePromptOpen;
+}

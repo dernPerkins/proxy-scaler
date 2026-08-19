@@ -153,6 +153,11 @@ class TaskOut(BaseModel):
 
 class WorkerStatusOut(BaseModel):
     running: bool
+    # True while the worker is started-but-waiting (see db.py's worker
+    # hold/release section) — `running` still reads true then, since the
+    # held worker does hold its lock. Defaulted so older clients that
+    # don't know the field parse fine.
+    held: bool = False
 
 
 class GalleryItemOut(BaseModel):

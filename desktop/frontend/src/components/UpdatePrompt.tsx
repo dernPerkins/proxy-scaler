@@ -7,6 +7,8 @@ import {
   getUpdateSkippedVersion,
   launchInstaller,
   setAvailableUpdate,
+  setBootUpdateCheckSettled,
+  setUpdatePromptOpen,
   setUpdateSkippedVersion,
   subscribeUpdateStore,
   type UpdateInfo,
@@ -70,8 +72,19 @@ export default function UpdatePrompt() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [state.kind]);
 
+  // ResumeTasksPrompt sequences itself behind this modal (update first,
+  // tasks second — see update.ts's boot-dialog sequencing section), so
+  // every state change publishes to the store: open/closed continuously,
+  // and "the boot check is settled" on every exit path of the check.
   useEffect(() => {
-    if (!isTauri()) return;
+    setUpdatePromptOpen(state.kind !== "hidden");
+  }, [state.kind]);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      setBootUpdateCheckSettled();
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -89,6 +102,11 @@ export default function UpdatePrompt() {
         setState({ kind: "offer", info });
       } catch {
         // A failed check is indistinguishable from "no update" by design.
+      } finally {
+        // Settled regardless of outcome — offered, none, skipped, or
+        // failed. If the offer opened, updatePromptOpen (above) is what
+        // keeps ResumeTasksPrompt waiting from here on.
+        setBootUpdateCheckSettled();
       }
     })();
     return () => {

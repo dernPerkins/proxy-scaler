@@ -232,7 +232,8 @@ string, not a database relationship.
 | `GET /api/tasks?project_tag=` | List tasks for a project |
 | `GET /api/tasks/{id}` | Single task status |
 | `POST /api/tasks/{id}/cancel` | Cancel a queued/running task |
-| `GET /api/worker/status` | Is the background worker alive |
+| `GET /api/worker/status` | Is the background worker alive, and is it held (see `/api/worker/release`) |
+| `POST /api/worker/release` | Release a worker started held. The desktop app spawns its embedded server with `--hold-worker` so tasks left over from the last session don't start processing at launch; the client asks the user to resume or cancel them (ResumeTasksPrompt), then releases. `POST /api/tasks/cancel-all?include_running=true` is allowed only while held — a held worker has claimed nothing, so `running` rows are provable orphans. Headless/standalone/remote servers never hold |
 | `GET /api/gallery?project_tag=` | List generated images for a project |
 | `POST /api/gallery/adopt` | Register already-existing images for matching cards into this `project_tag`'s gallery: other projects' rows plus an `output_dir` filename scan for row-less files — called on import/load so already-generated cards show without a Generate request |
 | `GET /api/gallery/{id}/original` \| `/full` | Serve image bytes |

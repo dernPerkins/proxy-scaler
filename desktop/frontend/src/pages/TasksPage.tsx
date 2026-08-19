@@ -75,9 +75,13 @@ export default function TasksPage() {
           Worker:{" "}
           {workerQuery.isLoading
             ? "checking…"
-            : workerQuery.data?.running
-              ? "running"
-              : "not running"}
+            : workerQuery.data?.held
+              ? // Started but waiting for ResumeTasksPrompt's release —
+                // "running" would misleadingly suggest progress.
+                "held"
+              : workerQuery.data?.running
+                ? "running"
+                : "not running"}
         </span>
         {/* Fixed status order rather than object-key order — otherwise the
             badges reshuffle position between polls as counts change. */}

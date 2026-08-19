@@ -15,12 +15,14 @@ from proxy_scaler import db as db_module
 from proxy_scaler.db import (
     TaskRow,
     acquire_worker_lock,
+    cancel_all_tasks,
     cancel_pending_tasks_for_tag,
     cancel_task,
     claim_next_task,
     enqueue_task,
     get_gallery_item,
     get_task,
+    get_worker_hold,
     init_db,
     is_worker_running,
     list_gallery_items,
@@ -28,8 +30,10 @@ from proxy_scaler.db import (
     mark_task_done,
     mark_task_failed,
     parse_output_filename,
+    release_worker_hold,
     release_worker_lock,
     scan_gallery_from_output,
+    set_worker_hold,
     upsert_gallery_item_for_task,
 )
 from proxy_scaler.pipeline import FaceResult
@@ -392,6 +396,40 @@ def test_cancel_task_only_affects_pending(db_path: Path) -> None:
     assert get_task(tid2, db_path=db_path).status == "running"
 
 
+def test_cancel_all_tasks_default_leaves_running_alone(db_path: Path) -> None:
+    running = _enqueue_sol_ring(db_path, collector_number="1")
+    claim_next_task(db_path=db_path)  # -> running
+    pending = _enqueue_sol_ring(db_path, collector_number="2")
+
+    assert cancel_all_tasks(db_path=db_path) == 1
+
+    assert get_task(pending, db_path=db_path).status == "canceled"
+    assert get_task(running, db_path=db_path).status == "running"
+
+
+def test_cancel_all_tasks_include_running_cancels_orphans(db_path: Path) -> None:
+    """The startup-hold path: with the worker held, 'running' rows are
+    provable orphans from a dead worker, and cancel-all may sweep them
+    too — clearing started_at, since nothing is actually running them.
+    Terminal states stay untouched either way."""
+    orphan = _enqueue_sol_ring(db_path, collector_number="1")
+    claim_next_task(db_path=db_path)  # 'running', simulating a dead worker
+    done = _enqueue_sol_ring(db_path, collector_number="2")
+    mark_task_done(done, db_path=db_path)
+    failed = _enqueue_sol_ring(db_path, collector_number="3")
+    mark_task_failed(failed, "boom", db_path=db_path)
+    pending = _enqueue_sol_ring(db_path, collector_number="4")
+
+    assert cancel_all_tasks(db_path=db_path, include_running=True) == 2
+
+    by_id = {t.id: t for t in list_tasks(db_path=db_path)}
+    assert by_id[orphan].status == "canceled"
+    assert by_id[orphan].started_at is None
+    assert by_id[pending].status == "canceled"
+    assert by_id[done].status == "done"
+    assert by_id[failed].status == "failed"
+
+
 def test_cancel_pending_tasks_for_tag_only_touches_that_tags_pending(db_path: Path) -> None:
     """Discarding one Project's session must leave another Project's queue
     alone, and can't reach work that already started — a running upscale
@@ -495,6 +533,25 @@ def test_worker_lock_prevents_double_acquire(tmp_path: Path) -> None:
 
     release_worker_lock(fd)
     assert is_worker_running(lock_path) is False
+
+
+def test_worker_hold_round_trip(db_path: Path) -> None:
+    # Absent row (nothing ever set it) reads as not held.
+    assert get_worker_hold(db_path=db_path) is False
+
+    set_worker_hold(True, db_path=db_path)
+    assert get_worker_hold(db_path=db_path) is True
+
+    assert release_worker_hold(db_path=db_path) is True
+    assert get_worker_hold(db_path=db_path) is False
+    # Idempotent — releasing an already-released hold reports False.
+    assert release_worker_hold(db_path=db_path) is False
+
+    # The supervisor's non-held start path: an explicit clear.
+    set_worker_hold(True, db_path=db_path)
+    set_worker_hold(False, db_path=db_path)
+    assert get_worker_hold(db_path=db_path) is False
+    assert release_worker_hold(db_path=db_path) is False
 
 
 # --- Schema versioning / migrations ----------------------------------
@@ -720,6 +777,39 @@ def test_migration_003_adds_total_faces_to_existing_rows_as_null(tmp_path: Path)
         assert gallery_row["total_faces"] is None
     finally:
         conn.close()
+
+
+def test_migration_004_adds_worker_control_to_existing_db(tmp_path: Path) -> None:
+    """A real pre-hold database (user_version 3, no worker_control) gains
+    the table and lands at the current version — and the hold helpers work
+    on it afterwards."""
+    path = tmp_path / "v3.db"
+    init_db(path)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("DROP TABLE worker_control")
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+    finally:
+        conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "worker_control" in tables
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+    set_worker_hold(True, db_path=path)
+    assert get_worker_hold(db_path=path) is True
 
 
 def test_init_db_is_idempotent(db_path: Path) -> None:

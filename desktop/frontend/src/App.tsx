@@ -4,6 +4,7 @@ import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
 import QuitPrompt from "./components/QuitPrompt";
+import ResumeTasksPrompt from "./components/ResumeTasksPrompt";
 import ServerStatusToast from "./components/ServerStatusToast";
 import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
@@ -67,6 +68,10 @@ export default function App() {
         {/* Mounted for its close-request listener, not for what it draws:
             it renders nothing until the window is actually closing. */}
         <QuitPrompt />
+        {/* The launch-time resume-or-cancel choice for tasks left over
+            from the last session — renders nothing unless the local
+            worker was spawned held AND leftovers exist. */}
+        <ResumeTasksPrompt />
         <ProjectBar />
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual

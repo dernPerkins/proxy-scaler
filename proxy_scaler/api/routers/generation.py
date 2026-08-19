@@ -98,8 +98,18 @@ def cancel_task(task_id: int) -> dict:
 
 
 @router.post("/tasks/cancel-all")
-def cancel_all_tasks() -> dict:
-    canceled = db.cancel_all_tasks(db_path=get_db_path())
+def cancel_all_tasks(include_running: bool = False) -> dict:
+    db_path = get_db_path()
+    if include_running and not db.get_worker_hold(db_path=db_path):
+        # Only safe while the worker is held: held means nothing has been
+        # claimed, so 'running' rows are provable orphans. Once released,
+        # a 'running' row may be genuinely in flight — the worker would
+        # finish it and overwrite 'canceled' with 'done'/'failed'.
+        raise HTTPException(
+            status_code=409,
+            detail="Running tasks can only be canceled while the worker is held.",
+        )
+    canceled = db.cancel_all_tasks(db_path=db_path, include_running=include_running)
     return {"canceled": canceled}
 
 
@@ -117,4 +127,14 @@ def retry_all_tasks(project_tag: str, model: str, dpi: list[int] = Query(...)) -
 
 @router.get("/worker/status", response_model=WorkerStatusOut)
 def worker_status() -> WorkerStatusOut:
-    return WorkerStatusOut(running=db.is_worker_running(lock_path=get_lock_path()))
+    return WorkerStatusOut(
+        running=db.is_worker_running(lock_path=get_lock_path()),
+        held=db.get_worker_hold(db_path=get_db_path()),
+    )
+
+
+@router.post("/worker/release")
+def release_worker() -> dict:
+    """Release a worker the supervisor started held (--hold-worker).
+    Idempotent — released reads False when there was no hold to clear."""
+    return {"released": db.release_worker_hold(db_path=get_db_path())}
