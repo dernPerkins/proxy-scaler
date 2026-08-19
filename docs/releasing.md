@@ -554,22 +554,29 @@ limit (a 2.47GB single exe built and verified).
 Install once: `winget install JRSoftware.InnoSetup` — lands in
 `%LOCALAPPDATA%\Programs\Inno Setup 6`.
 
+`MSYS_NO_PATHCONV=1` and `pwd -W` are both load-bearing under Git Bash:
+MSYS otherwise rewrites arguments that start with `/` (its heuristics
+differ between Git Bash versions), and a mangled `/D...` switch makes
+ISCC read it as a second script filename — "You may not specify more
+than one script filename", observed in the wild. With conversion off,
+paths must be Windows-style, which is what `pwd -W` prints.
+
 ```bash
 ISCC="$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe"
 
-"$ISCC" "/DAppName=Proxy Scaler" /DAppVersion=0.1.0 \
-  "/DMsiDir=$(pwd)/dist/proxy-scaler-client_0.1.0_windows-x64_cuda" \
+MSYS_NO_PATHCONV=1 "$ISCC" "/DAppName=Proxy Scaler" /DAppVersion=0.1.0 \
+  "/DMsiDir=$(pwd -W)/dist/proxy-scaler-client_0.1.0_windows-x64_cuda" \
   "/DMsiName=Proxy Scaler_0.1.0_x64_en-US.msi" \
-  "/DIconPath=$(pwd)/desktop/src-tauri/icons/icon.ico" \
-  "/DOutputDir=$(pwd)/dist" \
+  "/DIconPath=$(pwd -W)/desktop/src-tauri/icons/icon.ico" \
+  "/DOutputDir=$(pwd -W)/dist" \
   /DOutputBaseName=proxy-scaler-client_0.1.0_windows-x64_cuda-setup \
   /Q desktop/inno/setup.iss
 
-"$ISCC" "/DAppName=Proxy Scaler Server" /DAppVersion=0.1.0 \
-  "/DMsiDir=$(pwd)/dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda" \
+MSYS_NO_PATHCONV=1 "$ISCC" "/DAppName=Proxy Scaler Server" /DAppVersion=0.1.0 \
+  "/DMsiDir=$(pwd -W)/dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda" \
   "/DMsiName=Proxy Scaler Server_0.1.0_x64_en-US.msi" \
-  "/DIconPath=$(pwd)/desktop/server-app/icons/icon.ico" \
-  "/DOutputDir=$(pwd)/dist" \
+  "/DIconPath=$(pwd -W)/desktop/server-app/icons/icon.ico" \
+  "/DOutputDir=$(pwd -W)/dist" \
   /DOutputBaseName=proxy-scaler-server-app_0.1.0_windows-x64_cuda-setup \
   /Q desktop/inno/setup.iss
 ```
