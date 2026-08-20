@@ -6,6 +6,7 @@ import type { CardRow } from "../api/project";
 import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import CompareDialog from "../components/CompareDialog";
+import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import ServerSwitcher from "../components/ServerSwitcher";
@@ -370,7 +371,10 @@ export default function DecklistPage() {
     onError: (err: Error) => setStatus(`Regenerate failed: ${err.message}`),
   });
 
-  const [confirmClearGenerated, setConfirmClearGenerated] = useState(false);
+  // ConfirmDialog rather than a checkbox-arm: destructive actions ask
+  // their yes/no question in a modal (see ConfirmDialog.tsx for why not
+  // window.confirm).
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const clearGeneratedMutation = useMutation({
     mutationFn: () =>
       generationApi.clearGeneratedData(
@@ -379,7 +383,6 @@ export default function DecklistPage() {
         projectTag ?? undefined,
       ),
     onSuccess: () => {
-      setConfirmClearGenerated(false);
       invalidateStatus();
     },
     onError: (err: Error) => setStatus(`Clear failed: ${err.message}`),
@@ -561,21 +564,28 @@ export default function DecklistPage() {
             Deletes the generated images and download cache (the output and cache directories
             above). Model weights are kept.
           </p>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={confirmClearGenerated}
-              onChange={(e) => setConfirmClearGenerated(e.target.checked)}
-            />
-            Confirm delete generated data
-          </label>
           <button
             className="btn-danger btn-block"
-            onClick={() => clearGeneratedMutation.mutate()}
-            disabled={!confirmClearGenerated || clearGeneratedMutation.isPending}
+            onClick={() => setConfirmClearOpen(true)}
+            disabled={clearGeneratedMutation.isPending}
           >
             Delete all generated images &amp; cache
           </button>
+          {confirmClearOpen && (
+            <ConfirmDialog
+              title="Delete all generated images & cache?"
+              confirmLabel="Delete everything"
+              onConfirm={() => {
+                setConfirmClearOpen(false);
+                clearGeneratedMutation.mutate();
+              }}
+              onCancel={() => setConfirmClearOpen(false)}
+            >
+              This deletes every generated image and the download cache (the
+              output and cache directories in the sidebar). Model weights are
+              kept. Cards can be re-generated any time.
+            </ConfirmDialog>
+          )}
           {clearGeneratedMutation.data && (
             <div className="hint">
               {clearGeneratedMutation.data.notes.length > 0 ? (

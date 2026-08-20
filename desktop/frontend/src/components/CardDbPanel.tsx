@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import type { CardDataset } from "../api/types";
+import ConfirmDialog from "./ConfirmDialog";
 
 const STALE_AFTER_DAYS = 30;
 
@@ -77,13 +78,12 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
     onError: (err: Error) => setJobError(err.message),
   });
 
-  // Checkbox-armed like DecklistPage's clear-generated-data control — the
-  // corpus is minutes of download/import to get back.
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  // ConfirmDialog rather than a checkbox-arm (see ConfirmDialog.tsx) —
+  // the corpus is minutes of download/import to get back.
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const deleteMutation = useMutation({
     mutationFn: () => generationApi.deleteCardDb(),
     onSuccess: () => {
-      setConfirmDelete(false);
       setJobError(null);
       queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
       queryClient.invalidateQueries({ queryKey: ["card-languages"] });
@@ -163,26 +163,29 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
             {local ? "Update card database" : "Import card database"}
           </button>
           {local && (
-            <>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={confirmDelete}
-                  onChange={(e) => setConfirmDelete(e.target.checked)}
-                  disabled={serverUnavailable}
-                />
-                Really delete?
-              </label>
-              <button
-                className="btn-sm"
-                onClick={() => deleteMutation.mutate()}
-                disabled={
-                  serverUnavailable || !confirmDelete || deleteMutation.isPending
-                }
-              >
-                Delete card database
-              </button>
-            </>
+            <button
+              className="btn-sm btn-danger"
+              onClick={() => setConfirmDeleteOpen(true)}
+              disabled={serverUnavailable || deleteMutation.isPending}
+            >
+              Delete card database
+            </button>
+          )}
+          {confirmDeleteOpen && (
+            <ConfirmDialog
+              title="Delete the card database?"
+              confirmLabel="Delete card database"
+              onConfirm={() => {
+                setConfirmDeleteOpen(false);
+                deleteMutation.mutate();
+              }}
+              onCancel={() => setConfirmDeleteOpen(false)}
+            >
+              This removes the imported Scryfall card data from this server.
+              The printing picker stops working until it's imported again
+              (~{formatMB(remote?.[dataset]?.compressed_size ?? 80_000_000)} MB
+              download). Your decks and generated images are untouched.
+            </ConfirmDialog>
           )}
         </>
       )}
