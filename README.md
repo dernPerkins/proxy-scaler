@@ -37,7 +37,16 @@ server keeps its own copy). Once imported, card resolution runs against
 the local database first, so most decklist imports and generations make
 no live Scryfall API calls at all; only cards newer than your last import
 fall back to the live API. Update it from the same panel whenever the
-staleness hint suggests it.
+staleness hint suggests it. (Upgrading across a card-database format
+change shows "Not imported yet" — just import again.)
+
+Importing a decklist matches every line before adding it: pick a card
+language next to the Import Cards button (strictly that language — lines
+without a version in it are listed as errors and left in the box), or
+tick **All Languages** to match best-effort across languages. Non-English
+lines work too — `1 Aang der Luftnomade 210` finds the German printing by
+its printed name — and non-English cards display their printed name in
+the deck list, with the English name in the tooltip.
 
 ## Future Features
 

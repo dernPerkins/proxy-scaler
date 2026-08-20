@@ -1256,10 +1256,17 @@ def test_card_import_status_and_cancel_roundtrip(client: TestClient, monkeypatch
     assert client.post("/api/cards/import/nope/cancel").status_code == 404
 
 
-def test_card_languages_default_and_seeded(client: TestClient) -> None:
-    assert client.get("/api/cards/languages").json() == {"languages": ["en"]}
+def test_card_languages_full_list_regardless_of_corpus(client: TestClient) -> None:
+    """The dropdown expresses what the user wants, not what's downloaded —
+    the endpoint serves the full Scryfall language list (English first)
+    whether or not any corpus exists."""
+    from proxy_scaler.scryfall import SCRYFALL_LANGUAGES
+
+    expected = {"languages": list(SCRYFALL_LANGUAGES)}
+    assert client.get("/api/cards/languages").json() == expected
+    assert expected["languages"][0] == "en"
     _seed_card_db()
-    assert client.get("/api/cards/languages").json() == {"languages": ["en"]}
+    assert client.get("/api/cards/languages").json() == expected
 
 
 def test_card_variants_requires_corpus(client: TestClient) -> None:

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from .decklist import DeckEntry
+from .scryfall import SCRYFALL_LANGUAGES
 from .upscale import UpscaleModel
 
 if TYPE_CHECKING:
@@ -99,9 +100,7 @@ _MODEL_SLUGS = "|".join(
 # be misread as a language. English is never written into filenames (see
 # pipeline.output_filename), so an absent group reads back as "en" — which
 # also keeps every pre-language filename parsing exactly as before.
-_LANG_CODES = (
-    "es|fr|de|it|pt|ja|ko|ru|zhs|zht|he|la|grc|ar|sa|ph|qya"
-)
+_LANG_CODES = "|".join(lang for lang in SCRYFALL_LANGUAGES if lang != "en")
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
     rf"(?:-(?P<lang>{_LANG_CODES}))?"

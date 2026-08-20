@@ -316,3 +316,120 @@ def test_live_failure_surfaces_as_entry_error(tmp_path: Path) -> None:
     assert isinstance(results[0], ScryfallError)
     with pytest.raises(ScryfallError):
         resolver.resolve(_entry(set_code="xxx", collector_number="1"))
+
+
+# ---------------------------------------------------------------------------
+# printed names & strict language mode
+
+
+def test_local_name_lookup_matches_printed_name(tmp_path: Path) -> None:
+    _seed(
+        tmp_path,
+        [
+            _card(
+                id="aang-de",
+                name="Aang, Air Nomad",
+                printed_name="Aang der Luftnomade",
+                lang="de",
+                set="tle",
+                collector_number="210",
+            )
+        ],
+    )
+    resolver = _resolver(tmp_path)
+    card, _ = resolver.resolve(_entry(name="Aang der Luftnomade"))
+    assert card["id"] == "aang-de"
+    # And with the collector hint too.
+    card, _ = resolver.resolve(
+        _entry(name="Aang der Luftnomade", collector_number="210")
+    )
+    assert card["id"] == "aang-de"
+
+
+def test_printed_name_match_does_not_warn_name_mismatch(tmp_path: Path) -> None:
+    _seed(
+        tmp_path,
+        [
+            _card(
+                id="aang-de",
+                name="Aang, Air Nomad",
+                printed_name="Aang der Luftnomade",
+                lang="de",
+                set="tle",
+                collector_number="210",
+            )
+        ],
+    )
+    resolver = _resolver(tmp_path)
+    _, warnings = resolver.resolve(
+        _entry(name="Aang der Luftnomade", set_code="tle", collector_number="210", lang="de")
+    )
+    assert warnings == []
+
+
+def test_strict_lang_local_requires_exact_language(tmp_path: Path) -> None:
+    _seed(
+        tmp_path,
+        [
+            _card(id="bolt-en", set="sta", collector_number="116", lang="en"),
+            _card(id="bolt-ja", set="sta", collector_number="116", lang="ja"),
+        ],
+    )
+    resolver = _resolver(tmp_path)
+    card, _ = resolver.resolve(
+        _entry(set_code="sta", collector_number="116", lang="ja"), strict_lang=True
+    )
+    assert card["id"] == "bolt-ja"
+
+    # Demanded language absent locally -> local miss -> live path; the
+    # strict live path only asks for that language and errors when it
+    # doesn't exist (no English substitute).
+    live = _FakeClient()  # answers nothing
+    resolver = _resolver(tmp_path, client=live)
+    results = resolver.resolve_many(
+        [_entry(set_code="sta", collector_number="116", lang="ko")], strict_lang=True
+    )
+    assert isinstance(results[0], ScryfallError)
+    assert "No ko version" in str(results[0])
+    assert live.fetch_calls == [("sta", "116", "ko")]  # no bare retry
+
+
+def test_strict_lang_rejects_fuzzy_match_in_other_language(tmp_path: Path) -> None:
+    """Strictly literal: an English name resolving (via live fuzzy) to an
+    English printing is a failure when the import demanded German."""
+    live = _FakeClient(by_key={"Lightning Bolt": _card()})  # en object
+    resolver = _resolver(tmp_path, client=live)
+    results = resolver.resolve_many(
+        [_entry(name="Lightning Bolt", lang="de")], strict_lang=True
+    )
+    assert isinstance(results[0], ScryfallError)
+    assert "No de match" in str(results[0])
+
+
+def test_strict_lang_accepts_fuzzy_match_in_demanded_language(tmp_path: Path) -> None:
+    """A German-typed name fuzzy-matching the German object passes strict
+    German — the Aang flow under strict mode."""
+    de_card = _card(
+        id="aang-de",
+        name="Aang, Air Nomad",
+        printed_name="Aang der Luftnomade",
+        lang="de",
+        set="tle",
+        collector_number="210",
+    )
+    live = _FakeClient(by_key={"Aang der Luftnomade": de_card})
+    resolver = _resolver(tmp_path, client=live)
+    card, _ = resolver.resolve(
+        _entry(name="Aang der Luftnomade", lang="de"), strict_lang=True
+    )
+    assert card["id"] == "aang-de"
+
+
+def test_entries_without_lang_ignore_strict_flag(tmp_path: Path) -> None:
+    """"All Languages" mode: entries carry lang=None, so strict_lang has
+    nothing to demand and the relaxed ladder applies unchanged."""
+    de_card = _card(id="aang-de", name="Aang, Air Nomad", lang="de", set="tle")
+    live = _FakeClient(by_key={"Aang, Air Nomad": de_card})
+    resolver = _resolver(tmp_path, client=live)
+    card, _ = resolver.resolve(_entry(name="Aang, Air Nomad"), strict_lang=True)
+    assert card["id"] == "aang-de"

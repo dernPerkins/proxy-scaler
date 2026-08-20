@@ -94,7 +94,7 @@ def fetch_bulk_info(
     return info
 
 
-_FACE_KEYS = ("name", "oracle_id")
+_FACE_KEYS = ("name", "oracle_id", "printed_name")
 
 
 def prune_card(card: dict[str, Any]) -> dict[str, Any]:
@@ -107,6 +107,7 @@ def prune_card(card: dict[str, Any]) -> dict[str, Any]:
         "id",
         "oracle_id",
         "name",
+        "printed_name",
         "lang",
         "set",
         "set_name",

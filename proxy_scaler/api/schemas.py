@@ -50,6 +50,12 @@ class DeckEntryIn(BaseModel):
 
 class ResolveIn(BaseModel):
     entries: list[DeckEntryIn]
+    # The resolve-gated import's "strictly literal" language mode: each
+    # entry's lang is a demand, not a preference — a match in any other
+    # language becomes that entry's failure. False (default) keeps the
+    # relaxed preference ladder for legacy callers and the "All Languages"
+    # import mode (entries with lang = null).
+    strict_lang: bool = False
 
 
 class AdoptGalleryIn(BaseModel):
@@ -81,6 +87,10 @@ class ResolvedFaceOut(BaseModel):
     # Printing language — the client persists this (with scryfall_id) into
     # its project cards after a resolve. Defaulted for older servers.
     lang: str = "en"
+    # Localized name as printed on a non-English card; None for English
+    # printings. Display-only on the client (English name stays the
+    # matching identity).
+    printed_name: str | None = None
 
 
 class ResolvedCardOut(BaseModel):
@@ -358,6 +368,7 @@ class CardLanguagesOut(BaseModel):
 class CardVariantOut(BaseModel):
     scryfall_id: str
     name: str
+    printed_name: str | None = None
     set_code: str
     set_name: str | None = None
     collector_number: str

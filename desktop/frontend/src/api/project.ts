@@ -34,9 +34,13 @@ export interface ProjectSettings {
   show_cut_lines: boolean;
   preferred_dpi: number | null;
   preferred_model: string | null;
-  // Import-language preference (Scryfall code, "en" default): stamped onto
-  // cards at decklist import and used to steer server-side resolution.
+  // Import-language preference (Scryfall code, "en" default): the language
+  // the resolve-gated import demands ("strictly literal" — see
+  // ARCHITECTURE.md's resolve flow).
   preferred_lang: string;
+  // The import box's "All Languages" checkbox: best-effort matching across
+  // languages instead of strictly preferred_lang.
+  lang_any: boolean;
 }
 
 export interface CardRow {
@@ -52,6 +56,34 @@ export interface CardRow {
   // set_code/collector_number stay as the offline display cache.
   scryfall_id: string | null;
   lang: string | null;
+  // Localized name as printed on a non-English printing; null for English.
+  // Display-only — `name` (English/oracle) stays the matching identity.
+  printed_name: string | null;
+}
+
+// A parsed-but-unresolved decklist line, as returned by the Rust parser
+// (parse_decklist). The first half of the resolve-gated import.
+export interface ParsedDeckEntry {
+  quantity: number;
+  name: string;
+  set_code: string | null;
+  collector_number: string | null;
+  raw_line: string;
+}
+
+// One card as it returns from a successful resolve — everything
+// import_resolved_cards needs to insert a fully-pinned row. Field names
+// are the Rust struct's snake_case (Tauri only camelCases top-level
+// command arguments, not struct fields).
+export interface ResolvedImportCard {
+  raw_line: string;
+  quantity: number;
+  name: string;
+  printed_name: string | null;
+  set_code: string;
+  collector_number: string;
+  scryfall_id: string;
+  lang: string;
 }
 
 export interface RecentHost {
@@ -90,8 +122,16 @@ export const projectApi = {
   // Additive: adds any new cards parsed out of `text` to the project's
   // existing list, deduped against what's already there (see
   // project_store.rs::import_decklist_text) — never removes cards.
+  // Legacy path: the resolve-gated import below replaced it in the UI.
   importDecklistText: (projectId: number, text: string) =>
     invokeCommand<CardRow[]>("import_decklist_text", { projectId, text }),
+  // Parse only, no DB writes — the first half of the resolve-gated import.
+  parseDecklist: (text: string) =>
+    invokeCommand<ParsedDeckEntry[]>("parse_decklist", { text }),
+  // The second half: insert already-resolved (fully pinned) cards in one
+  // transaction, deduped like importDecklistText. Returns the full list.
+  importResolvedCards: (projectId: number, text: string, cards: ResolvedImportCard[]) =>
+    invokeCommand<CardRow[]>("import_resolved_cards", { projectId, text, cards }),
   removeCard: (cardId: number) => invokeCommand<void>("remove_card", { cardId }),
   // Clamped to a minimum of 1 on the Rust side; removal stays removeCard's job.
   setCardQuantity: (cardId: number, quantity: number) =>
@@ -106,6 +146,7 @@ export const projectApi = {
       setCode: string;
       collectorNumber: string;
       lang: string;
+      printedName: string | null;
     },
   ) =>
     invokeCommand<void>("set_card_printing", {
@@ -115,6 +156,7 @@ export const projectApi = {
       setCode: printing.setCode,
       collectorNumber: printing.collectorNumber,
       lang: printing.lang,
+      printedName: printing.printedName,
     }),
   // Batched persist of post-import resolve results — one transaction for
   // the whole decklist. Field names are the Rust struct's snake_case:
@@ -127,6 +169,7 @@ export const projectApi = {
       set_code: string;
       collector_number: string;
       lang: string;
+      printed_name: string | null;
     }[],
   ) => invokeCommand<void>("set_cards_resolution", { updates }),
 
@@ -140,6 +183,12 @@ export const projectApi = {
   getQuitPromptSuppressed: () => invokeCommand<boolean>("get_quit_prompt_suppressed"),
   setQuitPromptSuppressed: (suppressed: boolean) =>
     invokeCommand<void>("set_quit_prompt_suppressed", { suppressed }),
+
+  // The printing picker's "Show digital" — an app-wide user preference
+  // (same app_settings store), not per-popover state. False until ticked.
+  getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
+  setShowDigitalPrintings: (show: boolean) =>
+    invokeCommand<void>("set_show_digital_printings", { show }),
 
   // Remembered remote server address+port pairs (see connection.tsx) — not
   // project data, but the same app_settings-backed store, so it lives here

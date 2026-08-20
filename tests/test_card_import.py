@@ -321,3 +321,31 @@ def test_fetch_bulk_info_missing_dataset_raises() -> None:
     session = _StubSession("all_cards", b"")
     with pytest.raises(RuntimeError, match="default_cards"):
         card_import.fetch_bulk_info("default_cards", session)
+
+
+def test_prune_card_keeps_printed_name() -> None:
+    pruned = card_import.prune_card(
+        _bulk_card(printed_name="Aang der Luftnomade", lang="de")
+    )
+    assert pruned["printed_name"] == "Aang der Luftnomade"
+
+
+def test_prune_card_keeps_face_printed_names() -> None:
+    card = _bulk_card(
+        lang="de",
+        card_faces=[
+            {
+                "name": "Delver of Secrets",
+                "printed_name": "Delver der Geheimnisse",
+                "image_uris": {"png": "https://img.example/front.png"},
+            },
+            {
+                "name": "Insectile Aberration",
+                "printed_name": "Insektoide Abartigkeit",
+                "image_uris": {"png": "https://img.example/back.png"},
+            },
+        ],
+    )
+    del card["image_uris"]
+    pruned = card_import.prune_card(card)
+    assert pruned["card_faces"][0]["printed_name"] == "Delver der Geheimnisse"

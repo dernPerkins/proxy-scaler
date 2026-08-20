@@ -15,6 +15,15 @@ SCRYFALL_API = "https://api.scryfall.com"
 USER_AGENT = "proxy-scaler/0.1.0 (home proxy printing; local tool)"
 REQUEST_DELAY_S = 0.1
 
+# Every printed-language code Scryfall uses. The single source of truth:
+# the import-language dropdown (/api/cards/languages) offers exactly these
+# regardless of what corpus is imported, and db.py builds its filename
+# lang-segment regex from the same tuple so the two can't drift.
+SCRYFALL_LANGUAGES = (
+    "en", "es", "fr", "de", "it", "pt", "ja", "ko", "ru",
+    "zhs", "zht", "he", "la", "grc", "ar", "sa", "ph", "qya",
+)
+
 
 @dataclass(frozen=True)
 class CardFaceImage:
@@ -33,6 +42,11 @@ class CardFaceImage:
     # output filenames via pipeline.output_filename, so two languages of
     # the same set/collector never collide on disk.
     lang: str = "en"
+    # The localized name as printed on a non-English card ("Aang der
+    # Luftnomade"); None on English printings, where card_name IS the
+    # printed name. Display-only — identity, dedup, and filenames all stay
+    # keyed on the English/oracle card_name.
+    printed_name: str | None = None
     # How many faces this printing actually has an image for (usually 2 for
     # DFC/transform, 1 otherwise — but Scryfall occasionally lacks a PNG for
     # one face, and expand_faces() already excludes that face below, so this
@@ -230,6 +244,11 @@ def _exact_printing_warning(entry: DeckEntry, card: dict[str, Any]) -> str | Non
     returned = card.get("name", "")
     if _names_compatible(entry.name, returned):
         return None
+    # A list written in the printing's own language is just as compatible:
+    # "Aang der Luftnomade" matching its German printing is not a mismatch.
+    printed = card_printed_name(card)
+    if printed and _names_compatible(entry.name, printed):
+        return None
     return (
         f"Name mismatch: list has {entry.name!r}, "
         f"Scryfall returned {returned!r} "
@@ -279,6 +298,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     collector = str(card["collector_number"])
     image_status = card.get("image_status")
     lang = card.get("lang") or "en"
+    printed_name = card_printed_name(card)
 
     faces = card.get("card_faces") or []
     per_face_images = [
@@ -303,6 +323,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
                     image_status=image_status,
                     total_faces=total_faces,
                     lang=lang,
+                    printed_name=printed_name,
                 )
             )
         return results
@@ -326,8 +347,32 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
             image_status=image_status,
             total_faces=1,
             lang=lang,
+            printed_name=printed_name,
         )
     ]
+
+
+def card_printed_name(card: dict[str, Any]) -> str | None:
+    """The card-level localized name of a non-English printing, or None.
+
+    Single-faced foreign cards carry it at the top level; DFC foreign
+    cards carry one per face instead, composed here as "front // back" to
+    mirror how `name` composes its faces. Cards without localized names
+    (i.e. English printings) yield None — card_name is already the
+    printed name there. Shared by expand_faces and carddb._card_to_row so
+    local corpus rows and live responses agree."""
+    printed = card.get("printed_name")
+    if printed:
+        return str(printed)
+    faces = card.get("card_faces") or []
+    face_names = [
+        face.get("printed_name")
+        for face in faces
+        if isinstance(face, dict)
+    ]
+    if face_names and all(face_names):
+        return " // ".join(str(n) for n in face_names)
+    return None
 
 
 def download_png(url: str, session: requests.Session | None = None) -> bytes:

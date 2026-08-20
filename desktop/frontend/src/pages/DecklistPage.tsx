@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
+import { projectApi } from "../api/project";
 import type { CardRow } from "../api/project";
 import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
@@ -89,8 +90,7 @@ export default function DecklistPage() {
     settings,
     setSettings,
     cards,
-    importDecklistText,
-    importingDecklistText,
+    importResolvedCards,
     removeCard,
     setCardQuantity,
     setCardPrinting,
@@ -121,6 +121,81 @@ export default function DecklistPage() {
   const [decklistDraft, setDecklistDraft] = useState("");
   useEffect(() => setDecklistDraft(""), [projectId]);
   const [status, setStatus] = useState<string | null>(null);
+  // Per-line failures from the last resolve-gated import attempt — the
+  // lines themselves stay in the textarea for fixing; successes leave it.
+  const [importFailures, setImportFailures] = useState<
+    { line: string; error: string }[]
+  >([]);
+  const [importing, setImporting] = useState(false);
+  useEffect(() => setImportFailures([]), [projectId]);
+
+  // The resolve-gated import: parse locally (Rust), resolve against the
+  // server (strictly in the chosen language unless "All Languages"),
+  // persist only the successes — failures are listed and NOT added.
+  const handleImport = async () => {
+    setStatus(null);
+    setImportFailures([]);
+    setImporting(true);
+    try {
+      const parsed = await projectApi.parseDecklist(decklistDraft);
+      if (parsed.length === 0) {
+        setStatus("Nothing to import.");
+        return;
+      }
+      const lang = settings.lang_any ? null : settings.preferred_lang;
+      const result = await generationApi.resolve(
+        parsed.map((e) => ({
+          quantity: e.quantity,
+          name: e.name,
+          set_code: e.set_code,
+          collector_number: e.collector_number,
+          raw_line: e.raw_line,
+          lang,
+        })),
+        { strict_lang: !settings.lang_any },
+      );
+      const resolvedCards = result.resolved.flatMap((rc) => {
+        const face = rc.faces[0];
+        if (!face) return [];
+        return [
+          {
+            raw_line: rc.raw_line,
+            quantity: rc.quantity,
+            name: face.card_name,
+            printed_name: face.printed_name ?? null,
+            set_code: face.set_code,
+            collector_number: face.collector_number,
+            scryfall_id: face.scryfall_id,
+            lang: face.lang ?? "en",
+          },
+        ];
+      });
+      if (resolvedCards.length > 0) {
+        await importResolvedCards(decklistDraft, resolvedCards);
+      }
+      const failures = result.failed.map((f) => ({ line: f.raw_line, error: f.error }));
+      if (failures.length > 0) {
+        const failedLines = new Set(failures.map((f) => f.line));
+        setDecklistDraft(
+          decklistDraft
+            .split("\n")
+            .filter((l) => failedLines.has(l.trim()))
+            .join("\n"),
+        );
+        setImportFailures(failures);
+        setStatus(
+          `Imported ${resolvedCards.length} card(s) — ${failures.length} line(s) didn't match and were not added.`,
+        );
+      } else {
+        setDecklistDraft("");
+        if (resolvedCards.length === 0) setStatus("Nothing to import.");
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImporting(false);
+    }
+  };
   const [sortPrimary, setSortPrimary] = useState<"Name" | "Set" | "(none)">("Name");
   const [expandedFaces, setExpandedFaces] = useState<Set<string>>(new Set());
 
@@ -181,10 +256,11 @@ export default function DecklistPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectTag, cardIdentities, serverUnavailable]);
 
-  // Languages available for the import preference — read from the server's
-  // card corpus (English only until an all-languages import), same
-  // server-owns-the-dropdown rule as the models list. Falls back to ["en"]
-  // whenever the server (or its corpus) can't answer.
+  // Languages the import dropdown may request — the full Scryfall list
+  // (server-owned, same rule as the models list), independent of what
+  // corpus is imported: the dropdown expresses what the user *wants*, and
+  // resolution answers from the corpus or the live API. ["en"] only as
+  // the offline placeholder.
   const languagesQuery = useQuery({
     queryKey: ["card-languages"],
     queryFn: () => generationApi.cardLanguages(),
@@ -193,12 +269,10 @@ export default function DecklistPage() {
   });
   const languages = languagesQuery.data?.languages ?? ["en"];
 
-  // Eager resolve: pin every unpinned card (scryfall_id null — a fresh
-  // import, a pre-upgrade project, or an import done while the server was
-  // down) to one exact printing *before* any generation, by running the
-  // rows through /api/resolve (local-corpus-first server-side) and
-  // persisting scryfall_id + the refreshed display cache. Best-effort:
-  // failures leave cards unpinned and the next project load retries.
+  // On-load re-resolve for legacy rows only: cards imported before the
+  // resolve-gated import existed (or by older builds) may be unpinned —
+  // best-effort, relaxed (non-strict) resolution pins them. New imports
+  // always arrive pinned, so this is a no-op for them.
   // attempted-set so a card that genuinely fails to resolve (typo) doesn't
   // refire on every render; reset per project.
   const resolveAttempted = useRef<Set<number>>(new Set());
@@ -230,6 +304,7 @@ export default function DecklistPage() {
               set_code: face.set_code,
               collector_number: face.collector_number,
               lang: face.lang ?? "en",
+              printed_name: face.printed_name ?? null,
             },
           ];
         });
@@ -545,32 +620,29 @@ export default function DecklistPage() {
           <div className="import-actions">
             <button
               className="btn-primary"
-              onClick={() => {
-                setStatus(null);
-                importDecklistText(decklistDraft)
-                  .then(() => setDecklistDraft(""))
-                  // A failed import keeps the text for a retry; the error
-                  // itself is surfaced via the context's error state.
-                  .catch(() => {});
-              }}
-              disabled={!decklistDraft.trim() || importingDecklistText}
+              onClick={() => void handleImport()}
+              disabled={!decklistDraft.trim() || importing || serverUnavailable}
+              title={
+                serverUnavailable
+                  ? "Generation server is required to import"
+                  : undefined
+              }
             >
-              {importingDecklistText ? "Importing…" : "Import cards"}
+              {importing ? "Importing…" : "Import cards"}
             </button>
-            {/* Import-language preference: stamped onto imported cards and
-                used to match printings during resolution. Options come from
-                the server's corpus (just English until an all-languages
-                import), so unavailable languages can't be picked. */}
+            {/* The language this import demands ("strictly literal" — a
+                card without a version in this language errors and is not
+                added), unless "All Languages" hands matching back to
+                best-effort. Options are the full Scryfall list, served by
+                the server regardless of which corpus is imported. */}
             <select
               value={settings.preferred_lang}
               onChange={(e) =>
                 setSettings((s) => ({ ...s, preferred_lang: e.target.value }))
               }
-              disabled={languages.length <= 1 && settings.preferred_lang === "en"}
-              title="Preferred card language for imports"
+              disabled={settings.lang_any}
+              title="Card language to import"
             >
-              {/* Keep a stored preference selectable even if the corpus no
-                  longer lists it (e.g. after switching to English-only). */}
               {(languages.includes(settings.preferred_lang)
                 ? languages
                 : [settings.preferred_lang, ...languages]
@@ -580,8 +652,33 @@ export default function DecklistPage() {
                 </option>
               ))}
             </select>
+            <label className="check" title="Match any language, best effort">
+              <input
+                type="checkbox"
+                checked={settings.lang_any}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, lang_any: e.target.checked }))
+                }
+              />
+              All Languages
+            </label>
           </div>
+          {serverUnavailable && (
+            <p className="hint">
+              Importing needs the generation server — cards are matched
+              before they're added.
+            </p>
+          )}
           {status && <p className="hint">{status}</p>}
+          {importFailures.length > 0 && (
+            <ul className="import-failures">
+              {importFailures.map((f) => (
+                <li key={f.line} className="error-text">
+                  <span className="mono">{f.line}</span> — {f.error}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         <div className="decklist-head">
@@ -719,6 +816,7 @@ function CardRowView(props: {
     setCode: string;
     collectorNumber: string;
     lang: string;
+    printedName: string | null;
   }) => void;
   /** True when the generation server is unreachable — disables
    *  Generate/Regen/printing changes (Remove/Show stay enabled since
@@ -763,7 +861,15 @@ function CardRowView(props: {
   return (
     <div className="card-row">
       <div className="card-main">
-        <span className="card-name">{card.name}</span>
+        {/* Non-English printings show their printed name; the English/
+            oracle name stays underneath (and in the tooltip) as the
+            matching identity. */}
+        <span
+          className="card-name"
+          title={card.printed_name && card.printed_name !== card.name ? card.name : undefined}
+        >
+          {card.printed_name ?? card.name}
+        </span>
         <PrintingPicker
           card={card}
           preferredLang={preferredLang}

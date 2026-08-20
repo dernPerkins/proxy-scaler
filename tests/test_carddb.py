@@ -324,3 +324,55 @@ def test_collector_sort_key_natural_order() -> None:
     numbers = ["100b", "2", "10", "100a", "A-1"]
     ordered = sorted(numbers, key=carddb.collector_sort_key)
     assert ordered == ["2", "10", "100a", "100b", "A-1"]
+
+
+def test_upsert_extracts_printed_name_column(conn) -> None:
+    carddb.upsert_cards(
+        conn,
+        [_card(id="aang-de", printed_name="Aang der Luftnomade", lang="de")],
+    )
+    row = conn.execute("SELECT printed_name FROM cards WHERE id = 'aang-de'").fetchone()
+    assert row["printed_name"] == "Aang der Luftnomade"
+
+
+def test_dfc_printed_name_composes_from_faces(conn) -> None:
+    card = _card(
+        id="delver-de",
+        name="Delver of Secrets // Insectile Aberration",
+        lang="de",
+        layout="transform",
+        card_faces=[
+            {"name": "Delver of Secrets", "printed_name": "Delver der Geheimnisse",
+             "image_uris": {"png": "x"}},
+            {"name": "Insectile Aberration", "printed_name": "Insektoide Abartigkeit",
+             "image_uris": {"png": "y"}},
+        ],
+    )
+    del card["image_uris"]
+    carddb.upsert_cards(conn, [card])
+    # Printed front-face name alone finds the card, like the English form.
+    row = carddb.find_row_by_name(conn, "Delver der Geheimnisse")
+    assert row is not None and row["id"] == "delver-de"
+    assert row["printed_name"] == "Delver der Geheimnisse // Insektoide Abartigkeit"
+
+
+def test_init_card_db_rebuilds_outdated_schema(tmp_path: Path) -> None:
+    """A v1 corpus (pre-printed_name) is rebuilt from scratch by the next
+    import's init — reimport is the upgrade path, not a migration."""
+    import sqlite3
+
+    path = tmp_path / "cards.db"
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE cards (id TEXT PRIMARY KEY)")  # old, shapeless
+    conn.execute("INSERT INTO cards VALUES ('stale')")
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    assert carddb.open_if_ready(path) is None  # v1 reads as "no corpus"
+    carddb.init_card_db(path)
+    conn = carddb.connect(path)
+    try:
+        assert carddb.count_cards(conn) == 0  # stale rows gone, new shape
+    finally:
+        conn.close()

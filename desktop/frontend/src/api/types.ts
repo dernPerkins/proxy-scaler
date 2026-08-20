@@ -56,6 +56,9 @@ export interface ResolvedFace {
   // Printing language — persisted (with scryfall_id) into the local card
   // row after a resolve. Optional: older servers don't send it.
   lang?: string;
+  // Localized name as printed on a non-English card; null/absent for
+  // English printings.
+  printed_name?: string | null;
 }
 
 export interface ResolvedCard {
@@ -203,6 +206,7 @@ export interface CardImportStatus {
 export interface CardVariant {
   scryfall_id: string;
   name: string;
+  printed_name: string | null;
   set_code: string;
   set_name: string | null;
   collector_number: string;

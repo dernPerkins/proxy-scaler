@@ -29,10 +29,15 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from . import db as _db
+from .scryfall import card_printed_name
 
 DEFAULT_CARD_DB_PATH = _db._DATA_ROOT / "scryfall_cards.db"
 
-CARD_SCHEMA_VERSION = 1
+# v2: added printed_name (column, index, and inside the pruned card_json).
+# A v1 corpus lacks the data entirely — prune_card didn't keep the field —
+# so there is nothing to migrate: open_if_ready() treats v1 as "no usable
+# corpus" and the client's status panel offers a reimport.
+CARD_SCHEMA_VERSION = 2
 
 # Current, latest shape — everything IF NOT EXISTS, safe to re-apply.
 _SCHEMA = """
@@ -40,6 +45,7 @@ CREATE TABLE IF NOT EXISTS cards (
     id TEXT PRIMARY KEY,
     oracle_id TEXT,
     name TEXT NOT NULL,
+    printed_name TEXT,
     set_code TEXT NOT NULL,
     set_name TEXT,
     collector_number TEXT NOT NULL,
@@ -55,6 +61,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_oracle ON cards(oracle_id);
 CREATE INDEX IF NOT EXISTS idx_cards_set_collector
     ON cards(set_code, collector_number, lang);
 CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_cards_printed_name
+    ON cards(printed_name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS card_dataset_meta (
     key TEXT PRIMARY KEY,
@@ -100,12 +108,21 @@ def init_card_db(db_path: Path | str | None = None) -> Path:
     conn = _raw_connect(path)
     try:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, CARD_SCHEMA_VERSION):
+        if version > CARD_SCHEMA_VERSION:
             raise CardDbVersionMismatch(
-                f"{path} is at card-db schema version {version}, expected "
-                f"{CARD_SCHEMA_VERSION}. Delete the file and reimport the "
-                "card database."
+                f"{path} is at card-db schema version {version}, newer than "
+                f"this build's {CARD_SCHEMA_VERSION}. Delete the file or "
+                "update the server."
             )
+        if 0 < version < CARD_SCHEMA_VERSION:
+            # Outdated corpus: rebuild from scratch rather than migrate —
+            # the rows' pruned card_json predates the new shape too, so
+            # there's nothing worth carrying over. This runs at the start
+            # of an import job, which is about to repopulate everything
+            # anyway (open_if_ready() already reported the old file as "no
+            # usable corpus", so the client offered exactly that reimport).
+            conn.execute("DROP TABLE IF EXISTS cards")
+            conn.execute("DROP TABLE IF EXISTS card_dataset_meta")
         conn.executescript(_SCHEMA)
         conn.execute(f"PRAGMA user_version = {CARD_SCHEMA_VERSION}")
         conn.commit()
@@ -160,10 +177,10 @@ def upsert_cards(conn: sqlite3.Connection, cards: Iterable[dict[str, Any]]) -> i
         conn.executemany(
             """
             INSERT OR REPLACE INTO cards (
-                id, oracle_id, name, set_code, set_name, collector_number,
-                lang, released_at, layout, digital, image_status,
-                highres_image, card_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, oracle_id, name, printed_name, set_code, set_name,
+                collector_number, lang, released_at, layout, digital,
+                image_status, highres_image, card_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -181,6 +198,7 @@ def _card_to_row(card: dict[str, Any]) -> tuple:
         card["id"],
         oracle_id,
         card["name"],
+        card_printed_name(card),
         str(card["set"]).lower(),
         card.get("set_name"),
         str(card["collector_number"]),
@@ -259,15 +277,38 @@ def find_row_by_id(conn: sqlite3.Connection, scryfall_id: str) -> sqlite3.Row | 
     ).fetchone()
 
 
+# Matches the entry's name against the English/oracle name OR the
+# localized printed name, each including the DFC front-face-alone form
+# ("Delver of Secrets" finds "Delver of Secrets // Insectile Aberration",
+# and a printed front name finds the composed printed name the same way).
+_NAME_MATCH_SQL = """(
+       name = ?1 COLLATE NOCASE
+    OR name LIKE ?1 || ' //%'
+    OR printed_name = ?1 COLLATE NOCASE
+    OR printed_name LIKE ?1 || ' //%'
+)"""
+
+
 def find_row_by_set_collector(
     conn: sqlite3.Connection,
     set_code: str,
     collector_number: str,
     prefer_lang: str = "en",
+    *,
+    only_lang: str | None = None,
 ) -> sqlite3.Row | None:
     """Preferred language first, then English, then whatever exists — the
     English fallback keeps id-less entries behaving like the live
-    GET /cards/{set}/{number}, which always answers in English."""
+    GET /cards/{set}/{number}, which always answers in English.
+
+    only_lang instead demands exactly that language (strict import mode):
+    no fallback, None when the printing has no such version."""
+    if only_lang is not None:
+        return conn.execute(
+            "SELECT * FROM cards WHERE set_code = ? AND collector_number = ? "
+            "AND lang = ? LIMIT 1",
+            (set_code.lower(), str(collector_number), only_lang),
+        ).fetchone()
     return conn.execute(
         """
         SELECT * FROM cards
@@ -284,48 +325,62 @@ def find_row_by_name_and_collector(
     name: str,
     collector_number: str,
     prefer_lang: str = "en",
+    *,
+    only_lang: str | None = None,
 ) -> sqlite3.Row | None:
     """Name plus a collector-number *hint* with no set code — the best some
     deck managers can export (see decklist._NAME_COLLECTOR_RE). Any set's
-    printing of this name with that collector number qualifies; among
-    those, the same preference order as find_row_by_name. Same DFC
-    front-name matching too. None when the hint matches no printing — the
-    caller falls back to the plain name lookup."""
+    printing of this name (English or printed) with that collector number
+    qualifies; among those, the same preference order as find_row_by_name
+    — or exactly only_lang in strict import mode. None when the hint
+    matches no printing — the caller falls back to the plain name lookup."""
+    lang_clause = "AND lang = ?4" if only_lang is not None else ""
+    params: tuple = (name, str(collector_number), prefer_lang)
+    if only_lang is not None:
+        params += (only_lang,)
     return conn.execute(
-        """
+        f"""
         SELECT * FROM cards
-        WHERE (name = ?1 COLLATE NOCASE
-           OR name LIKE ?1 || ' //%')
+        WHERE {_NAME_MATCH_SQL}
           AND collector_number = ?2
+          {lang_clause}
         ORDER BY (lang = ?3) DESC, (lang = 'en') DESC,
                  digital ASC, highres_image DESC,
                  released_at DESC
         LIMIT 1
         """,
-        (name, str(collector_number), prefer_lang),
+        params,
     ).fetchone()
 
 
 def find_row_by_name(
-    conn: sqlite3.Connection, name: str, prefer_lang: str = "en"
+    conn: sqlite3.Connection,
+    name: str,
+    prefer_lang: str = "en",
+    *,
+    only_lang: str | None = None,
 ) -> sqlite3.Row | None:
     """Exact-name lookup returning the best printing to show for a bare
-    name: preferred language, then English, then paper over digital, high-
-    res scans over placeholders, newest release first. Also matches a DFC
-    by its front-face name alone ("Delver of Secrets" finds "Delver of
-    Secrets // Insectile Aberration"), mirroring scryfall._names_match.
-    Fuzzy matching stays a live-API concern on purpose."""
+    name (matched against the English name or a localized printed name):
+    preferred language, then English, then paper over digital, high-res
+    scans over placeholders, newest release first — or restricted to
+    exactly only_lang in strict import mode. Fuzzy matching stays a
+    live-API concern on purpose."""
+    lang_clause = "AND lang = ?3" if only_lang is not None else ""
+    params: tuple = (name, prefer_lang)
+    if only_lang is not None:
+        params += (only_lang,)
     return conn.execute(
-        """
+        f"""
         SELECT * FROM cards
-        WHERE name = ?1 COLLATE NOCASE
-           OR name LIKE ?1 || ' //%'
+        WHERE {_NAME_MATCH_SQL}
+          {lang_clause}
         ORDER BY (lang = ?2) DESC, (lang = 'en') DESC,
                  digital ASC, highres_image DESC,
                  released_at DESC
         LIMIT 1
         """,
-        (name, prefer_lang),
+        params,
     ).fetchone()
 
 
@@ -342,16 +397,24 @@ def get_card_by_set_collector(
     set_code: str,
     collector_number: str,
     prefer_lang: str = "en",
+    *,
+    only_lang: str | None = None,
 ) -> dict[str, Any] | None:
     return _row_json(
-        find_row_by_set_collector(conn, set_code, collector_number, prefer_lang)
+        find_row_by_set_collector(
+            conn, set_code, collector_number, prefer_lang, only_lang=only_lang
+        )
     )
 
 
 def get_card_by_name(
-    conn: sqlite3.Connection, name: str, prefer_lang: str = "en"
+    conn: sqlite3.Connection,
+    name: str,
+    prefer_lang: str = "en",
+    *,
+    only_lang: str | None = None,
 ) -> dict[str, Any] | None:
-    return _row_json(find_row_by_name(conn, name, prefer_lang))
+    return _row_json(find_row_by_name(conn, name, prefer_lang, only_lang=only_lang))
 
 
 def variants_for_oracle_id(
@@ -363,8 +426,8 @@ def variants_for_oracle_id(
     collector number in natural order (so "2" sorts before "10"), English
     before other languages of the same printing."""
     sql = """
-        SELECT id, name, set_code, set_name, collector_number, lang,
-               released_at, digital, image_status, highres_image
+        SELECT id, name, printed_name, set_code, set_name, collector_number,
+               lang, released_at, digital, image_status, highres_image
         FROM cards WHERE oracle_id = ?
     """
     if not include_digital:

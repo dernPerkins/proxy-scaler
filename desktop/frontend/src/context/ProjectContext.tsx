@@ -3,7 +3,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
-import type { CardRow, LoadedProject, ProjectSettings } from "../api/project";
+import type {
+  CardRow,
+  LoadedProject,
+  ProjectSettings,
+  ResolvedImportCard,
+} from "../api/project";
 
 // Heavy/quality-first vs. light/fast. Named rather than repeated inline so
 // the branching below reads as "which class of hardware is this."
@@ -76,6 +81,7 @@ function getDefaultSettings(): ProjectSettings {
     preferred_dpi: null,
     preferred_model: null,
     preferred_lang: "en",
+    lang_any: false,
   };
 }
 
@@ -105,6 +111,13 @@ interface ProjectContextValue {
    *  rejects on failure (the error is also surfaced via `error`). */
   importDecklistText: (text: string) => Promise<void>;
   importingDecklistText: boolean;
+  /** The resolve-gated import's persist step: inserts already-resolved
+   *  (fully pinned) cards in one transaction, deduped like
+   *  importDecklistText, and remembers `text` as decklistText. Creates the
+   *  Unnamed Project on first use the same way. The caller (DecklistPage)
+   *  owns the parse + resolve halves. */
+  importResolvedCards: (text: string, cards: ResolvedImportCard[]) => Promise<void>;
+  importingResolvedCards: boolean;
   removeCard: (cardId: number) => void;
   /** Sets a card's copy count. Values below 1 are clamped to 1 — removal
    *  is removeCard's job. */
@@ -121,6 +134,7 @@ interface ProjectContextValue {
       setCode: string;
       collectorNumber: string;
       lang: string;
+      printedName: string | null;
     },
   ) => Promise<void>;
   /** Persists post-import resolve results in one batch — pins each card's
@@ -134,6 +148,7 @@ interface ProjectContextValue {
       set_code: string;
       collector_number: string;
       lang: string;
+      printed_name: string | null;
     }[],
   ) => Promise<void>;
   /** Whether the project has a name. Deliberately not "is saved": since
@@ -465,6 +480,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  const importResolvedCardsMutation = useMutation({
+    mutationFn: async (args: { text: string; cards: ResolvedImportCard[] }) => {
+      // Same born-here rule as the legacy import below: with no project
+      // yet, the first successful import creates the Unnamed Project.
+      const id = await ensureProjectRow();
+      const newCards = await projectApi.importResolvedCards(id, args.text, args.cards);
+      return { text: args.text, newCards };
+    },
+    onSuccess: ({ text, newCards }) => {
+      setDecklistTextState(text);
+      setCards(newCards);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
   const importDecklistMutation = useMutation({
     mutationFn: async (text: string) => {
       // The row can be born here. With no project yet, importing creates
@@ -501,6 +532,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         setCode: string;
         collectorNumber: string;
         lang: string;
+        printedName: string | null;
       };
     }) => {
       await projectApi.setCardPrinting(args.cardId, args.printing);
@@ -517,6 +549,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 set_code: printing.setCode,
                 collector_number: printing.collectorNumber,
                 lang: printing.lang,
+                printed_name: printing.printedName,
               }
             : c,
         ),
@@ -534,6 +567,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         set_code: string;
         collector_number: string;
         lang: string;
+        printed_name: string | null;
       }[],
     ) => {
       await projectApi.setCardsResolution(updates);
@@ -552,6 +586,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 set_code: u.set_code,
                 collector_number: u.collector_number,
                 lang: u.lang,
+                printed_name: u.printed_name,
               }
             : c;
         }),
@@ -798,6 +833,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       await importDecklistMutation.mutateAsync(text);
     },
     importingDecklistText: importDecklistMutation.isPending,
+    importResolvedCards: async (text, resolvedCards) => {
+      await importResolvedCardsMutation.mutateAsync({ text, cards: resolvedCards });
+    },
+    importingResolvedCards: importResolvedCardsMutation.isPending,
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     setCardQuantity: (cardId: number, quantity: number) =>
       setCardQuantityMutation.mutate({ cardId, quantity }),

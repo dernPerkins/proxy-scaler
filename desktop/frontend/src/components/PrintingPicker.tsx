@@ -6,8 +6,9 @@
 // Picking a row pins the card to that exact printing via
 // ProjectContext.setCardPrinting.
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
+import { projectApi } from "../api/project";
 import type { CardRow } from "../api/project";
 import type { CardVariant } from "../api/types";
 
@@ -29,13 +30,28 @@ export default function PrintingPicker(props: {
     setCode: string;
     collectorNumber: string;
     lang: string;
+    printedName: string | null;
   }) => void;
 }) {
   const { card, preferredLang, disabled, onPick } = props;
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [includeDigital, setIncludeDigital] = useState(false);
   const cardLang = card.lang ?? preferredLang ?? "en";
   const [langFilter, setLangFilter] = useState(cardLang);
+
+  // "Show digital" is an app-wide preference persisted in the client's
+  // app_settings store — every picker instance shares this query entry,
+  // so checking it on one card holds for the next and across restarts.
+  const showDigitalQuery = useQuery({
+    queryKey: ["show-digital"],
+    queryFn: () => projectApi.getShowDigitalPrintings(),
+    staleTime: Infinity,
+  });
+  const includeDigital = showDigitalQuery.data ?? false;
+  const setShowDigital = useMutation({
+    mutationFn: (show: boolean) => projectApi.setShowDigitalPrintings(show),
+    onSuccess: (_data, show) => queryClient.setQueryData(["show-digital"], show),
+  });
 
   // Lazy on purpose: nothing is fetched until the picker is opened, so a
   // 200-card decklist doesn't fire 200 variant queries on render.
@@ -111,7 +127,7 @@ export default function PrintingPicker(props: {
               <input
                 type="checkbox"
                 checked={includeDigital}
-                onChange={(e) => setIncludeDigital(e.target.checked)}
+                onChange={(e) => setShowDigital.mutate(e.target.checked)}
               />
               Show digital
             </label>
@@ -152,6 +168,7 @@ export default function PrintingPicker(props: {
                         setCode: v.set_code,
                         collectorNumber: v.collector_number,
                         lang: v.lang,
+                        printedName: v.printed_name,
                       });
                     }
                   }}
@@ -161,6 +178,7 @@ export default function PrintingPicker(props: {
                     {v.lang !== "en" ? ` · ${v.lang.toUpperCase()}` : ""}
                   </span>
                   <span className="printing-set-name">
+                    {v.printed_name ? `${v.printed_name} · ` : ""}
                     {v.set_name ?? ""}
                     {variantYear(v)}
                     {v.digital ? " · digital" : ""}

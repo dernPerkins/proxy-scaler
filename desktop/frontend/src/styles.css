@@ -696,6 +696,15 @@ button:disabled {
   align-items: center;
   gap: 10px;
 }
+/* Per-line failures from the resolve-gated import. */
+.import-failures {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
 .card-qty-stepper input {
   width: 40px;
   padding: 3px 4px;

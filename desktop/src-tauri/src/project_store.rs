@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS projects (
     preferred_dpi INTEGER,
     preferred_model TEXT,
     preferred_lang TEXT NOT NULL DEFAULT 'en',
+    -- The import box's \"All Languages\" checkbox: 1 = best-effort matching
+    -- across languages, 0 = strictly the preferred_lang (see the resolve-
+    -- gated import flow in ARCHITECTURE.md).
+    lang_any INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -60,7 +64,11 @@ CREATE TABLE IF NOT EXISTS project_cards (
     scryfall_id TEXT,
     -- Scryfall language code of the chosen printing; set+collector alone
     -- can't encode it (every language of a printing shares them).
-    lang TEXT
+    lang TEXT,
+    -- Localized name as printed on a non-English printing; NULL for
+    -- English. Display-only — `name` (English/oracle) stays the matching
+    -- and dedup identity.
+    printed_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_project_cards_project_id ON project_cards(project_id);
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -94,12 +102,14 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("preferred_dpi", "INTEGER"),
     ("preferred_model", "TEXT"),
     ("preferred_lang", "TEXT NOT NULL DEFAULT 'en'"),
+    ("lang_any", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
 const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("scryfall_id", "TEXT"),
     ("lang", "TEXT"),
+    ("printed_name", "TEXT"),
 ];
 
 fn add_missing_columns(
@@ -287,6 +297,10 @@ pub struct ProjectSettings {
     // doesn't wipe the setting.
     #[serde(default = "default_preferred_lang")]
     pub preferred_lang: String,
+    // The import box's "All Languages" checkbox — best-effort matching
+    // across languages instead of strictly preferred_lang.
+    #[serde(default)]
+    pub lang_any: bool,
 }
 
 fn default_preferred_lang() -> String {
@@ -316,6 +330,7 @@ impl Default for ProjectSettings {
             preferred_dpi: None,
             preferred_model: None,
             preferred_lang: default_preferred_lang(),
+            lang_any: false,
         }
     }
 }
@@ -331,6 +346,7 @@ pub struct CardRow {
     pub collector_number: Option<String>,
     pub scryfall_id: Option<String>,
     pub lang: Option<String>,
+    pub printed_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -365,21 +381,34 @@ fn entry_dedup_key(set_code: Option<&str>, collector_number: Option<&str>, name:
 // Every key an already-stored card answers to — its own specific key plus
 // every less-specific one. Needed because resolution *changes* a stored
 // row's shape: a card imported as "4 Lightning Bolt" (name key only) gains
-// set/collector when the post-import resolve pins it, and without the
-// broader keys re-pasting that same decklist line would no longer match
-// the row it created and import a duplicate.
+// set/collector when the resolve pins it, and without the broader keys
+// re-pasting that same decklist line would no longer match the row it
+// created and import a duplicate. The printed-name tiers exist for the
+// same reason in the other direction: a row imported from a German line
+// ends up storing the English name in `name` — the typed German text
+// survives only as printed_name, so re-pasting it must match through that.
 fn stored_card_dedup_keys(
     set_code: Option<&str>,
     collector_number: Option<&str>,
     name: &str,
+    printed_name: Option<&str>,
 ) -> Vec<String> {
-    let lname = name.to_lowercase();
-    let mut keys = vec![format!("name:{lname}")];
-    if let Some(c) = collector_number.filter(|c| !c.is_empty()) {
-        keys.push(format!("name:{lname}/{}", c.to_lowercase()));
-        if let Some(s) = set_code.filter(|s| !s.is_empty()) {
-            keys.push(format!("{}/{}", s.to_lowercase(), c.to_lowercase()));
+    let mut keys = Vec::new();
+    let mut names = vec![name.to_lowercase()];
+    if let Some(p) = printed_name.filter(|p| !p.is_empty()) {
+        names.push(p.to_lowercase());
+    }
+    for n in &names {
+        keys.push(format!("name:{n}"));
+        if let Some(c) = collector_number.filter(|c| !c.is_empty()) {
+            keys.push(format!("name:{n}/{}", c.to_lowercase()));
         }
+    }
+    if let (Some(s), Some(c)) = (
+        set_code.filter(|s| !s.is_empty()),
+        collector_number.filter(|c| !c.is_empty()),
+    ) {
+        keys.push(format!("{}/{}", s.to_lowercase(), c.to_lowercase()));
     }
     keys
 }
@@ -411,7 +440,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
     let mut stmt = conn
         .prepare(
             "SELECT id, sort_order, original_import_line, quantity, name, set_code, collector_number,
-                    scryfall_id, lang
+                    scryfall_id, lang, printed_name
              FROM project_cards WHERE project_id = ?1 ORDER BY sort_order ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -427,6 +456,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 collector_number: row.get(6)?,
                 scryfall_id: row.get(7)?,
                 lang: row.get(8)?,
+                printed_name: row.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -461,6 +491,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         preferred_dpi: Option<i64>,
         preferred_model: Option<String>,
         preferred_lang: String,
+        lang_any: bool,
         created_at: String,
         updated_at: String,
     }
@@ -470,7 +501,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             "SELECT tag, name, import_decklist_text, model, dpi_targets, skip_existing, tile_size,
                     page_width_mm, page_height_mm, cols, rows, bleed_mm, spacing_x_mm, spacing_y_mm,
                     offset_x_mm, offset_y_mm, guide_width_pt, guide_length_mm, export_dpi,
-                    show_cut_lines, preferred_dpi, preferred_model, preferred_lang,
+                    show_cut_lines, preferred_dpi, preferred_model, preferred_lang, lang_any,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -499,6 +530,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     preferred_dpi: row.get("preferred_dpi")?,
                     preferred_model: row.get("preferred_model")?,
                     preferred_lang: row.get("preferred_lang")?,
+                    lang_any: row.get("lang_any")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -535,6 +567,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             preferred_dpi: loaded.preferred_dpi,
             preferred_model: loaded.preferred_model,
             preferred_lang: loaded.preferred_lang,
+            lang_any: loaded.lang_any,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -716,8 +749,8 @@ fn update_project_row(
          bleed_mm = ?10, spacing_x_mm = ?11, spacing_y_mm = ?12, offset_x_mm = ?13,
          offset_y_mm = ?14, guide_width_pt = ?15, guide_length_mm = ?16, export_dpi = ?17,
          show_cut_lines = ?18, preferred_dpi = ?19, preferred_model = ?20,
-         preferred_lang = ?21, updated_at = ?22
-         WHERE id = ?23",
+         preferred_lang = ?21, lang_any = ?22, updated_at = ?23
+         WHERE id = ?24",
         params![
             trimmed,
             settings.model,
@@ -740,6 +773,7 @@ fn update_project_row(
             settings.preferred_dpi,
             settings.preferred_model,
             settings.preferred_lang,
+            settings.lang_any,
             now,
             project_id,
         ],
@@ -829,7 +863,7 @@ fn import_decklist_into(
     {
         let mut stmt = tx
             .prepare(
-                "SELECT sort_order, name, set_code, collector_number
+                "SELECT sort_order, name, set_code, collector_number, printed_name
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -839,15 +873,18 @@ fn import_decklist_into(
                 let name: String = row.get(1)?;
                 let set_code: Option<String> = row.get(2)?;
                 let collector_number: Option<String> = row.get(3)?;
-                Ok((sort_order, name, set_code, collector_number))
+                let printed_name: Option<String> = row.get(4)?;
+                Ok((sort_order, name, set_code, collector_number, printed_name))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number) = row.map_err(|e| e.to_string())?;
+            let (sort_order, name, set_code, collector_number, printed_name) =
+                row.map_err(|e| e.to_string())?;
             seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
                 collector_number.as_deref(),
                 &name,
+                printed_name.as_deref(),
             ));
             next_sort_order = next_sort_order.max(sort_order + 1);
         }
@@ -894,6 +931,122 @@ pub fn import_decklist_text(
     import_decklist_into(&mut conn, project_id, &text)
 }
 
+/// Parse only — no DB writes. The first half of the resolve-gated import:
+/// the frontend parses here, resolves the entries against the generation
+/// server, and then persists only the successes via import_resolved_cards.
+#[tauri::command]
+pub fn parse_decklist(text: String) -> Vec<DeckEntry> {
+    parse_decklist_text(&text)
+}
+
+/// One card as it arrives from a successful strict resolve — fully pinned.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolvedImportCard {
+    pub raw_line: String,
+    pub quantity: i64,
+    pub name: String,
+    #[serde(default)]
+    pub printed_name: Option<String>,
+    pub set_code: String,
+    pub collector_number: String,
+    pub scryfall_id: String,
+    pub lang: String,
+}
+
+/// The second half of the resolve-gated import: inserts already-resolved
+/// cards in one transaction, deduped against the project's existing rows
+/// (and within the batch) via the same key scheme import_decklist_into
+/// uses — the set/collector tier is always available here since every row
+/// arrives pinned. Also mirrors the pasted text onto the project like the
+/// legacy import did. Returns the project's full card list.
+fn import_resolved_cards_into(
+    conn: &mut Connection,
+    project_id: i64,
+    text: &str,
+    cards: &[ResolvedImportCard],
+) -> Result<Vec<CardRow>, String> {
+    let now = now_timestamp();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE projects SET import_decklist_text = ?1, updated_at = ?2 WHERE id = ?3",
+        params![text, now, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut seen_keys: HashSet<String> = HashSet::new();
+    let mut next_sort_order: i64 = 0;
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT sort_order, name, set_code, collector_number, printed_name
+                 FROM project_cards WHERE project_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                let sort_order: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                let set_code: Option<String> = row.get(2)?;
+                let collector_number: Option<String> = row.get(3)?;
+                let printed_name: Option<String> = row.get(4)?;
+                Ok((sort_order, name, set_code, collector_number, printed_name))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (sort_order, name, set_code, collector_number, printed_name) =
+                row.map_err(|e| e.to_string())?;
+            seen_keys.extend(stored_card_dedup_keys(
+                set_code.as_deref(),
+                collector_number.as_deref(),
+                &name,
+                printed_name.as_deref(),
+            ));
+            next_sort_order = next_sort_order.max(sort_order + 1);
+        }
+    }
+
+    for card in cards {
+        let key = entry_dedup_key(Some(&card.set_code), Some(&card.collector_number), &card.name);
+        if !seen_keys.insert(key) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO project_cards
+             (project_id, sort_order, original_import_line, quantity, name, printed_name,
+              set_code, collector_number, scryfall_id, lang)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                project_id,
+                next_sort_order,
+                card.raw_line,
+                card.quantity.max(1),
+                card.name,
+                card.printed_name,
+                card.set_code,
+                card.collector_number,
+                card.scryfall_id,
+                card.lang,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        next_sort_order += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    cards_for_project(conn, project_id)
+}
+
+#[tauri::command]
+pub fn import_resolved_cards(
+    app: AppHandle,
+    project_id: i64,
+    text: String,
+    cards: Vec<ResolvedImportCard>,
+) -> Result<Vec<CardRow>, String> {
+    let mut conn = open_db(&app)?;
+    import_resolved_cards_into(&mut conn, project_id, &text, &cards)
+}
+
 #[tauri::command]
 pub fn remove_card(app: AppHandle, card_id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
@@ -931,18 +1084,21 @@ pub struct CardResolutionUpdate {
     pub set_code: String,
     pub collector_number: String,
     pub lang: String,
+    #[serde(default)]
+    pub printed_name: Option<String>,
 }
 
 fn apply_card_resolution(conn: &Connection, update: &CardResolutionUpdate) -> Result<(), String> {
     conn.execute(
         "UPDATE project_cards SET scryfall_id = ?1, name = ?2, set_code = ?3,
-         collector_number = ?4, lang = ?5 WHERE id = ?6",
+         collector_number = ?4, lang = ?5, printed_name = ?6 WHERE id = ?7",
         params![
             update.scryfall_id,
             update.name,
             update.set_code,
             update.collector_number,
             update.lang,
+            update.printed_name,
             update.card_id,
         ],
     )
@@ -962,6 +1118,7 @@ pub fn set_card_printing(
     set_code: String,
     collector_number: String,
     lang: String,
+    printed_name: Option<String>,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
     apply_card_resolution(
@@ -973,6 +1130,7 @@ pub fn set_card_printing(
             set_code,
             collector_number,
             lang,
+            printed_name,
         },
     )
 }
@@ -1071,6 +1229,34 @@ pub fn get_quit_prompt_suppressed(app: AppHandle) -> Result<bool, String> {
 pub fn set_quit_prompt_suppressed(app: AppHandle, suppressed: bool) -> Result<(), String> {
     let conn = open_db(&app)?;
     write_quit_prompt_suppressed(&conn, suppressed)
+}
+
+// --- The printing picker's "Show digital" ----------------------------------
+//
+// A user preference, not per-card/per-popover state: whether digital-only
+// printings (MTGO/Arena sets) appear in the change-printing list. Same
+// app_settings idiom as the quit prompt above; absent means off.
+
+const SHOW_DIGITAL_PRINTINGS_KEY: &str = "show_digital_printings";
+
+fn read_show_digital_printings(conn: &Connection) -> Result<bool, String> {
+    Ok(read_app_setting(conn, SHOW_DIGITAL_PRINTINGS_KEY)?.as_deref() == Some("1"))
+}
+
+fn write_show_digital_printings(conn: &Connection, show: bool) -> Result<(), String> {
+    write_app_setting(conn, SHOW_DIGITAL_PRINTINGS_KEY, if show { "1" } else { "0" })
+}
+
+#[tauri::command]
+pub fn get_show_digital_printings(app: AppHandle) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    read_show_digital_printings(&conn)
+}
+
+#[tauri::command]
+pub fn set_show_digital_printings(app: AppHandle, show: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_show_digital_printings(&conn, show)
 }
 
 // --- The update prompt's "skip this version" -------------------------------
@@ -1514,6 +1700,7 @@ mod tests {
                 set_code: "clu".to_string(),
                 collector_number: "141".to_string(),
                 lang: "en".to_string(),
+                printed_name: None,
             },
         )
         .expect("resolve bolt");
@@ -1526,6 +1713,7 @@ mod tests {
                 set_code: "c21".to_string(),
                 collector_number: "263".to_string(),
                 lang: "en".to_string(),
+                printed_name: None,
             },
         )
         .expect("resolve sol ring");
@@ -1533,6 +1721,105 @@ mod tests {
         let cards = import_decklist_into(&mut conn, id, "4 Lightning Bolt\n1 Sol Ring 263")
             .expect("re-paste the same decklist");
         assert_eq!(cards.len(), 2, "no duplicates after resolution reshaped the rows");
+    }
+
+    fn _resolved(raw_line: &str, name: &str, set: &str, cn: &str) -> ResolvedImportCard {
+        ResolvedImportCard {
+            raw_line: raw_line.to_string(),
+            quantity: 1,
+            name: name.to_string(),
+            printed_name: None,
+            set_code: set.to_string(),
+            collector_number: cn.to_string(),
+            scryfall_id: format!("{set}-{cn}"),
+            lang: "en".to_string(),
+        }
+    }
+
+    #[test]
+    fn import_resolved_cards_inserts_pinned_rows_and_dedups() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+
+        let cards = import_resolved_cards_into(
+            &mut conn,
+            id,
+            "1 Sol Ring (c21) 263\n1 Lightning Bolt",
+            &[
+                _resolved("1 Sol Ring (c21) 263", "Sol Ring", "c21", "263"),
+                _resolved("1 Lightning Bolt", "Lightning Bolt", "clu", "141"),
+            ],
+        )
+        .expect("import");
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].scryfall_id.as_deref(), Some("c21-263"));
+        assert_eq!(cards[1].set_code.as_deref(), Some("clu"));
+
+        // Re-importing the same resolved cards is a no-op.
+        let cards = import_resolved_cards_into(
+            &mut conn,
+            id,
+            "1 Sol Ring (c21) 263",
+            &[_resolved("1 Sol Ring (c21) 263", "Sol Ring", "c21", "263")],
+        )
+        .expect("re-import");
+        assert_eq!(cards.len(), 2);
+    }
+
+    #[test]
+    fn a_german_line_repaste_dedups_through_printed_name() {
+        // "1 Aang der Luftnomade 210" resolves to a row whose `name` is the
+        // English oracle name; the typed German text survives only as
+        // printed_name — the dedup keys must reach it, or re-pasting the
+        // original decklist duplicates the card.
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let de = ResolvedImportCard {
+            raw_line: "1 Aang der Luftnomade 210".to_string(),
+            quantity: 1,
+            name: "Aang, Air Nomad".to_string(),
+            printed_name: Some("Aang der Luftnomade".to_string()),
+            set_code: "tle".to_string(),
+            collector_number: "210".to_string(),
+            scryfall_id: "aang-de".to_string(),
+            lang: "de".to_string(),
+        };
+        let cards =
+            import_resolved_cards_into(&mut conn, id, "1 Aang der Luftnomade 210", &[de.clone()])
+                .expect("import");
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].printed_name.as_deref(), Some("Aang der Luftnomade"));
+
+        // The re-paste arrives as the same resolved card (same set/collector
+        // tier) — and even a legacy-path re-import of the raw German line
+        // matches through the printed-name key.
+        let cards =
+            import_resolved_cards_into(&mut conn, id, "1 Aang der Luftnomade 210", &[de])
+                .expect("re-import");
+        assert_eq!(cards.len(), 1);
+        let cards = import_decklist_into(&mut conn, id, "1 Aang der Luftnomade 210")
+            .expect("legacy re-import of the raw line");
+        assert_eq!(cards.len(), 1, "printed-name dedup tier caught it");
+    }
+
+    #[test]
+    fn show_digital_printings_setting_roundtrips() {
+        let conn = test_conn();
+        assert!(!read_show_digital_printings(&conn).expect("default off"));
+        write_show_digital_printings(&conn, true).expect("enable");
+        assert!(read_show_digital_printings(&conn).expect("read"));
+        write_show_digital_printings(&conn, false).expect("disable");
+        assert!(!read_show_digital_printings(&conn).expect("read"));
+    }
+
+    #[test]
+    fn lang_any_setting_roundtrips_through_project_settings() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        assert!(!load_project(&conn, id).expect("load").settings.lang_any);
+        let settings = ProjectSettings { lang_any: true, ..ProjectSettings::default() };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        assert!(load_project(&conn, id).expect("load").settings.lang_any);
     }
 
     #[test]
@@ -1628,6 +1915,7 @@ mod tests {
                 set_code: "sta".to_string(),
                 collector_number: "116".to_string(),
                 lang: "ja".to_string(),
+                printed_name: None,
             },
         )
         .expect("change printing");
@@ -1658,6 +1946,7 @@ mod tests {
                 set_code: "c21".to_string(),
                 collector_number: "263".to_string(),
                 lang: "en".to_string(),
+                printed_name: None,
             },
             CardResolutionUpdate {
                 card_id: cards[1].id,
@@ -1666,6 +1955,7 @@ mod tests {
                 set_code: "clu".to_string(),
                 collector_number: "141".to_string(),
                 lang: "en".to_string(),
+                printed_name: None,
             },
         ];
         let tx = conn.transaction().expect("tx");

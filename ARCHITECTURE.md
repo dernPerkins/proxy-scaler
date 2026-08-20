@@ -148,34 +148,43 @@ traffic lives on the generation side, collapsed into one step instead of
 the old architecture's two separate resolutions (once at decklist import,
 again at generate time):
 
-1. User pastes decklist text and imports. If there is no project yet,
-   `get_or_create_unnamed_project` creates one first — nothing has to be
-   named or saved to get this far. The Rust project store parses the
-   text locally (`parse_decklist_text` — a direct Rust port of the old
-   `proxy_scaler/decklist.py`, two regexes, no network) and stores the
-   raw, **unresolved** lines (quantity + name + optional set/collector,
-   or a set-less trailing collector number — `1 Sol Ring 263` — kept as a
-   hint, since some deck managers can't export more than that for
-   non-English cards),
-   each stamped with the project's import-language preference
-   (`preferred_lang`, the dropdown beside the Import Cards button).
-2. **Eager resolve-on-import** (DecklistPage's resolve effect): right
-   after the import — and on project load, for any card still unpinned —
-   the frontend sends the rows to `POST /api/resolve` and persists each
-   result back into `project_cards` via `set_cards_resolution`: the
-   card's `scryfall_id` (the authoritative pin to one exact printing),
-   its canonical name, and a concrete set/collector/lang for name-only
-   lines. `name`/`set_code`/`collector_number`/`lang` stay denormalized
-   on the row so decklists render fully offline. Server unreachable →
-   cards stay unpinned and the next load retries; nothing blocks.
+1. **Import is resolve-gated**: the Import Cards button is disabled while
+   the generation server is unreachable, and only successfully matched
+   cards enter the list. The frontend parses the pasted text via the Rust
+   `parse_decklist` command (a direct Rust port of the old
+   `proxy_scaler/decklist.py` — quantity + name + optional set/collector,
+   or a set-less trailing collector number like `1 Sol Ring 263`, kept as
+   a hint since some deck managers can't export more for non-English
+   cards), resolves the entries through `POST /api/resolve`, and persists
+   the successes — fully pinned rows (`scryfall_id`, canonical name,
+   `printed_name` for non-English printings, set/collector/lang) — via
+   `import_resolved_cards` in one transaction. Failed lines are listed
+   with their errors, stay in the textarea for fixing, and are **not**
+   added. If there is no project yet, the first successful import creates
+   the Unnamed Project. `name`/`set_code`/`collector_number`/`lang`/
+   `printed_name` stay denormalized on the row so decklists render fully
+   offline; rows show `printed_name` when set, with the English name as
+   the tooltip.
+2. **Language modes** (the controls beside the Import Cards button): the
+   language dropdown (full Scryfall list from `GET /api/cards/languages`,
+   default `en`) is **strictly literal** — the resolved object's `lang`
+   must equal the selection (`ResolveIn.strict_lang`), else that line
+   errors. The "All Languages" checkbox disables the dropdown and matches
+   best-effort across languages (a German-typed name fuzzy-matches its
+   German printing; an English line lands on the English one). Cards
+   imported before this flow existed are re-resolved on project load,
+   best-effort and non-strict, purely to backfill their pins.
 3. Server-side resolution is **local-first** (`card_lookup.CardResolver`,
    used by both `/api/resolve` and `/api/generate`): pinned `scryfall_id`
-   → set+collector in the entry's preferred language (English fallback)
+   → set+collector in the entry's preferred language (English fallback,
+   or exactly the demanded language under strict_lang)
    → name + collector-number hint for set-less lines (matched against the
-   name's printings in any set, language-preferred; a hint that matches
-   nothing degrades to the name-only path with a warning) → exact name,
-   all against the card corpus; only misses (cards newer than the last
-   import, fuzzy names) and image downloads touch the live Scryfall API.
+   name's printings — English or printed names — in any set; a hint that
+   matches nothing degrades to the name-only path with a warning) →
+   exact name (English or printed), all against the card corpus; only
+   misses (cards newer than the last import, fuzzy names) and image
+   downloads touch the live Scryfall API — where Scryfall's fuzzy lookup
+   also matches localized printed names and returns the foreign printing.
    No corpus imported → everything falls through live, exactly the
    pre-corpus behavior (a set-less hint resolves as name-only there, with
    a warning that the number went unused).
@@ -218,7 +227,9 @@ generation-server state.
 | `update_project` | Write name + settings. Also the **promotion** path: naming an Unnamed Project is an `UPDATE ... SET name = ?` that never touches `tag`. Accepts `''` (the row must be writable before it is named) but never *un-names* — a blank name leaves the stored one alone, and the UNIQUE constraint is the collision check |
 | `delete_project` | Delete one project (cascades to its cards). Also the whole of "discard": deleting the Unnamed Project row is what New/discard does |
 | `clear_all_projects` | Delete everything, confirm-gated. Bare `DELETE FROM projects` — takes the Unnamed Project with it |
-| `import_decklist_text` | Add parsed card lines to a project, additively, de-duped by set+collector (or name), stamped with the project's `preferred_lang`; also mirrors the pasted text back onto the row |
+| `import_decklist_text` | Legacy insert-first import (parsed, unresolved rows). The UI now uses the resolve-gated pair below; this stays for scripted/test use |
+| `parse_decklist` | Parse only, no DB writes — the first half of the resolve-gated import |
+| `import_resolved_cards` | The second half: insert already-resolved (fully pinned) cards in one transaction, de-duped at every identity tier (set/collector, name+collector, English and printed names); also mirrors the pasted text onto the row |
 | `remove_card` | Drop one parsed line from a project |
 | `set_card_quantity` | Set a card's copy count (clamped to ≥ 1 — removal is `remove_card`'s job) |
 | `set_card_printing` | Change one card to a different printing: pins `scryfall_id` and refreshes the display cache (name/set/collector/lang). The user-chosen twin of a resolution |
@@ -292,7 +303,7 @@ string, not a database relationship.
 | `POST /api/cards/import` | Start a bulk import job (`{dataset: "default_cards" \| "all_cards"}`, 202 + job id; 409 while one runs). Background thread + in-memory registry (`card_jobs.py`), same polling idiom as the PDF render jobs |
 | `GET /api/cards/import/{job_id}` | Import job progress: phase (checking/downloading/importing/finalizing), bytes, rows |
 | `POST /api/cards/import/{job_id}/cancel` | Ask a running import to stop at its next chunk/batch boundary |
-| `GET /api/cards/languages` | Languages present in the corpus, English first — the import-language dropdown's options (`["en"]` when nothing is imported) |
+| `GET /api/cards/languages` | The full Scryfall language list (English first) — the import-language dropdown's options, independent of what corpus is imported: the dropdown is a request, resolution answers from corpus or live API |
 | `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
 | `GET /api/health` | Supervisor readiness probe |
 | `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |

@@ -64,9 +64,11 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project, get_last_project_id,
     get_or_create_unnamed_project, get_project, get_quit_prompt_suppressed,
-    get_update_skipped_version, import_decklist_text, list_projects, list_recent_hosts,
-    remove_card, remove_recent_host, set_card_printing, set_card_quantity, set_cards_resolution,
-    set_last_project_id, set_quit_prompt_suppressed, set_update_skipped_version, update_project,
+    get_show_digital_printings, get_update_skipped_version, import_decklist_text,
+    import_resolved_cards, list_projects, list_recent_hosts, parse_decklist, remove_card,
+    remove_recent_host, set_card_printing, set_card_quantity, set_cards_resolution,
+    set_last_project_id, set_quit_prompt_suppressed, set_show_digital_printings,
+    set_update_skipped_version, update_project,
 };
 use update::{check_for_update, launch_installer};
 
@@ -828,10 +830,14 @@ fn main() {
             delete_project,
             clear_all_projects,
             import_decklist_text,
+            parse_decklist,
+            import_resolved_cards,
             remove_card,
             set_card_quantity,
             set_card_printing,
             set_cards_resolution,
+            get_show_digital_printings,
+            set_show_digital_printings,
             get_last_project_id,
             set_last_project_id,
             list_recent_hosts,

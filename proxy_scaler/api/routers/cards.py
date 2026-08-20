@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from proxy_scaler import card_import, card_jobs, carddb
 from proxy_scaler.api.deps import get_card_db_path
+from proxy_scaler.scryfall import SCRYFALL_LANGUAGES
 from proxy_scaler.api.schemas import (
     CardDbLocalOut,
     CardDbRemoteEntryOut,
@@ -126,20 +127,19 @@ def cancel_card_import(job_id: str) -> Response:
 
 @router.get("/languages", response_model=CardLanguagesOut)
 def card_languages() -> CardLanguagesOut:
-    conn = carddb.open_if_ready(get_card_db_path())
-    if conn is None:
-        return CardLanguagesOut(languages=["en"])
-    try:
-        langs = carddb.distinct_languages(conn)
-    finally:
-        conn.close()
-    return CardLanguagesOut(languages=langs or ["en"])
+    """Every language the import dropdown may request — the full Scryfall
+    list, independent of what corpus (if any) is imported. The dropdown
+    expresses what the user *wants*; resolution then answers from the
+    corpus or the live API, and the strict import mode reports per-card
+    errors when a language genuinely doesn't exist for a card."""
+    return CardLanguagesOut(languages=list(SCRYFALL_LANGUAGES))
 
 
 def _variant_out(row) -> CardVariantOut:
     return CardVariantOut(
         scryfall_id=row["id"],
         name=row["name"],
+        printed_name=row["printed_name"],
         set_code=row["set_code"],
         set_name=row["set_name"],
         collector_number=row["collector_number"],
