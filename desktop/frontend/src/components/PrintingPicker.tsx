@@ -5,7 +5,7 @@
 // deliberate "import the card database first" hint when there is no corpus).
 // Picking a row pins the card to that exact printing via
 // ProjectContext.setCardPrinting.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -36,6 +36,27 @@ export default function PrintingPicker(props: {
   const { card, preferredLang, disabled, onPick } = props;
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  // Clicking anywhere outside the popover (or Esc) closes it — without
+  // this, the picker only closed via its own Close button and would sit
+  // open under/over whatever the user interacted with next.
+  const cellRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onMouseDown(e: MouseEvent) {
+      if (cellRef.current && !cellRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
   const cardLang = card.lang ?? preferredLang ?? "en";
   const [langFilter, setLangFilter] = useState(cardLang);
 
@@ -95,14 +116,18 @@ export default function PrintingPicker(props: {
         v.collector_number === (card.collector_number ?? "") &&
         v.lang === cardLang;
 
+  // Language always shown, EN included — with several languages of one
+  // printing allowed in a deck, an unlabeled row is ambiguous. Rows
+  // predating the lang field read as English (the only language that
+  // existed then).
   const label = card.set_code
-    ? `${card.set_code.toUpperCase()} · ${card.collector_number ?? "—"}${
-        card.lang && card.lang !== "en" ? ` · ${card.lang.toUpperCase()}` : ""
-      }`
+    ? `${card.set_code.toUpperCase()} · ${card.collector_number ?? "—"} · ${(
+        card.lang ?? "en"
+      ).toUpperCase()}`
     : "— · —";
 
   return (
-    <span className="printing-cell">
+    <span className="printing-cell" ref={cellRef}>
       <button
         type="button"
         className="card-meta mono printing-toggle"
@@ -183,8 +208,8 @@ export default function PrintingPicker(props: {
                   }}
                 >
                   <span className="mono">
-                    {v.set_code.toUpperCase()} · #{v.collector_number}
-                    {v.lang !== "en" ? ` · ${v.lang.toUpperCase()}` : ""}
+                    {v.set_code.toUpperCase()} · #{v.collector_number} ·{" "}
+                    {v.lang.toUpperCase()}
                   </span>
                   <span className="printing-set-name">
                     {v.printed_name ? `${v.printed_name} · ` : ""}

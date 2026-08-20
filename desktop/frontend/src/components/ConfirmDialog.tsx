@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export interface ConfirmDialogProps {
   title: string;
@@ -41,7 +42,12 @@ export default function ConfirmDialog({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onCancel]);
 
-  return (
+  // Portaled to document.body: this dialog gets mounted from deep inside
+  // panels (e.g. the sidebar's CardDbPanel), and an ancestor there can
+  // open its own stacking context — leaving the overlay's z-index losing
+  // to unrelated positioned content (a card row's printing popover painted
+  // over the modal). At body level the overlay always stacks on top.
+  return createPortal(
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -59,6 +65,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

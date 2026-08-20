@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
@@ -77,6 +78,10 @@ export default function App() {
             the connected server has no imported corpus, and waits its
             turn behind the update and resume-tasks dialogs. */}
         <CardDbPrompt />
+        {/* Blocks the whole app while a card-database import runs — a
+            half-imported corpus would answer printing lookups
+            incompletely. Renders nothing otherwise. */}
+        <CardDbImportModal />
         <ProjectBar />
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual

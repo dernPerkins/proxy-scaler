@@ -1,13 +1,20 @@
 // Sidebar panel for the generation server's local Scryfall card corpus:
 // shows what's imported (with a staleness nudge), offers the dataset choice
 // (English-only vs all languages, sizes read live from Scryfall's catalog
-// via the status endpoint), and drives the background import job with the
-// same start-then-poll idiom the PDF render jobs use. Per-server on
-// purpose: in Remote mode this reads and imports on the connected machine.
+// via the status endpoint), and starts imports / deletes the database.
+// Per-server on purpose: in Remote mode this reads and imports on the
+// connected machine.
+//
+// This panel only STARTS imports. A running job is watched — and the whole
+// app blocked — by CardDbImportModal (mounted in App.tsx): mid-import the
+// corpus is only partially populated, so nothing should be querying it.
+// The started job id is pushed through cardDbImport.ts so the modal
+// appears immediately.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import type { CardDataset } from "../api/types";
+import { setCardDbImportJobId } from "../cardDbImport";
 import ConfirmDialog from "./ConfirmDialog";
 
 const STALE_AFTER_DAYS = 30;
@@ -25,8 +32,7 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
   const { serverUnavailable } = props;
   const queryClient = useQueryClient();
   const [dataset, setDataset] = useState<CardDataset>("default_cards");
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobError, setJobError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const statusQuery = useQuery({
     queryKey: ["card-db-status"],
@@ -38,44 +44,20 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
   });
   const status = statusQuery.data;
 
-  // Adopt an import some other window started, so this one shows progress
-  // instead of a disabled button with no explanation.
-  useEffect(() => {
-    if (jobId == null && status?.active_job_id) setJobId(status.active_job_id);
-  }, [jobId, status?.active_job_id]);
-
   // Default the dataset choice to what's already imported.
   useEffect(() => {
     if (status?.local) setDataset(status.local.dataset_type);
   }, [status?.local?.dataset_type]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const jobQuery = useQuery({
-    queryKey: ["card-import-job", jobId],
-    queryFn: () => generationApi.cardImportStatus(jobId as string),
-    enabled: jobId != null,
-    refetchInterval: 1000,
-  });
-  const job = jobQuery.data;
-
-  // Terminal job state: stop polling and refresh the status line (and the
-  // import-language dropdown, whose options may just have changed).
-  useEffect(() => {
-    if (job && job.status !== "running") {
-      if (job.status === "failed") setJobError(`Import failed: ${job.error ?? "unknown error"}`);
-      setJobId(null);
-      queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
-      queryClient.invalidateQueries({ queryKey: ["card-languages"] });
-    }
-  }, [job, queryClient]);
-
   const startMutation = useMutation({
     mutationFn: (chosen: CardDataset) => generationApi.startCardImport(chosen),
     onSuccess: ({ job_id }) => {
-      setJobError(null);
-      setJobId(job_id);
-      queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
+      setError(null);
+      // Hands the job to CardDbImportModal, which takes the screen over.
+      setCardDbImportJobId(job_id);
+      void queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
     },
-    onError: (err: Error) => setJobError(err.message),
+    onError: (err: Error) => setError(err.message),
   });
 
   // ConfirmDialog rather than a checkbox-arm (see ConfirmDialog.tsx) —
@@ -84,11 +66,11 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
   const deleteMutation = useMutation({
     mutationFn: () => generationApi.deleteCardDb(),
     onSuccess: () => {
-      setJobError(null);
-      queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
-      queryClient.invalidateQueries({ queryKey: ["card-languages"] });
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["card-languages"] });
     },
-    onError: (err: Error) => setJobError(err.message),
+    onError: (err: Error) => setError(err.message),
   });
 
   const local = status?.local ?? null;
@@ -111,7 +93,10 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
           ? `Card data last imported ${staleDays} days ago.`
           : null;
 
-  const running = jobId != null && (job == null || job.status === "running");
+  // While a job runs the blocking modal owns the screen, so this state is
+  // mostly invisible — it exists so the controls aren't clickable in the
+  // instant before the modal mounts.
+  const importRunning = status?.import_running ?? false;
   const switching = local != null && local.dataset_type !== dataset;
 
   return (
@@ -124,94 +109,69 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         </p>
       ) : (
         <p className="hint" style={{ margin: 0 }}>
-          Not imported yet.
+          {importRunning ? "Import in progress…" : "Not imported yet."}
         </p>
       )}
-      {nudge && <p className="error-text">{nudge}</p>}
+      {!importRunning && nudge && <p className="error-text">{nudge}</p>}
 
-      {!running && (
-        <>
-          <select
-            value={dataset}
-            onChange={(e) => setDataset(e.target.value as CardDataset)}
-            disabled={serverUnavailable}
-          >
-            <option value="default_cards">
-              English only (~{formatMB(remote?.default_cards?.compressed_size ?? 80_000_000)} MB)
-            </option>
-            <option value="all_cards">
-              All languages (~{formatMB(remote?.all_cards?.compressed_size ?? 400_000_000)} MB)
-            </option>
-          </select>
-          {switching && (
-            <p className="hint">
-              Switching dataset replaces the current card database.
-            </p>
-          )}
-          <button
-            className="btn-sm"
-            onClick={() => startMutation.mutate(dataset)}
-            disabled={serverUnavailable || startMutation.isPending}
-            title={
-              serverUnavailable
-                ? "Generation server is unreachable"
-                : remoteEntry == null
-                  ? "Scryfall's catalog is unreachable from the server right now — the import will re-check when started."
-                  : undefined
-            }
-          >
-            {local ? "Update card database" : "Import card database"}
-          </button>
-          {local && (
-            <button
-              className="btn-sm btn-danger"
-              onClick={() => setConfirmDeleteOpen(true)}
-              disabled={serverUnavailable || deleteMutation.isPending}
-            >
-              Delete card database
-            </button>
-          )}
-          {confirmDeleteOpen && (
-            <ConfirmDialog
-              title="Delete the card database?"
-              confirmLabel="Delete card database"
-              onConfirm={() => {
-                setConfirmDeleteOpen(false);
-                deleteMutation.mutate();
-              }}
-              onCancel={() => setConfirmDeleteOpen(false)}
-            >
-              This removes the imported Scryfall card data from this server.
-              The printing picker stops working until it's imported again
-              (~{formatMB(remote?.[dataset]?.compressed_size ?? 80_000_000)} MB
-              download). Your decks and generated images are untouched.
-            </ConfirmDialog>
-          )}
-        </>
+      <select
+        value={dataset}
+        onChange={(e) => setDataset(e.target.value as CardDataset)}
+        disabled={serverUnavailable || importRunning}
+      >
+        <option value="default_cards">
+          English only (~{formatMB(remote?.default_cards?.compressed_size ?? 80_000_000)} MB)
+        </option>
+        <option value="all_cards">
+          All languages (~{formatMB(remote?.all_cards?.compressed_size ?? 400_000_000)} MB)
+        </option>
+      </select>
+      {switching && !importRunning && (
+        <p className="hint">Switching dataset replaces the current card database.</p>
+      )}
+      <button
+        className="btn-sm"
+        onClick={() => startMutation.mutate(dataset)}
+        disabled={serverUnavailable || importRunning || startMutation.isPending}
+        title={
+          serverUnavailable
+            ? "Generation server is unreachable"
+            : remoteEntry == null
+              ? "Scryfall's catalog is unreachable from the server right now — the import will re-check when started."
+              : undefined
+        }
+      >
+        {local ? "Update card database" : "Import card database"}
+      </button>
+      {local && (
+        <button
+          className="btn-sm btn-danger"
+          onClick={() => setConfirmDeleteOpen(true)}
+          disabled={serverUnavailable || importRunning || deleteMutation.isPending}
+        >
+          Delete card database
+        </button>
+      )}
+      {confirmDeleteOpen && (
+        <ConfirmDialog
+          title="Delete the card database?"
+          confirmLabel="Delete card database"
+          onConfirm={() => {
+            setConfirmDeleteOpen(false);
+            deleteMutation.mutate();
+          }}
+          onCancel={() => setConfirmDeleteOpen(false)}
+        >
+          This removes the imported Scryfall card data from this server.
+          The printing picker stops working until it's imported again
+          (~{formatMB(remote?.[dataset]?.compressed_size ?? 80_000_000)} MB
+          download). Your decks and generated images are untouched.
+        </ConfirmDialog>
       )}
 
-      {running && (
-        <>
-          <p className="hint" style={{ margin: 0 }}>
-            {job == null || job.phase === "checking"
-              ? "Checking Scryfall's catalog…"
-              : job.phase === "downloading"
-                ? `Downloading ${formatMB(job.bytes_downloaded)}/${formatMB(job.total_bytes)} MB…`
-                : job.phase === "importing"
-                  ? `Imported ${job.rows_imported.toLocaleString()} cards…`
-                  : "Finishing up…"}
-          </p>
-          <button
-            className="btn-sm"
-            onClick={() => jobId && generationApi.cancelCardImport(jobId).catch(() => {})}
-          >
-            Cancel
-          </button>
-        </>
-      )}
-
-      {/* Import-job failures and delete errors share this line. */}
-      {jobError && <p className="error-text">{jobError}</p>}
+      {/* Start-refused (409) and delete errors; job failures surface in
+          CardDbImportModal's error view instead. */}
+      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }

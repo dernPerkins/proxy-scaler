@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { CardDataset } from "../api/types";
+import { setCardDbImportJobId } from "../cardDbImport";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { isTauri } from "../tauri";
@@ -75,10 +76,11 @@ export default function CardDbPrompt() {
 
   const startMutation = useMutation({
     mutationFn: (chosen: CardDataset) => generationApi.startCardImport(chosen),
-    onSuccess: () => {
-      // The sidebar panel picks the running job up from the invalidated
-      // status and shows its progress; this dialog's job is done.
+    onSuccess: ({ job_id }) => {
+      // CardDbImportModal takes over with its blocking progress view;
+      // this dialog's job is done.
       setDismissedThisLaunch(true);
+      setCardDbImportJobId(job_id);
       void queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
     },
     onError: (err: Error) => setError(err.message),
