@@ -74,6 +74,10 @@ export default function PrintingPicker(props: {
   });
 
   const variants = variantsQuery.data?.variants ?? [];
+  // Loaded and got something — until then (still loading, or 404 because
+  // there's no card corpus on the server) the filter controls have nothing
+  // to filter and render disabled placeholders instead of pretending.
+  const ready = variantsQuery.isSuccess && variants.length > 0;
   const languages = useMemo(
     () => Array.from(new Set(variants.map((v) => v.lang))),
     [variants],
@@ -112,21 +116,26 @@ export default function PrintingPicker(props: {
         <div className="printing-picker panel">
           <div className="printing-picker-controls">
             <select
-              value={effectiveLang ?? "all"}
+              value={ready ? (effectiveLang ?? "all") : "none"}
               onChange={(e) => setLangFilter(e.target.value)}
-              disabled={languages.length <= 1}
+              disabled={!ready || languages.length <= 1}
             >
-              {effectiveLang == null && <option value="all">All languages</option>}
-              {languages.map((lang) => (
-                <option key={lang} value={lang}>
-                  {lang.toUpperCase()}
-                </option>
-              ))}
+              {!ready && <option value="none">—</option>}
+              {ready && effectiveLang == null && (
+                <option value="all">All languages</option>
+              )}
+              {ready &&
+                languages.map((lang) => (
+                  <option key={lang} value={lang}>
+                    {lang.toUpperCase()}
+                  </option>
+                ))}
             </select>
             <label className="check">
               <input
                 type="checkbox"
                 checked={includeDigital}
+                disabled={!ready}
                 onChange={(e) => setShowDigital.mutate(e.target.checked)}
               />
               Show digital

@@ -38,7 +38,12 @@ the local database first, so most decklist imports and generations make
 no live Scryfall API calls at all; only cards newer than your last import
 fall back to the live API. Update it from the same panel whenever the
 staleness hint suggests it. (Upgrading across a card-database format
-change shows "Not imported yet" — just import again.)
+change shows "Not imported yet" — just import again.) A first launch with
+no database offers the download in a dialog; declining leaves the sidebar
+panel as the way in, and the same panel can delete the database again.
+The same card can be in a deck once per printing *and language* — an
+Italian and an English Sol Ring of the same set import, generate, and
+print as two separate cards.
 
 Importing a decklist matches every line before adding it: pick a card
 language next to the Import Cards button (strictly that language — lines

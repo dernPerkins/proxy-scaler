@@ -67,7 +67,7 @@ def _face(**overrides) -> FaceResult:
 
 
 def test_card_identity_prefers_set_and_collector() -> None:
-    assert card_identity("C21", "263", "sol-id") == "c21/263"
+    assert card_identity("C21", "263", "sol-id") == "c21/263/en"
 
 
 def test_card_identity_falls_back_to_scryfall_id() -> None:
@@ -116,8 +116,8 @@ def test_group_by_card_drops_face_index_distinction() -> None:
     front = _face(face_index=0, face_label="front")
     back = _face(face_index=1, face_label="back")
     gallery_by_card, tasks_by_card = group_by_card([front, back], [])
-    assert list(gallery_by_card.keys()) == ["c21/263"]
-    assert gallery_by_card["c21/263"] == [front, back]
+    assert list(gallery_by_card.keys()) == ["c21/263/en"]
+    assert gallery_by_card["c21/263/en"] == [front, back]
     assert tasks_by_card == {}
 
 

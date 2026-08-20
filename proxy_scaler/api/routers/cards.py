@@ -125,6 +125,19 @@ def cancel_card_import(job_id: str) -> Response:
     return Response(status_code=204)
 
 
+@router.delete("/database", status_code=204)
+def delete_card_database() -> Response:
+    """Remove the imported corpus entirely — the sidebar panel's "Delete
+    card database". Refused while an import is writing to it."""
+    if card_jobs.active_job() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A card database import is running — cancel it first.",
+        )
+    carddb.delete_card_db(get_card_db_path())
+    return Response(status_code=204)
+
+
 @router.get("/languages", response_model=CardLanguagesOut)
 def card_languages() -> CardLanguagesOut:
     """Every language the import dropdown may request — the full Scryfall

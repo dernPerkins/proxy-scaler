@@ -208,6 +208,9 @@ export const generationApi = {
     request<CardImportStatus>(`/api/cards/import/${jobId}`),
   cancelCardImport: (jobId: string) =>
     request<void>(`/api/cards/import/${jobId}/cancel`, { method: "POST" }),
+  // Remove the imported corpus from the server entirely; 409 while an
+  // import is running.
+  deleteCardDb: () => request<void>("/api/cards/database", { method: "DELETE" }),
   cardLanguages: () => request<{ languages: string[] }>("/api/cards/languages"),
   cardVariants: (params: {
     scryfall_id?: string | null;

@@ -190,6 +190,12 @@ export const projectApi = {
   setShowDigitalPrintings: (show: boolean) =>
     invokeCommand<void>("set_show_digital_printings", { show }),
 
+  // The boot card-database offer's "Don't ask again" (CardDbPrompt.tsx).
+  getCardDbPromptDismissed: () =>
+    invokeCommand<boolean>("get_card_db_prompt_dismissed"),
+  setCardDbPromptDismissed: (dismissed: boolean) =>
+    invokeCommand<void>("set_card_db_prompt_dismissed", { dismissed }),
+
   // Remembered remote server address+port pairs (see connection.tsx) — not
   // project data, but the same app_settings-backed store, so it lives here
   // alongside the other app_settings-backed calls above.

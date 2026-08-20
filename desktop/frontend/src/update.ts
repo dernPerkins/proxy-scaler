@@ -157,3 +157,31 @@ export function setUpdatePromptOpen(open: boolean): void {
 export function getUpdatePromptOpen(): boolean {
   return updatePromptOpen;
 }
+
+// Third link in the boot-dialog chain (update → resume-tasks → card-db
+// offer): ResumeTasksPrompt publishes these the same way UpdatePrompt
+// publishes its pair above, and CardDbPrompt waits on all four so launch
+// dialogs never stack. "Settled" means ResumeTasksPrompt has decided —
+// either it had nothing to show, or its prompt was answered.
+let resumeTasksSettled = false;
+let resumeTasksPromptOpen = false;
+
+export function setResumeTasksSettled(): void {
+  if (resumeTasksSettled) return;
+  resumeTasksSettled = true;
+  notifyUpdateStore();
+}
+
+export function getResumeTasksSettled(): boolean {
+  return resumeTasksSettled;
+}
+
+export function setResumeTasksPromptOpen(open: boolean): void {
+  if (resumeTasksPromptOpen === open) return;
+  resumeTasksPromptOpen = open;
+  notifyUpdateStore();
+}
+
+export function getResumeTasksPromptOpen(): boolean {
+  return resumeTasksPromptOpen;
+}

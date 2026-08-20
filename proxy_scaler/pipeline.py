@@ -166,7 +166,13 @@ def face_group_key(item: FaceResult) -> str:
     duplicate physical print slots for the same card.
     """
     if item.set_code and item.collector_number:
-        identity = f"{item.set_code.lower()}/{item.collector_number}"
+        # Language is part of the printing identity (Italian and English
+        # rows of one set/collector are different cards); absent lang
+        # normalizes to "en" so pre-language rows keep matching.
+        identity = (
+            f"{item.set_code.lower()}/{item.collector_number}/"
+            f"{(item.lang or 'en').lower()}"
+        )
     else:
         identity = item.scryfall_id or "unknown"
     return f"{identity}:{item.face_index}:{item.face_label}"

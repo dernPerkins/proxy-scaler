@@ -13,14 +13,18 @@ from proxy_scaler.pipeline import FaceResult, group_by_face
 
 
 def card_identity(
-    set_code: str | None, collector_number: str | None, scryfall_id: str | None
+    set_code: str | None,
+    collector_number: str | None,
+    scryfall_id: str | None,
+    lang: str | None = None,
 ) -> str:
     """Physical-card identity (no face_index/label) shared by
     ProjectCardRow, FaceResult, and TaskRow — used to match a project_cards
     row to its faces' gallery items/tasks regardless of which one you start
-    from."""
+    from. Language completes the printing identity (absent → "en", the
+    only language that existed before lang was recorded)."""
     if set_code and collector_number:
-        return f"{set_code.lower()}/{collector_number}"
+        return f"{set_code.lower()}/{collector_number}/{(lang or 'en').lower()}"
     return scryfall_id or "unknown"
 
 
@@ -28,7 +32,9 @@ def face_key_for_task(task: db.TaskRow) -> str:
     """Same identity scheme as pipeline.face_group_key(), read off a
     TaskRow instead of a FaceResult, so a face's in-flight task and its
     (once done) gallery item merge under the same key."""
-    identity = card_identity(task.set_code, task.collector_number, task.scryfall_id)
+    identity = card_identity(
+        task.set_code, task.collector_number, task.scryfall_id, task.lang
+    )
     return f"{identity}:{task.face_index}:{task.face_label}"
 
 
@@ -58,12 +64,12 @@ def group_by_card(
     gallery_by_card: dict[str, list[FaceResult]] = defaultdict(list)
     for item in items:
         gallery_by_card[
-            card_identity(item.set_code, item.collector_number, item.scryfall_id)
+            card_identity(item.set_code, item.collector_number, item.scryfall_id, item.lang)
         ].append(item)
     tasks_by_card: dict[str, list[db.TaskRow]] = defaultdict(list)
     for task in tasks:
         tasks_by_card[
-            card_identity(task.set_code, task.collector_number, task.scryfall_id)
+            card_identity(task.set_code, task.collector_number, task.scryfall_id, task.lang)
         ].append(task)
     return gallery_by_card, tasks_by_card
 

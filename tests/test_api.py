@@ -1293,3 +1293,27 @@ def test_card_variants_unknown_card_404(client: TestClient) -> None:
     resp = client.get("/api/cards/variants", params={"name": "Storm Crow"})
     assert resp.status_code == 404
     assert "newer than the last import" in resp.json()["detail"]
+
+
+def test_delete_card_database(client: TestClient, monkeypatch) -> None:
+    _seed_card_db()
+    assert client.get("/api/cards/status").json()["local"] is not None
+
+    resp = client.request("DELETE", "/api/cards/database")
+    assert resp.status_code == 204
+    body = client.get("/api/cards/status").json()
+    assert body["local"] is None
+    # Idempotent: deleting an absent corpus is still a 204.
+    assert client.request("DELETE", "/api/cards/database").status_code == 204
+
+
+def test_delete_card_database_refused_during_import(
+    client: TestClient, monkeypatch
+) -> None:
+    from proxy_scaler import card_import, card_jobs
+
+    monkeypatch.setattr(card_import, "run_import", lambda *a, **k: None)
+    client.post("/api/cards/import", json={"dataset": "default_cards"})
+    assert card_jobs.active_job() is not None
+    resp = client.request("DELETE", "/api/cards/database")
+    assert resp.status_code == 409

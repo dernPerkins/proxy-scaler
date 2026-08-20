@@ -543,8 +543,17 @@ def match_quantities(
         matched_qty = 0
         matched_indices: set[int] = set()
         if set_code and collector:
+            rep_lang = (rep.lang or "en").lower()
             for i, entry in enumerate(entries):
-                if entry.set_code == set_code and entry.collector_number == str(collector):
+                if (
+                    entry.set_code == set_code
+                    and entry.collector_number == str(collector)
+                    # Language completes the printing identity — an
+                    # Italian entry must not print the English image of
+                    # the same set/collector. Absent lang reads as "en"
+                    # on both sides, so pre-language decks are unchanged.
+                    and (entry.lang or "en").lower() == rep_lang
+                ):
                     matched_qty += entry.quantity
                     matched_indices.add(i)
         if not matched_indices and card_name:

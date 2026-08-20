@@ -361,16 +361,27 @@ pub struct LoadedProject {
     pub updated_at: String,
 }
 
-// Import-dedup identity, most-specific-first: exact set/collector when
-// both are given, name+collector for a set-less collector hint ("Sol Ring
-// 263" — see parse_line), bare name otherwise. Same spirit as
+// Import-dedup identity, most-specific-first: exact set/collector/lang
+// when all are given (language is part of a printing's identity — the
+// Italian and English Sol Ring of one set/collector are different cards
+// in a deck), set/collector for the legacy lang-less parse path,
+// name+collector for a set-less collector hint ("Sol Ring 263" — see
+// parse_line), bare name otherwise. Same spirit as
 // mergeCardStatus.ts::cardIdentity, plus the hint tier that only matters
 // at import time.
-fn entry_dedup_key(set_code: Option<&str>, collector_number: Option<&str>, name: &str) -> String {
+fn entry_dedup_key(
+    set_code: Option<&str>,
+    collector_number: Option<&str>,
+    name: &str,
+    lang: Option<&str>,
+) -> String {
     match (set_code, collector_number) {
-        (Some(s), Some(c)) if !s.is_empty() && !c.is_empty() => {
-            format!("{}/{}", s.to_lowercase(), c.to_lowercase())
-        }
+        (Some(s), Some(c)) if !s.is_empty() && !c.is_empty() => match lang {
+            Some(l) if !l.is_empty() => {
+                format!("{}/{}/{}", s.to_lowercase(), c.to_lowercase(), l.to_lowercase())
+            }
+            _ => format!("{}/{}", s.to_lowercase(), c.to_lowercase()),
+        },
         (_, Some(c)) if !c.is_empty() => {
             format!("name:{}/{}", name.to_lowercase(), c.to_lowercase())
         }
@@ -392,6 +403,7 @@ fn stored_card_dedup_keys(
     collector_number: Option<&str>,
     name: &str,
     printed_name: Option<&str>,
+    lang: Option<&str>,
 ) -> Vec<String> {
     let mut keys = Vec::new();
     let mut names = vec![name.to_lowercase()];
@@ -408,6 +420,17 @@ fn stored_card_dedup_keys(
         set_code.filter(|s| !s.is_empty()),
         collector_number.filter(|c| !c.is_empty()),
     ) {
+        // Both the lang-qualified key (what resolved imports ask with —
+        // absent lang on old rows reads as English, the only language that
+        // existed before lang was recorded) and the bare one (what the
+        // legacy lang-less parse path asks with).
+        let l = lang.filter(|l| !l.is_empty()).unwrap_or("en");
+        keys.push(format!(
+            "{}/{}/{}",
+            s.to_lowercase(),
+            c.to_lowercase(),
+            l.to_lowercase()
+        ));
         keys.push(format!("{}/{}", s.to_lowercase(), c.to_lowercase()));
     }
     keys
@@ -863,7 +886,7 @@ fn import_decklist_into(
     {
         let mut stmt = tx
             .prepare(
-                "SELECT sort_order, name, set_code, collector_number, printed_name
+                "SELECT sort_order, name, set_code, collector_number, printed_name, lang
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -874,24 +897,26 @@ fn import_decklist_into(
                 let set_code: Option<String> = row.get(2)?;
                 let collector_number: Option<String> = row.get(3)?;
                 let printed_name: Option<String> = row.get(4)?;
-                Ok((sort_order, name, set_code, collector_number, printed_name))
+                let lang: Option<String> = row.get(5)?;
+                Ok((sort_order, name, set_code, collector_number, printed_name, lang))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number, printed_name) =
+            let (sort_order, name, set_code, collector_number, printed_name, lang) =
                 row.map_err(|e| e.to_string())?;
             seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
                 collector_number.as_deref(),
                 &name,
                 printed_name.as_deref(),
+                lang.as_deref(),
             ));
             next_sort_order = next_sort_order.max(sort_order + 1);
         }
     }
 
     for entry in &entries {
-        let key = entry_dedup_key(entry.set_code.as_deref(), entry.collector_number.as_deref(), &entry.name);
+        let key = entry_dedup_key(entry.set_code.as_deref(), entry.collector_number.as_deref(), &entry.name, None);
         // HashSet::insert returns false when the key was already present
         // — covers both "already an existing card" and "duplicated within
         // this same paste" in one check.
@@ -978,7 +1003,7 @@ fn import_resolved_cards_into(
     {
         let mut stmt = tx
             .prepare(
-                "SELECT sort_order, name, set_code, collector_number, printed_name
+                "SELECT sort_order, name, set_code, collector_number, printed_name, lang
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -989,24 +1014,26 @@ fn import_resolved_cards_into(
                 let set_code: Option<String> = row.get(2)?;
                 let collector_number: Option<String> = row.get(3)?;
                 let printed_name: Option<String> = row.get(4)?;
-                Ok((sort_order, name, set_code, collector_number, printed_name))
+                let lang: Option<String> = row.get(5)?;
+                Ok((sort_order, name, set_code, collector_number, printed_name, lang))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number, printed_name) =
+            let (sort_order, name, set_code, collector_number, printed_name, lang) =
                 row.map_err(|e| e.to_string())?;
             seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
                 collector_number.as_deref(),
                 &name,
                 printed_name.as_deref(),
+                lang.as_deref(),
             ));
             next_sort_order = next_sort_order.max(sort_order + 1);
         }
     }
 
     for card in cards {
-        let key = entry_dedup_key(Some(&card.set_code), Some(&card.collector_number), &card.name);
+        let key = entry_dedup_key(Some(&card.set_code), Some(&card.collector_number), &card.name, Some(&card.lang));
         if !seen_keys.insert(key) {
             continue;
         }
@@ -1257,6 +1284,38 @@ pub fn get_show_digital_printings(app: AppHandle) -> Result<bool, String> {
 pub fn set_show_digital_printings(app: AppHandle, show: bool) -> Result<(), String> {
     let conn = open_db(&app)?;
     write_show_digital_printings(&conn, show)
+}
+
+// --- The boot card-database offer's "Don't ask again" ----------------------
+//
+// CardDbPrompt.tsx offers the corpus download on launch when none is
+// imported; this suppresses that offer permanently (the sidebar panel
+// remains the way in). Same app_settings idiom; absent means keep asking.
+
+const CARD_DB_PROMPT_DISMISSED_KEY: &str = "card_db_prompt_dismissed";
+
+fn read_card_db_prompt_dismissed(conn: &Connection) -> Result<bool, String> {
+    Ok(read_app_setting(conn, CARD_DB_PROMPT_DISMISSED_KEY)?.as_deref() == Some("1"))
+}
+
+fn write_card_db_prompt_dismissed(conn: &Connection, dismissed: bool) -> Result<(), String> {
+    write_app_setting(
+        conn,
+        CARD_DB_PROMPT_DISMISSED_KEY,
+        if dismissed { "1" } else { "0" },
+    )
+}
+
+#[tauri::command]
+pub fn get_card_db_prompt_dismissed(app: AppHandle) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    read_card_db_prompt_dismissed(&conn)
+}
+
+#[tauri::command]
+pub fn set_card_db_prompt_dismissed(app: AppHandle, dismissed: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_card_db_prompt_dismissed(&conn, dismissed)
 }
 
 // --- The update prompt's "skip this version" -------------------------------
@@ -1767,6 +1826,29 @@ mod tests {
     }
 
     #[test]
+    fn different_languages_of_one_printing_coexist() {
+        // Language is part of a printing's identity: the Italian and
+        // English Sol Ring of the same set/collector are different cards
+        // in a deck — but re-importing the same language still dedups.
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let en = _resolved("1 Sol Ring (c21) 263", "Sol Ring", "c21", "263");
+        let it = ResolvedImportCard {
+            lang: "it".to_string(),
+            scryfall_id: "sol-it".to_string(),
+            printed_name: Some("Anello Solare".to_string()),
+            ..en.clone()
+        };
+        let cards = import_resolved_cards_into(&mut conn, id, "x", &[en.clone(), it.clone()])
+            .expect("import both languages");
+        assert_eq!(cards.len(), 2);
+
+        let cards = import_resolved_cards_into(&mut conn, id, "x", &[en, it])
+            .expect("re-import");
+        assert_eq!(cards.len(), 2, "same-language re-imports dedup");
+    }
+
+    #[test]
     fn a_german_line_repaste_dedups_through_printed_name() {
         // "1 Aang der Luftnomade 210" resolves to a row whose `name` is the
         // English oracle name; the typed German text survives only as
@@ -1810,6 +1892,14 @@ mod tests {
         assert!(read_show_digital_printings(&conn).expect("read"));
         write_show_digital_printings(&conn, false).expect("disable");
         assert!(!read_show_digital_printings(&conn).expect("read"));
+    }
+
+    #[test]
+    fn card_db_prompt_dismissed_setting_roundtrips() {
+        let conn = test_conn();
+        assert!(!read_card_db_prompt_dismissed(&conn).expect("default: keep asking"));
+        write_card_db_prompt_dismissed(&conn, true).expect("dismiss");
+        assert!(read_card_db_prompt_dismissed(&conn).expect("read"));
     }
 
     #[test]

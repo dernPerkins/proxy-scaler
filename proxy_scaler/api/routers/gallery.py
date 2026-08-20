@@ -77,6 +77,8 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
             set_code=e.set_code,
             collector_number=e.collector_number,
             raw_line=e.raw_line,
+            scryfall_id=e.scryfall_id,
+            lang=e.lang,
         )
         for e in body.entries
     ]

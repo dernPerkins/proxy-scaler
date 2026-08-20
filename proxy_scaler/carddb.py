@@ -99,6 +99,19 @@ def _raw_connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def delete_card_db(db_path: Path | str | None = None) -> bool:
+    """Remove the corpus database from disk — the file plus SQLite's WAL/
+    SHM sidecars. Safe while no import is writing (the API layer refuses
+    the delete during one); readers hold no persistent connections (every
+    lookup opens and closes), so a concurrent read at worst errors once.
+    Returns whether a database file actually existed."""
+    path = Path(db_path) if db_path else DEFAULT_CARD_DB_PATH
+    existed = path.exists()
+    for target in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        target.unlink(missing_ok=True)
+    return existed
+
+
 def init_card_db(db_path: Path | str | None = None) -> Path:
     """Create (or verify) the corpus database. Called by the import job
     before its first batch — never at server startup, so a server that has

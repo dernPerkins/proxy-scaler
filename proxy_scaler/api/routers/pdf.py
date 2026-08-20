@@ -65,6 +65,8 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         set_code=e.set_code,
         collector_number=e.collector_number,
         raw_line=e.raw_line or e.name,
+        scryfall_id=e.scryfall_id,
+        lang=e.lang,
     )
 
 

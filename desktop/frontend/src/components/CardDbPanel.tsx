@@ -60,7 +60,7 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
   // import-language dropdown, whose options may just have changed).
   useEffect(() => {
     if (job && job.status !== "running") {
-      if (job.status === "failed") setJobError(job.error ?? "Import failed.");
+      if (job.status === "failed") setJobError(`Import failed: ${job.error ?? "unknown error"}`);
       setJobId(null);
       queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
       queryClient.invalidateQueries({ queryKey: ["card-languages"] });
@@ -73,6 +73,20 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
       setJobError(null);
       setJobId(job_id);
       queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
+    },
+    onError: (err: Error) => setJobError(err.message),
+  });
+
+  // Checkbox-armed like DecklistPage's clear-generated-data control — the
+  // corpus is minutes of download/import to get back.
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const deleteMutation = useMutation({
+    mutationFn: () => generationApi.deleteCardDb(),
+    onSuccess: () => {
+      setConfirmDelete(false);
+      setJobError(null);
+      queryClient.invalidateQueries({ queryKey: ["card-db-status"] });
+      queryClient.invalidateQueries({ queryKey: ["card-languages"] });
     },
     onError: (err: Error) => setJobError(err.message),
   });
@@ -148,6 +162,28 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
           >
             {local ? "Update card database" : "Import card database"}
           </button>
+          {local && (
+            <>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={confirmDelete}
+                  onChange={(e) => setConfirmDelete(e.target.checked)}
+                  disabled={serverUnavailable}
+                />
+                Really delete?
+              </label>
+              <button
+                className="btn-sm"
+                onClick={() => deleteMutation.mutate()}
+                disabled={
+                  serverUnavailable || !confirmDelete || deleteMutation.isPending
+                }
+              >
+                Delete card database
+              </button>
+            </>
+          )}
         </>
       )}
 
@@ -171,7 +207,8 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         </>
       )}
 
-      {jobError && <p className="error-text">Import failed: {jobError}</p>}
+      {/* Import-job failures and delete errors share this line. */}
+      {jobError && <p className="error-text">{jobError}</p>}
     </div>
   );
 }

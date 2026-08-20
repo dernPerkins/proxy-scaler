@@ -942,13 +942,26 @@ def list_gallery_items(
 
 
 def _variant_key(
-    set_code: str | None, collector_number: Any, face_index: int | None, model: str, dpi: int
+    set_code: str | None,
+    collector_number: Any,
+    face_index: int | None,
+    model: str,
+    dpi: int,
+    lang: str | None = None,
 ) -> tuple:
     """Identity of one displayable image variant: a printing's face at one
-    model+dpi. Printing (set+collector), not scryfall_id, so rows recovered
-    from filenames alone (empty scryfall_id) still compare equal to fully
-    resolved rows for the same image."""
-    return ((set_code or "").lower(), str(collector_number), face_index, model, dpi)
+    model+dpi. Printing (set+collector+lang), not scryfall_id, so rows
+    recovered from filenames alone (empty scryfall_id) still compare equal
+    to fully resolved rows for the same image. Absent lang reads as "en" —
+    every pre-language row was English by construction."""
+    return (
+        (set_code or "").lower(),
+        str(collector_number),
+        (lang or "en").lower(),
+        face_index,
+        model,
+        dpi,
+    )
 
 
 def adopt_gallery_items(
@@ -983,8 +996,14 @@ def adopt_gallery_items(
     rows adopted."""
     if not project_tag or not entries:
         return 0
+    # Printing identity includes language (absent → "en" on both sides):
+    # an Italian entry adopts only Italian rows of its printing.
     exact = {
-        ((entry.set_code or "").lower(), str(entry.collector_number))
+        (
+            (entry.set_code or "").lower(),
+            str(entry.collector_number),
+            (entry.lang or "en").lower(),
+        )
         for entry in entries
         if entry.set_code and entry.collector_number is not None
     }
@@ -998,10 +1017,11 @@ def adopt_gallery_items(
     with connect(db_path) as conn:
         have = {
             _variant_key(
-                r["set_code"], r["collector_number"], r["face_index"], r["model"], r["dpi"]
+                r["set_code"], r["collector_number"], r["face_index"], r["model"],
+                r["dpi"], r["lang"],
             )
             for r in conn.execute(
-                "SELECT set_code, collector_number, face_index, model, dpi "
+                "SELECT set_code, collector_number, face_index, model, dpi, lang "
                 "FROM project_gallery_items WHERE project_tag = ?",
                 (project_tag,),
             ).fetchall()
@@ -1061,15 +1081,17 @@ def adopt_gallery_items(
             (project_tag,),
         ).fetchall()
         for row in rows:
+            row_lang = row["lang"] if "lang" in row.keys() else None
             matches = (
                 (row["set_code"] or "").lower(),
                 str(row["collector_number"]),
+                (row_lang or "en").lower(),
             ) in exact or (row["card_name"] or "").lower() in names
             if not matches:
                 continue
             key = _variant_key(
                 row["set_code"], row["collector_number"], row["face_index"],
-                row["model"], row["dpi"],
+                row["model"], row["dpi"], row_lang,
             )
             if key in have:
                 continue
@@ -1083,7 +1105,7 @@ def adopt_gallery_items(
             for item in scan_gallery_from_output(output_dir, entries):
                 key = _variant_key(
                     item["set_code"], item["collector_number"], item["face_index"],
-                    item["model"], item["dpi"],
+                    item["model"], item["dpi"], item.get("lang"),
                 )
                 if key in have:
                     continue
@@ -1245,11 +1267,13 @@ def upsert_gallery_item(
                 "DELETE FROM project_gallery_items WHERE project_tag = ? "
                 "AND (scryfall_id = '' OR scryfall_id LIKE 'scan:%') "
                 "AND lower(set_code) = lower(?) "
-                "AND collector_number = ? AND face_index IS ? AND model = ? AND dpi = ?",
+                "AND collector_number = ? AND lower(lang) = lower(?) "
+                "AND face_index IS ? AND model = ? AND dpi = ?",
                 (
                     project_tag,
                     result.set_code,
                     str(result.collector_number),
+                    result.lang or "en",
                     result.face_index,
                     result.model,
                     result.dpi,
@@ -1498,9 +1522,18 @@ def scan_gallery_from_output(
         if not suffix:
             continue
         head = suffix.group("head")
+        raw_suffix_lang = suffix.group("lang")
+        # The file's own language: from its lang segment, absent = English
+        # (English is never written into filenames). A file only matches an
+        # entry of the same language — a Japanese file must not register
+        # under the English entry of the same printing.
+        file_lang = raw_suffix_lang.lower() if raw_suffix_lang else "en"
         entry: DeckEntry | None = None
         for token, candidate in printings:
-            if head.endswith(token):
+            # _OUTPUT_SUFFIX_RE already split any lang segment out of the
+            # head, so the token matches regardless of the file's language
+            # — the lang captured above is what has to agree.
+            if head.endswith(token) and (candidate.lang or "en").lower() == file_lang:
                 entry = candidate
                 break
         if entry is None:
@@ -1508,10 +1541,12 @@ def scan_gallery_from_output(
             meta = parse_output_filename(path.name)
             if meta is None:
                 continue
+            file_lang = meta["lang"]
             for token, candidate in printings:
                 if (
                     candidate.set_code == meta["set_code"]
                     and str(candidate.collector_number) == str(meta["collector_number"])
+                    and (candidate.lang or "en").lower() == file_lang
                 ):
                     entry = candidate
                     break

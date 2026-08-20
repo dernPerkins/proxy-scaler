@@ -54,6 +54,7 @@ def _face(
     model: str = "ultrasharp_v2",
     face_label: str | None = None,
     total_faces: int | None = None,
+    lang: str = "en",
 ) -> FaceResult:
     return FaceResult(
         out_path=Path(f"/o/{scryfall_id}-{face_index}-{dpi}.png"),
@@ -69,6 +70,7 @@ def _face(
         model=model,
         face_label=face_label,
         total_faces=total_faces,
+        lang=lang,
     )
 
 
@@ -847,3 +849,37 @@ def test_build_pdf_progress_callback_can_abort_the_build(tmp_path: Path) -> None
             export_dpi=800,
             on_progress=stop_after_first,
         )
+
+
+def test_match_quantities_language_completes_printing_identity() -> None:
+    """An Italian entry must not print the English image of the same
+    set/collector — and lang-less entries (pre-language decks) still match
+    English rows, since absent lang normalizes to en on both sides."""
+    gallery = [
+        _face("sol-en", None, "Sol Ring", "Sol Ring", "c21", "263", 800, lang="en"),
+        _face("sol-it", None, "Sol Ring", "Sol Ring", "c21", "263", 800, lang="it"),
+    ]
+    entries = [
+        DeckEntry(quantity=2, name="Sol Ring", set_code="c21", collector_number="263", lang="it"),
+    ]
+    units, missing, _ = match_quantities(entries, gallery)
+    assert missing == []
+    assert len(units) == 1
+    assert units[0].best.scryfall_id == "sol-it"
+    assert units[0].quantity == 2
+
+    # Lang-less entry matches only the English row.
+    legacy = [DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")]
+    units, missing, _ = match_quantities(legacy, gallery)
+    assert missing == []
+    assert [u.best.scryfall_id for u in units] == ["sol-en"]
+
+
+def test_match_quantities_missing_language_is_reported() -> None:
+    gallery = [_face("sol-en", None, "Sol Ring", "Sol Ring", "c21", "263", 800, lang="en")]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263", lang="ja"),
+    ]
+    units, missing, _ = match_quantities(entries, gallery)
+    assert units == []
+    assert len(missing) == 1

@@ -74,7 +74,7 @@ function cardToEntry(card: CardRow): DeckEntryIn {
 // there's no exact set/collector, same as the gallery/task side's
 // fallback in mergeCardStatus.ts.
 function localCardIdentity(card: CardRow): string {
-  return cardIdentity(card.set_code, card.collector_number, null, card.name);
+  return cardIdentity(card.set_code, card.collector_number, null, card.name, card.lang);
 }
 
 interface DisplayFace {

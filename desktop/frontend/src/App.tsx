@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import CardDbPrompt from "./components/CardDbPrompt";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
@@ -72,6 +73,10 @@ export default function App() {
             from the last session — renders nothing unless the local
             worker was spawned held AND leftovers exist. */}
         <ResumeTasksPrompt />
+        {/* The launch-time card-database offer — renders nothing unless
+            the connected server has no imported corpus, and waits its
+            turn behind the update and resume-tasks dialogs. */}
+        <CardDbPrompt />
         <ProjectBar />
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual

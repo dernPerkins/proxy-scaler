@@ -205,7 +205,13 @@ again at generate time):
    frontend merges this generation-side data with its own local project
    card list client-side, using `mergeCardStatus.ts`.
 
-Printing language is part of identity end-to-end: `lang` rides on tasks
+Printing language is part of identity end-to-end — an exact printing is
+`set/collector/lang` (absent lang normalizes to `en`) everywhere identity
+is compared: import dedup (project_store.rs), status-badge bucketing
+(mergeCardStatus.ts), gallery adoption and scan matching (db.py), and PDF
+quantity matching (pipeline.face_group_key / pdf_layout.match_quantities)
+— so the Italian and English Sol Ring of one set/collector are two cards
+with independent images. Additionally, `lang` rides on tasks
 and gallery rows (db migration 5), and non-English printings carry a lang
 segment in output filenames (`Name-SET-COLLECTOR-ja-...png`) so two
 languages of one printing never collide on disk. English filenames keep
@@ -303,6 +309,7 @@ string, not a database relationship.
 | `POST /api/cards/import` | Start a bulk import job (`{dataset: "default_cards" \| "all_cards"}`, 202 + job id; 409 while one runs). Background thread + in-memory registry (`card_jobs.py`), same polling idiom as the PDF render jobs |
 | `GET /api/cards/import/{job_id}` | Import job progress: phase (checking/downloading/importing/finalizing), bytes, rows |
 | `POST /api/cards/import/{job_id}/cancel` | Ask a running import to stop at its next chunk/batch boundary |
+| `DELETE /api/cards/database` | Remove the imported corpus (file + WAL/SHM); 409 while an import job is running. The sidebar panel's "Delete card database" |
 | `GET /api/cards/languages` | The full Scryfall language list (English first) — the import-language dropdown's options, independent of what corpus is imported: the dropdown is a request, resolution answers from corpus or live API |
 | `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
 | `GET /api/health` | Supervisor readiness probe |

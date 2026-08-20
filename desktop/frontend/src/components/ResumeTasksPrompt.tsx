@@ -6,6 +6,8 @@ import { isTauri } from "../tauri";
 import {
   getBootUpdateCheckSettled,
   getUpdatePromptOpen,
+  setResumeTasksPromptOpen,
+  setResumeTasksSettled,
   subscribeUpdateStore,
 } from "../update";
 
@@ -54,6 +56,14 @@ export default function ResumeTasksPrompt() {
   // mode leaves "local", rather than a run-once flag.
   const checkedThisConnection = useRef(false);
 
+  // Publish this component's link in the boot-dialog chain (see
+  // update.ts): CardDbPrompt waits for our verdict before offering the
+  // corpus download. Anywhere the resume flow can't apply at all —
+  // browser tab, remote server — settles immediately.
+  useEffect(() => {
+    if (!isTauri() || mode !== "local") setResumeTasksSettled();
+  }, [mode]);
+
   useEffect(() => {
     if (mode !== "local") {
       checkedThisConnection.current = false;
@@ -79,6 +89,7 @@ export default function ResumeTasksPrompt() {
         if (cancelled) return;
         if (!worker.held) {
           settled = true;
+          setResumeTasksSettled();
           return;
         }
         const tasks = await generationApi.listTasks();
@@ -89,10 +100,12 @@ export default function ResumeTasksPrompt() {
         if (count === 0) {
           await generationApi.releaseWorker();
           settled = true;
+          setResumeTasksSettled();
           void queryClient.invalidateQueries({ queryKey: ["worker-status"] });
           return;
         }
         settled = true;
+        setResumeTasksPromptOpen(true);
         setLeftover(count);
       } catch (err) {
         // Reaching here means the server stopped answering right after
@@ -128,6 +141,8 @@ export default function ResumeTasksPrompt() {
     void queryClient.invalidateQueries({ queryKey: ["worker-status"] });
     setLeftover(null);
     setWorking(false);
+    setResumeTasksPromptOpen(false);
+    setResumeTasksSettled();
   }
 
   const resume = () => finish(() => generationApi.releaseWorker());

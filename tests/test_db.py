@@ -1023,3 +1023,60 @@ def test_enqueue_and_gallery_carry_lang(db_path: Path, tmp_path: Path) -> None:
     upsert_gallery_item_for_task(task, result, db_path=db_path)
     [item] = list_gallery_items("tag-lang", db_path=db_path)
     assert item["lang"] == "ja"
+
+
+def test_adopt_gallery_items_respects_language(db_path: Path, tmp_path: Path) -> None:
+    """Printing identity includes language: an Italian entry adopts only
+    the Italian rows of its printing, and a lang-less (legacy) entry only
+    the English ones."""
+    from proxy_scaler.decklist import DeckEntry
+
+    img_en = tmp_path / "sol_en.png"
+    img_en.write_bytes(b"png")
+    img_it = tmp_path / "sol_it.png"
+    img_it.write_bytes(b"png")
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=img_en, original_path=img_en), db_path=db_path
+    )
+    db_module.upsert_gallery_item(
+        "tag-a",
+        _result(out_path=img_it, original_path=img_it, scryfall_id="sol-it", lang="it"),
+        db_path=db_path,
+    )
+
+    it_entry = DeckEntry(
+        quantity=1, name="Sol Ring", set_code="c21", collector_number="263", lang="it"
+    )
+    assert db_module.adopt_gallery_items("tag-it", [it_entry], db_path=db_path) == 1
+    [item] = list_gallery_items("tag-it", db_path=db_path)
+    assert item["lang"] == "it"
+
+    legacy_entry = DeckEntry(
+        quantity=1, name="Sol Ring", set_code="c21", collector_number="263"
+    )
+    assert db_module.adopt_gallery_items("tag-en", [legacy_entry], db_path=db_path) == 1
+    [item] = list_gallery_items("tag-en", db_path=db_path)
+    assert item["lang"] == "en"
+
+
+def test_scan_gallery_matches_files_to_entries_by_language(tmp_path: Path) -> None:
+    """A Japanese output file registers only under the Japanese entry of
+    its printing; the lang-less file only under the English one."""
+    from proxy_scaler.decklist import DeckEntry
+
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png").write_bytes(b"en")
+    (out / "Sol_Ring-C21-263-ja-ultrasharp_v2-800dpi.png").write_bytes(b"ja")
+
+    en_entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ja_entry = DeckEntry(
+        quantity=1, name="Sol Ring", set_code="c21", collector_number="263", lang="ja"
+    )
+
+    en_only = scan_gallery_from_output(out, [en_entry])
+    assert [g["lang"] for g in en_only] == ["en"]
+    ja_only = scan_gallery_from_output(out, [ja_entry])
+    assert [g["lang"] for g in ja_only] == ["ja"]
+    both = scan_gallery_from_output(out, [en_entry, ja_entry])
+    assert sorted(g["lang"] for g in both) == ["en", "ja"]

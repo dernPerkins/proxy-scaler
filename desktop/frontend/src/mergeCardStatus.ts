@@ -28,19 +28,29 @@ export function cardIdentity(
   collectorNumber: string | null | undefined,
   scryfallId: string | null | undefined,
   nameFallback?: string | null,
+  lang?: string | null,
 ): string {
   // Both lowercased: collector numbers are usually digits, but not always
   // (e.g. "DDG-14") — the client parses these verbatim from whatever case
   // the user typed, while Scryfall's resolved value uses its own
   // canonical case, which won't always agree.
-  if (setCode && collectorNumber) return `${setCode.toLowerCase()}/${collectorNumber.toLowerCase()}`;
+  //
+  // Language is part of the printing identity: the Italian and English
+  // rows of one set/collector are different cards with their own images.
+  // Absent lang normalizes to "en" — everything predating the lang field
+  // was English by construction, so old rows keep matching exactly.
+  if (setCode && collectorNumber) {
+    return `${setCode.toLowerCase()}/${collectorNumber.toLowerCase()}/${(lang ?? "en").toLowerCase()}`;
+  }
   if (scryfallId) return scryfallId;
   if (nameFallback) return `name:${nameFallback.toLowerCase()}`;
   return "unknown";
 }
 
 function faceGroupKey(item: GalleryItem): string {
-  const identity = cardIdentity(item.set_code, item.collector_number, item.scryfall_id, item.card_name);
+  const identity = cardIdentity(
+    item.set_code, item.collector_number, item.scryfall_id, item.card_name, item.lang,
+  );
   return `${identity}:${item.face_index}:${item.face_label}`;
 }
 
@@ -48,7 +58,9 @@ function faceGroupKey(item: GalleryItem): string {
 // GalleryItem, so a face's in-flight task and its (once done) gallery
 // item merge under the same key.
 function faceKeyForTask(task: Task): string {
-  const identity = cardIdentity(task.set_code, task.collector_number, task.scryfall_id, task.card_name);
+  const identity = cardIdentity(
+    task.set_code, task.collector_number, task.scryfall_id, task.card_name, task.lang,
+  );
   return `${identity}:${task.face_index}:${task.face_label}`;
 }
 
@@ -99,13 +111,17 @@ export function groupByCard(
 ): { galleryByCard: Map<string, GalleryItem[]>; tasksByCard: Map<string, Task[]> } {
   const galleryByCard = new Map<string, GalleryItem[]>();
   for (const item of items) {
-    const id = cardIdentity(item.set_code, item.collector_number, item.scryfall_id, item.card_name);
+    const id = cardIdentity(
+      item.set_code, item.collector_number, item.scryfall_id, item.card_name, item.lang,
+    );
     if (!galleryByCard.has(id)) galleryByCard.set(id, []);
     galleryByCard.get(id)!.push(item);
   }
   const tasksByCard = new Map<string, Task[]>();
   for (const task of tasks) {
-    const id = cardIdentity(task.set_code, task.collector_number, task.scryfall_id, task.card_name);
+    const id = cardIdentity(
+      task.set_code, task.collector_number, task.scryfall_id, task.card_name, task.lang,
+    );
     if (!tasksByCard.has(id)) tasksByCard.set(id, []);
     tasksByCard.get(id)!.push(task);
   }
