@@ -10,8 +10,10 @@ from proxy_scaler.api.schemas import (
     ResolveIn,
     ResolveOut,
 )
+from proxy_scaler.api.deps import get_card_db_path
+from proxy_scaler.card_lookup import CardResolver
 from proxy_scaler.decklist import DeckEntry
-from proxy_scaler.scryfall import ScryfallClient, ScryfallError, expand_faces
+from proxy_scaler.scryfall import ScryfallError, expand_faces
 
 router = APIRouter(prefix="/api", tags=["resolve"])
 
@@ -23,6 +25,8 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         set_code=e.set_code,
         collector_number=e.collector_number,
         raw_line=e.raw_line or e.name,
+        scryfall_id=e.scryfall_id,
+        lang=e.lang,
     )
 
 
@@ -36,8 +40,10 @@ def resolve(body: ResolveIn) -> ResolveOut:
         return ResolveOut(resolved=[], failed=[])
 
     entries = [_to_deck_entry(e) for e in body.entries]
-    client = ScryfallClient()
-    results = client.resolve_many(entries)
+    # Local-first: answered from the imported card corpus when possible,
+    # live Scryfall only for the leftovers (see card_lookup.CardResolver).
+    resolver = CardResolver(card_db_path=get_card_db_path())
+    results = resolver.resolve_many(entries)
 
     resolved: list[ResolvedCardOut] = []
     failed: list[ResolveFailureOut] = []
@@ -66,6 +72,7 @@ def resolve(body: ResolveIn) -> ResolveOut:
                         collector_number=f.collector_number,
                         png_url=f.png_url,
                         image_status=f.image_status,
+                        lang=f.lang,
                     )
                     for f in faces
                 ],

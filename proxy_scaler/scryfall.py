@@ -28,6 +28,11 @@ class CardFaceImage:
     png_url: str
     face_index: int | None  # None = single-faced; 0/1 = DFC front/back
     image_status: str | None = None
+    # Scryfall language code ("en", "ja", "zhs", …). Part of a printing's
+    # identity now that non-English printings are selectable — it reaches
+    # output filenames via pipeline.output_filename, so two languages of
+    # the same set/collector never collide on disk.
+    lang: str = "en"
     # How many faces this printing actually has an image for (usually 2 for
     # DFC/transform, 1 otherwise — but Scryfall occasionally lacks a PNG for
     # one face, and expand_faces() already excludes that face below, so this
@@ -95,10 +100,18 @@ class ScryfallClient:
             )
         return resp.json()
 
-    def fetch_by_set_collector(self, set_code: str, collector: str) -> dict[str, Any]:
+    def fetch_by_set_collector(
+        self, set_code: str, collector: str, lang: str | None = None
+    ) -> dict[str, Any]:
         # Collector numbers may contain letters/hyphens; URL-encode the path segment
         code = quote(set_code.lower(), safe="")
         number = quote(collector, safe="")
+        if lang:
+            # /cards/{set}/{number}/{lang} — the only live endpoint that can
+            # name a language; /cards/collection identifiers cannot. 404s
+            # when that language of the printing doesn't exist, so callers
+            # wanting a fallback retry without lang.
+            return self._get(f"/cards/{code}/{number}/{quote(lang, safe='')}")
         return self._get(f"/cards/{code}/{number}")
 
     def fetch_by_name(self, name: str) -> dict[str, Any]:
@@ -265,6 +278,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     set_code = card["set"]
     collector = str(card["collector_number"])
     image_status = card.get("image_status")
+    lang = card.get("lang") or "en"
 
     faces = card.get("card_faces") or []
     per_face_images = [
@@ -288,6 +302,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
                     face_index=i,
                     image_status=image_status,
                     total_faces=total_faces,
+                    lang=lang,
                 )
             )
         return results
@@ -310,6 +325,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
             face_index=None,
             image_status=image_status,
             total_faces=1,
+            lang=lang,
         )
     ]
 

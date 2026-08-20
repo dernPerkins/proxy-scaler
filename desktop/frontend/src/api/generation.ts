@@ -5,6 +5,10 @@
 // project.ts), never a server-side project id — see ARCHITECTURE.md.
 import { getApiBaseUrl, waitForServerReady } from "../config";
 import type {
+  CardDataset,
+  CardDbStatus,
+  CardImportStatus,
+  CardVariantsResult,
   DeckEntryIn,
   Device,
   GalleryItem,
@@ -184,6 +188,39 @@ export const generationApi = {
     request<{ canceled: number }>(`/api/tags/${encodeURIComponent(projectTag)}/discard`, {
       method: "POST",
     }),
+
+  // --- Card corpus (routers/cards.py) ---
+  // The server's locally-imported Scryfall bulk data. Status feeds the
+  // sidebar's staleness hint; import runs as a background job the client
+  // polls (same idiom as the PDF render jobs above); variants feeds the
+  // change-printing picker. All of it is per-server: in Remote mode the
+  // corpus lives (and must be imported) on the connected machine.
+  cardDbStatus: () => request<CardDbStatus>("/api/cards/status"),
+  startCardImport: (dataset: CardDataset) =>
+    request<{ job_id: string }>("/api/cards/import", {
+      method: "POST",
+      body: JSON.stringify({ dataset }),
+    }),
+  cardImportStatus: (jobId: string) =>
+    request<CardImportStatus>(`/api/cards/import/${jobId}`),
+  cancelCardImport: (jobId: string) =>
+    request<void>(`/api/cards/import/${jobId}/cancel`, { method: "POST" }),
+  cardLanguages: () => request<{ languages: string[] }>("/api/cards/languages"),
+  cardVariants: (params: {
+    scryfall_id?: string | null;
+    set_code?: string | null;
+    collector_number?: string | null;
+    name?: string | null;
+    include_digital?: boolean;
+  }) => {
+    const search = new URLSearchParams();
+    if (params.scryfall_id) search.set("scryfall_id", params.scryfall_id);
+    if (params.set_code) search.set("set_code", params.set_code);
+    if (params.collector_number) search.set("collector_number", params.collector_number);
+    if (params.name) search.set("name", params.name);
+    if (params.include_digital) search.set("include_digital", "true");
+    return request<CardVariantsResult>(`/api/cards/variants?${search}`);
+  },
 
   health: () => request<{ status: string }>("/api/health"),
 };

@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from proxy_scaler import db
-from proxy_scaler.api.deps import get_db_path, get_lock_path
+from proxy_scaler.api.deps import get_card_db_path, get_db_path, get_lock_path
 from proxy_scaler.api.schemas import (
     DeckEntryIn,
     GenerateIn,
@@ -37,6 +37,7 @@ def _task_out(t: db.TaskRow) -> TaskOut:
         created_at=t.created_at,
         started_at=t.started_at,
         completed_at=t.completed_at,
+        lang=t.lang,
     )
 
 
@@ -47,6 +48,8 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         set_code=e.set_code,
         collector_number=e.collector_number,
         raw_line=e.raw_line or e.name,
+        scryfall_id=e.scryfall_id,
+        lang=e.lang,
     )
 
 
@@ -72,6 +75,7 @@ def generate(body: GenerateIn) -> GenerateOut:
         project_tag=body.project_tag,
         on_note=notes.append,
         db_path=db_path,
+        card_db_path=get_card_db_path(),
     )
     return GenerateOut(queued=queued, failed=failed, task_ids=task_ids, notes=notes)
 

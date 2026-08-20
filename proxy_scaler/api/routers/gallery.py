@@ -50,6 +50,7 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
             dpi=i["dpi"],
             model=i["model"],
             image_filename=i["image_filename"],
+            lang=i["lang"],
         )
         for i in items
     ]
@@ -125,6 +126,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         weights_dir=Path(body.weights_dir),
         project_tag=item["project_tag"],
         total_faces=item["total_faces"],
+        lang=item["lang"],
         db_path=db_path,
     )
     return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])

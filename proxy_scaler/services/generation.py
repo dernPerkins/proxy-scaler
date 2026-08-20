@@ -11,8 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from proxy_scaler import db
+from proxy_scaler.card_lookup import CardResolver
 from proxy_scaler.pipeline import FaceResult, output_filename
-from proxy_scaler.scryfall import ScryfallClient, ScryfallError, expand_faces
+from proxy_scaler.scryfall import ScryfallError, expand_faces
 from proxy_scaler.upscale import original_cache_path
 
 
@@ -34,6 +35,7 @@ def enqueue_face(
     weights_dir: Path,
     project_tag: str | None,
     total_faces: int | None = None,
+    lang: str = "en",
     db_path: Path | str | None = None,
 ) -> list[int]:
     """Queue one task per requested DPI for an already-resolved face (no
@@ -58,6 +60,7 @@ def enqueue_face(
             cache_dir=str(cache_dir),
             weights_dir=str(weights_dir),
             total_faces=total_faces,
+            lang=lang,
             db_path=db_path,
         )
         for dpi in dpi_targets
@@ -93,6 +96,7 @@ def enqueue_decklist_entries(
     project_tag: str | None,
     on_note=None,
     db_path: Path | str | None = None,
+    card_db_path: Path | str | None = None,
 ) -> tuple[int, int, list[int]]:
     """Resolve entries (one batched Scryfall call, not one per card) and
     queue one task per (face, dpi) that's actually missing: not already
@@ -100,8 +104,10 @@ def enqueue_decklist_entries(
     for this project (always — regardless of skip_existing, duplicating
     in-flight work is never wanted). Returns (queued_count, failed_count,
     task_ids)."""
-    client = ScryfallClient()
-    resolved = client.resolve_many(entries)
+    # Local-first: answered from the imported card corpus when possible,
+    # live Scryfall only for the leftovers (see card_lookup.CardResolver).
+    resolver = CardResolver(card_db_path=card_db_path)
+    resolved = resolver.resolve_many(entries)
     active = active_task_keys(project_tag, db_path=db_path)
     queued = 0
     failed = 0
@@ -139,6 +145,7 @@ def enqueue_decklist_entries(
                         face.face_label,
                         model,
                         target_dpi,
+                        lang=face.lang,
                     )
                     out_path = output_dir / out_name
                     if skip_existing and out_path.exists():
@@ -186,6 +193,7 @@ def enqueue_decklist_entries(
                                 model=model,
                                 face_label=face.face_label,
                                 total_faces=face.total_faces,
+                                lang=face.lang,
                             ),
                             db_path=db_path,
                         )
@@ -211,6 +219,7 @@ def enqueue_decklist_entries(
                     weights_dir=weights_dir,
                     project_tag=project_tag,
                     total_faces=face.total_faces,
+                    lang=face.lang,
                     db_path=db_path,
                 )
                 task_ids.extend(new_ids)

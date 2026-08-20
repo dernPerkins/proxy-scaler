@@ -10,6 +10,19 @@ from pathlib import Path
 _SET_COLLECTOR_RE = re.compile(
     r"^(?P<name>.+?)\s+\((?P<set>[A-Za-z0-9]+)\)\s+(?P<collector>\S+)\s*$"
 )
+# Trailing bare collector number with NO set code — "Sol Ring 263" — the
+# best some deck managers can export (notably for non-English cards, whose
+# printings they often don't model at all). Deliberately strict about what
+# counts as a collector number (digits + one optional letter suffix, like
+# 263 or 123a): a looser token would start eating the ends of card names.
+# The number is a *hint*, not an exact printing — set_code stays None and
+# resolution matches it against the name's printings, falling back to the
+# plain name-only path when it matches nothing (see
+# card_lookup.CardResolver). Card names ending in a bare number would be
+# misparsed here, but no real Magic card name does ("Borrowing 100,000
+# Arrows" has commas, so its last token doesn't match) — and resolution
+# retries with the number folded back into the name anyway.
+_NAME_COLLECTOR_RE = re.compile(r"^(?P<name>.+?)\s+(?P<collector>\d{1,4}[A-Za-z]?)\s*$")
 # Optional x after the count covers the "4x Lightning Bolt" style many
 # deck-site exports use.
 _QTY_RE = re.compile(r"^(?P<qty>\d+)[xX]?\s+(?P<rest>.+)$")
@@ -33,6 +46,12 @@ class DeckEntry:
     set_code: str | None = None
     collector_number: str | None = None
     raw_line: str = ""
+    # Never parsed from decklist text — carried by entries the client sends
+    # for cards it has already pinned to an exact printing (scryfall_id) or
+    # stamped with the project's language preference (lang). See
+    # card_lookup.CardResolver for how they steer resolution.
+    scryfall_id: str | None = None
+    lang: str | None = None
 
     @property
     def has_exact_printing(self) -> bool:
@@ -65,6 +84,17 @@ def parse_line(line: str) -> DeckEntry | None:
             name=set_match.group("name").strip(),
             set_code=set_match.group("set").lower(),
             collector_number=set_match.group("collector"),
+            raw_line=stripped,
+        )
+
+    hint_match = _NAME_COLLECTOR_RE.match(rest)
+    if hint_match:
+        # Collector-number hint, no set (has_exact_printing stays False —
+        # set_code is None). See _NAME_COLLECTOR_RE above.
+        return DeckEntry(
+            quantity=quantity,
+            name=hint_match.group("name").strip(),
+            collector_number=hint_match.group("collector"),
             raw_line=stripped,
         )
 

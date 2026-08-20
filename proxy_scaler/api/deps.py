@@ -18,3 +18,10 @@ def get_db_path() -> Path | str | None:
 def get_lock_path() -> Path | str | None:
     """Same convention as get_db_path, for the worker's flock file."""
     return os.environ.get("PROXY_SCALER_WORKER_LOCK_PATH") or None
+
+
+def get_card_db_path() -> Path | str | None:
+    """Same convention as get_db_path, for the Scryfall card corpus file
+    (carddb.py). None falls back to carddb's own default under the data
+    root — the env var exists for test isolation, not deployment."""
+    return os.environ.get("PROXY_SCALER_CARD_DB_PATH") or None

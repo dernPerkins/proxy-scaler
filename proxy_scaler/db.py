@@ -87,14 +87,24 @@ WORKER_LOG_FILE = _DATA_ROOT / "worker.log"
 
 # Abandoned_Air_Temple-TLA-263-ultrasharp_v2-600dpi.png
 # Name-SET-COLLECTOR-front-ultrasharp_v2-800dpi.png  (collector may contain hyphens)
+# Name-SET-COLLECTOR-ja-front-ultrasharp_v2-800dpi.png  (non-English printing)
 # Parsed from the right so numeric collectors are not mistaken for set codes.
 # Model slugs come straight from the enum so the alternation can't drift;
 # longest-first guards against any future slug being a prefix of another.
 _MODEL_SLUGS = "|".join(
     re.escape(m.value) for m in sorted(UpscaleModel, key=lambda m: -len(m.value))
 )
+# Scryfall's printed-language codes, as an explicit closed alternation (not
+# a generic [a-z]{2,3}) so a hyphen-containing collector number can never
+# be misread as a language. English is never written into filenames (see
+# pipeline.output_filename), so an absent group reads back as "en" — which
+# also keeps every pre-language filename parsing exactly as before.
+_LANG_CODES = (
+    "es|fr|de|it|pt|ja|ko|ru|zhs|zht|he|la|grc|ar|sa|ph|qya"
+)
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
+    rf"(?:-(?P<lang>{_LANG_CODES}))?"
     r"(?:-(?P<face>front|back))?"
     rf"-(?P<model>{_MODEL_SLUGS})"
     r"-(?P<dpi>\d+)dpi\.png$",
@@ -140,7 +150,11 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT,
-    total_faces INTEGER
+    total_faces INTEGER,
+    -- Scryfall language code of the printing being generated. Part of the
+    -- output filename for non-English printings (pipeline.output_filename)
+    -- so two languages of one set/collector never collide on disk.
+    lang TEXT NOT NULL DEFAULT 'en'
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status
@@ -174,6 +188,9 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
     -- lets pdf_layout.match_quantities notice a DFC missing its other face
     -- without a live Scryfall call. NULL for rows predating migration 003.
     total_faces INTEGER,
+    -- Scryfall language code of the printing (see generation_tasks.lang).
+    -- 'en' for rows predating migration 005.
+    lang TEXT NOT NULL DEFAULT 'en',
     UNIQUE (project_tag, scryfall_id, face_index, model, dpi)
 );
 
@@ -226,6 +243,7 @@ class TaskRow:
     started_at: str | None
     completed_at: str | None
     total_faces: int | None
+    lang: str = "en"
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> TaskRow:
@@ -252,6 +270,7 @@ class TaskRow:
             started_at=row["started_at"],
             completed_at=row["completed_at"],
             total_faces=row["total_faces"],
+            lang=row["lang"] if "lang" in row.keys() else "en",
         )
 
 
@@ -475,6 +494,39 @@ def _migration_004_add_worker_control(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_005_add_lang(conn: sqlite3.Connection) -> None:
+    """Add lang to generation_tasks and project_gallery_items — the
+    Scryfall language code of the printing, captured at enqueue time like
+    every other denormalized identity field. Needed now that non-English
+    printings are selectable (see the card-corpus feature / carddb.py):
+    language is part of a printing's identity, and it reaches output
+    filenames via pipeline.output_filename for non-English printings so
+    two languages of one set/collector never collide on disk.
+
+    NOT NULL DEFAULT 'en' rather than nullable-with-no-backfill (unlike
+    migrations 002/003): 'en' is the honest value for every pre-existing
+    row, because until this feature only English printings were ever
+    reachable — /cards/{set}/{number} answers in English and name lookups
+    resolved English printings. Guarded/no-op the same way as 003."""
+    for table in ("generation_tasks", "project_gallery_items"):
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if table not in tables:
+            continue
+        cols = {
+            row[1]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if "lang" not in cols:
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'"
+            )
+
+
 # Ordered oldest-to-newest. _migrate() below walks this list and applies
 # whichever steps are newer than a database's current PRAGMA user_version,
 # one at a time in order — so a database several versions behind replays
@@ -505,8 +557,15 @@ _MIGRATIONS: list[Migration] = [
         "hold/release handshake between the API server and the worker",
         _migration_004_add_worker_control,
     ),
+    Migration(
+        5,
+        "add lang to generation_tasks and project_gallery_items — printing "
+        "language became part of identity when non-English printings became "
+        "selectable from the local card corpus",
+        _migration_005_add_lang,
+    ),
 ]
-SCHEMA_VERSION = 4  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 5  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -592,6 +651,7 @@ def enqueue_task(
     weights_dir: str,
     tile_size: int = 0,
     total_faces: int | None = None,
+    lang: str = "en",
     db_path: Path | str | None = None,
 ) -> int:
     """Add one (face, dpi, model) unit of generation work to the queue,
@@ -604,8 +664,8 @@ def enqueue_task(
                 project_tag, status, scryfall_id, face_index, face_label,
                 face_name, card_name, set_code, collector_number, png_url,
                 dpi, model, tile_size, output_dir, cache_dir, weights_dir,
-                created_at, total_faces
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, total_faces, lang
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
@@ -625,6 +685,7 @@ def enqueue_task(
                 weights_dir,
                 now,
                 total_faces,
+                lang,
             ),
         )
         conn.commit()
@@ -857,6 +918,9 @@ def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
         # Absent on rows written before migration 003; None means "unknown,
         # don't verify DFC completeness" (see pdf_layout.match_quantities).
         "total_faces": g["total_faces"] if "total_faces" in g.keys() else None,
+        # 'en' for rows written before migration 005 — the honest value,
+        # since only English printings were reachable before then.
+        "lang": g["lang"] if "lang" in g.keys() else "en",
     }
 
 
@@ -961,8 +1025,8 @@ def adopt_gallery_items(
                     project_tag, scryfall_id, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
                     device, image_filename, out_path, original_path, png_url,
-                    created_at, total_faces
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, total_faces, lang
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_tag,
@@ -983,6 +1047,7 @@ def adopt_gallery_items(
                     values["png_url"],
                     values["created_at"],
                     values["total_faces"],
+                    values.get("lang", "en"),
                 ),
             )
 
@@ -1075,7 +1140,7 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
         stale_tasks = []
         for t in conn.execute(
             "SELECT id, face_name, set_code, collector_number, face_label, "
-            "model, dpi, output_dir FROM generation_tasks "
+            "model, dpi, output_dir, lang FROM generation_tasks "
             "WHERE project_tag = ? AND status = 'done'",
             (project_tag,),
         ):
@@ -1086,6 +1151,7 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
                 t["face_label"],
                 t["model"],
                 t["dpi"],
+                lang=t["lang"],
             )
             if not out.is_file():
                 stale_tasks.append(int(t["id"]))
@@ -1224,6 +1290,7 @@ def upsert_gallery_item(
             # is exactly what the PDF variant pick needs to see.
             _utc_now(),
             result.total_faces,
+            result.lang,
         )
         if existing is not None:
             conn.execute(
@@ -1232,7 +1299,7 @@ def upsert_gallery_item(
                     face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
                     face_label = ?, native_scale = ?, device = ?, image_filename = ?,
                     out_path = ?, original_path = ?, png_url = ?, created_at = ?,
-                    total_faces = ?
+                    total_faces = ?, lang = ?
                 WHERE id = ?
                 """,
                 (*values, int(existing["id"])),
@@ -1244,8 +1311,8 @@ def upsert_gallery_item(
                     project_tag, scryfall_id, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
                     device, image_filename, out_path, original_path, png_url,
-                    created_at, total_faces
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, total_faces, lang
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_tag,
@@ -1264,8 +1331,9 @@ def upsert_gallery_item(
                     str(result.out_path),
                     str(result.original_path),
                     result.png_url,
-                    values[-2],  # same timestamp as the UPDATE branch above
-                    values[-1],  # total_faces
+                    values[-3],  # same timestamp as the UPDATE branch above
+                    values[-2],  # total_faces
+                    values[-1],  # lang
                 ),
             )
         conn.commit()
@@ -1385,6 +1453,7 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
         return None
     face = match.group("face")
     face_index = None if face is None else (0 if face.lower() == "front" else 1)
+    lang = match.group("lang")
     return {
         "image_filename": name,
         "set_code": set_col.group("set").lower(),
@@ -1394,6 +1463,9 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
         "model": match.group("model").lower(),
         "dpi": int(match.group("dpi")),
         "stem": set_col.group("stem"),
+        # English is never written into filenames, so absent means "en" —
+        # which also covers every pre-language file.
+        "lang": lang.lower() if lang else "en",
     }
 
 
@@ -1450,6 +1522,7 @@ def scan_gallery_from_output(
             face_index = meta["face_index"]
             model = meta["model"]
             dpi = meta["dpi"]
+            lang = meta["lang"]
         else:
             face = suffix.group("face")
             face_label = face.lower() if face else None
@@ -1458,6 +1531,8 @@ def scan_gallery_from_output(
             )
             model = suffix.group("model").lower()
             dpi = int(suffix.group("dpi"))
+            raw_lang = suffix.group("lang")
+            lang = raw_lang.lower() if raw_lang else "en"
 
         gallery.append(
             {
@@ -1482,6 +1557,7 @@ def scan_gallery_from_output(
                 "native_scale": 4,
                 "device": "unknown",
                 "image_filename": path.name,
+                "lang": lang,
             }
         )
     return gallery

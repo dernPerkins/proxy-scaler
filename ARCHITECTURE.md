@@ -40,6 +40,13 @@ matter throughout this document:
 - **Generation server** — the Python FastAPI + worker pair that resolves
   cards against Scryfall, downloads, upscales, and assembles PDFs. Has no
   concept of a "project."
+- **Card corpus** — the generation server's locally-imported copy of
+  Scryfall's bulk card data (`scryfall_cards.db`, owned by
+  `proxy_scaler/carddb.py`), imported on demand from the sidebar's Card
+  database panel. Powers the change-printing picker (variants share an
+  `oracle_id`) and makes resolution local-first. Per-server, disposable,
+  and optional — every reader tolerates its absence. See
+  [ADR-0003](./docs/adr/0003-local-scryfall-corpus-in-separate-sqlite-file.md).
 - **`project_tag`** — an opaque string minted when a Project row is
   created, attached to every generation request, used purely to
   scope/filter that project's tasks and images. Deliberately *not* a
@@ -81,7 +88,10 @@ relationship, instead of an accident of a shared database.
                           │                                        │
                           │ Python FastAPI + worker (unchanged     │
                           │ supervisor.py lifecycle). Owns:        │
-                          │  - Scryfall resolution                 │
+                          │  - Scryfall resolution (local card     │
+                          │    corpus first, live API fallback)    │
+                          │  - the card corpus (scryfall_cards.db, │
+                          │    bulk-imported on demand)            │
                           │  - download + upscale pipeline         │
                           │  - generation_tasks queue               │
                           │  - project_gallery_items (images)      │
@@ -143,21 +153,54 @@ again at generate time):
    named or saved to get this far. The Rust project store parses the
    text locally (`parse_decklist_text` — a direct Rust port of the old
    `proxy_scaler/decklist.py`, two regexes, no network) and stores the
-   raw, **unresolved** lines (quantity + name + optional set/collector).
-2. The frontend calls `POST /api/resolve` (debounced, on decklist
-   change) against whichever generation server is configured, purely for
-   *display* — canonical card names, catching typos/invalid entries
-   before committing to real work. No DB writes on the generation side,
-   no enqueue.
-3. On **Generate**, the frontend sends the project's card list (resolved
-   or raw — the endpoint resolves internally if needed) plus the
-   project's `project_tag` to `POST /api/generate`. The generation server
-   resolves (if not already), downloads, and upscales each face as one
-   pipeline per task — not three separate round trips.
-4. Status polling (`GET /api/tasks?project_tag=...`) and generated images
+   raw, **unresolved** lines (quantity + name + optional set/collector,
+   or a set-less trailing collector number — `1 Sol Ring 263` — kept as a
+   hint, since some deck managers can't export more than that for
+   non-English cards),
+   each stamped with the project's import-language preference
+   (`preferred_lang`, the dropdown beside the Import Cards button).
+2. **Eager resolve-on-import** (DecklistPage's resolve effect): right
+   after the import — and on project load, for any card still unpinned —
+   the frontend sends the rows to `POST /api/resolve` and persists each
+   result back into `project_cards` via `set_cards_resolution`: the
+   card's `scryfall_id` (the authoritative pin to one exact printing),
+   its canonical name, and a concrete set/collector/lang for name-only
+   lines. `name`/`set_code`/`collector_number`/`lang` stay denormalized
+   on the row so decklists render fully offline. Server unreachable →
+   cards stay unpinned and the next load retries; nothing blocks.
+3. Server-side resolution is **local-first** (`card_lookup.CardResolver`,
+   used by both `/api/resolve` and `/api/generate`): pinned `scryfall_id`
+   → set+collector in the entry's preferred language (English fallback)
+   → name + collector-number hint for set-less lines (matched against the
+   name's printings in any set, language-preferred; a hint that matches
+   nothing degrades to the name-only path with a warning) → exact name,
+   all against the card corpus; only misses (cards newer than the last
+   import, fuzzy names) and image downloads touch the live Scryfall API.
+   No corpus imported → everything falls through live, exactly the
+   pre-corpus behavior (a set-less hint resolves as name-only there, with
+   a warning that the number went unused).
+4. **Changing a printing**: the card row's set/collector button
+   (`PrintingPicker.tsx`) fetches `GET /api/cards/variants` — every
+   printing sharing the card's `oracle_id`, from the corpus, newest
+   first, filterable by language — and a pick writes the new
+   `scryfall_id` + display fields through `set_card_printing`. The card's
+   identity string changes, so the adopt effect re-buckets its gallery
+   badges automatically.
+5. On **Generate**, the frontend sends the project's card list (each
+   entry carrying its pinned `scryfall_id` + `lang`) plus the project's
+   `project_tag` to `POST /api/generate`. The generation server resolves
+   (local-first), downloads, and upscales each face as one pipeline per
+   task — not three separate round trips.
+6. Status polling (`GET /api/tasks?project_tag=...`) and generated images
    (`GET /api/gallery/{id}/...`) are scoped by that same tag. The
    frontend merges this generation-side data with its own local project
    card list client-side, using `mergeCardStatus.ts`.
+
+Printing language is part of identity end-to-end: `lang` rides on tasks
+and gallery rows (db migration 5), and non-English printings carry a lang
+segment in output filenames (`Name-SET-COLLECTOR-ja-...png`) so two
+languages of one printing never collide on disk. English filenames keep
+the exact pre-language shape on purpose — nothing regenerates on upgrade.
 
 ## Endpoint / command inventory
 
@@ -175,8 +218,11 @@ generation-server state.
 | `update_project` | Write name + settings. Also the **promotion** path: naming an Unnamed Project is an `UPDATE ... SET name = ?` that never touches `tag`. Accepts `''` (the row must be writable before it is named) but never *un-names* — a blank name leaves the stored one alone, and the UNIQUE constraint is the collision check |
 | `delete_project` | Delete one project (cascades to its cards). Also the whole of "discard": deleting the Unnamed Project row is what New/discard does |
 | `clear_all_projects` | Delete everything, confirm-gated. Bare `DELETE FROM projects` — takes the Unnamed Project with it |
-| `import_decklist_text` | Add parsed card lines to a project, additively, de-duped by set+collector (or name); also mirrors the pasted text back onto the row |
+| `import_decklist_text` | Add parsed card lines to a project, additively, de-duped by set+collector (or name), stamped with the project's `preferred_lang`; also mirrors the pasted text back onto the row |
 | `remove_card` | Drop one parsed line from a project |
+| `set_card_quantity` | Set a card's copy count (clamped to ≥ 1 — removal is `remove_card`'s job) |
+| `set_card_printing` | Change one card to a different printing: pins `scryfall_id` and refreshes the display cache (name/set/collector/lang). The user-chosen twin of a resolution |
+| `set_cards_resolution` | Batched persist of post-import resolve results — one transaction for the whole decklist (see the resolve → generate flow, step 2) |
 | `get_last_project_id` / `set_last_project_id` | Auto-load-on-launch support (`app_settings`) |
 | `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
 | `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
@@ -227,7 +273,7 @@ string, not a database relationship.
 
 | Method + path | Purpose |
 |---|---|
-| `POST /api/resolve` | Scryfall-resolve raw entries for display only; no writes |
+| `POST /api/resolve` | Resolve raw entries (card corpus first, live Scryfall fallback); no writes on the generation side. The client persists the returned `scryfall_id`s into its own `project_cards` (resolve → generate flow, step 2) |
 | `POST /api/generate` | Resolve (if needed) + enqueue download+upscale per face |
 | `GET /api/tasks?project_tag=` | List tasks for a project |
 | `GET /api/tasks/{id}` | Single task status |
@@ -242,6 +288,12 @@ string, not a database relationship.
 | `GET /api/paths` | Absolute resolved output/cache/weights dirs on the generation machine (fixed relative names resolved against the server's cwd) |
 | `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine |
 | `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session: cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
+| `GET /api/cards/status` | Card corpus status: what's imported locally (dataset, updated_at, count) + Scryfall's advertised catalog (null when offline — "unknown", never an error). Feeds the sidebar's staleness hint |
+| `POST /api/cards/import` | Start a bulk import job (`{dataset: "default_cards" \| "all_cards"}`, 202 + job id; 409 while one runs). Background thread + in-memory registry (`card_jobs.py`), same polling idiom as the PDF render jobs |
+| `GET /api/cards/import/{job_id}` | Import job progress: phase (checking/downloading/importing/finalizing), bytes, rows |
+| `POST /api/cards/import/{job_id}/cancel` | Ask a running import to stop at its next chunk/batch boundary |
+| `GET /api/cards/languages` | Languages present in the corpus, English first — the import-language dropdown's options (`["en"]` when nothing is imported) |
+| `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
 | `GET /api/health` | Supervisor readiness probe |
 | `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |
 

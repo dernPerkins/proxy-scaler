@@ -75,6 +75,37 @@ def test_parse_qty_with_x_suffix():
     assert upper.set_code == "c21"
 
 
+def test_parse_collector_hint_without_set():
+    # The best some deck managers can export, notably for non-English
+    # cards: a trailing collector number with no set code. Parsed as a
+    # *hint* — collector_number set, set_code None, has_exact_printing
+    # False — so resolution matches it against the name's printings and
+    # can still fall back to the plain name path.
+    e = parse_line("1 Sol Ring 263")
+    assert e is not None
+    assert e.name == "Sol Ring"
+    assert e.set_code is None
+    assert e.collector_number == "263"
+    assert not e.has_exact_printing
+
+    suffixed = parse_line("2 History of Benalia 21p")
+    assert suffixed.name == "History of Benalia"
+    assert suffixed.collector_number == "21p"
+
+
+def test_parse_collector_hint_leaves_real_names_alone():
+    # Tokens that aren't strictly digits(+one letter) stay part of the
+    # name — a looser match would eat the ends of real card names.
+    arrows = parse_line("1 Borrowing 100,000 Arrows")
+    assert arrows.name == "Borrowing 100,000 Arrows"
+    assert arrows.collector_number is None
+
+    # A bare number alone is a name, not an empty name + hint.
+    bare = parse_line("1 234")
+    assert bare.name == "234"
+    assert bare.collector_number is None
+
+
 def test_parse_skip_headers():
     assert parse_line("Deck") is None
     assert parse_line("") is None

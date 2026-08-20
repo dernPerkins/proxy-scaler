@@ -887,3 +887,139 @@ def test_prune_stale_gallery_items_keeps_live_records(db_path: Path, tmp_path: P
 
     # Second pass is a no-op.
     assert db_module.prune_stale_gallery_items("tag-a", db_path=db_path) == 0
+
+
+def test_migration_005_adds_lang_to_existing_rows_as_en(tmp_path: Path) -> None:
+    """A version-4 database gains lang on both tables at DEFAULT 'en' —
+    unlike 002/003's nullable-no-backfill, 'en' is the honest value for
+    every pre-existing row, since only English printings were ever
+    reachable before the card corpus made languages selectable."""
+    path = tmp_path / "v4.db"
+    init_db(path)
+    conn = sqlite3.connect(str(path))
+    try:
+        # Rewind to the v4 shape: drop the lang columns and stamp version 4.
+        conn.execute("ALTER TABLE generation_tasks DROP COLUMN lang")
+        conn.execute("ALTER TABLE project_gallery_items DROP COLUMN lang")
+        conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                project_tag, scryfall_id, face_name, card_name, set_code,
+                collector_number, png_url, dpi, model, output_dir, cache_dir,
+                weights_dir, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
+                "https://example.com/sol.png", 800, "ultrasharp_v2", "/tmp/out",
+                "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+    finally:
+        conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+        task_row = conn.execute("SELECT * FROM generation_tasks").fetchone()
+        assert task_row["lang"] == "en"
+        gallery_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(project_gallery_items)")
+        }
+        assert "lang" in gallery_cols
+    finally:
+        conn.close()
+
+
+def test_parse_output_filename_lang_segment() -> None:
+    """Non-English filenames carry a lang segment between collector and
+    face; English (and every pre-language file) has none and reads as en."""
+    ja = parse_output_filename("Sol_Ring-C21-263-ja-ultrasharp_v2-800dpi.png")
+    assert ja is not None
+    assert ja["lang"] == "ja"
+    assert ja["set_code"] == "c21"
+    assert ja["collector_number"] == "263"
+
+    ja_dfc = parse_output_filename(
+        "Delver_of_Secrets-ISD-51-ja-front-ultrasharp_v2-800dpi.png"
+    )
+    assert ja_dfc is not None
+    assert ja_dfc["lang"] == "ja"
+    assert ja_dfc["face_label"] == "front"
+
+    legacy = parse_output_filename("Sol_Ring-C21-263-ultrasharp_v2-800dpi.png")
+    assert legacy is not None
+    assert legacy["lang"] == "en"
+    assert legacy["collector_number"] == "263"
+
+    # A hyphenated collector must not be misread as containing a language.
+    hyphen = parse_output_filename("Fireball-DDG-14-ultrasharp_v2-600dpi.png")
+    assert hyphen is not None
+    assert hyphen["lang"] == "en"
+    assert hyphen["collector_number"] == "14"
+
+    zhs = parse_output_filename("Sol_Ring-C21-263-zhs-ultrasharp_v2-800dpi.png")
+    assert zhs is not None
+    assert zhs["lang"] == "zhs"
+
+
+def test_output_filename_lang_roundtrip() -> None:
+    """output_filename and parse_output_filename agree in both directions:
+    en omits the segment (pre-language shape preserved), non-en embeds it."""
+    from proxy_scaler.pipeline import output_filename
+
+    en_name = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800, lang="en")
+    assert en_name == "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"
+    assert parse_output_filename(en_name)["lang"] == "en"
+
+    ja_name = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800, lang="ja")
+    assert ja_name == "Sol_Ring-C21-263-ja-ultrasharp_v2-800dpi.png"
+    assert parse_output_filename(ja_name)["lang"] == "ja"
+
+
+def test_enqueue_and_gallery_carry_lang(db_path: Path, tmp_path: Path) -> None:
+    task_id = enqueue_task(
+        "tag-lang",
+        scryfall_id="sol-ja",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol-ja.png",
+        dpi=800,
+        model="ultrasharp_v2",
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        lang="ja",
+        db_path=db_path,
+    )
+    task = get_task(task_id, db_path=db_path)
+    assert task.lang == "ja"
+
+    img = tmp_path / "sol_ja.png"
+    img.write_bytes(b"png")
+    result = FaceResult(
+        out_path=img,
+        original_path=img,
+        scryfall_id="sol-ja",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol-ja.png",
+        dpi=800,
+        model="ultrasharp_v2",
+        lang="ja",
+    )
+    upsert_gallery_item_for_task(task, result, db_path=db_path)
+    [item] = list_gallery_items("tag-lang", db_path=db_path)
+    assert item["lang"] == "ja"

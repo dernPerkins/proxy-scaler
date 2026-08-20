@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import type { CardRow } from "../api/project";
 import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
+import CardDbPanel from "../components/CardDbPanel";
 import CompareDialog from "../components/CompareDialog";
 import NumberInput from "../components/NumberInput";
+import PrintingPicker from "../components/PrintingPicker";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import { DPI_OPTIONS, modelDisplayName } from "../constants";
@@ -58,6 +60,11 @@ function cardToEntry(card: CardRow): DeckEntryIn {
     set_code: card.set_code,
     collector_number: card.collector_number,
     raw_line: card.original_import_line,
+    // The pinned printing + language preference make server-side
+    // resolution exact (a non-English printing is unreachable via
+    // set/collector alone — every language shares them).
+    scryfall_id: card.scryfall_id,
+    lang: card.lang,
   };
 }
 
@@ -86,6 +93,8 @@ export default function DecklistPage() {
     importingDecklistText,
     removeCard,
     setCardQuantity,
+    setCardPrinting,
+    applyCardResolutions,
   } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -171,6 +180,67 @@ export default function DecklistPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectTag, cardIdentities, serverUnavailable]);
+
+  // Languages available for the import preference — read from the server's
+  // card corpus (English only until an all-languages import), same
+  // server-owns-the-dropdown rule as the models list. Falls back to ["en"]
+  // whenever the server (or its corpus) can't answer.
+  const languagesQuery = useQuery({
+    queryKey: ["card-languages"],
+    queryFn: () => generationApi.cardLanguages(),
+    enabled: !serverUnavailable,
+    staleTime: 5 * 60_000,
+  });
+  const languages = languagesQuery.data?.languages ?? ["en"];
+
+  // Eager resolve: pin every unpinned card (scryfall_id null — a fresh
+  // import, a pre-upgrade project, or an import done while the server was
+  // down) to one exact printing *before* any generation, by running the
+  // rows through /api/resolve (local-corpus-first server-side) and
+  // persisting scryfall_id + the refreshed display cache. Best-effort:
+  // failures leave cards unpinned and the next project load retries.
+  // attempted-set so a card that genuinely fails to resolve (typo) doesn't
+  // refire on every render; reset per project.
+  const resolveAttempted = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    resolveAttempted.current = new Set();
+  }, [projectId]);
+  useEffect(() => {
+    if (!projectTag || serverUnavailable) return;
+    const unresolved = cards.filter(
+      (c) => !c.scryfall_id && !resolveAttempted.current.has(c.id),
+    );
+    if (unresolved.length === 0) return;
+    unresolved.forEach((c) => resolveAttempted.current.add(c.id));
+    let cancelled = false;
+    generationApi
+      .resolve(unresolved.map(cardToEntry))
+      .then((result) => {
+        if (cancelled) return;
+        const byLine = new Map(unresolved.map((c) => [c.original_import_line, c]));
+        const updates = result.resolved.flatMap((rc) => {
+          const card = byLine.get(rc.raw_line);
+          const face = rc.faces[0];
+          if (!card || !face) return [];
+          return [
+            {
+              card_id: card.id,
+              scryfall_id: face.scryfall_id,
+              name: face.card_name,
+              set_code: face.set_code,
+              collector_number: face.collector_number,
+              lang: face.lang ?? "en",
+            },
+          ];
+        });
+        if (updates.length > 0) return applyCardResolutions(updates);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectTag, serverUnavailable, cards]);
 
   const generateAllMutation = useMutation({
     mutationFn: () =>
@@ -406,6 +476,8 @@ export default function DecklistPage() {
             {dirRow("Cache", pathsQuery.data?.cache_dir)}
             {dirRow("Weights", pathsQuery.data?.weights_dir)}
           </div>
+
+          <CardDbPanel serverUnavailable={serverUnavailable} />
         </div>
 
         <div className="danger-zone">
@@ -468,22 +540,47 @@ export default function DecklistPage() {
             onChange={(e) => setDecklistDraft(e.target.value)}
             rows={6}
             style={{ width: "100%" }}
-            placeholder={"1 Sol Ring (c21) 263\n4 Lightning Bolt"}
+            placeholder={"1 Sol Ring (c21) 263\n2 Arcane Signet 117\n4 Lightning Bolt"}
           />
-          <button
-            className="btn-primary"
-            onClick={() => {
-              setStatus(null);
-              importDecklistText(decklistDraft)
-                .then(() => setDecklistDraft(""))
-                // A failed import keeps the text for a retry; the error
-                // itself is surfaced via the context's error state.
-                .catch(() => {});
-            }}
-            disabled={!decklistDraft.trim() || importingDecklistText}
-          >
-            {importingDecklistText ? "Importing…" : "Import cards"}
-          </button>
+          <div className="import-actions">
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setStatus(null);
+                importDecklistText(decklistDraft)
+                  .then(() => setDecklistDraft(""))
+                  // A failed import keeps the text for a retry; the error
+                  // itself is surfaced via the context's error state.
+                  .catch(() => {});
+              }}
+              disabled={!decklistDraft.trim() || importingDecklistText}
+            >
+              {importingDecklistText ? "Importing…" : "Import cards"}
+            </button>
+            {/* Import-language preference: stamped onto imported cards and
+                used to match printings during resolution. Options come from
+                the server's corpus (just English until an all-languages
+                import), so unavailable languages can't be picked. */}
+            <select
+              value={settings.preferred_lang}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, preferred_lang: e.target.value }))
+              }
+              disabled={languages.length <= 1 && settings.preferred_lang === "en"}
+              title="Preferred card language for imports"
+            >
+              {/* Keep a stored preference selectable even if the corpus no
+                  longer lists it (e.g. after switching to English-only). */}
+              {(languages.includes(settings.preferred_lang)
+                ? languages
+                : [settings.preferred_lang, ...languages]
+              ).map((lang) => (
+                <option key={lang} value={lang}>
+                  {lang.toUpperCase()}
+                </option>
+              ))}
+            </select>
+          </div>
           {status && <p className="hint">{status}</p>}
         </div>
 
@@ -563,6 +660,17 @@ export default function DecklistPage() {
               onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
               onGenerate={() => generateCardMutation.mutate(card)}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+              preferredLang={settings.preferred_lang}
+              onPickPrinting={(printing) => {
+                // Persisting the pick changes the card's identity string,
+                // which re-fires the adopt effect above (badges re-bucket
+                // to whatever exists for the new printing); the status
+                // query refresh makes that visible without waiting for the
+                // 3s poll.
+                setCardPrinting(card.id, printing)
+                  .then(invalidateStatus)
+                  .catch(() => {});
+              }}
               disabled={serverUnavailable}
             />
           );
@@ -602,12 +710,34 @@ function CardRowView(props: {
   onSetQuantity: (quantity: number) => void;
   onGenerate: () => void;
   onRegenerate: (galleryItemId: number) => void;
+  /** The project's import-language preference — PrintingPicker's default
+   *  language filter for cards that don't carry their own. */
+  preferredLang: string;
+  onPickPrinting: (printing: {
+    scryfallId: string;
+    name: string;
+    setCode: string;
+    collectorNumber: string;
+    lang: string;
+  }) => void;
   /** True when the generation server is unreachable — disables
-   *  Generate/Regen (Remove/Show stay enabled since those are purely
-   *  local). */
+   *  Generate/Regen/printing changes (Remove/Show stay enabled since
+   *  those are purely local). */
   disabled: boolean;
 }) {
-  const { card, faces, expandedFaces, onToggleExpand, onRemove, onSetQuantity, onGenerate, onRegenerate, disabled } = props;
+  const {
+    card,
+    faces,
+    expandedFaces,
+    onToggleExpand,
+    onRemove,
+    onSetQuantity,
+    onGenerate,
+    onRegenerate,
+    preferredLang,
+    onPickPrinting,
+    disabled,
+  } = props;
   const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
@@ -634,8 +764,12 @@ function CardRowView(props: {
     <div className="card-row">
       <div className="card-main">
         <span className="card-name">{card.name}</span>
-        <span className="card-meta mono">{(card.set_code ?? "—").toUpperCase()}</span>
-        <span className="card-meta mono">{card.collector_number ?? "—"}</span>
+        <PrintingPicker
+          card={card}
+          preferredLang={preferredLang}
+          disabled={disabled}
+          onPick={onPickPrinting}
+        />
         <span className="card-qty-stepper">
           <button
             className="btn-sm"

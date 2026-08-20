@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS projects (
     show_cut_lines INTEGER NOT NULL DEFAULT 1,
     preferred_dpi INTEGER,
     preferred_model TEXT,
+    preferred_lang TEXT NOT NULL DEFAULT 'en',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -51,7 +52,15 @@ CREATE TABLE IF NOT EXISTS project_cards (
     quantity INTEGER,
     name TEXT NOT NULL,
     set_code TEXT,
-    collector_number TEXT
+    collector_number TEXT,
+    -- Authoritative link to one exact Scryfall printing, filled in by the
+    -- post-import resolve (or a printing change). name/set_code/
+    -- collector_number stay as the offline display cache — the client must
+    -- render decklists with no server reachable (see ARCHITECTURE.md).
+    scryfall_id TEXT,
+    -- Scryfall language code of the chosen printing; set+collector alone
+    -- can't encode it (every language of a printing shares them).
+    lang TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_project_cards_project_id ON project_cards(project_id);
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -68,7 +77,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 // additive-only and idempotent by checking PRAGMA table_info() each time,
 // matching how the rest of this file already re-runs its schema
 // defensively on every open_db() call.
-const PDF_LAYOUT_COLUMNS: &[(&str, &str)] = &[
+const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("page_width_mm", "REAL NOT NULL DEFAULT 210.0"),
     ("page_height_mm", "REAL NOT NULL DEFAULT 297.0"),
     ("cols", "INTEGER NOT NULL DEFAULT 3"),
@@ -84,20 +93,31 @@ const PDF_LAYOUT_COLUMNS: &[(&str, &str)] = &[
     ("show_cut_lines", "INTEGER NOT NULL DEFAULT 1"),
     ("preferred_dpi", "INTEGER"),
     ("preferred_model", "TEXT"),
+    ("preferred_lang", "TEXT NOT NULL DEFAULT 'en'"),
 ];
 
-fn migrate_projects_table(conn: &Connection) -> Result<(), String> {
+// Same pattern for `project_cards` — its first post-release additions.
+const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("scryfall_id", "TEXT"),
+    ("lang", "TEXT"),
+];
+
+fn add_missing_columns(
+    conn: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> Result<(), String> {
     let mut stmt = conn
-        .prepare("PRAGMA table_info(projects)")
+        .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|e| e.to_string())?;
     let existing: HashSet<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-    for (name, decl) in PDF_LAYOUT_COLUMNS {
+    for (name, decl) in columns {
         if !existing.contains(*name) {
-            conn.execute(&format!("ALTER TABLE projects ADD COLUMN {name} {decl}"), [])
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {decl}"), [])
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -112,7 +132,8 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create app data dir: {e}"))?;
     let conn = Connection::open(dir.join(DB_FILENAME)).map_err(|e| e.to_string())?;
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
-    migrate_projects_table(&conn)?;
+    add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS)?;
+    add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)?;
     Ok(conn)
 }
 
@@ -150,7 +171,12 @@ const SKIP_LINES: &[&str] = &[
     "main",
 ];
 
-fn parse_line(line: &str, set_collector_re: &regex::Regex, qty_re: &regex::Regex) -> Option<DeckEntry> {
+fn parse_line(
+    line: &str,
+    set_collector_re: &regex::Regex,
+    name_collector_re: &regex::Regex,
+    qty_re: &regex::Regex,
+) -> Option<DeckEntry> {
     let stripped = line.trim();
     if stripped.is_empty() || stripped.starts_with('#') || stripped.starts_with("//") {
         return None;
@@ -177,6 +203,20 @@ fn parse_line(line: &str, set_collector_re: &regex::Regex, qty_re: &regex::Regex
         });
     }
 
+    if let Some(caps) = name_collector_re.captures(&rest) {
+        // Collector-number hint, no set (some deck managers can't export
+        // more, notably for non-English cards). set_code stays None — the
+        // server matches the hint against the name's printings and falls
+        // back to plain name resolution (see card_lookup.CardResolver).
+        return Some(DeckEntry {
+            quantity,
+            name: caps.name("name").unwrap().as_str().trim().to_string(),
+            set_code: None,
+            collector_number: Some(caps.name("collector").unwrap().as_str().to_string()),
+            raw_line: stripped.to_string(),
+        });
+    }
+
     Some(DeckEntry {
         quantity,
         name: rest,
@@ -192,12 +232,18 @@ pub fn parse_decklist_text(text: &str) -> Vec<DeckEntry> {
     let set_collector_re =
         regex::Regex::new(r"^(?P<name>.+?)\s+\((?P<set>[A-Za-z0-9]+)\)\s+(?P<collector>\S+)\s*$")
             .expect("static regex");
+    // Trailing bare collector number with no set — "Sol Ring 263". Strict
+    // token shape (digits + one optional letter) so it can't eat the end
+    // of a real card name — mirrors decklist.py's _NAME_COLLECTOR_RE.
+    let name_collector_re =
+        regex::Regex::new(r"^(?P<name>.+?)\s+(?P<collector>\d{1,4}[A-Za-z]?)\s*$")
+            .expect("static regex");
     // Optional x after the count covers the "4x Lightning Bolt" style many
     // deck-site exports use — mirrors decklist.py's _QTY_RE.
     let qty_re = regex::Regex::new(r"^(?P<qty>\d+)[xX]?\s+(?P<rest>.+)$").expect("static regex");
 
     text.lines()
-        .filter_map(|line| parse_line(line, &set_collector_re, &qty_re))
+        .filter_map(|line| parse_line(line, &set_collector_re, &name_collector_re, &qty_re))
         .collect()
 }
 
@@ -235,6 +281,16 @@ pub struct ProjectSettings {
     pub show_cut_lines: bool,
     pub preferred_dpi: Option<i64>,
     pub preferred_model: Option<String>,
+    // Import-language preference (Scryfall code): stamped onto cards at
+    // decklist import and used to steer server-side resolution. Defaulted
+    // on deserialize so an older frontend build that doesn't send it
+    // doesn't wipe the setting.
+    #[serde(default = "default_preferred_lang")]
+    pub preferred_lang: String,
+}
+
+fn default_preferred_lang() -> String {
+    "en".to_string()
 }
 
 impl Default for ProjectSettings {
@@ -259,6 +315,7 @@ impl Default for ProjectSettings {
             show_cut_lines: true,
             preferred_dpi: None,
             preferred_model: None,
+            preferred_lang: default_preferred_lang(),
         }
     }
 }
@@ -272,6 +329,8 @@ pub struct CardRow {
     pub name: String,
     pub set_code: Option<String>,
     pub collector_number: Option<String>,
+    pub scryfall_id: Option<String>,
+    pub lang: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -286,18 +345,43 @@ pub struct LoadedProject {
     pub updated_at: String,
 }
 
-// Same identity scheme mergeCardStatus.ts::cardIdentity uses on the
-// frontend to match a local card to its generation-server records: exact
-// set/collector when both are given, otherwise fall back to the card
-// name — so "already have this card" means the same thing everywhere,
-// not just within this one function.
-fn card_dedup_key(set_code: Option<&str>, collector_number: Option<&str>, name: &str) -> String {
+// Import-dedup identity, most-specific-first: exact set/collector when
+// both are given, name+collector for a set-less collector hint ("Sol Ring
+// 263" — see parse_line), bare name otherwise. Same spirit as
+// mergeCardStatus.ts::cardIdentity, plus the hint tier that only matters
+// at import time.
+fn entry_dedup_key(set_code: Option<&str>, collector_number: Option<&str>, name: &str) -> String {
     match (set_code, collector_number) {
         (Some(s), Some(c)) if !s.is_empty() && !c.is_empty() => {
             format!("{}/{}", s.to_lowercase(), c.to_lowercase())
         }
+        (_, Some(c)) if !c.is_empty() => {
+            format!("name:{}/{}", name.to_lowercase(), c.to_lowercase())
+        }
         _ => format!("name:{}", name.to_lowercase()),
     }
+}
+
+// Every key an already-stored card answers to — its own specific key plus
+// every less-specific one. Needed because resolution *changes* a stored
+// row's shape: a card imported as "4 Lightning Bolt" (name key only) gains
+// set/collector when the post-import resolve pins it, and without the
+// broader keys re-pasting that same decklist line would no longer match
+// the row it created and import a duplicate.
+fn stored_card_dedup_keys(
+    set_code: Option<&str>,
+    collector_number: Option<&str>,
+    name: &str,
+) -> Vec<String> {
+    let lname = name.to_lowercase();
+    let mut keys = vec![format!("name:{lname}")];
+    if let Some(c) = collector_number.filter(|c| !c.is_empty()) {
+        keys.push(format!("name:{lname}/{}", c.to_lowercase()));
+        if let Some(s) = set_code.filter(|s| !s.is_empty()) {
+            keys.push(format!("{}/{}", s.to_lowercase(), c.to_lowercase()));
+        }
+    }
+    keys
 }
 
 fn dpi_targets_to_text(dpi_targets: &[i64]) -> String {
@@ -326,7 +410,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectSummary> {
 fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, sort_order, original_import_line, quantity, name, set_code, collector_number
+            "SELECT id, sort_order, original_import_line, quantity, name, set_code, collector_number,
+                    scryfall_id, lang
              FROM project_cards WHERE project_id = ?1 ORDER BY sort_order ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -340,6 +425,8 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 name: row.get(4)?,
                 set_code: row.get(5)?,
                 collector_number: row.get(6)?,
+                scryfall_id: row.get(7)?,
+                lang: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -373,6 +460,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         show_cut_lines: bool,
         preferred_dpi: Option<i64>,
         preferred_model: Option<String>,
+        preferred_lang: String,
         created_at: String,
         updated_at: String,
     }
@@ -382,7 +470,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             "SELECT tag, name, import_decklist_text, model, dpi_targets, skip_existing, tile_size,
                     page_width_mm, page_height_mm, cols, rows, bleed_mm, spacing_x_mm, spacing_y_mm,
                     offset_x_mm, offset_y_mm, guide_width_pt, guide_length_mm, export_dpi,
-                    show_cut_lines, preferred_dpi, preferred_model, created_at, updated_at
+                    show_cut_lines, preferred_dpi, preferred_model, preferred_lang,
+                    created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
             |row| {
@@ -409,6 +498,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     show_cut_lines: row.get("show_cut_lines")?,
                     preferred_dpi: row.get("preferred_dpi")?,
                     preferred_model: row.get("preferred_model")?,
+                    preferred_lang: row.get("preferred_lang")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -444,6 +534,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             show_cut_lines: loaded.show_cut_lines,
             preferred_dpi: loaded.preferred_dpi,
             preferred_model: loaded.preferred_model,
+            preferred_lang: loaded.preferred_lang,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -624,8 +715,9 @@ fn update_project_row(
          tile_size = ?5, page_width_mm = ?6, page_height_mm = ?7, cols = ?8, rows = ?9,
          bleed_mm = ?10, spacing_x_mm = ?11, spacing_y_mm = ?12, offset_x_mm = ?13,
          offset_y_mm = ?14, guide_width_pt = ?15, guide_length_mm = ?16, export_dpi = ?17,
-         show_cut_lines = ?18, preferred_dpi = ?19, preferred_model = ?20, updated_at = ?21
-         WHERE id = ?22",
+         show_cut_lines = ?18, preferred_dpi = ?19, preferred_model = ?20,
+         preferred_lang = ?21, updated_at = ?22
+         WHERE id = ?23",
         params![
             trimmed,
             settings.model,
@@ -647,6 +739,7 @@ fn update_project_row(
             settings.show_cut_lines,
             settings.preferred_dpi,
             settings.preferred_model,
+            settings.preferred_lang,
             now,
             project_id,
         ],
@@ -693,9 +786,10 @@ pub fn clear_all_projects(app: AppHandle) -> Result<(), String> {
 
 /// Adds new card lines from `text` to this project's existing card list —
 /// additive, like the old server-side "/import" endpoint, not a replace.
-/// A parsed entry is skipped if it already matches an existing card (or an
-/// earlier entry in this very same paste) by card_dedup_key — set_code+
-/// collector_number when both are given, name otherwise. No Scryfall call
+/// A parsed entry is skipped if its entry_dedup_key (set+collector, then
+/// name+collector hint, then name) matches an existing card — which
+/// answers to every key tier it satisfies, see stored_card_dedup_keys —
+/// or an earlier entry in this very same paste. No Scryfall call
 /// here (that's /api/resolve's job, on demand, against the generation
 /// server). import_decklist_text is still overwritten to the latest
 /// pasted text — it's just a convenience mirror of "what did I last paste
@@ -718,6 +812,18 @@ fn import_decklist_into(
     )
     .map_err(|e| e.to_string())?;
 
+    // New cards are stamped with the project's language preference so
+    // resolution (server-side, local-corpus-first) can look for that
+    // language instead of defaulting to English. scryfall_id stays NULL
+    // until the post-import resolve pins each card to an exact printing.
+    let preferred_lang: String = tx
+        .query_row(
+            "SELECT preferred_lang FROM projects WHERE id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
     let mut seen_keys: HashSet<String> = HashSet::new();
     let mut next_sort_order: i64 = 0;
     {
@@ -738,7 +844,7 @@ fn import_decklist_into(
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (sort_order, name, set_code, collector_number) = row.map_err(|e| e.to_string())?;
-            seen_keys.insert(card_dedup_key(
+            seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
                 collector_number.as_deref(),
                 &name,
@@ -748,7 +854,7 @@ fn import_decklist_into(
     }
 
     for entry in &entries {
-        let key = card_dedup_key(entry.set_code.as_deref(), entry.collector_number.as_deref(), &entry.name);
+        let key = entry_dedup_key(entry.set_code.as_deref(), entry.collector_number.as_deref(), &entry.name);
         // HashSet::insert returns false when the key was already present
         // — covers both "already an existing card" and "duplicated within
         // this same paste" in one check.
@@ -757,8 +863,8 @@ fn import_decklist_into(
         }
         tx.execute(
             "INSERT INTO project_cards
-             (project_id, sort_order, original_import_line, quantity, name, set_code, collector_number)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (project_id, sort_order, original_import_line, quantity, name, set_code, collector_number, lang)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 project_id,
                 next_sort_order,
@@ -767,6 +873,7 @@ fn import_decklist_into(
                 entry.name,
                 entry.set_code,
                 entry.collector_number,
+                preferred_lang,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -810,6 +917,79 @@ fn set_card_quantity_in(conn: &Connection, card_id: i64, quantity: i64) -> Resul
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// One card's resolved identity, as persisted after a server-side resolve
+/// or a printing change: the pinned scryfall_id plus the refreshed display
+/// cache (canonical name, concrete set/collector for name-only lines, and
+/// the printing's language).
+#[derive(Debug, Deserialize)]
+pub struct CardResolutionUpdate {
+    pub card_id: i64,
+    pub scryfall_id: String,
+    pub name: String,
+    pub set_code: String,
+    pub collector_number: String,
+    pub lang: String,
+}
+
+fn apply_card_resolution(conn: &Connection, update: &CardResolutionUpdate) -> Result<(), String> {
+    conn.execute(
+        "UPDATE project_cards SET scryfall_id = ?1, name = ?2, set_code = ?3,
+         collector_number = ?4, lang = ?5 WHERE id = ?6",
+        params![
+            update.scryfall_id,
+            update.name,
+            update.set_code,
+            update.collector_number,
+            update.lang,
+            update.card_id,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Change one card to a different printing (picked from the server's
+/// variants endpoint) — same UPDATE as a resolution, it just happens to be
+/// user-chosen rather than resolver-chosen.
+#[tauri::command]
+pub fn set_card_printing(
+    app: AppHandle,
+    card_id: i64,
+    scryfall_id: String,
+    name: String,
+    set_code: String,
+    collector_number: String,
+    lang: String,
+) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    apply_card_resolution(
+        &conn,
+        &CardResolutionUpdate {
+            card_id,
+            scryfall_id,
+            name,
+            set_code,
+            collector_number,
+            lang,
+        },
+    )
+}
+
+/// Batched persist of post-import resolve results — one transaction for
+/// the whole decklist rather than one round-trip per card.
+#[tauri::command]
+pub fn set_cards_resolution(
+    app: AppHandle,
+    updates: Vec<CardResolutionUpdate>,
+) -> Result<(), String> {
+    let mut conn = open_db(&app)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for update in &updates {
+        apply_card_resolution(&tx, update)?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 // --- app_settings ---------------------------------------------------------
@@ -1285,6 +1465,77 @@ mod tests {
     }
 
     #[test]
+    fn parse_decklist_reads_a_set_less_collector_hint() {
+        let entries = parse_decklist_text(
+            "1 Sol Ring 263\n2 History of Benalia 21p\n1 Borrowing 100,000 Arrows\n1 234",
+        );
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].name, "Sol Ring");
+        assert_eq!(entries[0].set_code, None);
+        assert_eq!(entries[0].collector_number.as_deref(), Some("263"));
+        assert_eq!(entries[1].collector_number.as_deref(), Some("21p"));
+        // Tokens that aren't strictly digits(+one letter) stay in the name.
+        assert_eq!(entries[2].name, "Borrowing 100,000 Arrows");
+        assert_eq!(entries[2].collector_number, None);
+        // A bare number alone is a name, not an empty name + hint.
+        assert_eq!(entries[3].name, "234");
+        assert_eq!(entries[3].collector_number, None);
+    }
+
+    #[test]
+    fn distinct_collector_hints_of_one_name_both_import() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring 263\n1 Sol Ring 116")
+            .expect("import");
+        assert_eq!(cards.len(), 2, "different hints are different printings");
+
+        // But the same hint pasted again is the same card.
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring 263").expect("re-import");
+        assert_eq!(cards.len(), 2);
+    }
+
+    #[test]
+    fn a_resolved_card_still_dedups_its_original_line() {
+        // A name-only (or hint) line gains set/collector when the
+        // post-import resolve pins it — re-pasting the original decklist
+        // must still match the row it created, not import a duplicate.
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "4 Lightning Bolt\n1 Sol Ring 263")
+            .expect("import");
+        assert_eq!(cards.len(), 2);
+        apply_card_resolution(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "bolt-id".to_string(),
+                name: "Lightning Bolt".to_string(),
+                set_code: "clu".to_string(),
+                collector_number: "141".to_string(),
+                lang: "en".to_string(),
+            },
+        )
+        .expect("resolve bolt");
+        apply_card_resolution(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[1].id,
+                scryfall_id: "sol-id".to_string(),
+                name: "Sol Ring".to_string(),
+                set_code: "c21".to_string(),
+                collector_number: "263".to_string(),
+                lang: "en".to_string(),
+            },
+        )
+        .expect("resolve sol ring");
+
+        let cards = import_decklist_into(&mut conn, id, "4 Lightning Bolt\n1 Sol Ring 263")
+            .expect("re-paste the same decklist");
+        assert_eq!(cards.len(), 2, "no duplicates after resolution reshaped the rows");
+    }
+
+    #[test]
     fn set_card_quantity_updates_and_clamps_to_one() {
         let mut conn = test_conn();
         let id = get_or_create_unnamed_project_id(&conn).expect("create");
@@ -1299,6 +1550,135 @@ mod tests {
 
         set_card_quantity_in(&conn, card_id, -3).expect("clamp negative");
         assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(1));
+    }
+
+    #[test]
+    fn add_missing_columns_upgrades_a_legacy_shaped_db() {
+        // A projects.db from before scryfall_id/lang/preferred_lang: both
+        // tables exist but lack the new columns. CREATE TABLE IF NOT EXISTS
+        // won't touch them; the additive migrator must.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL UNIQUE,
+                import_decklist_text TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT 'ultrasharp_v2',
+                dpi_targets TEXT NOT NULL DEFAULT '1200',
+                skip_existing INTEGER NOT NULL DEFAULT 1,
+                tile_size INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE project_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL,
+                original_import_line TEXT NOT NULL,
+                quantity INTEGER,
+                name TEXT NOT NULL,
+                set_code TEXT,
+                collector_number TEXT
+            );",
+        )
+        .expect("legacy schema");
+
+        add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS).expect("projects");
+        add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)
+            .expect("project_cards");
+        // Idempotent: a second pass must be a no-op, not a duplicate-column
+        // error.
+        add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS).expect("re-run");
+
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let loaded = load_project(&conn, id).expect("load through the new columns");
+        assert_eq!(loaded.settings.preferred_lang, "en");
+        assert!(loaded.cards.is_empty());
+    }
+
+    #[test]
+    fn import_stamps_cards_with_the_project_preferred_lang() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let settings = ProjectSettings {
+            preferred_lang: "ja".to_string(),
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("set preferred_lang");
+
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263").expect("import");
+
+        assert_eq!(cards[0].lang.as_deref(), Some("ja"));
+        assert_eq!(cards[0].scryfall_id, None, "unpinned until the post-import resolve");
+    }
+
+    #[test]
+    fn set_card_printing_roundtrip() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263").expect("import");
+
+        apply_card_resolution(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "sol-sta".to_string(),
+                name: "Sol Ring".to_string(),
+                set_code: "sta".to_string(),
+                collector_number: "116".to_string(),
+                lang: "ja".to_string(),
+            },
+        )
+        .expect("change printing");
+
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.scryfall_id.as_deref(), Some("sol-sta"));
+        assert_eq!(card.set_code.as_deref(), Some("sta"));
+        assert_eq!(card.collector_number.as_deref(), Some("116"));
+        assert_eq!(card.lang.as_deref(), Some("ja"));
+        assert_eq!(
+            card.original_import_line, "1 Sol Ring (c21) 263",
+            "the original pasted line is history, not display state — untouched"
+        );
+    }
+
+    #[test]
+    fn set_cards_resolution_batch_applies_all_in_one_transaction() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263\n1 Lightning Bolt")
+            .expect("import");
+
+        let updates: Vec<CardResolutionUpdate> = vec![
+            CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "sol-id".to_string(),
+                name: "Sol Ring".to_string(),
+                set_code: "c21".to_string(),
+                collector_number: "263".to_string(),
+                lang: "en".to_string(),
+            },
+            CardResolutionUpdate {
+                card_id: cards[1].id,
+                scryfall_id: "bolt-id".to_string(),
+                name: "Lightning Bolt".to_string(),
+                set_code: "clu".to_string(),
+                collector_number: "141".to_string(),
+                lang: "en".to_string(),
+            },
+        ];
+        let tx = conn.transaction().expect("tx");
+        for update in &updates {
+            apply_card_resolution(&tx, update).expect("apply");
+        }
+        tx.commit().expect("commit");
+
+        let cards = cards_for_project(&conn, id).expect("cards");
+        assert_eq!(cards[0].scryfall_id.as_deref(), Some("sol-id"));
+        // The name-only line gained a concrete printing from resolution.
+        assert_eq!(cards[1].scryfall_id.as_deref(), Some("bolt-id"));
+        assert_eq!(cards[1].set_code.as_deref(), Some("clu"));
     }
 }
 

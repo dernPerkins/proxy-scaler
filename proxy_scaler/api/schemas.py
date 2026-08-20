@@ -42,6 +42,10 @@ class DeckEntryIn(BaseModel):
     set_code: str | None = None
     collector_number: str | None = None
     raw_line: str = ""
+    # Optional pinned identity + language preference (see DeckEntry in
+    # decklist.py). Defaulted so older clients keep working unchanged.
+    scryfall_id: str | None = None
+    lang: str | None = None
 
 
 class ResolveIn(BaseModel):
@@ -74,6 +78,9 @@ class ResolvedFaceOut(BaseModel):
     collector_number: str
     png_url: str
     image_status: str | None = None
+    # Printing language — the client persists this (with scryfall_id) into
+    # its project cards after a resolve. Defaulted for older servers.
+    lang: str = "en"
 
 
 class ResolvedCardOut(BaseModel):
@@ -149,6 +156,7 @@ class TaskOut(BaseModel):
     created_at: str
     started_at: str | None
     completed_at: str | None
+    lang: str = "en"
 
 
 class WorkerStatusOut(BaseModel):
@@ -172,6 +180,7 @@ class GalleryItemOut(BaseModel):
     dpi: int
     model: str
     image_filename: str
+    lang: str = "en"
 
 
 class PdfLayoutIn(BaseModel):
@@ -292,3 +301,77 @@ class DiscardTagOut(BaseModel):
     # discard fire-and-forget and ignores the body; this is here so a
     # manual `curl` can see what actually happened.
     canceled: int
+
+
+class CardDbLocalOut(BaseModel):
+    # State of this server's imported card corpus (see carddb.py) — absent
+    # entirely (CardDbStatusOut.local = None) until a first import has
+    # fully finished, since import meta is only written on success.
+    dataset_type: str  # "default_cards" | "all_cards"
+    dataset_updated_at: str  # Scryfall's updated_at for the imported dump
+    imported_at: str
+    card_count: int
+
+
+class CardDbRemoteEntryOut(BaseModel):
+    updated_at: str
+    compressed_size: int
+
+
+class CardDbStatusOut(BaseModel):
+    local: CardDbLocalOut | None = None
+    # Keyed by dataset type ("default_cards"/"all_cards") so the client can
+    # both show live download sizes on the dataset choice and compare
+    # updated_at against local for the staleness hint. None whenever the
+    # live catalog can't be reached — the client must treat that as
+    # "unknown", never as an error.
+    remote: dict[str, CardDbRemoteEntryOut] | None = None
+    import_running: bool
+    active_job_id: str | None = None
+
+
+class CardImportIn(BaseModel):
+    dataset: str  # "default_cards" | "all_cards" — validated in the router
+
+
+class CardImportStartedOut(BaseModel):
+    job_id: str
+
+
+class CardImportStatusOut(BaseModel):
+    status: str  # "running" | "done" | "failed" | "canceled"
+    phase: str  # "checking" | "downloading" | "importing" | "finalizing"
+    dataset: str
+    bytes_downloaded: int
+    total_bytes: int | None = None
+    rows_imported: int
+    error: str | None = None
+
+
+class CardLanguagesOut(BaseModel):
+    # Languages actually present in the imported corpus, English first —
+    # feeds the import-language dropdown, so an English-only corpus
+    # naturally offers only English. ["en"] when nothing is imported.
+    languages: list[str]
+
+
+class CardVariantOut(BaseModel):
+    scryfall_id: str
+    name: str
+    set_code: str
+    set_name: str | None = None
+    collector_number: str
+    lang: str
+    released_at: str | None = None
+    digital: bool
+    image_status: str | None = None
+    highres_image: bool
+
+
+class CardVariantsOut(BaseModel):
+    # The printing the query anchored on (resolved by scryfall_id, then
+    # set+collector, then exact name) plus every printing sharing its
+    # oracle_id, sorted for direct display (newest release first).
+    anchor: CardVariantOut
+    variants: list[CardVariantOut]
+    total: int

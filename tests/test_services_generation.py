@@ -407,3 +407,45 @@ def test_enqueue_decklist_entries_reports_scryfall_failures(
     assert failed == 1
     assert task_ids == []
     assert any("not found" in n for n in notes)
+
+
+def test_enqueue_decklist_entries_resolves_from_local_corpus_without_network(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """With a seeded card corpus, enqueueing never touches Scryfall at all —
+    the whole resolve happens against carddb (see card_lookup.CardResolver)."""
+    from proxy_scaler import carddb
+
+    card_db_path = tmp_path / "cards.db"
+    carddb.init_card_db(card_db_path)
+    conn = carddb.connect(card_db_path)
+    try:
+        carddb.upsert_cards(
+            conn,
+            [dict(SOL_RING_CARD, lang="en", oracle_id="oracle-sol")],
+        )
+    finally:
+        conn.close()
+
+    def no_network(self, entries):
+        raise AssertionError("live ScryfallClient used despite a local corpus hit")
+
+    monkeypatch.setattr(ScryfallClient, "resolve_many", no_network)
+
+    queued, failed, task_ids = generation.enqueue_decklist_entries(
+        [_entry(set_code="c21", collector_number="263")],
+        model="ultrasharp_v2",
+        dpi_targets=[600],
+        skip_existing=False,
+        tile_size=0,
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-local",
+        db_path=db_path,
+        card_db_path=card_db_path,
+    )
+    assert (queued, failed) == (1, 0)
+    [task] = db.list_tasks(project_tag="tag-local", db_path=db_path)
+    assert task.scryfall_id == "sol-id"
+    assert task.png_url == "https://example.com/sol.png"

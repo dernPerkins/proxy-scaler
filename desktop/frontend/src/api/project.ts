@@ -34,6 +34,9 @@ export interface ProjectSettings {
   show_cut_lines: boolean;
   preferred_dpi: number | null;
   preferred_model: string | null;
+  // Import-language preference (Scryfall code, "en" default): stamped onto
+  // cards at decklist import and used to steer server-side resolution.
+  preferred_lang: string;
 }
 
 export interface CardRow {
@@ -44,6 +47,11 @@ export interface CardRow {
   name: string;
   set_code: string | null;
   collector_number: string | null;
+  // Authoritative link to one exact Scryfall printing — null until the
+  // post-import resolve pins it (or the user picks a printing). name/
+  // set_code/collector_number stay as the offline display cache.
+  scryfall_id: string | null;
+  lang: string | null;
 }
 
 export interface RecentHost {
@@ -88,6 +96,39 @@ export const projectApi = {
   // Clamped to a minimum of 1 on the Rust side; removal stays removeCard's job.
   setCardQuantity: (cardId: number, quantity: number) =>
     invokeCommand<void>("set_card_quantity", { cardId, quantity }),
+  // Change one card to a different printing (picked from the server's
+  // variants endpoint): pins scryfall_id and refreshes the display cache.
+  setCardPrinting: (
+    cardId: number,
+    printing: {
+      scryfallId: string;
+      name: string;
+      setCode: string;
+      collectorNumber: string;
+      lang: string;
+    },
+  ) =>
+    invokeCommand<void>("set_card_printing", {
+      cardId,
+      scryfallId: printing.scryfallId,
+      name: printing.name,
+      setCode: printing.setCode,
+      collectorNumber: printing.collectorNumber,
+      lang: printing.lang,
+    }),
+  // Batched persist of post-import resolve results — one transaction for
+  // the whole decklist. Field names are the Rust struct's snake_case:
+  // Tauri only camelCases top-level command arguments, not struct fields.
+  setCardsResolution: (
+    updates: {
+      card_id: number;
+      scryfall_id: string;
+      name: string;
+      set_code: string;
+      collector_number: string;
+      lang: string;
+    }[],
+  ) => invokeCommand<void>("set_cards_resolution", { updates }),
 
   getLastProjectId: () => invokeCommand<number | null>("get_last_project_id"),
   setLastProjectId: (projectId: number) =>

@@ -61,12 +61,21 @@ def output_filename(
     face_label: str | None,
     model: UpscaleModel | str | None = None,
     dpi: int | None = None,
+    *,
+    lang: str | None = None,
 ) -> str:
+    """Name-SET-COLLECTOR[-lang][-face]-model-dpi.png. The lang segment is
+    lowercase and only written for non-English printings — English output
+    keeps the exact pre-language filename shape, so nothing regenerates
+    just because this field appeared (and db.parse_output_filename reads a
+    missing segment back as "en" for the same reason)."""
     base = (
         f"{_safe_filename_part(face_name)}-"
         f"{set_code.upper()}-"
         f"{_safe_filename_part(collector)}"
     )
+    if lang and lang != "en":
+        base = f"{base}-{lang.lower()}"
     if face_label:
         base = f"{base}-{face_label}"
     if model is not None:
@@ -94,6 +103,9 @@ class FaceResult:
     face_label: str | None = None
     native_scale: int = 4
     device: str = "unknown"  # "gpu" | "cpu" | "unknown"
+    # Scryfall language code of the printing (see scryfall.CardFaceImage).
+    # "en" for results predating db migration 005.
+    lang: str = "en"
     # ISO-8601 UTC, from project_gallery_items.created_at — when this image
     # was last produced. None for a freshly-built result that hasn't been
     # persisted yet, and for gallery rows predating db migration 002.
@@ -139,6 +151,7 @@ class FaceResult:
             device=device,
             created_at=data.get("created_at"),
             total_faces=data.get("total_faces"),
+            lang=data.get("lang") or "en",
         )
 
 
@@ -310,6 +323,7 @@ def _write_dpi_variant(
         face.face_label,
         model_id,
         dpi,
+        lang=face.lang,
     )
     out_path = output_dir / out_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -339,6 +353,7 @@ def _write_dpi_variant(
         total_faces=face.total_faces,
         native_scale=native_scale,
         device=device,
+        lang=face.lang,
     )
 
 
@@ -482,6 +497,7 @@ def regenerate_face_multi(
         png_url=item.png_url,
         face_index=item.face_index,
         total_faces=item.total_faces,
+        lang=item.lang,
     )
     return _regenerate_face_from_card(
         face,
@@ -515,6 +531,7 @@ def process_task(
         png_url=task.png_url,
         face_index=task.face_index,
         total_faces=task.total_faces,
+        lang=task.lang,
     )
     results = _regenerate_face_from_card(
         face,
@@ -546,6 +563,7 @@ def expected_face_result(task: TaskRow) -> FaceResult:
         task.face_label,
         model_id,
         task.dpi,
+        lang=task.lang,
     )
     original_path = original_cache_path(
         Path(task.cache_dir), task.scryfall_id, task.face_index
@@ -569,6 +587,7 @@ def expected_face_result(task: TaskRow) -> FaceResult:
         total_faces=task.total_faces,
         native_scale=native,
         device=read_cache_device(cached),
+        lang=task.lang,
     )
 
 
@@ -699,6 +718,7 @@ def process_entries(
                         face.face_label,
                         model_id,
                         target_dpi,
+                        lang=face.lang,
                     )
                     out_path = output_dir / out_name
 
@@ -740,6 +760,7 @@ def process_entries(
                             total_faces=face.total_faces,
                             native_scale=native,
                             device=read_cache_device(cached),
+                            lang=face.lang,
                         )
                         log(f"  exists: {out_name}")
                         result.skipped += 1

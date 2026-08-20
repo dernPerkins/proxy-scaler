@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from proxy_scaler.api.routers import gallery, generation, misc, pdf, resolve
+from proxy_scaler.api.routers import cards, gallery, generation, misc, pdf, resolve
 
 app = FastAPI(title="proxy-scaler API")
 
@@ -28,3 +28,4 @@ app.include_router(generation.router)
 app.include_router(pdf.router)
 app.include_router(gallery.router)
 app.include_router(resolve.router)
+app.include_router(cards.router)

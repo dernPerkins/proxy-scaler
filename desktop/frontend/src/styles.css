@@ -591,8 +591,11 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 .card-main {
+  /* Columns: name / printing (set·collector button) / qty stepper /
+     buttons. The old separate set + collector columns merged into the
+     PrintingPicker cell. */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px 84px 106px auto;
+  grid-template-columns: minmax(0, 1fr) 158px 106px auto;
   gap: 12px;
   align-items: center;
 }
@@ -610,6 +613,88 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* --- Change-printing picker (PrintingPicker.tsx) --- */
+.printing-cell {
+  position: relative;
+  display: inline-flex;
+}
+.printing-toggle {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.printing-toggle:hover:not(:disabled) {
+  border-color: var(--border);
+}
+.printing-toggle:disabled {
+  cursor: default;
+}
+.printing-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  width: 330px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.printing-picker-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.printing-picker-controls select {
+  flex: 0 1 auto;
+}
+.printing-picker-controls .btn-sm {
+  margin-left: auto;
+}
+.printing-picker-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.printing-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.printing-option:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+.printing-option.active {
+  background: var(--bg-active, rgba(127, 127, 127, 0.2));
+}
+.printing-set-name {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Import button + language preference side by side (DecklistPage). */
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .card-qty-stepper input {
   width: 40px;

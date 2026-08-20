@@ -25,6 +25,20 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
   </tr>
 </table>
 
+## Card Database & Changing Printings
+
+Click a card's set/collector button in the decklist view to switch it to
+any other printing — set, collector number, and (with the right dataset)
+language. This is powered by a **local card database** imported from
+Scryfall's daily bulk data: the sidebar's "Card database" panel offers
+**English only (~80 MB)** or **All languages (~400 MB)** downloads, kept
+on the generation server (in Remote mode, on the connected machine — each
+server keeps its own copy). Once imported, card resolution runs against
+the local database first, so most decklist imports and generations make
+no live Scryfall API calls at all; only cards newer than your last import
+fall back to the live API. Update it from the same panel whenever the
+staleness hint suggests it.
+
 ## Future Features
 
 Planned, in roughly the order they're likely to land:
@@ -37,9 +51,7 @@ Planned, in roughly the order they're likely to land:
    images, instead of the Scryfall printing.
 3. **Better project management** — see how much storage space each
    project is consuming, and clean up the ones you no longer need.
-4. **Editable set / collector number** — change a card's printing from
-   the decklist view; today you're stuck with whatever you imported.
-5. **MPCFill exploration** — browsing and selecting already-created
+4. **MPCFill exploration** — browsing and selecting already-created
    custom art the way other proxy tools do. Custom image upload above is
    the stop-gap until something like this exists.
 

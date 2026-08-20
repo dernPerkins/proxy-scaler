@@ -36,6 +36,11 @@ export interface DeckEntryIn {
   set_code?: string | null;
   collector_number?: string | null;
   raw_line?: string;
+  // Pinned printing + language preference (see project.ts::CardRow).
+  // scryfall_id makes resolution exact server-side; lang steers id-less
+  // entries toward the project's preferred language.
+  scryfall_id?: string | null;
+  lang?: string | null;
 }
 
 export interface ResolvedFace {
@@ -48,6 +53,9 @@ export interface ResolvedFace {
   collector_number: string;
   png_url: string;
   image_status: string | null;
+  // Printing language — persisted (with scryfall_id) into the local card
+  // row after a resolve. Optional: older servers don't send it.
+  lang?: string;
 }
 
 export interface ResolvedCard {
@@ -127,6 +135,7 @@ export interface Task {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  lang?: string;
 }
 
 export interface WorkerStatus {
@@ -149,6 +158,65 @@ export interface GalleryItem {
   dpi: number;
   model: string;
   image_filename: string;
+  lang?: string;
+}
+
+// --- Card corpus (routers/cards.py) ---------------------------------------
+// The generation server's locally-imported Scryfall bulk data: import
+// lifecycle, languages present, and the printing-variants listing behind
+// the change-printing picker.
+
+export type CardDataset = "default_cards" | "all_cards";
+
+export interface CardDbLocal {
+  dataset_type: CardDataset;
+  dataset_updated_at: string;
+  imported_at: string;
+  card_count: number;
+}
+
+export interface CardDbRemoteEntry {
+  updated_at: string;
+  compressed_size: number;
+}
+
+export interface CardDbStatus {
+  // null until a first import fully finishes.
+  local: CardDbLocal | null;
+  // Keyed by dataset; null whenever Scryfall's catalog is unreachable —
+  // "unknown", never an error state.
+  remote: Partial<Record<CardDataset, CardDbRemoteEntry>> | null;
+  import_running: boolean;
+  active_job_id: string | null;
+}
+
+export interface CardImportStatus {
+  status: "running" | "done" | "failed" | "canceled";
+  phase: "checking" | "downloading" | "importing" | "finalizing";
+  dataset: CardDataset;
+  bytes_downloaded: number;
+  total_bytes: number | null;
+  rows_imported: number;
+  error: string | null;
+}
+
+export interface CardVariant {
+  scryfall_id: string;
+  name: string;
+  set_code: string;
+  set_name: string | null;
+  collector_number: string;
+  lang: string;
+  released_at: string | null;
+  digital: boolean;
+  image_status: string | null;
+  highres_image: boolean;
+}
+
+export interface CardVariantsResult {
+  anchor: CardVariant;
+  variants: CardVariant[];
+  total: number;
 }
 
 export interface PdfLayoutRequest {

@@ -75,6 +75,7 @@ function getDefaultSettings(): ProjectSettings {
     show_cut_lines: true,
     preferred_dpi: null,
     preferred_model: null,
+    preferred_lang: "en",
   };
 }
 
@@ -108,6 +109,33 @@ interface ProjectContextValue {
   /** Sets a card's copy count. Values below 1 are clamped to 1 — removal
    *  is removeCard's job. */
   setCardQuantity: (cardId: number, quantity: number) => void;
+  /** Changes one card to a different printing (picked from the server's
+   *  variants endpoint): pins scryfall_id and refreshes the display cache
+   *  (name/set/collector/lang). Resolves once stored, so callers can
+   *  invalidate their server-side status queries after it lands. */
+  setCardPrinting: (
+    cardId: number,
+    printing: {
+      scryfallId: string;
+      name: string;
+      setCode: string;
+      collectorNumber: string;
+      lang: string;
+    },
+  ) => Promise<void>;
+  /** Persists post-import resolve results in one batch — pins each card's
+   *  scryfall_id and fills in concrete set/collector for name-only lines.
+   *  See DecklistPage's eager resolve effect. */
+  applyCardResolutions: (
+    updates: {
+      card_id: number;
+      scryfall_id: string;
+      name: string;
+      set_code: string;
+      collector_number: string;
+      lang: string;
+    }[],
+  ) => Promise<void>;
   /** Whether the project has a name. Deliberately not "is saved": since
    *  settings began writing through (.scratch/optional-projects/spec.md
    *  §5.2) everything is saved, named or not — what varies is whether you
@@ -464,6 +492,76 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  const setCardPrintingMutation = useMutation({
+    mutationFn: async (args: {
+      cardId: number;
+      printing: {
+        scryfallId: string;
+        name: string;
+        setCode: string;
+        collectorNumber: string;
+        lang: string;
+      };
+    }) => {
+      await projectApi.setCardPrinting(args.cardId, args.printing);
+      return args;
+    },
+    onSuccess: ({ cardId, printing }) => {
+      setCards((prev) =>
+        prev.map((c) =>
+          c.id === cardId
+            ? {
+                ...c,
+                scryfall_id: printing.scryfallId,
+                name: printing.name,
+                set_code: printing.setCode,
+                collector_number: printing.collectorNumber,
+                lang: printing.lang,
+              }
+            : c,
+        ),
+      );
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const applyCardResolutionsMutation = useMutation({
+    mutationFn: async (
+      updates: {
+        card_id: number;
+        scryfall_id: string;
+        name: string;
+        set_code: string;
+        collector_number: string;
+        lang: string;
+      }[],
+    ) => {
+      await projectApi.setCardsResolution(updates);
+      return updates;
+    },
+    onSuccess: (updates) => {
+      const byId = new Map(updates.map((u) => [u.card_id, u]));
+      setCards((prev) =>
+        prev.map((c) => {
+          const u = byId.get(c.id);
+          return u
+            ? {
+                ...c,
+                scryfall_id: u.scryfall_id,
+                name: u.name,
+                set_code: u.set_code,
+                collector_number: u.collector_number,
+                lang: u.lang,
+              }
+            : c;
+        }),
+      );
+    },
+    // Deliberately no onError surface: the eager resolve is best-effort
+    // background work — a failure just leaves cards unpinned, and the next
+    // project load retries.
+  });
+
   const setCardQuantityMutation = useMutation({
     mutationFn: async ({ cardId, quantity }: { cardId: number; quantity: number }) => {
       await projectApi.setCardQuantity(cardId, quantity);
@@ -703,6 +801,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     setCardQuantity: (cardId: number, quantity: number) =>
       setCardQuantityMutation.mutate({ cardId, quantity }),
+    setCardPrinting: async (cardId, printing) => {
+      await setCardPrintingMutation.mutateAsync({ cardId, printing });
+    },
+    applyCardResolutions: async (updates) => {
+      await applyCardResolutionsMutation.mutateAsync(updates);
+    },
     isNamed: projectName.trim().length > 0,
     rename: async (name: string) => {
       await renameMutation.mutateAsync(name);

@@ -44,6 +44,9 @@ def client(tmp_path: Path, monkeypatch) -> TestClient:
     db.init_db(db_path)
     monkeypatch.setenv("PROXY_SCALER_DB_PATH", str(db_path))
     monkeypatch.setenv("PROXY_SCALER_WORKER_LOCK_PATH", str(tmp_path / "worker.lock"))
+    # Not initialized on purpose — card-corpus endpoints must behave as
+    # "no corpus imported yet" by default; tests that need one seed it.
+    monkeypatch.setenv("PROXY_SCALER_CARD_DB_PATH", str(tmp_path / "cards.db"))
     monkeypatch.setattr(
         ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])] * len(entries)
     )
@@ -1134,3 +1137,152 @@ def test_adopt_gallery_prunes_stale_records_on_load(
     assert client.get("/api/gallery", params={"project_tag": "tag-stale"}).json() == []
     tasks = client.get("/api/tasks", params={"project_tag": "tag-stale"}).json()
     assert tasks == []
+
+
+# ---------------------------------------------------------------------------
+# Card corpus endpoints (routers/cards.py)
+
+
+def _seed_card_db(**card_overrides) -> None:
+    """Initialize the tmp corpus (PROXY_SCALER_CARD_DB_PATH, set by the
+    client fixture) with one card plus finished import meta."""
+    from proxy_scaler import carddb
+
+    path = os.environ["PROXY_SCALER_CARD_DB_PATH"]
+    card = {
+        "id": "bolt-lea",
+        "oracle_id": "oracle-bolt",
+        "name": "Lightning Bolt",
+        "lang": "en",
+        "set": "lea",
+        "set_name": "Limited Edition Alpha",
+        "collector_number": "161",
+        "released_at": "1993-08-05",
+        "layout": "normal",
+        "digital": False,
+        "image_status": "highres_scan",
+        "highres_image": True,
+        "image_uris": {"png": "https://img.example/bolt.png"},
+    }
+    card.update(card_overrides)
+    carddb.init_card_db(path)
+    conn = carddb.connect(path)
+    try:
+        carddb.upsert_cards(conn, [card])
+        carddb.write_import_meta(
+            conn, dataset_type="default_cards", dataset_updated_at="2026-08-19T00:00:00Z"
+        )
+    finally:
+        conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _clean_card_jobs():
+    from proxy_scaler import card_jobs
+
+    card_jobs._reset_for_tests()
+    yield
+    card_jobs._reset_for_tests()
+
+
+def test_card_status_no_corpus_offline(client: TestClient, monkeypatch) -> None:
+    from proxy_scaler import card_import
+
+    monkeypatch.setattr(
+        card_import,
+        "fetch_bulk_catalog",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+    body = client.get("/api/cards/status").json()
+    assert body["local"] is None
+    assert body["remote"] is None  # unreachable catalog is "unknown", not a 5xx
+    assert body["import_running"] is False
+
+
+def test_card_status_reports_local_and_remote(client: TestClient, monkeypatch) -> None:
+    from proxy_scaler import card_import
+    from proxy_scaler.card_import import BulkDatasetInfo
+
+    _seed_card_db()
+    monkeypatch.setattr(
+        card_import,
+        "fetch_bulk_catalog",
+        lambda *a, **k: {
+            "default_cards": BulkDatasetInfo(
+                dataset="default_cards",
+                updated_at="2026-08-20T00:00:00Z",
+                download_uri="https://data.example/d.jsonl.gz",
+                compressed_size=77,
+            )
+        },
+    )
+    body = client.get("/api/cards/status").json()
+    assert body["local"]["dataset_type"] == "default_cards"
+    assert body["local"]["card_count"] == 1
+    assert body["remote"]["default_cards"]["updated_at"] == "2026-08-20T00:00:00Z"
+
+
+def test_card_import_validates_dataset(client: TestClient) -> None:
+    resp = client.post("/api/cards/import", json={"dataset": "oracle_cards"})
+    assert resp.status_code == 422
+
+
+def test_card_import_refuses_concurrent_jobs(client: TestClient, monkeypatch) -> None:
+    from proxy_scaler import card_import, card_jobs
+
+    # Don't actually run anything on the spawned thread.
+    monkeypatch.setattr(card_import, "run_import", lambda *a, **k: None)
+    first = client.post("/api/cards/import", json={"dataset": "default_cards"})
+    assert first.status_code == 202
+    job_id = first.json()["job_id"]
+    assert card_jobs.get(job_id) is not None
+    second = client.post("/api/cards/import", json={"dataset": "default_cards"})
+    assert second.status_code == 409
+
+
+def test_card_import_status_and_cancel_roundtrip(client: TestClient, monkeypatch) -> None:
+    from proxy_scaler import card_import, card_jobs
+
+    monkeypatch.setattr(card_import, "run_import", lambda *a, **k: None)
+    job_id = client.post("/api/cards/import", json={"dataset": "all_cards"}).json()[
+        "job_id"
+    ]
+    body = client.get(f"/api/cards/import/{job_id}").json()
+    assert body["status"] == "running"
+    assert body["dataset"] == "all_cards"
+    assert client.post(f"/api/cards/import/{job_id}/cancel").status_code == 204
+    assert card_jobs.is_cancel_requested(job_id)
+    assert client.get("/api/cards/import/nope").status_code == 404
+    assert client.post("/api/cards/import/nope/cancel").status_code == 404
+
+
+def test_card_languages_default_and_seeded(client: TestClient) -> None:
+    assert client.get("/api/cards/languages").json() == {"languages": ["en"]}
+    _seed_card_db()
+    assert client.get("/api/cards/languages").json() == {"languages": ["en"]}
+
+
+def test_card_variants_requires_corpus(client: TestClient) -> None:
+    resp = client.get("/api/cards/variants", params={"name": "Lightning Bolt"})
+    assert resp.status_code == 404
+    assert "import" in resp.json()["detail"].lower()
+
+
+def test_card_variants_by_each_anchor(client: TestClient) -> None:
+    _seed_card_db()
+    for params in (
+        {"scryfall_id": "bolt-lea"},
+        {"set_code": "LEA", "collector_number": "161"},
+        {"name": "lightning bolt"},
+    ):
+        body = client.get("/api/cards/variants", params=params).json()
+        assert body["anchor"]["scryfall_id"] == "bolt-lea"
+        assert body["total"] == 1
+        assert body["variants"][0]["set_code"] == "lea"
+
+
+def test_card_variants_unknown_card_404(client: TestClient) -> None:
+    _seed_card_db()
+    resp = client.get("/api/cards/variants", params={"name": "Storm Crow"})
+    assert resp.status_code == 404
+    assert "newer than the last import" in resp.json()["detail"]
