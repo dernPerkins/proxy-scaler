@@ -64,12 +64,23 @@ export default function ResumeTasksPrompt() {
     checkedThisConnection.current = true;
 
     let cancelled = false;
+    // Set only when a run reaches one of its real outcomes (not held /
+    // released / dialog up). StrictMode's dev-only mount→unmount→remount
+    // cancels the first run mid-flight — that run must hand the guard
+    // back in cleanup, or the remount's run bails on it and the check
+    // never happens at all (a held worker would then sit held forever,
+    // with no dialog).
+    let settled = false;
     void (async () => {
       try {
         // generationApi.request() already awaits the server-ready gate,
         // so nothing here races the sidecar's startup.
         const worker = await generationApi.workerStatus();
-        if (cancelled || !worker.held) return;
+        if (cancelled) return;
+        if (!worker.held) {
+          settled = true;
+          return;
+        }
         const tasks = await generationApi.listTasks();
         if (cancelled) return;
         const count = tasks.filter(
@@ -77,20 +88,24 @@ export default function ResumeTasksPrompt() {
         ).length;
         if (count === 0) {
           await generationApi.releaseWorker();
+          settled = true;
           void queryClient.invalidateQueries({ queryKey: ["worker-status"] });
           return;
         }
+        settled = true;
         setLeftover(count);
       } catch (err) {
         // Reaching here means the server stopped answering right after
         // connecting — in which case a release call would fail too.
         // Leaving the worker held is the safe direction: nothing heavy
-        // starts, and the next launch simply asks again.
+        // starts, and the next launch simply asks again. Deliberately
+        // not `settled`: if the component remounts, the check retries.
         console.error("leftover-task check failed; worker stays held", err);
       }
     })();
     return () => {
       cancelled = true;
+      if (!settled) checkedThisConnection.current = false;
     };
   }, [mode, status.kind, queryClient]);
 
