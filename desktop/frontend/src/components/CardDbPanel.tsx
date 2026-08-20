@@ -80,8 +80,14 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
   const staleDays = local
     ? Math.floor((Date.now() - Date.parse(local.imported_at)) / 86_400_000)
     : null;
+  // Scryfall republishes daily, so "remote is newer" is true within hours
+  // of almost any import — only worth nagging about once the user's own
+  // import is at least a day old. Someone who updated this morning
+  // doesn't care that tonight's dump exists.
   const behindRemote =
     local != null &&
+    staleDays != null &&
+    staleDays >= 1 &&
     remote?.[local.dataset_type] != null &&
     remote[local.dataset_type]!.updated_at > local.dataset_updated_at;
   const nudge =
