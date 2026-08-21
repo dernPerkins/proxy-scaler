@@ -94,7 +94,8 @@ relationship, instead of an accident of a shared database.
                           │    bulk-imported on demand)            │
                           │  - download + upscale pipeline         │
                           │  - generation_tasks queue               │
-                          │  - project_gallery_items (images)      │
+                          │  - generated_images registry +         │
+                          │    project_gallery_memberships         │
                           │  - PDF assembly                        │
                           │ No concept of "projects."               │
                           └───────────────────────────────────────┘
@@ -130,10 +131,17 @@ reason this migration is a reshape rather than a rewrite:
   via plain string keys built from `scryfall_id`/`set_code`/
   `collector_number`/`face_index`/`dpi`/`model` — never a database join.
   It ported to TypeScript unchanged in shape.
-- **`project_gallery_items` already redundantly stored every identity
-  field** on each row. Its only real dependency on `project_cards` was
-  the `card_id` foreign key, which became a plain `project_tag TEXT`
-  column — a small, mechanical schema change.
+- **The gallery table already redundantly stored every identity field**
+  on each row. Its only real dependency on `project_cards` was the
+  `card_id` foreign key, which became a plain `project_tag TEXT` column
+  — a small, mechanical schema change. (Migration 6 later reshaped that
+  table again into the global `generated_images` registry — one row per
+  physically distinct image, `scryfall_id` always real — plus a
+  `project_gallery_memberships` relation saying which projects show
+  which images. The registry is the authoritative "does this image
+  exist" answer: query paths never stat the filesystem; only the
+  explicit adopt/prune reconcile does. See
+  `docs/adr/0004-generated-image-registry.md`.)
 
 This transition is now formally tracked as migration 1 in `db.py`'s
 versioned schema-migration system (`_MIGRATIONS`, applied via

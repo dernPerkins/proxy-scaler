@@ -320,6 +320,33 @@ def test_variants_missing_release_date_sorts_last(conn) -> None:
     assert [v["id"] for v in variants] == ["v-dated", "v-undated"]
 
 
+def test_variants_carry_face_count_without_leaking_card_json(conn) -> None:
+    """Each variant row computes face_count from its card_json (the
+    picker's coverage indicator compares generated faces against it), and
+    the blob itself still never reaches the caller."""
+    carddb.upsert_cards(
+        conn,
+        [
+            _card(id="v-single"),
+            _card(
+                id="v-dfc",
+                set="fin",
+                collector_number="376",
+                layout="transform",
+                card_faces=[
+                    {"name": "Front", "image_uris": {"png": "https://img.example/f.png"}},
+                    {"name": "Back", "image_uris": {"png": "https://img.example/b.png"}},
+                ],
+            ),
+        ],
+    )
+    variants = carddb.variants_for_oracle_id(conn, "oracle-1")
+    by_id = {v["id"]: v for v in variants}
+    assert by_id["v-single"]["face_count"] == 1
+    assert by_id["v-dfc"]["face_count"] == 2
+    assert all("card_json" not in v for v in variants)
+
+
 def test_collector_sort_key_natural_order() -> None:
     numbers = ["100b", "2", "10", "100a", "A-1"]
     ordered = sorted(numbers, key=carddb.collector_sort_key)

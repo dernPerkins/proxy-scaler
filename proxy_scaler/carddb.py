@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from . import db as _db
-from .scryfall import card_printed_name
+from .scryfall import card_printed_name, expected_face_count
 
 DEFAULT_CARD_DB_PATH = _db._DATA_ROOT / "scryfall_cards.db"
 
@@ -435,12 +435,15 @@ def variants_for_oracle_id(
 ) -> list[dict[str, Any]]:
     """Every printing sharing an oracle_id — the change-printing dropdown's
     contents. Returns column data (not the card_json blobs; the picker
-    doesn't need image URLs), sorted newest release first, then set, then
-    collector number in natural order (so "2" sorts before "10"), English
-    before other languages of the same printing."""
+    doesn't need image URLs) plus a computed face_count (how many images
+    one generation of the printing produces per DPI — the blob is read
+    here to derive it, then dropped), sorted newest release first, then
+    set, then collector number in natural order (so "2" sorts before
+    "10"), English before other languages of the same printing."""
     sql = """
         SELECT id, name, printed_name, set_code, set_name, collector_number,
-               lang, released_at, digital, image_status, highres_image
+               lang, released_at, digital, image_status, highres_image,
+               card_json
         FROM cards WHERE oracle_id = ?
     """
     if not include_digital:
@@ -456,7 +459,16 @@ def variants_for_oracle_id(
             row["lang"],
         )
 
-    return [dict(row) for row in sorted(rows, key=sort_key)]
+    variants = []
+    for row in sorted(rows, key=sort_key):
+        data = dict(row)
+        raw = data.pop("card_json", None)
+        try:
+            data["face_count"] = expected_face_count(json.loads(raw) if raw else {})
+        except (TypeError, ValueError):
+            data["face_count"] = 1
+        variants.append(data)
+    return variants
 
 
 def _released_desc_key(released_at: str | None) -> tuple:

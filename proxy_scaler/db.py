@@ -86,9 +86,10 @@ DEFAULT_DB_PATH = _DATA_ROOT / "proxy_scaler.db"
 WORKER_LOCK_FILE = _DATA_ROOT / "worker.lock"
 WORKER_LOG_FILE = _DATA_ROOT / "worker.log"
 
-# Abandoned_Air_Temple-TLA-263-ultrasharp_v2-600dpi.png
+# Abandoned_Air_Temple-TLA-263-ultrasharp_v2-600dpi.png  (legacy, no id)
 # Name-SET-COLLECTOR-front-ultrasharp_v2-800dpi.png  (collector may contain hyphens)
 # Name-SET-COLLECTOR-ja-front-ultrasharp_v2-800dpi.png  (non-English printing)
+# Name-SET-COLLECTOR-ultrasharp_v2-800dpi-<scryfall uuid>.png  (current format)
 # Parsed from the right so numeric collectors are not mistaken for set codes.
 # Model slugs come straight from the enum so the alternation can't drift;
 # longest-first guards against any future slug being a prefix of another.
@@ -101,12 +102,23 @@ _MODEL_SLUGS = "|".join(
 # pipeline.output_filename), so an absent group reads back as "en" — which
 # also keeps every pre-language filename parsing exactly as before.
 _LANG_CODES = "|".join(lang for lang in SCRYFALL_LANGUAGES if lang != "en")
+# The trailing scryfall_id (a Scryfall UUID, appended by output_filename
+# since the generated_images registry) is optional: files produced before
+# it existed keep their names forever — the server never renames on disk,
+# since it only ever learns output_dir per request — so both formats must
+# parse for as long as legacy files can exist.
+_SCRYFALL_UUID = (
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
     rf"(?:-(?P<lang>{_LANG_CODES}))?"
     r"(?:-(?P<face>front|back))?"
     rf"-(?P<model>{_MODEL_SLUGS})"
-    r"-(?P<dpi>\d+)dpi\.png$",
+    r"-(?P<dpi>\d+)dpi"
+    rf"(?:-(?P<scryfall_id>{_SCRYFALL_UUID}))?"
+    r"\.png$",
     re.IGNORECASE,
 )
 
@@ -161,9 +173,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status
 CREATE INDEX IF NOT EXISTS idx_tasks_project_tag
     ON generation_tasks(project_tag);
 
-CREATE TABLE IF NOT EXISTS project_gallery_items (
+-- The global registry of generated images: one row per physically
+-- distinct output image, shared by every project. No project_tag —
+-- which projects show an image is project_gallery_memberships' job.
+-- scryfall_id is always a real Scryfall UUID: files that can't be
+-- resolved to one (output-dir rescans without a card corpus) are simply
+-- not registered, rather than minting sentinel ids. This table is the
+-- authoritative "does this image exist" answer — query paths (gallery
+-- list, generation-status lookups, PDF layout) read it without touching
+-- the filesystem; reconcile paths (prune/adopt) are what re-align it
+-- with disk.
+CREATE TABLE IF NOT EXISTS generated_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_tag TEXT NOT NULL,
     scryfall_id TEXT NOT NULL,
     face_index INTEGER,
     face_name TEXT,
@@ -189,12 +210,31 @@ CREATE TABLE IF NOT EXISTS project_gallery_items (
     total_faces INTEGER,
     -- Scryfall language code of the printing (see generation_tasks.lang).
     -- 'en' for rows predating migration 005.
-    lang TEXT NOT NULL DEFAULT 'en',
-    UNIQUE (project_tag, scryfall_id, face_index, model, dpi)
+    lang TEXT NOT NULL DEFAULT 'en'
 );
 
-CREATE INDEX IF NOT EXISTS idx_gallery_project_tag
-    ON project_gallery_items(project_tag);
+-- DB-level backstop for one-row-per-variant. COALESCE because
+-- face_index is NULL for single-faced cards and SQLite treats NULLs as
+-- distinct in UNIQUE indexes; the write path still probes with
+-- `face_index IS ?` itself (see upsert_gallery_item) rather than
+-- leaning on ON CONFLICT against an expression index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_variant
+    ON generated_images(scryfall_id, COALESCE(face_index, -1), model, dpi);
+
+-- Which projects show which registry images in their gallery. Pure
+-- relation: all image metadata lives on generated_images. Cascade so
+-- deleting a registry row (pruning a file that vanished from disk)
+-- silently drops it from every project's gallery.
+CREATE TABLE IF NOT EXISTS project_gallery_memberships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_tag TEXT NOT NULL,
+    image_id INTEGER NOT NULL
+        REFERENCES generated_images(id) ON DELETE CASCADE,
+    UNIQUE (project_tag, image_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memberships_project_tag
+    ON project_gallery_memberships(project_tag);
 
 -- Cross-process control flags shared between the API server and the
 -- worker (separate processes whose only common ground is this database).
@@ -526,6 +566,117 @@ def _migration_005_add_lang(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migration_006_split_gallery_registry(conn: sqlite3.Connection) -> None:
+    """Split project_gallery_items into the global generated_images
+    registry plus the project_gallery_memberships relation (see _SCHEMA).
+    One registry row per physically distinct image regardless of how many
+    projects showed it — per variant key the newest created_at row wins
+    (same recency rule as the PDF variant pick; NULL sorts oldest), and
+    every (project_tag, variant) pair becomes a membership.
+
+    Rows with a sentinel scryfall_id ('scan:…', or '' from early builds)
+    are dropped, not carried over: the registry's contract is that
+    scryfall_id is always real. Those rows were pure derivations of files
+    still on disk, and the adopt endpoint's rescan — which, unlike this
+    migration, can reach the card corpus to resolve a filename's printing
+    to a real id — re-registers them on the next project load. Worst case
+    a scanned image reads "not generated" until that reconcile runs.
+
+    A no-op (beyond creating the new tables, which _SCHEMA would anyway)
+    when project_gallery_items is absent — migration 001 may have dropped
+    a pre-reshape one."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generated_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scryfall_id TEXT NOT NULL,
+            face_index INTEGER,
+            face_name TEXT,
+            card_name TEXT,
+            set_code TEXT,
+            collector_number TEXT,
+            face_label TEXT,
+            model TEXT NOT NULL,
+            dpi INTEGER NOT NULL,
+            native_scale INTEGER NOT NULL DEFAULT 4,
+            device TEXT NOT NULL DEFAULT 'unknown',
+            image_filename TEXT NOT NULL,
+            out_path TEXT NOT NULL,
+            original_path TEXT NOT NULL,
+            png_url TEXT NOT NULL,
+            created_at TEXT,
+            total_faces INTEGER,
+            lang TEXT NOT NULL DEFAULT 'en'
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_variant "
+        "ON generated_images(scryfall_id, COALESCE(face_index, -1), model, dpi)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_gallery_memberships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_tag TEXT NOT NULL,
+            image_id INTEGER NOT NULL
+                REFERENCES generated_images(id) ON DELETE CASCADE,
+            UNIQUE (project_tag, image_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memberships_project_tag "
+        "ON project_gallery_memberships(project_tag)"
+    )
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "project_gallery_items" not in tables:
+        return
+    # Columns added by migrations 002/003/005 are guaranteed present here:
+    # steps replay strictly in order, so a database this old has already
+    # passed through them by the time this one runs.
+    conn.execute(
+        """
+        INSERT INTO generated_images (
+            scryfall_id, face_index, face_name, card_name, set_code,
+            collector_number, face_label, model, dpi, native_scale, device,
+            image_filename, out_path, original_path, png_url, created_at,
+            total_faces, lang)
+        SELECT scryfall_id, face_index, face_name, card_name, set_code,
+            collector_number, face_label, model, dpi, native_scale, device,
+            image_filename, out_path, original_path, png_url, created_at,
+            total_faces, lang
+        FROM project_gallery_items p
+        WHERE p.scryfall_id != '' AND p.scryfall_id NOT LIKE 'scan:%'
+          AND p.id = (
+              SELECT p2.id FROM project_gallery_items p2
+              WHERE p2.scryfall_id = p.scryfall_id
+                AND p2.face_index IS p.face_index
+                AND p2.model = p.model AND p2.dpi = p.dpi
+              ORDER BY p2.created_at IS NULL, p2.created_at DESC, p2.id DESC
+              LIMIT 1
+          )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO project_gallery_memberships (project_tag, image_id)
+        SELECT p.project_tag, g.id
+        FROM project_gallery_items p
+        JOIN generated_images g ON g.scryfall_id = p.scryfall_id
+            AND g.face_index IS p.face_index
+            AND g.model = p.model AND g.dpi = p.dpi
+        WHERE p.scryfall_id != '' AND p.scryfall_id NOT LIKE 'scan:%'
+        """
+    )
+    conn.execute("DROP TABLE project_gallery_items")
+
+
 # Ordered oldest-to-newest. _migrate() below walks this list and applies
 # whichever steps are newer than a database's current PRAGMA user_version,
 # one at a time in order — so a database several versions behind replays
@@ -563,8 +714,15 @@ _MIGRATIONS: list[Migration] = [
         "selectable from the local card corpus",
         _migration_005_add_lang,
     ),
+    Migration(
+        6,
+        "split project_gallery_items into the global generated_images "
+        "registry (real scryfall_id only) plus project_gallery_memberships, "
+        "making the database the authoritative record of which images exist",
+        _migration_006_split_gallery_registry,
+    ),
 ]
-SCHEMA_VERSION = 5  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 6  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -574,6 +732,8 @@ _KNOWN_TABLES = frozenset(
     {
         "generation_tasks",
         "project_gallery_items",
+        "generated_images",
+        "project_gallery_memberships",
         "worker_control",
         "projects",
         "project_cards",
@@ -893,9 +1053,12 @@ def get_task(task_id: int, db_path: Path | str | None = None) -> TaskRow | None:
 
 
 def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
+    """One generated_images row as the dict shape gallery consumers use.
+    Registry rows carry no project_tag — membership is a separate
+    relation (project_gallery_memberships), so the same dict serves every
+    project that shows the image."""
     return {
         "id": int(g["id"]),
-        "project_tag": g["project_tag"],
         "out_path": g["out_path"],
         "original_path": g["original_path"],
         "scryfall_id": g["scryfall_id"],
@@ -909,59 +1072,35 @@ def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
         "model": g["model"],
         "face_label": g["face_label"],
         "native_scale": int(g["native_scale"] or 4),
-        "device": g["device"] if "device" in g.keys() else "unknown",
+        "device": g["device"],
         "image_filename": g["image_filename"],
-        # Absent on rows written before migration 002; None is meaningful
-        # (treated as oldest) rather than an error case.
-        "created_at": g["created_at"] if "created_at" in g.keys() else None,
-        # Absent on rows written before migration 003; None means "unknown,
-        # don't verify DFC completeness" (see pdf_layout.match_quantities).
-        "total_faces": g["total_faces"] if "total_faces" in g.keys() else None,
-        # 'en' for rows written before migration 005 — the honest value,
-        # since only English printings were reachable before then.
-        "lang": g["lang"] if "lang" in g.keys() else "en",
+        # None is meaningful (treated as oldest by the PDF variant pick),
+        # not an error case — pre-migration-002 rows carried no timestamp.
+        "created_at": g["created_at"],
+        # None means "unknown, don't verify DFC completeness" (see
+        # pdf_layout.match_quantities).
+        "total_faces": g["total_faces"],
+        "lang": g["lang"],
     }
 
 
 def list_gallery_items(
     project_tag: str, db_path: Path | str | None = None
 ) -> list[dict[str, Any]]:
-    """A project's persisted gallery rows, scoped by project_tag — cheap
-    enough to call on every Decklist tab poll to pick up results the
+    """A project's gallery: the registry rows it holds memberships for —
+    cheap enough to call on every Decklist tab poll to pick up results the
     background worker wrote directly via upsert_gallery_item_for_task()."""
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT * FROM project_gallery_items
-            WHERE project_tag = ?
-            ORDER BY dpi ASC, face_index ASC
+            SELECT g.* FROM generated_images g
+            JOIN project_gallery_memberships m ON m.image_id = g.id
+            WHERE m.project_tag = ?
+            ORDER BY g.dpi ASC, g.face_index ASC
             """,
             (project_tag,),
         ).fetchall()
     return [_gallery_row_to_dict(g) for g in rows]
-
-
-def _variant_key(
-    set_code: str | None,
-    collector_number: Any,
-    face_index: int | None,
-    model: str,
-    dpi: int,
-    lang: str | None = None,
-) -> tuple:
-    """Identity of one displayable image variant: a printing's face at one
-    model+dpi. Printing (set+collector+lang), not scryfall_id, so rows
-    recovered from filenames alone (empty scryfall_id) still compare equal
-    to fully resolved rows for the same image. Absent lang reads as "en" —
-    every pre-language row was English by construction."""
-    return (
-        (set_code or "").lower(),
-        str(collector_number),
-        (lang or "en").lower(),
-        face_index,
-        model,
-        dpi,
-    )
 
 
 def adopt_gallery_items(
@@ -969,33 +1108,43 @@ def adopt_gallery_items(
     entries: list[DeckEntry],
     db_path: Path | str | None = None,
     output_dir: Path | str | None = None,
+    card_db_path: Path | str | None = None,
 ) -> int:
-    """Register already-existing images for matching cards into this
+    """Make already-existing images for matching cards show in this
     project's gallery, so a freshly imported deck shows what already
     exists instead of "Not generated yet" until a Generate is requested.
 
     Two passes:
-    1. Copy other projects' gallery rows (full metadata). Matched by exact
-       printing (set_code + collector_number) when the entry has one, else
-       by card name; newest row per variant wins. Rows whose output file
-       is gone from disk are skipped — adopting one would produce a
-       gallery entry that lists as "done" but 404s on view and breaks PDF
-       export.
-    2. Scan output_dir filenames for images with no gallery row anywhere
-       (files predating the gallery table, or produced by the CLI). These
-       register with what the filename proves (printing/face/model/dpi)
-       and an empty scryfall_id/png_url/original_path; the next real
-       generation or skip_existing pass replaces them with full-metadata
-       rows (see upsert_gallery_item). created_at is the file's mtime —
-       when the image was actually produced — which is what the PDF tab's
-       most-recent-wins pick means by recency. Name-only entries can't
-       match here (no printing token to find in the filename).
+    1. Registry adoption, pure SQL plus one liveness stat per candidate:
+       every generated_images row matching an entry — by scryfall_id when
+       the entry is pinned to one, by printing (set + collector + lang)
+       when it has one, else by card name — that this project holds no
+       membership for yet gains a membership. Rows whose output file is
+       gone from disk are deleted from the registry outright (the cascade
+       drops them from every project's gallery): adopting one would
+       produce a gallery entry that lists as "done" but 404s on view and
+       breaks PDF export.
+    2. When output_dir is sent: scan its filenames for images with no
+       registry row (files predating the registry, or produced by the
+       CLI). A file whose name embeds its scryfall_id (the current
+       output_filename format) registers directly; a legacy-named file
+       is resolved to a real scryfall_id through the card corpus by its
+       printing, strictly language-matched. Files that can't be resolved
+       — printing not in the corpus, or no corpus imported at all — are
+       skipped entirely: the registry never holds sentinel ids.
+       created_at is the file's mtime — when the image was actually
+       produced — which is what the PDF tab's most-recent-wins pick means
+       by recency. Name-only entries can't match here (no printing token
+       to find in the filename).
 
-    Variants this project already has are always left alone: a re-import
-    must never clobber this project's own results. Returns the number of
-    rows adopted."""
+    Returns the number of memberships added."""
     if not project_tag or not entries:
         return 0
+    # Local import: carddb is a separate optional database (the Scryfall
+    # corpus); only this reconcile path ever crosses into it from here.
+    from . import carddb
+
+    ids = {entry.scryfall_id for entry in entries if entry.scryfall_id}
     # Printing identity includes language (absent → "en" on both sides):
     # an Italian entry adopts only Italian rows of its printing.
     exact = {
@@ -1014,123 +1163,147 @@ def adopt_gallery_items(
     }
 
     adopted = 0
-    with connect(db_path) as conn:
-        have = {
-            _variant_key(
-                r["set_code"], r["collector_number"], r["face_index"], r["model"],
-                r["dpi"], r["lang"],
+    card_conn: sqlite3.Connection | None = None
+    card_conn_opened = False
+
+    def corpus() -> sqlite3.Connection | None:
+        # Lazy and once: most adopt calls have nothing to resolve, and the
+        # corpus may legitimately not exist (open_if_ready → None).
+        nonlocal card_conn, card_conn_opened
+        if not card_conn_opened:
+            card_conn_opened = True
+            card_conn = carddb.open_if_ready(
+                Path(card_db_path) if card_db_path else None
             )
-            for r in conn.execute(
-                "SELECT set_code, collector_number, face_index, model, dpi, lang "
-                "FROM project_gallery_items WHERE project_tag = ?",
+        return card_conn
+
+    try:
+        with connect(db_path) as conn:
+            def add_membership_row(image_id: int) -> None:
+                nonlocal adopted
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO project_gallery_memberships "
+                    "(project_tag, image_id) VALUES (?, ?)",
+                    (project_tag, image_id),
+                )
+                adopted += cur.rowcount
+
+            candidates = conn.execute(
+                """
+                SELECT g.* FROM generated_images g
+                WHERE g.id NOT IN (
+                    SELECT image_id FROM project_gallery_memberships
+                    WHERE project_tag = ?
+                )
+                """,
                 (project_tag,),
             ).fetchall()
-        }
-
-        def insert_row(values: dict[str, Any]) -> None:
-            # Filename-recovered rows have no real scryfall_id. They can't
-            # share '' either: the UNIQUE key is (tag, scryfall_id,
-            # face_index, model, dpi), and while NULL face_index rows never
-            # collide (SQLite treats NULLs as distinct), two different DFCs'
-            # "front" files (face_index 0) at the same model+dpi would. A
-            # per-printing sentinel keeps the key unique and is what
-            # upsert_gallery_item's supersede-DELETE matches on.
-            scryfall_id = values["scryfall_id"] or (
-                f"scan:{(values['set_code'] or '').lower()}:{values['collector_number']}"
-            )
-            conn.execute(
-                """
-                INSERT INTO project_gallery_items (
-                    project_tag, scryfall_id, face_index, face_name, card_name,
-                    set_code, collector_number, face_label, model, dpi, native_scale,
-                    device, image_filename, out_path, original_path, png_url,
-                    created_at, total_faces, lang
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    project_tag,
-                    scryfall_id,
-                    values["face_index"],
-                    values["face_name"],
-                    values["card_name"],
-                    values["set_code"],
-                    values["collector_number"],
-                    values["face_label"],
-                    values["model"],
-                    values["dpi"],
-                    values["native_scale"],
-                    values["device"],
-                    values["image_filename"],
-                    values["out_path"],
-                    values["original_path"],
-                    values["png_url"],
-                    values["created_at"],
-                    values["total_faces"],
-                    values.get("lang", "en"),
-                ),
-            )
-
-        rows = conn.execute(
-            # Newest first so the first row seen per variant key is the
-            # winner; NULL created_at (pre-migration-002 rows) sorts last.
-            """
-            SELECT * FROM project_gallery_items
-            WHERE project_tag != ?
-            ORDER BY created_at IS NULL, created_at DESC
-            """,
-            (project_tag,),
-        ).fetchall()
-        for row in rows:
-            row_lang = row["lang"] if "lang" in row.keys() else None
-            matches = (
-                (row["set_code"] or "").lower(),
-                str(row["collector_number"]),
-                (row_lang or "en").lower(),
-            ) in exact or (row["card_name"] or "").lower() in names
-            if not matches:
-                continue
-            key = _variant_key(
-                row["set_code"], row["collector_number"], row["face_index"],
-                row["model"], row["dpi"], row_lang,
-            )
-            if key in have:
-                continue
-            if not Path(row["out_path"]).is_file():
-                continue
-            insert_row({k: row[k] for k in row.keys()})
-            have.add(key)
-            adopted += 1
-
-        if output_dir is not None:
-            for item in scan_gallery_from_output(output_dir, entries):
-                key = _variant_key(
-                    item["set_code"], item["collector_number"], item["face_index"],
-                    item["model"], item["dpi"], item.get("lang"),
+            for row in candidates:
+                matches = (
+                    row["scryfall_id"] in ids
+                    or (
+                        (row["set_code"] or "").lower(),
+                        str(row["collector_number"]),
+                        (row["lang"] or "en").lower(),
+                    )
+                    in exact
+                    or (row["card_name"] or "").lower() in names
                 )
-                if key in have:
+                if not matches:
                     continue
-                path = Path(item["out_path"])
-                item["created_at"] = (
-                    datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-                    .replace(microsecond=0)
-                    .isoformat()
-                )
-                item["total_faces"] = None
-                insert_row(item)
-                have.add(key)
-                adopted += 1
+                if not Path(row["out_path"]).is_file():
+                    conn.execute(
+                        "DELETE FROM generated_images WHERE id = ?",
+                        (int(row["id"]),),
+                    )
+                    continue
+                add_membership_row(int(row["id"]))
 
-        conn.commit()
+            if output_dir is not None:
+                for item in scan_gallery_from_output(output_dir, entries):
+                    scryfall_id = item["scryfall_id"]
+                    if not scryfall_id:
+                        cconn = corpus()
+                        if cconn is None:
+                            continue
+                        card_row = carddb.find_row_by_set_collector(
+                            cconn,
+                            item["set_code"],
+                            item["collector_number"],
+                            # Strict: a Japanese file must not register
+                            # under the English printing of its set/collector.
+                            only_lang=item["lang"],
+                        )
+                        if card_row is None:
+                            continue
+                        scryfall_id = card_row["id"]
+                    existing = conn.execute(
+                        "SELECT id FROM generated_images WHERE scryfall_id = ? "
+                        "AND face_index IS ? AND model = ? AND dpi = ?",
+                        (
+                            scryfall_id,
+                            item["face_index"],
+                            item["model"],
+                            item["dpi"],
+                        ),
+                    ).fetchone()
+                    if existing is not None:
+                        add_membership_row(int(existing["id"]))
+                        continue
+                    path = Path(item["out_path"])
+                    created_at = (
+                        datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                        .replace(microsecond=0)
+                        .isoformat()
+                    )
+                    cur = conn.execute(
+                        """
+                        INSERT INTO generated_images (
+                            scryfall_id, face_index, face_name, card_name,
+                            set_code, collector_number, face_label, model, dpi,
+                            native_scale, device, image_filename, out_path,
+                            original_path, png_url, created_at, total_faces, lang
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            scryfall_id,
+                            item["face_index"],
+                            item["face_name"],
+                            item["card_name"],
+                            item["set_code"],
+                            item["collector_number"],
+                            item["face_label"],
+                            item["model"],
+                            item["dpi"],
+                            item["native_scale"],
+                            item["device"],
+                            item["image_filename"],
+                            item["out_path"],
+                            item["original_path"],
+                            item["png_url"],
+                            created_at,
+                            None,
+                            item["lang"],
+                        ),
+                    )
+                    add_membership_row(int(cur.lastrowid))
+
+            conn.commit()
+    finally:
+        if card_conn is not None:
+            card_conn.close()
     return adopted
 
 
 def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = None) -> int:
-    """Delete this project's gallery rows — and its "done" task records —
-    whose output file no longer exists on disk, so the deck list's badges
-    stop asserting images that can't be served. Output files are shared
-    across projects and carry no tag, so any project (or a manual delete)
-    can remove a file out from under every other project's rows; this runs
-    on project load (via the adopt endpoint) to reconcile.
+    """Delete the registry rows this project's gallery shows — and its
+    "done" task records — whose output file no longer exists on disk, so
+    the deck list's badges stop asserting images that can't be served.
+    Output files are shared across projects and carry no tag, so any
+    project (or a manual delete) can remove a file out from under every
+    project's rows; this runs on project load (via the adopt endpoint) to
+    reconcile. Dead rows leave the registry itself (the file is gone for
+    everyone), and the membership cascade clears them from every gallery.
 
     Done tasks must go along with the rows: the client's status merge
     falls back to the newest task's own status for a (face, dpi, model)
@@ -1146,35 +1319,59 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
 
     pruned = 0
     with connect(db_path) as conn:
+        # Stale registry rows are deleted from the registry itself, not
+        # just this project's membership: the file is gone for everyone,
+        # and the FK cascade drops the row from every project's gallery.
         stale_rows = [
             int(r["id"])
             for r in conn.execute(
-                "SELECT id, out_path FROM project_gallery_items WHERE project_tag = ?",
+                """
+                SELECT g.id, g.out_path FROM generated_images g
+                JOIN project_gallery_memberships m ON m.image_id = g.id
+                WHERE m.project_tag = ?
+                """,
                 (project_tag,),
             )
             if not Path(r["out_path"]).is_file()
         ]
         for gid in stale_rows:
-            conn.execute("DELETE FROM project_gallery_items WHERE id = ?", (gid,))
+            conn.execute("DELETE FROM generated_images WHERE id = ?", (gid,))
         pruned += len(stale_rows)
 
         stale_tasks = []
         for t in conn.execute(
-            "SELECT id, face_name, set_code, collector_number, face_label, "
-            "model, dpi, output_dir, lang FROM generation_tasks "
+            "SELECT id, scryfall_id, face_name, set_code, collector_number, "
+            "face_label, model, dpi, output_dir, lang FROM generation_tasks "
             "WHERE project_tag = ? AND status = 'done'",
             (project_tag,),
         ):
-            out = Path(t["output_dir"]) / output_filename(
-                t["face_name"],
-                t["set_code"],
-                t["collector_number"],
-                t["face_label"],
-                t["model"],
-                t["dpi"],
-                lang=t["lang"],
+            # A done task's file may carry either filename format: tasks
+            # completed since the registry embed their scryfall_id, older
+            # ones don't — and legacy files are never renamed. Stale only
+            # when neither name exists.
+            out_dir = Path(t["output_dir"])
+            names = (
+                output_filename(
+                    t["face_name"],
+                    t["set_code"],
+                    t["collector_number"],
+                    t["face_label"],
+                    t["model"],
+                    t["dpi"],
+                    lang=t["lang"],
+                    scryfall_id=t["scryfall_id"],
+                ),
+                output_filename(
+                    t["face_name"],
+                    t["set_code"],
+                    t["collector_number"],
+                    t["face_label"],
+                    t["model"],
+                    t["dpi"],
+                    lang=t["lang"],
+                ),
             )
-            if not out.is_file():
+            if not any((out_dir / name).is_file() for name in names):
                 stale_tasks.append(int(t["id"]))
         for tid in stale_tasks:
             conn.execute("DELETE FROM generation_tasks WHERE id = ?", (tid,))
@@ -1186,31 +1383,109 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
 def get_gallery_item(
     gallery_item_id: int, db_path: Path | str | None = None
 ) -> dict[str, Any] | None:
-    """Look up one gallery row by its own id — a plain global primary key,
-    not scoped by project_tag, since (unlike listing, which is always
+    """Look up one registry row by its own id — a plain global primary
+    key, not scoped by project_tag, since (unlike listing, which is always
     "for this project") a single id is already unambiguous on its own."""
     with connect(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM project_gallery_items WHERE id = ?", (gallery_item_id,)
+            "SELECT * FROM generated_images WHERE id = ?", (gallery_item_id,)
         ).fetchone()
     return _gallery_row_to_dict(row) if row is not None else None
+
+
+def find_generated_image(
+    scryfall_id: str,
+    face_index: int | None,
+    model: str,
+    dpi: int,
+    db_path: Path | str | None = None,
+) -> dict[str, Any] | None:
+    """One registry row by its variant key, or None. The registry-first
+    half of the skip-existing check (services/generation.py): the database
+    is the authority on what exists, so a known image needs no filename
+    reconstruction — just a liveness stat of the recorded out_path."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM generated_images WHERE scryfall_id = ? "
+            "AND face_index IS ? AND model = ? AND dpi = ?",
+            (scryfall_id, face_index, model, dpi),
+        ).fetchone()
+    return _gallery_row_to_dict(row) if row is not None else None
+
+
+def add_membership(
+    project_tag: str, image_id: int, db_path: Path | str | None = None
+) -> None:
+    """Show one registry image in one project's gallery. Idempotent."""
+    if not project_tag:
+        return
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO project_gallery_memberships "
+            "(project_tag, image_id) VALUES (?, ?)",
+            (project_tag, image_id),
+        )
+        conn.commit()
+
+
+def generated_variants_status(
+    scryfall_ids: list[str],
+    model: str,
+    dpis: list[int],
+    db_path: Path | str | None = None,
+) -> dict[str, list[tuple[int, int | None]]]:
+    """For each requested scryfall_id: the (dpi, face_index) pairs that
+    exist in the registry at the given model, across every project — the
+    printing picker's "already generated" lookup. Registry-only by
+    design: no membership join (an image generated under any project
+    counts) and no filesystem stats — a row can briefly outlive a
+    deleted file until the next adopt/prune reconcile, which is the
+    accepted trade for a query path that never touches disk."""
+    if not scryfall_ids or not dpis or not model:
+        return {}
+    found: dict[str, list[tuple[int, int | None]]] = {}
+    with connect(db_path) as conn:
+        # Chunked to stay well under SQLite's host-parameter limit.
+        for start in range(0, len(scryfall_ids), 500):
+            chunk = scryfall_ids[start : start + 500]
+            placeholders_ids = ",".join("?" * len(chunk))
+            placeholders_dpis = ",".join("?" * len(dpis))
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT scryfall_id, dpi, face_index
+                FROM generated_images
+                WHERE model = ? AND dpi IN ({placeholders_dpis})
+                  AND scryfall_id IN ({placeholders_ids})
+                """,
+                (model, *dpis, *chunk),
+            ).fetchall()
+            for r in rows:
+                found.setdefault(r["scryfall_id"], []).append(
+                    (int(r["dpi"]), r["face_index"])
+                )
+    return found
 
 
 def clear_project_generation_records(
     project_tag: str, db_path: Path | str | None = None
 ) -> None:
     """Deletes this project_tag's finished generation_tasks (done/failed/
-    canceled) and all of its project_gallery_items — the DB-side half of
+    canceled) and all of its gallery memberships — the DB-side half of
     "delete all generated images & cache" (see pipeline.py::
-    clear_generated_data for the on-disk half). pending/running tasks are
-    left alone: they haven't written a file yet, so there's nothing about
-    them for the delete to have invalidated.
+    clear_generated_data for the on-disk half, and prune_registry_under_dir
+    for the registry half when files are actually deleted). pending/running
+    tasks are left alone: they haven't written a file yet, so there's
+    nothing about them for the delete to have invalidated.
 
-    Both tables have to be touched, not just the gallery rows: a gallery
+    Memberships only, never registry rows: discarding a tag deletes no
+    files, so images it shared with other projects genuinely still exist
+    and must keep answering existence queries for them.
+
+    Both tables have to be touched, not just the memberships: a gallery
     row missing for a (scryfall_id, face_index, dpi, model) pair falls back
     to that pair's newest task's own status in the client's merge (see
     mergeCardStatus.ts::statusForPairs), and a *completed* task's status is
-    literally "done" — so deleting only the gallery row would still leave
+    literally "done" — so deleting only the membership would still leave
     the UI reporting "done" for images that no longer exist on disk, from
     task history alone. A no-op for a falsy project_tag, matching every
     other project_tag-scoped write in this module."""
@@ -1222,17 +1497,47 @@ def clear_project_generation_records(
             "AND status NOT IN ('pending', 'running')",
             (project_tag,),
         )
-        conn.execute("DELETE FROM project_gallery_items WHERE project_tag = ?", (project_tag,))
+        conn.execute(
+            "DELETE FROM project_gallery_memberships WHERE project_tag = ?",
+            (project_tag,),
+        )
         conn.commit()
+
+
+def prune_registry_under_dir(
+    output_dir: Path | str, db_path: Path | str | None = None
+) -> int:
+    """Delete every registry row whose out_path sits under output_dir —
+    the DB-side companion to pipeline.clear_generated_data actually
+    deleting those files. Without this, the stat-free existence queries
+    (generated_variants_status and the skip-existing registry probe) would
+    keep asserting images that were just wiped, for every project, until
+    some prune happened to notice. The membership cascade clears every
+    project's gallery along the way. Returns rows deleted."""
+    prefix = str(Path(output_dir).resolve())
+    if not prefix:
+        return 0
+    if not prefix.endswith(os.sep):
+        prefix += os.sep
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            # ESCAPE so a directory containing SQL wildcard characters
+            # (%, _) can't over-match unrelated paths.
+            "DELETE FROM generated_images WHERE out_path LIKE ? ESCAPE '\\'",
+            (prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%",),
+        )
+        conn.commit()
+        return cur.rowcount
 
 
 def upsert_gallery_item_for_task(
     task: TaskRow, result: FaceResult, db_path: Path | str | None = None
 ) -> None:
-    """Persist one completed task's result straight into
-    project_gallery_items — how a background-worker-produced image makes
-    it into a project's gallery. A no-op if the task has no project_tag
-    (nothing to scope it to).
+    """Persist one completed task's result straight into the
+    generated_images registry, plus a membership for the task's project —
+    how a background-worker-produced image makes it into a project's
+    gallery. A no-op if the task has no project_tag (nothing to scope the
+    membership to).
 
     No project_cards lookup/matching needed any more: the task already
     carries project_tag directly (denormalized at enqueue time, like
@@ -1253,43 +1558,27 @@ def upsert_gallery_item(
     output file already on disk (so no task ever runs for it under the
     current project_tag) and needs to register it into this project's
     gallery anyway, or it never shows up as "done" in the UI even though
-    the image genuinely exists. A no-op if project_tag is falsy."""
-    if not project_tag:
+    the image genuinely exists.
+
+    Writes the registry row (insert, or refresh in place when the variant
+    already exists) and then this project's membership. A no-op if
+    project_tag is falsy — and if the result carries no scryfall_id,
+    which real callers never produce (worker tasks and skip-existing both
+    start from fully resolved faces): the registry's contract is that
+    scryfall_id is always real."""
+    if not project_tag or not result.scryfall_id:
         return
     with connect(db_path) as conn:
-        # A fully resolved row supersedes any filename-recovered placeholder
-        # (scryfall_id 'scan:…' — or '' from early builds — from
-        # adopt_gallery_items' output-dir scan) for the same printed variant
-        # — without this, the first real generation after an adoption would
-        # show the image twice.
-        if result.scryfall_id:
-            conn.execute(
-                "DELETE FROM project_gallery_items WHERE project_tag = ? "
-                "AND (scryfall_id = '' OR scryfall_id LIKE 'scan:%') "
-                "AND lower(set_code) = lower(?) "
-                "AND collector_number = ? AND lower(lang) = lower(?) "
-                "AND face_index IS ? AND model = ? AND dpi = ?",
-                (
-                    project_tag,
-                    result.set_code,
-                    str(result.collector_number),
-                    result.lang or "en",
-                    result.face_index,
-                    result.model,
-                    result.dpi,
-                ),
-            )
-        # Not a plain `ON CONFLICT` upsert: the UNIQUE constraint includes
+        # Not a plain `ON CONFLICT` upsert: the UNIQUE index includes
         # face_index, which is NULL for the common single-faced-card case,
-        # and SQLite treats every NULL as distinct in a UNIQUE index — so
-        # ON CONFLICT would never fire and repeated regenerations of the
-        # same card/dpi/model would just keep inserting duplicate rows.
-        # `IS ?` (unlike `= ?`) matches NULL-to-NULL correctly.
+        # and SQLite treats every NULL as distinct in a UNIQUE index (the
+        # index COALESCEs around that as a backstop, but conflict targets
+        # against an expression index are their own can of worms). `IS ?`
+        # (unlike `= ?`) matches NULL-to-NULL correctly.
         existing = conn.execute(
-            "SELECT id FROM project_gallery_items WHERE project_tag = ? "
-            "AND scryfall_id = ? AND face_index IS ? AND model = ? AND dpi = ?",
+            "SELECT id FROM generated_images WHERE scryfall_id = ? "
+            "AND face_index IS ? AND model = ? AND dpi = ?",
             (
-                project_tag,
                 result.scryfall_id,
                 result.face_index,
                 result.model,
@@ -1316,29 +1605,29 @@ def upsert_gallery_item(
             result.lang,
         )
         if existing is not None:
+            image_id = int(existing["id"])
             conn.execute(
                 """
-                UPDATE project_gallery_items SET
+                UPDATE generated_images SET
                     face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
                     face_label = ?, native_scale = ?, device = ?, image_filename = ?,
                     out_path = ?, original_path = ?, png_url = ?, created_at = ?,
                     total_faces = ?, lang = ?
                 WHERE id = ?
                 """,
-                (*values, int(existing["id"])),
+                (*values, image_id),
             )
         else:
-            conn.execute(
+            cur = conn.execute(
                 """
-                INSERT INTO project_gallery_items (
-                    project_tag, scryfall_id, face_index, face_name, card_name,
+                INSERT INTO generated_images (
+                    scryfall_id, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
                     device, image_filename, out_path, original_path, png_url,
                     created_at, total_faces, lang
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    project_tag,
                     result.scryfall_id,
                     result.face_index,
                     result.face_name,
@@ -1359,6 +1648,12 @@ def upsert_gallery_item(
                     values[-1],  # lang
                 ),
             )
+            image_id = int(cur.lastrowid)
+        conn.execute(
+            "INSERT OR IGNORE INTO project_gallery_memberships "
+            "(project_tag, image_id) VALUES (?, ?)",
+            (project_tag, image_id),
+        )
         conn.commit()
 
 
@@ -1477,6 +1772,7 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
     face = match.group("face")
     face_index = None if face is None else (0 if face.lower() == "front" else 1)
     lang = match.group("lang")
+    scryfall_id = match.group("scryfall_id")
     return {
         "image_filename": name,
         "set_code": set_col.group("set").lower(),
@@ -1489,6 +1785,9 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
         # English is never written into filenames, so absent means "en" —
         # which also covers every pre-language file.
         "lang": lang.lower() if lang else "en",
+        # "" for legacy filenames that predate the embedded id — those
+        # need the card corpus to resolve to a real scryfall_id.
+        "scryfall_id": scryfall_id.lower() if scryfall_id else "",
     }
 
 
@@ -1568,11 +1867,15 @@ def scan_gallery_from_output(
             raw_lang = suffix.group("lang")
             lang = raw_lang.lower() if raw_lang else "en"
 
+        raw_id = suffix.group("scryfall_id")
         gallery.append(
             {
                 "out_path": str(path.resolve()),
                 "original_path": "",
-                "scryfall_id": "",
+                # Embedded in the filename by the current output_filename
+                # format; "" for legacy files, which adopt_gallery_items
+                # resolves through the card corpus instead.
+                "scryfall_id": raw_id.lower() if raw_id else "",
                 "face_index": face_index,
                 "face_name": entry.name.split(" // ")[0]
                 if face_index in (None, 0)

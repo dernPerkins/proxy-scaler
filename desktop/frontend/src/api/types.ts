@@ -97,6 +97,10 @@ export interface RegenerateGalleryItemRequest {
   // setting for that variant's model. output_dir/cache_dir/weights_dir
   // are generation-machine-local paths the server no longer has any
   // other way to know (see ARCHITECTURE.md).
+  // project_tag says whose regeneration this is: gallery rows are global
+  // registry entries shared across projects, so the item itself no
+  // longer carries one.
+  project_tag: string;
   tile_size?: number;
   output_dir: string;
   cache_dir: string;
@@ -215,12 +219,34 @@ export interface CardVariant {
   digital: boolean;
   image_status: string | null;
   highres_image: boolean;
+  // How many output images one generation of this printing produces per
+  // DPI (2 for a DFC, else 1) — the picker's coverage math compares
+  // generated faces against it. Optional: older servers don't send it,
+  // and absent reads as 1.
+  face_count?: number;
 }
 
 export interface CardVariantsResult {
   anchor: CardVariant;
   variants: CardVariant[];
   total: number;
+}
+
+// One generated (dpi, face) pair found in the server's generated-images
+// registry; face_index null = single-faced (same convention as
+// GalleryItem).
+export interface GeneratedPair {
+  dpi: number;
+  face_index: number | null;
+}
+
+export interface GalleryStatusResult {
+  // Keyed by scryfall_id; ids with nothing generated are simply absent.
+  // Cross-project by construction — an image generated under any project
+  // counts — and answered from the registry alone (no filesystem stats),
+  // so a just-deleted file can linger as generated until the next
+  // adopt/prune reconcile.
+  statuses: Record<string, GeneratedPair[]>;
 }
 
 export interface PdfLayoutRequest {

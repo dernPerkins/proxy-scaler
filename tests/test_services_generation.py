@@ -193,6 +193,79 @@ def test_enqueue_decklist_entries_skips_existing_output_file(
     assert any("already exist" in n for n in notes)
 
 
+def test_enqueue_decklist_entries_registry_hit_skips_without_filename_probe(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Registry-first skip: a variant already in generated_images (with a
+    live file at its recorded out_path — anywhere, not necessarily under
+    this request's output_dir or either filename shape) is skipped, and
+    this project just gains a membership to the existing row."""
+    from proxy_scaler.pipeline import FaceResult
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    img = elsewhere / "arbitrary-name.png"
+    img.write_bytes(b"fake png")
+    db.upsert_gallery_item(
+        "tag-original",
+        FaceResult(
+            out_path=img,
+            original_path=img,
+            scryfall_id="sol-id",
+            face_index=None,
+            face_name="Sol Ring",
+            card_name="Sol Ring",
+            set_code="c21",
+            collector_number="263",
+            png_url="https://example.com/sol.png",
+            dpi=800,
+            model="ultrasharp_v2",
+        ),
+        db_path=db_path,
+    )
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()  # empty — no file of either filename shape here
+    tag = "proj-tag-registry"
+    queued, failed, task_ids = generation.enqueue_decklist_entries(
+        [_entry()],
+        model="ultrasharp_v2",
+        dpi_targets=[800],
+        skip_existing=True,
+        tile_size=0,
+        output_dir=output_dir,
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag=tag,
+        db_path=db_path,
+    )
+    assert queued == 0
+    assert task_ids == []
+    [item] = db.list_gallery_items(tag, db_path=db_path)
+    assert item["scryfall_id"] == "sol-id"
+    assert item["out_path"] == str(img)
+
+    # A registry row whose file is gone does NOT satisfy the skip — the
+    # face queues for real generation instead.
+    img.unlink()
+    queued, failed, task_ids = generation.enqueue_decklist_entries(
+        [_entry()],
+        model="ultrasharp_v2",
+        dpi_targets=[800],
+        skip_existing=True,
+        tile_size=0,
+        output_dir=output_dir,
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="proj-tag-after-delete",
+        db_path=db_path,
+    )
+    assert queued == 1
+
+
 def test_enqueue_decklist_entries_backfills_gallery_for_preexisting_file(
     db_path: Path, tmp_path: Path, monkeypatch
 ) -> None:

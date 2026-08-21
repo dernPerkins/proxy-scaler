@@ -143,6 +143,28 @@ def test_parse_output_filename() -> None:
     # Removed models no longer parse.
     assert parse_output_filename("Sol_Ring-C21-263-swinir-600dpi.png") is None
 
+    # Current format: a trailing scryfall UUID after the dpi segment.
+    # Legacy names (all cases above) read it back as "".
+    assert anime_fast["scryfall_id"] == ""
+    with_id = parse_output_filename(
+        "Sol_Ring-C21-263-ultrasharp_v2-800dpi-"
+        "4CBC6901-6a4a-4d0a-83ea-7eefa3b35021.png"
+    )
+    assert with_id is not None
+    assert with_id["scryfall_id"] == "4cbc6901-6a4a-4d0a-83ea-7eefa3b35021"
+    assert with_id["set_code"] == "c21"
+    assert with_id["collector_number"] == "263"
+    assert with_id["dpi"] == 800
+
+    dfc_with_id = parse_output_filename(
+        "Dion_Bahamuts_Dominant-FIN-376-ja-front-ultrasharp_v2-800dpi-"
+        "f2309a7e-4ba0-4820-8313-ecd38d32a55f.png"
+    )
+    assert dfc_with_id is not None
+    assert dfc_with_id["scryfall_id"] == "f2309a7e-4ba0-4820-8313-ecd38d32a55f"
+    assert dfc_with_id["face_label"] == "front"
+    assert dfc_with_id["lang"] == "ja"
+
 
 def test_scan_gallery_from_output(tmp_path: Path) -> None:
     from proxy_scaler.decklist import parse_decklist_text
@@ -198,14 +220,53 @@ def test_adopt_gallery_items_matches_name_only_entries(db_path: Path, tmp_path: 
     assert db_module.adopt_gallery_items("tag-c", [other], db_path=db_path) == 0
 
 
+def _seed_corpus(tmp_path: Path, cards: list[dict]) -> Path:
+    """A minimal card corpus for adopt's scan-resolution path — legacy
+    filenames carry no scryfall_id, so registering them goes through
+    carddb.find_row_by_set_collector."""
+    from proxy_scaler import carddb
+
+    path = tmp_path / "cards.db"
+    carddb.init_card_db(path)
+    conn = carddb.connect(path)
+    try:
+        carddb.upsert_cards(conn, cards)
+    finally:
+        conn.close()
+    return path
+
+
+def _corpus_card(**overrides) -> dict:
+    card = {
+        "id": "sol-id",
+        "oracle_id": "oracle-sol",
+        "name": "Sol Ring",
+        "lang": "en",
+        "set": "c21",
+        "set_name": "Commander 2021",
+        "collector_number": "263",
+        "released_at": "2021-04-23",
+        "layout": "normal",
+        "digital": False,
+        "image_status": "highres_scan",
+        "highres_image": True,
+        "image_uris": {"png": "https://example.com/sol.png"},
+    }
+    card.update(overrides)
+    return card
+
+
 def test_adopt_gallery_items_scans_output_dir_for_rowless_files(
     db_path: Path, tmp_path: Path
 ) -> None:
-    """Files with no gallery row anywhere (pre-reshape or CLI-produced)
-    register from their filename alone, and a later real generation
-    replaces the placeholder instead of duplicating it."""
+    """Legacy-named files with no registry row (pre-registry or
+    CLI-produced) register through the card corpus, which resolves the
+    filename's printing to its real scryfall_id — so a later real
+    generation of the same variant updates that row in place instead of
+    duplicating it."""
     from proxy_scaler.decklist import DeckEntry
 
+    card_db = _seed_corpus(tmp_path, [_corpus_card()])
     out = tmp_path / "output"
     out.mkdir()
     img = out / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"
@@ -213,36 +274,119 @@ def test_adopt_gallery_items_scans_output_dir_for_rowless_files(
 
     entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     assert (
-        db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path, output_dir=out) == 1
+        db_module.adopt_gallery_items(
+            "tag-b", [entry], db_path=db_path, output_dir=out, card_db_path=card_db
+        )
+        == 1
     )
     [item] = list_gallery_items("tag-b", db_path=db_path)
-    assert item["scryfall_id"] == "scan:c21:263"
+    assert item["scryfall_id"] == "sol-id"
     assert item["model"] == "ultrasharp_v2"
     assert item["dpi"] == 800
     assert item["created_at"] is not None
 
     # Idempotent.
     assert (
-        db_module.adopt_gallery_items("tag-b", [entry], db_path=db_path, output_dir=out) == 0
+        db_module.adopt_gallery_items(
+            "tag-b", [entry], db_path=db_path, output_dir=out, card_db_path=card_db
+        )
+        == 0
     )
 
-    # A real generation for the same variant supersedes the placeholder.
+    # A real generation for the same variant lands on the same registry
+    # row — one gallery entry, refreshed metadata.
     db_module.upsert_gallery_item(
         "tag-b", _result(out_path=img, original_path=img, dpi=800), db_path=db_path
     )
     [item] = list_gallery_items("tag-b", db_path=db_path)
     assert item["scryfall_id"] == "sol-id"
+    assert item["png_url"] == "https://example.com/sol.png"
+
+
+def test_adopt_gallery_items_scan_skips_unresolvable_files(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """No corpus (or a printing the corpus doesn't know): the file is
+    skipped outright rather than registered under a sentinel id — the
+    registry's scryfall_id is always real."""
+    from proxy_scaler.decklist import DeckEntry
+
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png").write_bytes(b"png")
+
+    entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    # No corpus at all.
+    assert (
+        db_module.adopt_gallery_items(
+            "tag-b", [entry], db_path=db_path, output_dir=out,
+            card_db_path=tmp_path / "missing-cards.db",
+        )
+        == 0
+    )
+    assert list_gallery_items("tag-b", db_path=db_path) == []
+
+    # A corpus that doesn't know this printing.
+    card_db = _seed_corpus(tmp_path, [_corpus_card(set="lea", collector_number="1")])
+    assert (
+        db_module.adopt_gallery_items(
+            "tag-b", [entry], db_path=db_path, output_dir=out, card_db_path=card_db
+        )
+        == 0
+    )
+    assert list_gallery_items("tag-b", db_path=db_path) == []
+
+
+def test_adopt_gallery_items_scan_registers_embedded_id_without_corpus(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """A current-format filename embeds its scryfall_id, so recovery needs
+    no corpus at all."""
+    from proxy_scaler.decklist import DeckEntry
+
+    out = tmp_path / "output"
+    out.mkdir()
+    (
+        out
+        / "Sol_Ring-C21-263-ultrasharp_v2-800dpi-"
+        "4cbc6901-6a4a-4d0a-83ea-7eefa3b35021.png"
+    ).write_bytes(b"png")
+
+    entry = DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    assert (
+        db_module.adopt_gallery_items(
+            "tag-b", [entry], db_path=db_path, output_dir=out,
+            card_db_path=tmp_path / "missing-cards.db",
+        )
+        == 1
+    )
+    [item] = list_gallery_items("tag-b", db_path=db_path)
+    assert item["scryfall_id"] == "4cbc6901-6a4a-4d0a-83ea-7eefa3b35021"
 
 
 def test_adopt_gallery_items_scans_two_dfcs_without_key_collision(
     db_path: Path, tmp_path: Path
 ) -> None:
     """Two different DFCs' front files share (face_index=0, model, dpi);
-    with a common empty scryfall_id they'd violate the gallery UNIQUE key
-    (the NULL-face_index single-faced case never can — SQLite treats NULLs
-    as distinct). The per-printing sentinel keeps them apart."""
+    corpus resolution gives each its own real scryfall_id, so they land
+    as two distinct registry rows."""
     from proxy_scaler.decklist import DeckEntry
 
+    card_db = _seed_corpus(
+        tmp_path,
+        [
+            _corpus_card(
+                id="dion-id", oracle_id="oracle-dion",
+                name="Dion, Bahamut's Dominant // Bahamut, Warden of Light",
+                set="fin", collector_number="376", layout="transform",
+            ),
+            _corpus_card(
+                id="ajani-id", oracle_id="oracle-ajani",
+                name="Ajani, Nacatl Pariah // Ajani, Nacatl Avenger",
+                set="m3c", collector_number="1", layout="transform",
+            ),
+        ],
+    )
     out = tmp_path / "output"
     out.mkdir()
     (out / "Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-1200dpi.png").write_bytes(b"a")
@@ -253,10 +397,88 @@ def test_adopt_gallery_items_scans_two_dfcs_without_key_collision(
         DeckEntry(quantity=1, name="Ajani, Nacatl Pariah", set_code="m3c", collector_number="1"),
     ]
     assert (
-        db_module.adopt_gallery_items("tag-b", entries, db_path=db_path, output_dir=out) == 2
+        db_module.adopt_gallery_items(
+            "tag-b", entries, db_path=db_path, output_dir=out, card_db_path=card_db
+        )
+        == 2
     )
     ids = {i["scryfall_id"] for i in list_gallery_items("tag-b", db_path=db_path)}
-    assert ids == {"scan:fin:376", "scan:m3c:1"}
+    assert ids == {"dion-id", "ajani-id"}
+
+
+def test_generated_variants_status_is_cross_project_and_stat_free(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """The picker's existence lookup: registry-wide (which project
+    generated an image is irrelevant) and answered without touching disk
+    (the out_path here never exists)."""
+    gone = tmp_path / "never-written.png"
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=gone, original_path=gone), db_path=db_path
+    )
+    db_module.upsert_gallery_item(
+        "tag-other", _result(out_path=gone, original_path=gone, dpi=1200), db_path=db_path
+    )
+
+    found = db_module.generated_variants_status(
+        ["sol-id"], "ultrasharp_v2", [800, 1200], db_path=db_path
+    )
+    assert sorted(found["sol-id"]) == [(800, None), (1200, None)]
+
+
+def test_generated_variants_status_filters_by_model_and_dpi(db_path: Path) -> None:
+    p = Path("/o/x.png")
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=p, original_path=p), db_path=db_path
+    )
+
+    # Wrong model: nothing.
+    assert db_module.generated_variants_status(
+        ["sol-id"], "illustrationjanai", [800], db_path=db_path
+    ) == {}
+    # DPI not requested: nothing.
+    assert db_module.generated_variants_status(
+        ["sol-id"], "ultrasharp_v2", [1200], db_path=db_path
+    ) == {}
+    # Unknown id: absent from the result, not an error.
+    found = db_module.generated_variants_status(
+        ["sol-id", "unknown-id"], "ultrasharp_v2", [800], db_path=db_path
+    )
+    assert found == {"sol-id": [(800, None)]}
+    # Empty inputs never query.
+    assert db_module.generated_variants_status([], "ultrasharp_v2", [800], db_path=db_path) == {}
+    assert db_module.generated_variants_status(["sol-id"], "ultrasharp_v2", [], db_path=db_path) == {}
+
+
+def test_generated_variants_status_reports_faces_separately(db_path: Path) -> None:
+    """A DFC generates one row per face — partial coverage (front only)
+    must be distinguishable from complete."""
+    p = Path("/o/x.png")
+    db_module.upsert_gallery_item(
+        "tag-a",
+        _result(
+            out_path=p, original_path=p, scryfall_id="dfc-id",
+            face_index=0, face_label="front", total_faces=2,
+        ),
+        db_path=db_path,
+    )
+    found = db_module.generated_variants_status(
+        ["dfc-id"], "ultrasharp_v2", [800], db_path=db_path
+    )
+    assert found == {"dfc-id": [(800, 0)]}
+
+    db_module.upsert_gallery_item(
+        "tag-a",
+        _result(
+            out_path=p, original_path=p, scryfall_id="dfc-id",
+            face_index=1, face_label="back", total_faces=2,
+        ),
+        db_path=db_path,
+    )
+    found = db_module.generated_variants_status(
+        ["dfc-id"], "ultrasharp_v2", [800], db_path=db_path
+    )
+    assert sorted(found["dfc-id"]) == [(800, 0), (800, 1)]
 
 
 def test_adopt_gallery_items_skips_rows_whose_file_is_gone(db_path: Path, tmp_path: Path) -> None:
@@ -517,7 +739,9 @@ def test_get_gallery_item_by_id_not_scoped_by_project_tag(db_path: Path) -> None
     fetched = get_gallery_item(item["id"], db_path=db_path)
     assert fetched is not None
     assert fetched["scryfall_id"] == "sol-id"
-    assert fetched["project_tag"] == tag
+    # Registry rows are global — no project_tag on them; membership is a
+    # separate relation.
+    assert "project_tag" not in fetched
 
     assert get_gallery_item(999999, db_path=db_path) is None
 
@@ -568,16 +792,105 @@ def test_init_db_fresh_db_stamps_latest_version(tmp_path: Path) -> None:
         conn.close()
 
 
+# The v5 pre-registry gallery table — what real databases looked like
+# before migration 006 split it into generated_images + memberships. Used
+# to build faithful old-shape fixtures for the bridge/migration tests.
+_V5_GALLERY_DDL = """
+CREATE TABLE project_gallery_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_tag TEXT NOT NULL,
+    scryfall_id TEXT NOT NULL,
+    face_index INTEGER,
+    face_name TEXT,
+    card_name TEXT,
+    set_code TEXT,
+    collector_number TEXT,
+    face_label TEXT,
+    model TEXT NOT NULL,
+    dpi INTEGER NOT NULL,
+    native_scale INTEGER NOT NULL DEFAULT 4,
+    device TEXT NOT NULL DEFAULT 'unknown',
+    image_filename TEXT NOT NULL,
+    out_path TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    png_url TEXT NOT NULL,
+    created_at TEXT,
+    total_faces INTEGER,
+    lang TEXT NOT NULL DEFAULT 'en',
+    UNIQUE (project_tag, scryfall_id, face_index, model, dpi)
+);
+"""
+
+_V5_TASKS_DDL = """
+CREATE TABLE generation_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_tag TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    scryfall_id TEXT NOT NULL,
+    face_index INTEGER,
+    face_label TEXT,
+    face_name TEXT NOT NULL,
+    card_name TEXT NOT NULL,
+    set_code TEXT NOT NULL,
+    collector_number TEXT NOT NULL,
+    png_url TEXT NOT NULL,
+    dpi INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    tile_size INTEGER NOT NULL DEFAULT 0,
+    output_dir TEXT NOT NULL,
+    cache_dir TEXT NOT NULL,
+    weights_dir TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    total_faces INTEGER,
+    lang TEXT NOT NULL DEFAULT 'en'
+);
+"""
+
+
+def _insert_v5_gallery_row(conn: sqlite3.Connection, **overrides) -> None:
+    values = dict(
+        project_tag="tag-a",
+        scryfall_id="sol-id",
+        face_index=None,
+        model="ultrasharp_v2",
+        dpi=800,
+        image_filename="sol.png",
+        out_path="/tmp/out/sol.png",
+        original_path="/tmp/cache/sol.png",
+        png_url="https://example.com/sol.png",
+        created_at=None,
+        lang="en",
+    )
+    values.update(overrides)
+    conn.execute(
+        """
+        INSERT INTO project_gallery_items (
+            project_tag, scryfall_id, face_index, model, dpi, image_filename,
+            out_path, original_path, png_url, created_at, lang
+        ) VALUES (
+            :project_tag, :scryfall_id, :face_index, :model, :dpi,
+            :image_filename, :out_path, :original_path, :png_url,
+            :created_at, :lang
+        )
+        """,
+        values,
+    )
+
+
 def test_init_db_bridges_already_current_unversioned_db(tmp_path: Path) -> None:
     """A database already reshaped by the pre-versioning _migrate() (real
     users, including this project's own dev DB) has project_tag columns
     and no `projects` table, but PRAGMA user_version was never set
-    (implicit 0). init_db() must recognize it's already at the current
-    shape and just stamp the version -- not rerun migration 1's drops
-    against data that's already there."""
+    (implicit 0). init_db() must recognize the shape and replay only what
+    actually applies — migrations 1-5 are guarded no-ops against it, and
+    006 carries its gallery rows into the generated_images registry plus
+    memberships rather than dropping data."""
     path = tmp_path / "bridge.db"
     conn = sqlite3.connect(str(path))
-    conn.executescript(db_module._SCHEMA)
+    conn.executescript(_V5_TASKS_DDL + _V5_GALLERY_DDL)
     conn.execute(
         """
         INSERT INTO generation_tasks (
@@ -592,19 +905,7 @@ def test_init_db_bridges_already_current_unversioned_db(tmp_path: Path) -> None:
             "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
         ),
     )
-    conn.execute(
-        """
-        INSERT INTO project_gallery_items (
-            project_tag, scryfall_id, model, dpi, image_filename,
-            out_path, original_path, png_url
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "tag-a", "sol-id", "ultrasharp_v2", 800, "sol.png",
-            "/tmp/out/sol.png", "/tmp/cache/sol.png",
-            "https://example.com/sol.png",
-        ),
-    )
+    _insert_v5_gallery_row(conn)
     conn.commit()
     conn.close()
 
@@ -614,7 +915,10 @@ def test_init_db_bridges_already_current_unversioned_db(tmp_path: Path) -> None:
     try:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
         assert conn.execute("SELECT COUNT(*) FROM generation_tasks").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM project_gallery_items").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM generated_images").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT project_tag FROM project_gallery_memberships"
+        ).fetchall() == [("tag-a",)]
     finally:
         conn.close()
 
@@ -765,16 +1069,15 @@ def test_migration_003_adds_total_faces_to_existing_rows_as_null(tmp_path: Path)
     try:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
         task_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_tasks)")}
-        gallery_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(project_gallery_items)")
-        }
         assert "total_faces" in task_cols
-        assert "total_faces" in gallery_cols
 
         task_row = conn.execute("SELECT * FROM generation_tasks").fetchone()
-        gallery_row = conn.execute("SELECT * FROM project_gallery_items").fetchone()
         assert task_row["total_faces"] is None
+        # The gallery row rode migrations 003 (total_faces, NULL) and 006
+        # (registry split) — it now lives in generated_images.
+        gallery_row = conn.execute("SELECT * FROM generated_images").fetchone()
         assert gallery_row["total_faces"] is None
+        assert gallery_row["scryfall_id"] == "sol-id"
     finally:
         conn.close()
 
@@ -895,12 +1198,17 @@ def test_migration_005_adds_lang_to_existing_rows_as_en(tmp_path: Path) -> None:
     every pre-existing row, since only English printings were ever
     reachable before the card corpus made languages selectable."""
     path = tmp_path / "v4.db"
-    init_db(path)
     conn = sqlite3.connect(str(path))
     try:
-        # Rewind to the v4 shape: drop the lang columns and stamp version 4.
-        conn.execute("ALTER TABLE generation_tasks DROP COLUMN lang")
-        conn.execute("ALTER TABLE project_gallery_items DROP COLUMN lang")
+        # The v4 shape: v5 minus the lang columns.
+        conn.executescript(
+            _V5_TASKS_DDL.replace(
+                ",\n    lang TEXT NOT NULL DEFAULT 'en'", ""
+            )
+            + _V5_GALLERY_DDL.replace(
+                ",\n    lang TEXT NOT NULL DEFAULT 'en'", ""
+            )
+        )
         conn.execute(
             """
             INSERT INTO generation_tasks (
@@ -913,6 +1221,19 @@ def test_migration_005_adds_lang_to_existing_rows_as_en(tmp_path: Path) -> None:
                 "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
                 "https://example.com/sol.png", 800, "ultrasharp_v2", "/tmp/out",
                 "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO project_gallery_items (
+                project_tag, scryfall_id, model, dpi, image_filename,
+                out_path, original_path, png_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "tag-a", "sol-id", "ultrasharp_v2", 800, "sol.png",
+                "/tmp/out/sol.png", "/tmp/cache/sol.png",
+                "https://example.com/sol.png",
             ),
         )
         conn.execute("PRAGMA user_version = 4")
@@ -928,10 +1249,87 @@ def test_migration_005_adds_lang_to_existing_rows_as_en(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
         task_row = conn.execute("SELECT * FROM generation_tasks").fetchone()
         assert task_row["lang"] == "en"
-        gallery_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(project_gallery_items)")
+        # The gallery row gained lang in 005 and moved to the registry in 006.
+        gallery_row = conn.execute("SELECT * FROM generated_images").fetchone()
+        assert gallery_row["lang"] == "en"
+    finally:
+        conn.close()
+
+
+def test_migration_006_splits_gallery_into_registry_and_memberships(
+    tmp_path: Path,
+) -> None:
+    """A v5 database's gallery rows become one registry row per physical
+    image plus a membership per (tag, image): two tags sharing a variant
+    dedup to the newest-created_at row's metadata with both memberships;
+    sentinel rows ('scan:…' and '' scryfall_ids) are dropped outright —
+    they're re-derivable from disk by the adopt rescan, which unlike the
+    migration can reach the card corpus for real ids; and the old table
+    is gone."""
+    path = tmp_path / "v5.db"
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(_V5_TASKS_DDL + _V5_GALLERY_DDL)
+        # Same variant under two tags — tag-b's is newer and should win.
+        _insert_v5_gallery_row(
+            conn, project_tag="tag-a", created_at="2026-01-01T00:00:00+00:00",
+            out_path="/tmp/out/old.png",
+        )
+        _insert_v5_gallery_row(
+            conn, project_tag="tag-b", created_at="2026-02-01T00:00:00+00:00",
+            out_path="/tmp/out/new.png",
+        )
+        # A different variant (other dpi) under tag-a only.
+        _insert_v5_gallery_row(
+            conn, project_tag="tag-a", dpi=1200, out_path="/tmp/out/1200.png"
+        )
+        # Sentinel rows: filename-scan placeholders, dropped by the split.
+        _insert_v5_gallery_row(
+            conn, project_tag="tag-a", scryfall_id="scan:c21:263", dpi=600
+        )
+        _insert_v5_gallery_row(
+            conn, project_tag="tag-a", scryfall_id="", dpi=650
+        )
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
+    finally:
+        conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        assert "lang" in gallery_cols
+        assert "project_gallery_items" not in tables
+
+        rows = conn.execute(
+            "SELECT * FROM generated_images ORDER BY dpi"
+        ).fetchall()
+        assert [(r["scryfall_id"], r["dpi"]) for r in rows] == [
+            ("sol-id", 800),
+            ("sol-id", 1200),
+        ]
+        # Newest created_at won the shared-variant dedup.
+        assert rows[0]["out_path"] == "/tmp/out/new.png"
+
+        memberships = conn.execute(
+            """
+            SELECT m.project_tag, g.dpi
+            FROM project_gallery_memberships m
+            JOIN generated_images g ON g.id = m.image_id
+            ORDER BY g.dpi, m.project_tag
+            """
+        ).fetchall()
+        assert [(m["project_tag"], m["dpi"]) for m in memberships] == [
+            ("tag-a", 800),
+            ("tag-b", 800),
+            ("tag-a", 1200),
+        ]
     finally:
         conn.close()
 
@@ -980,6 +1378,36 @@ def test_output_filename_lang_roundtrip() -> None:
     ja_name = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800, lang="ja")
     assert ja_name == "Sol_Ring-C21-263-ja-ultrasharp_v2-800dpi.png"
     assert parse_output_filename(ja_name)["lang"] == "ja"
+
+
+def test_output_filename_scryfall_id_roundtrip() -> None:
+    """The current format appends the scryfall_id after the dpi segment,
+    and parse_output_filename reads it straight back — file→registry
+    recovery without a corpus lookup. Omitting it reproduces the legacy
+    shape exactly."""
+    from proxy_scaler.pipeline import output_filename
+
+    uuid = "4cbc6901-6a4a-4d0a-83ea-7eefa3b35021"
+    name = output_filename(
+        "Sol Ring", "c21", "263", None, "ultrasharp_v2", 800, scryfall_id=uuid
+    )
+    assert name == f"Sol_Ring-C21-263-ultrasharp_v2-800dpi-{uuid}.png"
+    meta = parse_output_filename(name)
+    assert meta is not None
+    assert meta["scryfall_id"] == uuid
+    assert meta["set_code"] == "c21"
+    assert meta["dpi"] == 800
+
+    ja_dfc = output_filename(
+        "Delver of Secrets", "isd", "51", "front", "ultrasharp_v2", 800,
+        lang="ja", scryfall_id=uuid,
+    )
+    meta = parse_output_filename(ja_dfc)
+    assert meta is not None
+    assert (meta["lang"], meta["face_label"], meta["scryfall_id"]) == ("ja", "front", uuid)
+
+    legacy = output_filename("Sol Ring", "c21", "263", None, "ultrasharp_v2", 800)
+    assert legacy == "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png"
 
 
 def test_enqueue_and_gallery_carry_lang(db_path: Path, tmp_path: Path) -> None:

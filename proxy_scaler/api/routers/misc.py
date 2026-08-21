@@ -104,12 +104,17 @@ def get_paths() -> GenPathsOut:
 @router.post("/generated-data/clear", response_model=ClearGeneratedOut)
 def clear_generated(body: ClearGeneratedIn) -> ClearGeneratedOut:
     notes = clear_generated_data(Path(body.output_dir), Path(body.cache_dir))
+    # Every registry row pointing under the just-emptied output dir is now
+    # a lie, for every project — and the registry answers existence
+    # queries (skip-existing, the picker's /api/gallery/status) without
+    # ever statting disk, so it must be told, not left to notice. The
+    # membership cascade clears the affected galleries along the way.
+    removed = db.prune_registry_under_dir(Path(body.output_dir), db_path=get_db_path())
+    if removed:
+        notes.append(f"unregistered {removed} generated image record(s)")
     if body.project_tag:
-        # The files these records point at are gone now — without this,
-        # the client keeps reporting every card as already generated
-        # (gallery rows say so directly; even without them, a completed
-        # task's own history reports "done" too — see
-        # db.py::clear_project_generation_records).
+        # A completed task's own history reports "done" too, even with
+        # its registry row gone — see db.py::clear_project_generation_records.
         db.clear_project_generation_records(body.project_tag, db_path=get_db_path())
         notes.append("cleared generation records for this project")
     return ClearGeneratedOut(notes=notes)

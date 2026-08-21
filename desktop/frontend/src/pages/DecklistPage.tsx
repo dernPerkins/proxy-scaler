@@ -394,6 +394,9 @@ export default function DecklistPage() {
   const regenerateMutation = useMutation({
     mutationFn: (galleryItemId: number) =>
       generationApi.regenerateGalleryItem(galleryItemId, {
+        // Gallery rows are global registry entries shared across
+        // projects — the request says whose regeneration this is.
+        project_tag: projectTag as string,
         tile_size: settings.tile_size,
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,

@@ -9,11 +9,39 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
+import { useProject } from "../context/ProjectContext";
 import type { CardRow } from "../api/project";
-import type { CardVariant } from "../api/types";
+import type { CardVariant, GeneratedPair } from "../api/types";
 
 function variantYear(v: CardVariant): string {
   return v.released_at ? ` (${v.released_at.slice(0, 4)})` : "";
+}
+
+// How much of a variant is already generated for the current sidebar
+// model + DPI selection: "full" = every selected DPI has all of the
+// printing's faces, "partial" = something exists but not everything,
+// "none" = no mark at all.
+type Coverage = "none" | "partial" | "full";
+
+function variantCoverage(
+  v: CardVariant,
+  found: GeneratedPair[] | undefined,
+  dpis: number[],
+): Coverage {
+  if (!found || found.length === 0 || dpis.length === 0) return "none";
+  // Count distinct generated faces per DPI rather than comparing face
+  // indices: Scryfall face indices aren't guaranteed 0..n-1 (faces
+  // without their own image are skipped), so "how many" is the honest
+  // comparison against face_count.
+  const facesPerDpi = new Map<number, Set<number | null>>();
+  for (const pair of found) {
+    const faces = facesPerDpi.get(pair.dpi) ?? new Set<number | null>();
+    faces.add(pair.face_index);
+    facesPerDpi.set(pair.dpi, faces);
+  }
+  const needed = v.face_count ?? 1;
+  const full = dpis.every((dpi) => (facesPerDpi.get(dpi)?.size ?? 0) >= needed);
+  return full ? "full" : "partial";
 }
 
 export default function PrintingPicker(props: {
@@ -99,6 +127,29 @@ export default function PrintingPicker(props: {
   // there's no card corpus on the server) the filter controls have nothing
   // to filter and render disabled placeholders instead of pretending.
   const ready = variantsQuery.isSuccess && variants.length > 0;
+
+  // "Already generated" marks, judged against the sidebar's current
+  // generation settings. Chained on the variants query (and gated on
+  // `open`) so the lazy-fetch rule above still holds — a closed picker
+  // fires zero requests. Model/DPIs sit in the query key, so changing
+  // them in the sidebar refetches only this cheap lookup, never the
+  // corpus-derived variants. Answered from the server's registry alone:
+  // cross-project, no filesystem stats.
+  const { settings } = useProject();
+  const dpis = settings.dpi_targets;
+  const variantIds = useMemo(() => variants.map((v) => v.scryfall_id), [variants]);
+  const statusQuery = useQuery({
+    queryKey: [
+      "printing-gen-status",
+      card.scryfall_id ?? `${card.set_code}/${card.collector_number}/${card.name}`,
+      includeDigital,
+      settings.model,
+      dpis.join(","),
+    ],
+    queryFn: () => generationApi.galleryStatus(variantIds, settings.model, dpis),
+    enabled: open && ready && dpis.length > 0,
+  });
+  const statuses = statusQuery.data?.statuses;
   const languages = useMemo(
     () => Array.from(new Set(variants.map((v) => v.lang))),
     [variants],
@@ -188,37 +239,56 @@ export default function PrintingPicker(props: {
 
           {shown.length > 0 && (
             <div className="printing-picker-list">
-              {shown.map((v) => (
-                <button
-                  key={v.scryfall_id}
-                  type="button"
-                  className={`printing-option${isCurrent(v) ? " active" : ""}`}
-                  onClick={() => {
-                    setOpen(false);
-                    if (!isCurrent(v)) {
-                      onPick({
-                        scryfallId: v.scryfall_id,
-                        name: v.name,
-                        setCode: v.set_code,
-                        collectorNumber: v.collector_number,
-                        lang: v.lang,
-                        printedName: v.printed_name,
-                      });
-                    }
-                  }}
-                >
-                  <span className="mono">
-                    {v.set_code.toUpperCase()} · #{v.collector_number} ·{" "}
-                    {v.lang.toUpperCase()}
-                  </span>
-                  <span className="printing-set-name">
-                    {v.printed_name ? `${v.printed_name} · ` : ""}
-                    {v.set_name ?? ""}
-                    {variantYear(v)}
-                    {v.digital ? " · digital" : ""}
-                  </span>
-                </button>
-              ))}
+              {shown.map((v) => {
+                const coverage = variantCoverage(v, statuses?.[v.scryfall_id], dpis);
+                return (
+                  <button
+                    key={v.scryfall_id}
+                    type="button"
+                    className={`printing-option${isCurrent(v) ? " active" : ""}`}
+                    onClick={() => {
+                      setOpen(false);
+                      if (!isCurrent(v)) {
+                        onPick({
+                          scryfallId: v.scryfall_id,
+                          name: v.name,
+                          setCode: v.set_code,
+                          collectorNumber: v.collector_number,
+                          lang: v.lang,
+                          printedName: v.printed_name,
+                        });
+                      }
+                    }}
+                  >
+                    <span className="printing-option-main">
+                      <span className="mono">
+                        {v.set_code.toUpperCase()} · #{v.collector_number} ·{" "}
+                        {v.lang.toUpperCase()}
+                      </span>
+                      {coverage !== "none" && (
+                        <span
+                          className={`printing-gen-mark ${
+                            coverage === "full" ? "gen-full" : "gen-partial"
+                          }`}
+                          title={
+                            coverage === "full"
+                              ? "Already generated: every selected DPI, all faces (current model)"
+                              : "Partially generated for the current model/DPI selection"
+                          }
+                        >
+                          ✓
+                        </span>
+                      )}
+                    </span>
+                    <span className="printing-set-name">
+                      {v.printed_name ? `${v.printed_name} · ` : ""}
+                      {v.set_name ?? ""}
+                      {variantYear(v)}
+                      {v.digital ? " · digital" : ""}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

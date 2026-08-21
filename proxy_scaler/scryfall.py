@@ -286,6 +286,21 @@ def _normalize_name(name: str) -> str:
     return " ".join(name.casefold().split())
 
 
+def expected_face_count(card: dict[str, Any]) -> int:
+    """How many face images one generation of this card produces per DPI —
+    expand_faces' rule (one image per face carrying its own image_uris.png,
+    else one parent image), without needing the faces to actually resolve.
+    Never raises: a card with no usable image at all still answers 1,
+    since this is a count for coverage math, not a fetch."""
+    faces = card.get("card_faces") or []
+    per_face = [
+        face
+        for face in faces
+        if isinstance(face, dict) and (face.get("image_uris") or {}).get("png")
+    ]
+    return len(per_face) if per_face else 1
+
+
 def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     """Expand a Scryfall card into one or more printable face images.
 

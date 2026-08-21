@@ -196,3 +196,45 @@ def test_download_png_raises_with_status_and_body_on_failure() -> None:
         download_png("https://cards.scryfall.io/x.png", session=sess)
     assert "400" in str(exc_info.value)
     assert "bot detection triggered" in str(exc_info.value)
+
+
+def test_expected_face_count_agrees_with_expand_faces() -> None:
+    """expected_face_count is expand_faces' rule as a bare count: one image
+    per face carrying its own image_uris.png, else one parent image."""
+    from proxy_scaler.scryfall import expand_faces, expected_face_count
+
+    single = _card("Sol Ring", "c21", "263", "sol-id")
+    assert expected_face_count(single) == 1
+    assert expected_face_count(single) == len(expand_faces(single))
+
+    dfc = {
+        "id": "dfc-id",
+        "name": "Dion, Bahamut's Dominant // Bahamut, Warden of Light",
+        "set": "fin",
+        "collector_number": "376",
+        "image_status": "highres_scan",
+        "card_faces": [
+            {"name": "Dion", "image_uris": {"png": "https://example.com/f.png"}},
+            {"name": "Bahamut", "image_uris": {"png": "https://example.com/b.png"}},
+        ],
+    }
+    assert expected_face_count(dfc) == 2
+    assert expected_face_count(dfc) == len(expand_faces(dfc))
+
+    # Split/adventure shape: faces exist but carry no per-face image_uris —
+    # one parent image.
+    adventure = {
+        "id": "adv-id",
+        "name": "Bonecrusher Giant // Stomp",
+        "set": "eld",
+        "collector_number": "115",
+        "image_status": "highres_scan",
+        "image_uris": {"png": "https://example.com/adv.png"},
+        "card_faces": [{"name": "Bonecrusher Giant"}, {"name": "Stomp"}],
+    }
+    assert expected_face_count(adventure) == 1
+    assert expected_face_count(adventure) == len(expand_faces(adventure))
+
+    # Unlike expand_faces, a card with no usable image still answers 1 —
+    # this is coverage math, not a fetch.
+    assert expected_face_count({"id": "x", "name": "X"}) == 1

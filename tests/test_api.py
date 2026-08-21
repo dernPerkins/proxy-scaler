@@ -651,6 +651,9 @@ def test_regenerate_gallery_item_redoes_exact_variant(
     resp = client.post(
         f"/api/gallery/{item['id']}/regenerate",
         json={
+            # Registry rows are global (shared via memberships), so the
+            # client says which project the regeneration belongs to.
+            "project_tag": "tag-a",
             "output_dir": str(tmp_path),
             "cache_dir": str(tmp_path),
             "weights_dir": str(tmp_path),
@@ -671,7 +674,12 @@ def test_regenerate_gallery_item_redoes_exact_variant(
 def test_regenerate_gallery_item_not_found(client: TestClient, tmp_path: Path) -> None:
     resp = client.post(
         "/api/gallery/999/regenerate",
-        json={"output_dir": str(tmp_path), "cache_dir": str(tmp_path), "weights_dir": str(tmp_path)},
+        json={
+            "project_tag": "tag-a",
+            "output_dir": str(tmp_path),
+            "cache_dir": str(tmp_path),
+            "weights_dir": str(tmp_path),
+        },
     )
     assert resp.status_code == 404
 
@@ -1080,8 +1088,18 @@ def test_adopt_gallery_surfaces_another_projects_images(
 def test_adopt_gallery_scans_output_dir_for_rowless_files(
     client: TestClient, tmp_path: Path
 ) -> None:
-    """Images on disk with no gallery row anywhere (pre-reshape or
-    CLI-produced) adopt from their filenames when output_dir is sent."""
+    """Images on disk with no registry row (pre-registry or CLI-produced)
+    adopt from their filenames when output_dir is sent — legacy-named
+    files resolve to a real scryfall_id through the card corpus."""
+    _seed_card_db(
+        id="sol-id",
+        oracle_id="oracle-sol",
+        name="Sol Ring",
+        set="c21",
+        set_name="Commander 2021",
+        collector_number="263",
+        released_at="2021-04-23",
+    )
     out = tmp_path / "output"
     out.mkdir()
     (out / "Sol_Ring-C21-263-illustrationjanai-1200dpi.png").write_bytes(b"png")
@@ -1098,7 +1116,63 @@ def test_adopt_gallery_scans_output_dir_for_rowless_files(
     assert resp.json() == {"adopted": 1, "pruned": 0}
 
     gallery = client.get("/api/gallery", params={"project_tag": "tag-x"}).json()
-    assert [(g["model"], g["dpi"]) for g in gallery] == [("illustrationjanai", 1200)]
+    assert [(g["scryfall_id"], g["model"], g["dpi"]) for g in gallery] == [
+        ("sol-id", "illustrationjanai", 1200)
+    ]
+
+
+def test_adopt_gallery_scan_skips_unresolvable_files_without_corpus(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A legacy-named file whose printing can't be resolved (no corpus
+    imported at all here) is skipped outright — the registry never holds
+    sentinel scryfall_ids, and the file simply waits for a corpus import
+    or a real generation to register it."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "Sol_Ring-C21-263-illustrationjanai-1200dpi.png").write_bytes(b"png")
+
+    resp = client.post(
+        "/api/gallery/adopt",
+        json={
+            "project_tag": "tag-x",
+            "entries": [_sol_ring_entry()],
+            "output_dir": str(out),
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"adopted": 0, "pruned": 0}
+    assert client.get("/api/gallery", params={"project_tag": "tag-x"}).json() == []
+
+
+def test_gallery_status_reports_cross_project_existence(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The picker's coverage lookup: an image generated under any project
+    counts (the request carries no project_tag at all), ids with nothing
+    generated are simply absent, and non-matching model/dpi filter out."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-someone-else")
+
+    resp = client.post(
+        "/api/gallery/status",
+        json={
+            "scryfall_ids": ["sol-id", "unknown-id"],
+            "model": "ultrasharp_v2",
+            "dpis": [800, 1200],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "statuses": {"sol-id": [{"dpi": 800, "face_index": None}]}
+    }
+
+    # Another model: nothing generated there.
+    resp = client.post(
+        "/api/gallery/status",
+        json={"scryfall_ids": ["sol-id"], "model": "illustrationjanai", "dpis": [800]},
+    )
+    assert resp.json() == {"statuses": {}}
 
 
 def test_adopt_gallery_prunes_stale_records_on_load(
@@ -1284,8 +1358,34 @@ def test_card_variants_by_each_anchor(client: TestClient) -> None:
     ):
         body = client.get("/api/cards/variants", params=params).json()
         assert body["anchor"]["scryfall_id"] == "bolt-lea"
+        assert body["anchor"]["face_count"] == 1
         assert body["total"] == 1
         assert body["variants"][0]["set_code"] == "lea"
+        assert body["variants"][0]["face_count"] == 1
+
+
+def test_card_variants_face_count_for_dfc(client: TestClient) -> None:
+    """A transform card with per-face images reports face_count 2 — the
+    picker's coverage math needs it to tell a half-generated DFC apart
+    from a complete one."""
+    _seed_card_db(
+        id="dion-fin",
+        oracle_id="oracle-dion",
+        name="Dion, Bahamut's Dominant // Bahamut, Warden of Light",
+        set="fin",
+        set_name="Final Fantasy",
+        collector_number="376",
+        layout="transform",
+        card_faces=[
+            {"name": "Dion, Bahamut's Dominant", "image_uris": {"png": "https://img.example/f.png"}},
+            {"name": "Bahamut, Warden of Light", "image_uris": {"png": "https://img.example/b.png"}},
+        ],
+    )
+    body = client.get(
+        "/api/cards/variants", params={"scryfall_id": "dion-fin"}
+    ).json()
+    assert body["anchor"]["face_count"] == 2
+    assert body["variants"][0]["face_count"] == 2
 
 
 def test_card_variants_unknown_card_404(client: TestClient) -> None:

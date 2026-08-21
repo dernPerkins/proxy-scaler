@@ -6,11 +6,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from proxy_scaler import db
-from proxy_scaler.api.deps import get_db_path
+from proxy_scaler.api.deps import get_card_db_path, get_db_path
 from proxy_scaler.api.schemas import (
     AdoptGalleryIn,
     AdoptGalleryOut,
     GalleryItemOut,
+    GalleryStatusIn,
+    GalleryStatusOut,
+    GeneratedPairOut,
     GenerateOut,
     RegenerateGalleryItemIn,
 )
@@ -59,15 +62,19 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
 @router.post("/adopt", response_model=AdoptGalleryOut)
 def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
     """Reconcile this project's gallery with what actually exists on disk,
-    in both directions. First prune: drop this tag's gallery rows and done-
-    task records whose output file is gone (db.prune_stale_gallery_items) —
-    pruning runs first so a stale row can't block adopting a live
-    replacement. Then adopt (db.adopt_gallery_items): other projects'
-    gallery rows, plus — when output_dir is sent — an on-disk filename
-    scan for images with no row anywhere. Called by the client after an
-    import / on project load, so badges reflect reality without waiting
-    for a Generate request. Idempotent and cheap: SQL plus file stats, no
-    Scryfall, no upscaling."""
+    in both directions. First prune: drop registry rows this tag shows —
+    and its done-task records — whose output file is gone
+    (db.prune_stale_gallery_items) — pruning runs first so a stale row
+    can't block adopting a live replacement. Then adopt
+    (db.adopt_gallery_items): memberships for registry images matching
+    this deck, plus — when output_dir is sent — an on-disk filename scan
+    for images with no registry row, resolved to real scryfall_ids via
+    the card corpus. Called by the client after an import / on project
+    load, so badges reflect reality without waiting for a Generate
+    request. This is the one deliberate place file existence is checked
+    against disk — the query paths (gallery list, /status) never stat.
+    Idempotent and cheap: SQL plus file stats, no Scryfall, no
+    upscaling."""
     db_path = get_db_path()
     pruned = db.prune_stale_gallery_items(body.project_tag, db_path=db_path)
     entries = [
@@ -87,8 +94,32 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
         entries,
         db_path=db_path,
         output_dir=Path(body.output_dir) if body.output_dir else None,
+        card_db_path=get_card_db_path(),
     )
     return AdoptGalleryOut(adopted=adopted, pruned=pruned)
+
+
+@router.post("/status", response_model=GalleryStatusOut)
+def gallery_status(body: GalleryStatusIn) -> GalleryStatusOut:
+    """Which of these printings already have generated images at this
+    model/these DPIs — the printing picker's coverage indicator. Answered
+    entirely from the generated_images registry: cross-project (an image
+    generated under any project counts) and with zero filesystem access —
+    a registry row can briefly outlive a deleted file until the next
+    adopt/prune reconcile, which is the accepted trade for a lookup the
+    picker can fire on every open."""
+    found = db.generated_variants_status(
+        body.scryfall_ids, body.model, body.dpis, db_path=get_db_path()
+    )
+    return GalleryStatusOut(
+        statuses={
+            scryfall_id: [
+                GeneratedPairOut(dpi=dpi, face_index=face_index)
+                for dpi, face_index in pairs
+            ]
+            for scryfall_id, pairs in found.items()
+        }
+    )
 
 
 @router.get("/{gallery_item_id}/original")
@@ -108,7 +139,10 @@ def get_full(gallery_item_id: int) -> FileResponse:
 @router.post("/{gallery_item_id}/regenerate", response_model=GenerateOut)
 def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateOut:
     """Redo one exact existing variant unchanged — its own scryfall_id/
-    png_url/model/dpi come from the stored gallery item, not the client."""
+    png_url/model/dpi come from the stored gallery item, not the client.
+    project_tag comes from the request: registry rows are global (shared
+    across projects via memberships), so the item itself no longer says
+    whose regeneration this is."""
     db_path = get_db_path()
     item = _find_item(gallery_item_id)
     task_ids = generation_service.enqueue_face(
@@ -126,7 +160,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         output_dir=Path(body.output_dir),
         cache_dir=Path(body.cache_dir),
         weights_dir=Path(body.weights_dir),
-        project_tag=item["project_tag"],
+        project_tag=body.project_tag,
         total_faces=item["total_faces"],
         lang=item["lang"],
         db_path=db_path,

@@ -7,6 +7,7 @@ error, because the client renders the staleness hint offline too."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 
@@ -14,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from proxy_scaler import card_import, card_jobs, carddb
 from proxy_scaler.api.deps import get_card_db_path
-from proxy_scaler.scryfall import SCRYFALL_LANGUAGES
+from proxy_scaler.scryfall import SCRYFALL_LANGUAGES, expected_face_count
 from proxy_scaler.api.schemas import (
     CardDbLocalOut,
     CardDbRemoteEntryOut,
@@ -149,6 +150,16 @@ def card_languages() -> CardLanguagesOut:
 
 
 def _variant_out(row) -> CardVariantOut:
+    # variants_for_oracle_id rows already computed face_count (and dropped
+    # the card_json blob); an anchor is a raw corpus row (SELECT *), so
+    # its count is derived from card_json here instead.
+    if "face_count" in row.keys():
+        face_count = int(row["face_count"])
+    else:
+        try:
+            face_count = expected_face_count(json.loads(row["card_json"] or "{}"))
+        except (IndexError, KeyError, TypeError, ValueError):
+            face_count = 1
     return CardVariantOut(
         scryfall_id=row["id"],
         name=row["name"],
@@ -161,6 +172,7 @@ def _variant_out(row) -> CardVariantOut:
         digital=bool(row["digital"]),
         image_status=row["image_status"],
         highres_image=bool(row["highres_image"]),
+        face_count=face_count,
     )
 
 

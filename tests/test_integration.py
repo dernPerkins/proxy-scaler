@@ -138,9 +138,17 @@ def test_cli_writes_outputs_with_mocks(tmp_path, monkeypatch):
     )
     assert rc == 0
     names = sorted(p.name for p in out.glob("*.png"))
-    assert "Sol_Ring-C21-263-ultrasharp_v2-800dpi.png" in names
-    assert "Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-800dpi.png" in names
-    assert "Bahamut_Warden_of_Light-FIN-376-back-ultrasharp_v2-800dpi.png" in names
+    # Filenames now end with the printing's scryfall_id (whatever id the
+    # resolution path produced), so match on the stable prefix.
+    assert any(n.startswith("Sol_Ring-C21-263-ultrasharp_v2-800dpi") for n in names)
+    assert any(
+        n.startswith("Dion_Bahamuts_Dominant-FIN-376-front-ultrasharp_v2-800dpi")
+        for n in names
+    )
+    assert any(
+        n.startswith("Bahamut_Warden_of_Light-FIN-376-back-ultrasharp_v2-800dpi")
+        for n in names
+    )
     assert len(names) == 3
 
 

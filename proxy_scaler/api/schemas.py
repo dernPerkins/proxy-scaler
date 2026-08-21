@@ -136,6 +136,10 @@ class RegenerateGalleryItemIn(BaseModel):
     # variant's model, not a stored per-item value. output_dir/cache_dir/
     # weights_dir are client-supplied per-request now that no project on
     # the server holds them (see ARCHITECTURE.md).
+    # project_tag scopes the regenerated task: registry rows are global
+    # (shared by every project via memberships), so the requesting client
+    # has to say which project the regeneration belongs to.
+    project_tag: str
     tile_size: int = 0
     output_dir: str
     cache_dir: str
@@ -377,6 +381,11 @@ class CardVariantOut(BaseModel):
     digital: bool
     image_status: str | None = None
     highres_image: bool
+    # How many output images one generation of this printing produces per
+    # DPI (see scryfall.expected_face_count) — what the picker's coverage
+    # indicator compares found gallery-status faces against. Defaulted so
+    # older servers' responses still parse.
+    face_count: int = 1
 
 
 class CardVariantsOut(BaseModel):
@@ -386,3 +395,27 @@ class CardVariantsOut(BaseModel):
     anchor: CardVariantOut
     variants: list[CardVariantOut]
     total: int
+
+
+class GalleryStatusIn(BaseModel):
+    # The picker's "already generated?" batch lookup: which of these
+    # printings have images in the generated_images registry at this
+    # model, at which of these DPIs. POST, not GET — a card can have
+    # hundreds of printings, well past sane URL lengths.
+    scryfall_ids: list[str]
+    model: str
+    dpis: list[int]
+
+
+class GeneratedPairOut(BaseModel):
+    dpi: int
+    # NULL face_index = single-faced (same convention as gallery rows).
+    face_index: int | None = None
+
+
+class GalleryStatusOut(BaseModel):
+    # Keyed by scryfall_id; ids with nothing generated are simply absent.
+    # Registry-wide by construction — an image generated under any
+    # project counts, and no filesystem is consulted (a row can briefly
+    # outlive a deleted file until the next adopt/prune reconcile).
+    statuses: dict[str, list[GeneratedPairOut]]

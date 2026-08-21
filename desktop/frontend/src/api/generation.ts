@@ -12,6 +12,7 @@ import type {
   DeckEntryIn,
   Device,
   GalleryItem,
+  GalleryStatusResult,
   GenerateRequest,
   GenerateResult,
   GenPathsInfo,
@@ -138,6 +139,14 @@ export const generationApi = {
     request<{ adopted: number; pruned: number }>("/api/gallery/adopt", {
       method: "POST",
       body: JSON.stringify({ project_tag: projectTag, entries, output_dir: outputDir }),
+    }),
+  // Which of these printings already have generated images at this model/
+  // these DPIs — answered from the server's registry alone (cross-project,
+  // no filesystem stats). Feeds the printing picker's coverage check marks.
+  galleryStatus: (scryfallIds: string[], model: string, dpis: number[]) =>
+    request<GalleryStatusResult>("/api/gallery/status", {
+      method: "POST",
+      body: JSON.stringify({ scryfall_ids: scryfallIds, model, dpis }),
     }),
   imageUrl: (galleryItemId: number, variant: "full" | "original") =>
     `${getApiBaseUrl()}/api/gallery/${galleryItemId}/${variant}`,

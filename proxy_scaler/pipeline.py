@@ -63,12 +63,19 @@ def output_filename(
     dpi: int | None = None,
     *,
     lang: str | None = None,
+    scryfall_id: str | None = None,
 ) -> str:
-    """Name-SET-COLLECTOR[-lang][-face]-model-dpi.png. The lang segment is
-    lowercase and only written for non-English printings — English output
-    keeps the exact pre-language filename shape, so nothing regenerates
-    just because this field appeared (and db.parse_output_filename reads a
-    missing segment back as "en" for the same reason)."""
+    """Name-SET-COLLECTOR[-lang][-face]-model-dpi[-scryfall_id].png. The
+    lang segment is lowercase and only written for non-English printings —
+    English output keeps the exact pre-language filename shape, so nothing
+    regenerates just because this field appeared (and
+    db.parse_output_filename reads a missing segment back as "en" for the
+    same reason). The trailing scryfall_id (written for every new file)
+    makes a file recoverable into the generated_images registry from its
+    name alone — no card-corpus lookup needed; files named before it
+    existed are never renamed, so consumers probe both shapes (see
+    db._OUTPUT_SUFFIX_RE and the skip-existing check in
+    services/generation.py)."""
     base = (
         f"{_safe_filename_part(face_name)}-"
         f"{set_code.upper()}-"
@@ -82,6 +89,8 @@ def output_filename(
         base = f"{base}-{parse_model(model).value}"
     if dpi is not None:
         base = f"{base}-{dpi}dpi"
+    if scryfall_id:
+        base = f"{base}-{scryfall_id.lower()}"
     return f"{base}.png"
 
 
@@ -106,7 +115,7 @@ class FaceResult:
     # Scryfall language code of the printing (see scryfall.CardFaceImage).
     # "en" for results predating db migration 005.
     lang: str = "en"
-    # ISO-8601 UTC, from project_gallery_items.created_at — when this image
+    # ISO-8601 UTC, from generated_images.created_at — when this image
     # was last produced. None for a freshly-built result that hasn't been
     # persisted yet, and for gallery rows predating db migration 002.
     # pdf_layout._pick_dpi_variant treats None as older than any timestamp.
@@ -330,6 +339,7 @@ def _write_dpi_variant(
         model_id,
         dpi,
         lang=face.lang,
+        scryfall_id=face.scryfall_id,
     )
     out_path = output_dir / out_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -570,6 +580,7 @@ def expected_face_result(task: TaskRow) -> FaceResult:
         model_id,
         task.dpi,
         lang=task.lang,
+        scryfall_id=task.scryfall_id,
     )
     original_path = original_cache_path(
         Path(task.cache_dir), task.scryfall_id, task.face_index
@@ -717,7 +728,7 @@ def process_entries(
 
                 for target_dpi in dpi_targets:
                     native = native_scale_for_dpi(target_dpi, model_id)
-                    out_name = output_filename(
+                    out_path = output_dir / output_filename(
                         face.face_name,
                         face.set_code,
                         face.collector_number,
@@ -725,8 +736,23 @@ def process_entries(
                         model_id,
                         target_dpi,
                         lang=face.lang,
+                        scryfall_id=face.scryfall_id,
                     )
-                    out_path = output_dir / out_name
+                    if not out_path.exists():
+                        # Files written before the embedded-id filename
+                        # format keep their legacy names forever — an
+                        # existing legacy file still counts as generated.
+                        legacy_path = output_dir / output_filename(
+                            face.face_name,
+                            face.set_code,
+                            face.collector_number,
+                            face.face_label,
+                            model_id,
+                            target_dpi,
+                            lang=face.lang,
+                        )
+                        if legacy_path.exists():
+                            out_path = legacy_path
 
                     if skip_existing and out_path.exists() and not force:
                         orig = original_cache_path(
@@ -768,7 +794,7 @@ def process_entries(
                             device=read_cache_device(cached),
                             lang=face.lang,
                         )
-                        log(f"  exists: {out_name}")
+                        log(f"  exists: {out_path.name}")
                         result.skipped += 1
                         result.wrote.append(face_result)
                         if on_face_done:

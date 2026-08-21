@@ -138,7 +138,26 @@ def enqueue_decklist_entries(
                     if (face.scryfall_id, face.face_index, target_dpi, model) in active:
                         skipped_active += 1
                         continue
-                    out_name = output_filename(
+                    if skip_existing:
+                        # Registry-first: the generated_images registry is
+                        # the authority on what exists, so a known variant
+                        # needs only a liveness stat of its recorded path
+                        # — no filename reconstruction, and this project
+                        # just joins the image via a membership.
+                        known = db.find_generated_image(
+                            face.scryfall_id,
+                            face.face_index,
+                            model,
+                            target_dpi,
+                            db_path=db_path,
+                        )
+                        if known is not None and Path(known["out_path"]).exists():
+                            skipped_existing += 1
+                            db.add_membership(
+                                project_tag, known["id"], db_path=db_path
+                            )
+                            continue
+                    out_path = output_dir / output_filename(
                         face.face_name,
                         face.set_code,
                         face.collector_number,
@@ -146,8 +165,23 @@ def enqueue_decklist_entries(
                         model,
                         target_dpi,
                         lang=face.lang,
+                        scryfall_id=face.scryfall_id,
                     )
-                    out_path = output_dir / out_name
+                    if not out_path.exists():
+                        # Legacy-named files (predating the embedded-id
+                        # filename format) are never renamed on disk — an
+                        # existing one still satisfies this face/dpi.
+                        legacy_path = output_dir / output_filename(
+                            face.face_name,
+                            face.set_code,
+                            face.collector_number,
+                            face.face_label,
+                            model,
+                            target_dpi,
+                            lang=face.lang,
+                        )
+                        if legacy_path.exists():
+                            out_path = legacy_path
                     if skip_existing and out_path.exists():
                         skipped_existing += 1
                         # The pre-upscale cached original lives at a
