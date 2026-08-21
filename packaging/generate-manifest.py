@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
-"""Build/refresh dist/latest.json — the update manifest the desktop app
-checks on boot (see desktop/src-tauri/src/update.rs) and the website's
-download data.
+"""Build/refresh AND SIGN dist/latest.json — the update manifest the
+desktop app checks on boot (see desktop/src-tauri/src/update.rs) and the
+website's download data.
 
     python packaging/generate-manifest.py [--notes TEXT] [--notes-url URL]
+
+The manifest names each installer's URL and sha256, so the manifest
+itself is the thing that must be authentic: this script signs it with
+minisign (dist/latest.json.minisig, uploaded alongside), and the apps
+refuse any manifest that doesn't verify against their compiled-in public
+key. The secret key lives ONLY on release machines (default
+~/.minisign/minisign.key, override with --signing-key or
+PROXY_SCALER_SIGNING_KEY) and is never committed — see docs/releasing.md
+for generation, backup, and rotation. Before signing, the public halves
+embedded in desktop/src-tauri/src/update.rs and
+desktop/server-app/src/main.rs are checked against each other, and the
+fresh signature is verified against them — a release signed with a key
+the shipped apps don't trust never leaves this script. --skip-sign
+exists for intermediate multi-machine passes; the final pass before
+upload must sign.
 
 Scans dist/ for release artifacts matching the established filename
 patterns, computes each one's size and sha256 (nobody should ever do that
@@ -31,7 +46,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -39,6 +57,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 MANIFEST = DIST / "latest.json"
+SIGNATURE = DIST / "latest.json.minisig"
+# The two compiled-in copies of the verification key. Kept in Rust consts
+# (not read from a file at runtime) so nothing on a user's disk can swap
+# the key out from under a shipped build.
+PUBKEY_SOURCES = [
+    ROOT / "desktop" / "src-tauri" / "src" / "update.rs",
+    ROOT / "desktop" / "server-app" / "src" / "main.rs",
+]
+DEFAULT_SIGNING_KEY = os.environ.get(
+    "PROXY_SCALER_SIGNING_KEY", str(Path.home() / ".minisign" / "minisign.key")
+)
 SCHEMA = 1
 DEFAULT_BASE_URL = "https://dl.proxy-scaler.com"
 DEFAULT_NOTES_URL = "https://www.proxy-scaler.com/#download"
@@ -139,11 +168,84 @@ def entry_key(entry: dict) -> tuple:
     return (entry["app"], entry["platform"], entry["arch"], entry["variant"], entry["format"])
 
 
+def embedded_pubkey(path: Path) -> str:
+    match = re.search(r'^const MANIFEST_PUBKEY: &str = "([^"]+)";', path.read_text(), re.M)
+    if not match:
+        sys.exit(f"error: no MANIFEST_PUBKEY constant found in {path.relative_to(ROOT)}")
+    return match.group(1)
+
+
+def sign_manifest(secret_key: Path, version: str) -> None:
+    keys = {source: embedded_pubkey(source) for source in PUBKEY_SOURCES}
+    unique = set(keys.values())
+    if len(unique) != 1:
+        detail = ", ".join(f"{p.relative_to(ROOT)}={k[:16]}…" for p, k in keys.items())
+        sys.exit(
+            "error: the MANIFEST_PUBKEY constants disagree — paste the same "
+            f".pub line into every copy ({detail})"
+        )
+    pubkey = unique.pop()
+    if pubkey == "UNSET":
+        sys.exit(
+            "error: MANIFEST_PUBKEY is still the UNSET placeholder. One-time "
+            "setup: `minisign -G`, paste the public key line into "
+            "desktop/src-tauri/src/update.rs and desktop/server-app/src/main.rs, "
+            "rebuild, then re-run. See docs/releasing.md."
+        )
+    if shutil.which("minisign") is None:
+        sys.exit("error: minisign not found — apt install minisign / brew install minisign")
+    if not secret_key.exists():
+        sys.exit(
+            f"error: signing key {secret_key} not found "
+            "(--signing-key or PROXY_SCALER_SIGNING_KEY points at it)"
+        )
+    # Interactive on purpose: minisign prompts for the key's password.
+    try:
+        subprocess.run(
+            [
+                "minisign", "-S", "-s", str(secret_key),
+                "-m", str(MANIFEST), "-x", str(SIGNATURE),
+                "-t", f"proxy-scaler latest.json {version}",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        sys.exit("error: minisign signing failed — manifest is NOT signed, do not upload")
+    # End-to-end: the signature just written must verify against the key
+    # compiled into the apps, or every shipped build would refuse this
+    # release. Catches signing with the wrong key file.
+    try:
+        subprocess.run(
+            ["minisign", "-V", "-P", pubkey, "-m", str(MANIFEST), "-x", str(SIGNATURE)],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        SIGNATURE.unlink(missing_ok=True)
+        sys.exit(
+            "error: the fresh signature does NOT verify against the apps' "
+            "embedded MANIFEST_PUBKEY — wrong signing key? Signature removed."
+        )
+    print(f"signed: {SIGNATURE.relative_to(ROOT)} (verified against the embedded public key)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--notes", help="release-notes text shown in the update prompt")
     parser.add_argument("--notes-url", help=f"link for full notes (default {DEFAULT_NOTES_URL})")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="artifact host URL prefix")
+    parser.add_argument(
+        "--signing-key",
+        default=DEFAULT_SIGNING_KEY,
+        help="minisign secret key to sign with (default: $PROXY_SCALER_SIGNING_KEY "
+        "or ~/.minisign/minisign.key; never in the repo)",
+    )
+    parser.add_argument(
+        "--skip-sign",
+        action="store_true",
+        help="write the manifest without signing — intermediate multi-machine "
+        "passes only; shipped apps REFUSE an unsigned manifest",
+    )
     args = parser.parse_args()
 
     version = pkg_version()
@@ -181,7 +283,24 @@ def main() -> None:
     }
     MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"wrote {MANIFEST.relative_to(ROOT)}: version {version}, {len(merged)} artifact(s)")
-    print("upload together with the artifacts (rclone copy dist/ ...); upload latest.json LAST")
+
+    if args.skip_sign:
+        # A stale signature over the previous contents must not ride
+        # along — it wouldn't verify, but its presence would look signed.
+        if SIGNATURE.exists():
+            SIGNATURE.unlink()
+            print(f"removed stale {SIGNATURE.relative_to(ROOT)}")
+        print(
+            "WARNING: manifest left UNSIGNED (--skip-sign) — shipped apps will "
+            "refuse it; run the final pass without --skip-sign before uploading."
+        )
+    else:
+        sign_manifest(Path(args.signing_key).expanduser(), version)
+
+    print(
+        "upload together with the artifacts (rclone copy dist/ ...); upload "
+        "latest.json + latest.json.minisig LAST, signature before manifest"
+    )
 
 
 if __name__ == "__main__":

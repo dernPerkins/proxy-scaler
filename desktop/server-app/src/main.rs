@@ -429,8 +429,18 @@ async fn resolve_close(app: AppHandle, action: String, remember: bool) -> Result
 // if either changes.
 
 const MANIFEST_URL: &str = "https://dl.proxy-scaler.com/latest.json";
+/// The minisign public key latest.json must be signed with — the SAME
+/// key as desktop/src-tauri/src/update.rs's MANIFEST_PUBKEY (both pasted
+/// from the one `.pub` file; generate-manifest.py checks they match the
+/// signing key and refuses to sign otherwise).
+const MANIFEST_PUBKEY: &str = "RWSV/YmIcdrlZEfbgQsMpBuSUQbp+xUOWGaZWyRFaUBwShUAbWsbhdlP";
 const MANIFEST_SCHEMA: u64 = 1;
 const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+/// Hard ceilings on the two fetches — the manifest is ~2KB, a .minisig
+/// ~330 bytes; without caps a hostile host could feed the boot path an
+/// unbounded body to buffer.
+const MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
+const SIGNATURE_MAX_BYTES: u64 = 8 * 1024;
 
 #[derive(serde::Deserialize)]
 struct Manifest {
@@ -465,23 +475,62 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Fetch a body with a hard size cap; the declared content-length is
+/// advisory, so what actually arrives is counted too.
+async fn fetch_capped(
+    client: &reqwest::Client,
+    url: &str,
+    cap: u64,
+) -> Result<Vec<u8>, String> {
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("fetch returned {} for {url}", response.status()));
+    }
+    if response.content_length().is_some_and(|len| len > cap) {
+        return Err(format!("{url} exceeds the {cap}-byte limit"));
+    }
+    let body = response.bytes().await.map_err(|e| e.to_string())?;
+    if body.len() as u64 > cap {
+        return Err(format!("{url} exceeds the {cap}-byte limit"));
+    }
+    Ok(body.to_vec())
+}
+
 /// None for ANY reason there's nothing to say — up to date, offline,
-/// malformed manifest. Runs unprompted on window load, so a machine with
-/// no internet must never see an error for it.
+/// malformed manifest, bad signature. Runs unprompted on window load, so
+/// a machine with no internet must never see an error for it.
 #[tauri::command]
 async fn check_update_notice() -> Result<Option<UpdateNotice>, String> {
-    let url =
-        std::env::var("PROXY_SCALER_UPDATE_URL").unwrap_or_else(|_| MANIFEST_URL.to_string());
+    // Env overrides only in debug builds, mirroring update.rs: an env
+    // var must never redirect a shipped install to another manifest or
+    // verification key.
+    let (url, pubkey) = if cfg!(debug_assertions) {
+        (
+            std::env::var("PROXY_SCALER_UPDATE_URL").unwrap_or_else(|_| MANIFEST_URL.to_string()),
+            std::env::var("PROXY_SCALER_UPDATE_PUBKEY")
+                .unwrap_or_else(|_| MANIFEST_PUBKEY.to_string()),
+        )
+    } else {
+        (MANIFEST_URL.to_string(), MANIFEST_PUBKEY.to_string())
+    };
     let fetch = async {
+        let pk = minisign_verify::PublicKey::from_base64(pubkey.trim()).map_err(|_| {
+            "update public key not configured or unusable (see docs/releasing.md)".to_string()
+        })?;
         let client = reqwest::Client::builder()
             .timeout(MANIFEST_FETCH_TIMEOUT)
             .build()
             .map_err(|e| e.to_string())?;
-        let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("manifest fetch returned {}", response.status()));
-        }
-        let body = response.bytes().await.map_err(|e| e.to_string())?;
+        let body = fetch_capped(&client, &url, MANIFEST_MAX_BYTES).await?;
+        let sig = fetch_capped(&client, &format!("{url}.minisig"), SIGNATURE_MAX_BYTES).await?;
+        let sig = String::from_utf8(sig).map_err(|_| "signature file isn't UTF-8".to_string())?;
+        let sig = minisign_verify::Signature::decode(sig.trim())
+            .map_err(|e| format!("manifest signature unparseable: {e}"))?;
+        // Verified over the raw bytes BEFORE json parsing; prehashed
+        // signatures only (allow_legacy=false), matching what any
+        // current minisign emits.
+        pk.verify(&body, &sig, false)
+            .map_err(|_| "manifest signature verification FAILED".to_string())?;
         serde_json::from_slice::<Manifest>(&body).map_err(|e| e.to_string())
     };
     let manifest = match fetch.await {
@@ -503,14 +552,18 @@ async fn check_update_notice() -> Result<Option<UpdateNotice>, String> {
     if latest <= current {
         return Ok(None);
     }
+    // The link lands in an <a href> in ui/index.html — https or nothing,
+    // so a hostile value can't smuggle another scheme (javascript:,
+    // file:) into the webview. Anything else falls back to the download
+    // page.
+    let notes_url = match reqwest::Url::parse(&manifest.notes_url) {
+        Ok(u) if u.scheme() == "https" => manifest.notes_url,
+        _ => "https://www.proxy-scaler.com/#download".to_string(),
+    };
     Ok(Some(UpdateNotice {
         current: current_text.to_string(),
         latest: manifest.version,
-        notes_url: if manifest.notes_url.is_empty() {
-            "https://www.proxy-scaler.com/#download".to_string()
-        } else {
-            manifest.notes_url
-        },
+        notes_url,
     }))
 }
 

@@ -1,3 +1,10 @@
+# The update-manifest signing key must never enter the repo — it lives
+# only on release machines (see docs/releasing.md). The default filenames
+# minisign uses, plus the test keypair pattern from the docs.
+minisign.key
+minisign.pub
+test.key
+
 imgcache/
 output/
 output_smoke/

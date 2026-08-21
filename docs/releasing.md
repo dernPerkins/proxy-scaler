@@ -58,8 +58,13 @@ on boot (`GET https://dl.proxy-scaler.com/latest.json` — see
 `desktop/src-tauri/src/update.rs`) to offer the user an update. It
 carries the latest version, release notes, and per-artifact
 `size`/`sha256` (computed for you — the client refuses to launch an
-installer that doesn't match them). `packaging/generate-manifest.py`
-builds it by scanning `dist/`:
+installer that doesn't match them). Because the manifest names both the
+download URLs *and* the hashes they must match, the manifest itself is
+the trust anchor: `generate-manifest.py` **signs it with minisign**
+(`dist/latest.json.minisig`, uploaded alongside), and installed apps
+refuse any manifest that doesn't verify against the public key compiled
+into them — see [the signing key](#the-manifest-signing-key) below.
+`packaging/generate-manifest.py` builds it by scanning `dist/`:
 
 - Runs automatically at the end of `make release` and `make macos-release`.
 - Run `make manifest` by hand after the Windows passes.
@@ -69,10 +74,67 @@ builds it by scanning `dist/`:
   machine (or from R2) to accumulate the full set.
 - `NOTES="Fixed X, added Y" make manifest` sets the release-notes text
   shown inside the app's update prompt.
+- Intermediate passes on machines without the signing key can use
+  `--skip-sign`; the **final pass before upload must sign** — shipped
+  apps treat an unsigned manifest exactly like a tampered one.
 
-Upload `latest.json` to R2 **last**, after every artifact it references
-is uploaded — from the moment it lands, installed apps will offer
-downloads from the URLs inside it.
+Upload `latest.json` **and** `latest.json.minisig` to R2 **last**, after
+every artifact they reference is uploaded (signature before manifest) —
+from the moment the manifest lands, installed apps will offer downloads
+from the URLs inside it.
+
+### The manifest signing key
+
+One minisign keypair signs every release. The public half is pasted into
+two Rust constants (`MANIFEST_PUBKEY` in `desktop/src-tauri/src/update.rs`
+and `desktop/server-app/src/main.rs`) and shipped inside the apps — being
+public, it's fine that it sits in an open repo: it can only *verify*
+manifests, never produce them. The secret half exists **only on the
+release machines** and must never be committed (`.gitignore` guards the
+default filename, but the real guard is keeping it out of the tree
+entirely).
+
+One-time setup:
+
+```bash
+minisign -G    # writes ~/.minisign/minisign.key (password-protected) + minisign.pub
+```
+
+Then paste the base64 line from `minisign.pub` into both `MANIFEST_PUBKEY`
+constants (replacing the `"UNSET"` placeholder) and rebuild. Until that's
+done, builds fail toward "no update offered" and `generate-manifest.py`
+refuses to sign — it also cross-checks at every signing that the two
+constants match each other *and* the key it just signed with, so a
+wrong-key release can't leave the script.
+
+Custody rules:
+
+- The key file is password-encrypted by minisign itself; signing prompts
+  for the password. Copy `~/.minisign/minisign.key` to each release
+  machine over a trusted channel (or point `PROXY_SCALER_SIGNING_KEY` /
+  `--signing-key` at wherever it lives).
+- **Keep an offline backup.** If the key is lost, shipped apps can never
+  verify another manifest — every installed copy would have to be updated
+  by hand from the website.
+- **If the key may have been compromised**: stop uploading manifests,
+  generate a new keypair, paste the new public key, ship the next release
+  through the website (existing installs won't trust it in-app), and
+  announce it. A compromised key plus write access to the bucket is full
+  code execution on updating users — treat it like the production
+  credential it is.
+
+Local end-to-end testing never needs the production key: **debug builds
+only** honor `PROXY_SCALER_UPDATE_URL` and `PROXY_SCALER_UPDATE_PUBKEY`,
+so a throwaway `minisign -G -p test.pub -s test.key`, a manifest signed
+with it, and `python -m http.server` in `dist/` exercise the whole flow.
+Release builds ignore both variables.
+
+Platform code-signing note: macOS bundles are codesigned/notarized (see
+[Code signing](#code-signing)); the Windows `setup.exe` currently ships
+**without** Authenticode. The signed manifest is what guarantees update
+authenticity today — an Authenticode certificate for the Windows
+installer remains worthwhile defense-in-depth (and SmartScreen relief)
+when the budget allows.
 
 ## GPU variants
 

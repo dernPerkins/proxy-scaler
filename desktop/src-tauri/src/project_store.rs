@@ -1375,6 +1375,27 @@ pub fn set_update_skipped_version(app: AppHandle, version: String) -> Result<(),
     write_app_setting(&conn, UPDATE_SKIPPED_VERSION_KEY, &version)
 }
 
+// Whether the boot-time update check runs at all (UpdatePrompt.tsx reads
+// this before calling check_for_update). Default ON — but the check is an
+// unauthenticated request to the release host on every launch, which some
+// people reasonably want their machine not to make, so the Decklist
+// settings sidebar offers the off switch. The tab bar's manual "Update"
+// button path is unaffected: that only exists once a check has run.
+
+const UPDATE_CHECK_ENABLED_KEY: &str = "update_check_enabled";
+
+#[tauri::command]
+pub fn get_update_check_enabled(app: AppHandle) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    Ok(read_app_setting(&conn, UPDATE_CHECK_ENABLED_KEY)?.as_deref() != Some("0"))
+}
+
+#[tauri::command]
+pub fn set_update_check_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, UPDATE_CHECK_ENABLED_KEY, if enabled { "1" } else { "0" })
+}
+
 // --- Recent remote hosts --------------------------------------------------
 //
 // A plain list of remote server address+port pairs the user has

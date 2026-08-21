@@ -10,14 +10,14 @@
 import { useSyncExternalStore } from "react";
 import { invokeCommand, isTauri } from "./tauri";
 
+/** Display data only. The URL, destination path, and expected sha256
+ *  deliberately never cross into the webview: they live in Rust-managed
+ *  state (update.rs::PendingUpdate), set by check_for_update, so injected
+ *  script can't hand download_update/launch_installer a URL or path of
+ *  its choosing. */
 export interface UpdateArtifact {
-  url: string;
-  /** Where Rust decided the installer should land (the user's Downloads
-   *  directory) — passed straight back into invokeDownloadToPath. */
-  save_path: string;
   filename: string;
   size: number;
-  sha256: string;
 }
 
 export interface UpdateInfo {
@@ -39,16 +39,21 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   return invokeCommand<UpdateInfo | null>("check_for_update");
 }
 
-/** Verifies the downloaded file against the manifest's size/sha256, hands
- *  it to the OS installer, and exits the app (sidecar stopped first).
- *  Only ever resolves with an error — success means the process is going
- *  away. */
-export async function launchInstaller(artifact: UpdateArtifact): Promise<void> {
-  await invokeCommand<void>("launch_installer", {
-    path: artifact.save_path,
-    expectedSize: artifact.size,
-    expectedSha256: artifact.sha256,
-  });
+/** Streams the pending installer (the one check_for_update stored
+ *  Rust-side) to the Downloads directory, reporting on the shared
+ *  `download-progress` channel under `downloadId` and honoring
+ *  invokeCancelDownload with that same id. Resolves false if canceled. */
+export async function downloadUpdate(downloadId: string): Promise<boolean> {
+  return invokeCommand<boolean>("download_update", { downloadId });
+}
+
+/** Verifies the downloaded file against the signed manifest's size/sha256,
+ *  hands it to the OS installer, and exits the app (sidecar stopped
+ *  first). Takes no arguments — Rust already knows what it downloaded and
+ *  what the hash must be. Only ever resolves with an error — success
+ *  means the process is going away. */
+export async function launchInstaller(): Promise<void> {
+  await invokeCommand<void>("launch_installer");
 }
 
 /** The one release the user said "Skip this version" to — the boot check
@@ -65,6 +70,18 @@ export async function setUpdateSkippedVersion(version: string): Promise<void> {
 /** This build's own version (compile-time constant from Cargo.toml). */
 export async function getAppVersion(): Promise<string> {
   return invokeCommand<string>("get_app_version");
+}
+
+/** Whether the boot-time check runs at all (default true). The check is
+ *  an unauthenticated request to the release host on every launch — the
+ *  Decklist settings sidebar offers the off switch for machines that
+ *  shouldn't phone anywhere unprompted. */
+export async function getUpdateCheckEnabled(): Promise<boolean> {
+  return invokeCommand<boolean>("get_update_check_enabled");
+}
+
+export async function setUpdateCheckEnabled(enabled: boolean): Promise<void> {
+  await invokeCommand<void>("set_update_check_enabled", { enabled });
 }
 
 // --- Shared "an update exists" store ----------------------------------------

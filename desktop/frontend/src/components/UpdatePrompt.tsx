@@ -1,9 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { invokeCancelDownload, invokeDownloadToPath, isTauri, listenDownloadProgress } from "../tauri";
+import { invokeCancelDownload, isTauri, listenDownloadProgress } from "../tauri";
 import {
   checkForUpdate,
+  downloadUpdate,
   getAvailableUpdate,
   getPromptRequestSeq,
+  getUpdateCheckEnabled,
   getUpdateSkippedVersion,
   launchInstaller,
   setAvailableUpdate,
@@ -88,6 +90,11 @@ export default function UpdatePrompt() {
     let cancelled = false;
     (async () => {
       try {
+        // The settings sidebar's "Check for updates at launch" switch.
+        // Failing open (an unreadable setting still checks) keeps the
+        // default behavior; the check itself stays fail-silent below.
+        const enabled = await getUpdateCheckEnabled().catch(() => true);
+        if (!enabled || cancelled) return;
         const info = await checkForUpdate();
         if (!info || cancelled) return;
         // Published unconditionally — even for a skipped release: the
@@ -144,19 +151,18 @@ export default function UpdatePrompt() {
           total: e.total ?? artifact.size,
         });
       });
-      const saved = await invokeDownloadToPath({
-        url: artifact.url,
-        path: artifact.save_path,
-        downloadId,
-      });
+      // No URL or path here on purpose: Rust already decided both when
+      // check_for_update stored the pending artifact (see
+      // update.rs::PendingUpdate) — this side only pulls the trigger.
+      const saved = await downloadUpdate(downloadId);
       if (!saved) {
         // Canceled — back to the offer, not an error.
         setState({ kind: "offer", info });
         return;
       }
-      // Verifies size+sha256 and exits the app on success — an error here
-      // is the only way back.
-      await launchInstaller(artifact);
+      // Verifies size+sha256 against the signed manifest and exits the
+      // app on success — an error here is the only way back.
+      await launchInstaller();
     } catch (err) {
       setState({
         kind: "error",
@@ -225,13 +231,21 @@ export default function UpdatePrompt() {
             <span className="modal-title">Update failed</span>
           </div>
           <p style={{ marginBottom: 8 }}>{state.message}</p>
-          <p className="hint" style={{ marginBottom: 16 }}>
-            You can try again, or get the installer from{" "}
-            <a href={info.notes_url} target="_blank" rel="noreferrer">
-              the download page
-            </a>{" "}
-            instead.
-          </p>
+          {/* notes_url is https-or-blank (Rust filters it — see
+              check_for_update); blank just drops the link. */}
+          {info.notes_url ? (
+            <p className="hint" style={{ marginBottom: 16 }}>
+              You can try again, or get the installer from{" "}
+              <a href={info.notes_url} target="_blank" rel="noreferrer">
+                the download page
+              </a>{" "}
+              instead.
+            </p>
+          ) : (
+            <p className="hint" style={{ marginBottom: 16 }}>
+              You can try again.
+            </p>
+          )}
           <div className="modal-actions">
             <button onClick={() => setState({ kind: "hidden" })}>Close</button>
             <button onClick={() => void startDownload()}>Try again</button>
@@ -256,11 +270,13 @@ export default function UpdatePrompt() {
             {info.notes}
           </p>
         )}
-        <p className="hint" style={{ marginBottom: 16 }}>
-          <a href={info.notes_url} target="_blank" rel="noreferrer">
-            Release notes
-          </a>
-        </p>
+        {info.notes_url && (
+          <p className="hint" style={{ marginBottom: 16 }}>
+            <a href={info.notes_url} target="_blank" rel="noreferrer">
+              Release notes
+            </a>
+          </p>
+        )}
         <div className="modal-actions">
           <button className="btn-sm" onClick={() => void skipThisVersion()}>
             Skip this version
@@ -272,13 +288,13 @@ export default function UpdatePrompt() {
             <button className="btn-primary" onClick={() => void startDownload()}>
               Update now ({formatGb(info.artifact.size)})
             </button>
-          ) : (
+          ) : info.notes_url ? (
             // No installer for this build (Linux tarball, dev build) —
             // the download page is the update path.
             <button className="btn-primary" onClick={() => openExternal(info.notes_url)}>
               Open download page
             </button>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

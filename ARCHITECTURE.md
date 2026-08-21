@@ -245,18 +245,26 @@ generation-server state.
 | `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
 | `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
 | `get_update_skipped_version` / `set_update_skipped_version` | The update prompt's "Skip this version" (`app_settings`) — suppresses exactly one release; the next one supersedes the skip by not matching it |
+| `get_update_check_enabled` / `set_update_check_enabled` | The Decklist sidebar's "Check for updates at launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
 
 The update mechanism itself lives in `desktop/src-tauri/src/update.rs`
-(`check_for_update` / `launch_installer`, driven by
+(`check_for_update` / `download_update` / `launch_installer`, driven by
 `components/UpdatePrompt.tsx` on boot): the manifest at
-`https://dl.proxy-scaler.com/latest.json` (built by
+`https://dl.proxy-scaler.com/latest.json` (built and minisign-signed by
 `packaging/generate-manifest.py`, see `docs/releasing.md`) is fetched in
-Rust — CORS-exempt, so the host needs no CORS setup — compared against
+Rust — CORS-exempt, so the host needs no CORS setup — **verified against
+the public key compiled into the app** (the manifest names each
+installer's URL *and* sha256, so the manifest is the trust anchor; a bad
+or missing signature reads as "no update"), compared against
 `CARGO_PKG_VERSION`, and matched to this build via platform + arch + the
 `gpu-variant` marker the Makefile bakes into the frozen sidecar. The
-in-app download reuses `download_to_path`; `launch_installer` verifies
-size + sha256 before handing the file to the OS installer and exiting.
-Linux (tarball/.deb) and dev builds get a download-page link instead.
+chosen artifact's URL/destination/hash stay in Rust-managed state
+(`PendingUpdate`) — the webview triggers `download_update` and
+`launch_installer` but never supplies their parameters. The download
+streams to the Downloads directory (https-only, size-capped, hashed off
+the wire); `launch_installer` re-verifies size + sha256 before handing
+the file to the OS installer and exiting. Linux (tarball/.deb) and dev
+builds get a download-page link instead.
 
 Settings reach SQLite by **write-through on change**, not by an explicit
 Save — the shipped UI has no Save button. That covers the Unnamed

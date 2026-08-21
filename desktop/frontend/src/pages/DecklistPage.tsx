@@ -15,6 +15,7 @@ import { DPI_OPTIONS, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
+import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
 import { useProject } from "../context/ProjectContext";
 import { runDownload, useDownloadStatus } from "../download";
 import {
@@ -54,6 +55,37 @@ const DEFAULT_GEN_PATHS = {
   cache_dir: "imgcache",
   weights_dir: "weights",
 };
+
+// The off switch for the boot-time update check (UpdatePrompt.tsx reads
+// the same setting before calling check_for_update). Tauri-only: in a
+// plain browser tab there's no check to disable. Reads as unchecked until
+// the setting loads — a wrong-for-a-frame checkbox beats an on-by-default
+// flash for people who turned it off.
+function UpdateCheckToggle() {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    getUpdateCheckEnabled()
+      .then(setEnabled)
+      .catch(() => setEnabled(true));
+  }, []);
+  if (!isTauri()) return null;
+  return (
+    <label className="check">
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={(e) => {
+          const next = e.target.checked;
+          setEnabled(next);
+          // Best-effort, same reasoning as skipThisVersion: a failed
+          // write just means the old behavior next launch.
+          void setUpdateCheckEnabled(next).catch(() => {});
+        }}
+      />
+      Check for updates at launch
+    </label>
+  );
+}
 
 function cardToEntry(card: CardRow): DeckEntryIn {
   return {
@@ -554,6 +586,8 @@ export default function DecklistPage() {
             {dirRow("Cache", pathsQuery.data?.cache_dir)}
             {dirRow("Weights", pathsQuery.data?.weights_dir)}
           </div>
+
+          <UpdateCheckToggle />
 
           <CardDbPanel serverUnavailable={serverUnavailable} />
         </div>

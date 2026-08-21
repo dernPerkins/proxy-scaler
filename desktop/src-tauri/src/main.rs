@@ -65,13 +65,15 @@ use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project,
     discard_unnamed_project, get_card_db_prompt_dismissed, get_last_project_id,
     get_or_create_unnamed_project, get_project,
-    get_quit_prompt_suppressed, get_show_digital_printings, get_update_skipped_version,
+    get_quit_prompt_suppressed, get_show_digital_printings, get_update_check_enabled,
+    get_update_skipped_version,
     import_decklist_text, import_resolved_cards, list_projects, list_recent_hosts, parse_decklist,
     remove_card, remove_recent_host, set_card_db_prompt_dismissed, set_card_printing,
     set_card_quantity, set_cards_resolution, set_last_project_id, set_quit_prompt_suppressed,
-    set_show_digital_printings, set_update_skipped_version, update_project,
+    set_show_digital_printings, set_update_check_enabled, set_update_skipped_version,
+    update_project,
 };
-use update::{check_for_update, launch_installer};
+use update::{check_for_update, download_update, launch_installer};
 
 const READY_MARKER: &str = "PROXY_SCALER_READY";
 // The single source of truth for the local sidecar's port: passed to it
@@ -815,6 +817,7 @@ fn main() {
         .manage(SidecarState::default())
         .manage(DownloadCancel::default())
         .manage(QuitPromptState::default())
+        .manage(update::PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             start_local_server,
             stop_local_server,
@@ -854,7 +857,10 @@ fn main() {
             get_app_version,
             get_update_skipped_version,
             set_update_skipped_version,
+            get_update_check_enabled,
+            set_update_check_enabled,
             check_for_update,
+            download_update,
             launch_installer
         ])
         .setup(|app| {
