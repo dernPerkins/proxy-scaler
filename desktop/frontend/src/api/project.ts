@@ -110,6 +110,11 @@ export const projectApi = {
   // an app installed and never used holds no row at all.
   getOrCreateUnnamedProject: () =>
     invokeCommand<ProjectSummary>("get_or_create_unnamed_project"),
+  // Deletes the Unnamed Project row if there is one, returning its tag (for
+  // the generation server's discard) or null if there was none. Never
+  // creates one — this clears the way for a blank slate, it doesn't mint.
+  discardUnnamedProject: () =>
+    invokeCommand<string | null>("discard_unnamed_project"),
   listProjects: () => invokeCommand<ProjectSummary[]>("list_projects"),
   getProject: (projectId: number) =>
     invokeCommand<LoadedProject>("get_project", { projectId }),

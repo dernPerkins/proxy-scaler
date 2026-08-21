@@ -646,6 +646,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
 
+  // The same discard, aimed at an Unnamed Project the user is *not* in —
+  // see createNew's else branch for why New has to make this call. Parked
+  // in rowDeleteInFlight exactly like discardUnnamedRow's delete, so an
+  // import arriving in the same breath can't have its get_or_create
+  // answered with the row being deleted.
+  function discardOrphanedUnnamedRow() {
+    rowDeleteInFlight.current = projectApi
+      .discardUnnamedProject()
+      .then((tag) => {
+        // Same best-effort, never-retried cleanup as discardUnnamedRow's:
+        // the records belong to whichever server produced them, which is
+        // not necessarily the one connected now.
+        if (tag) void generationApi.discardTag(tag).catch(() => {});
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }
+
   // Whether New, from the project identified by `id`, is the discard rather
   // than a detach. "Unnamed Project" is a row with no stored name — the same
   // test as isNamed. With no row at all there is nothing to delete and this
@@ -688,6 +705,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       discardUnnamedRow(id, projectTag);
     } else {
       settleSettingsWriteBeforeTransition();
+      // Detaching from a named Project is not by itself a blank slate: an
+      // Unnamed Project row can already exist (left behind by switching
+      // away from one via the picker, since New never ran on it), and
+      // ensureProjectRow's get_or_create would hand that row — its cards,
+      // its tag, its settings — to the "new" project at its first write.
+      // The user would then import a decklist and watch a previous
+      // session's cards appear alongside it.
+      //
+      // So New sweeps it away, unprompted. There is no discard confirm
+      // here on purpose: the row being deleted is not the one on screen,
+      // and New from a named Project has never asked about anything —
+      // asking would be a question about a session the user left behind
+      // and cannot see. (The confirm in front of a *self* discard, where
+      // the cards being thrown away are the ones in front of them, is
+      // unchanged — see newWouldDiscard.)
+      discardOrphanedUnnamedRow();
     }
     adoptProjectId(null);
     setProjectTag(null);

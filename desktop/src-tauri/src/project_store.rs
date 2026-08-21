@@ -671,6 +671,27 @@ fn unnamed_project_id(conn: &Connection) -> Result<Option<i64>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Deletes the Unnamed Project row if there is one, handing back its tag so
+/// the caller can discard the generation server's records for it too.
+/// `None` when no such row existed.
+///
+/// Deliberately *not* get_or_create: this is called to clear the way for a
+/// blank slate (New, from a named Project), and creating a row just to
+/// delete it would mint and strand a tag on every click.
+fn discard_unnamed_project_row(conn: &Connection) -> Result<Option<String>, String> {
+    let found: Option<(i64, String)> = conn
+        .query_row("SELECT id, tag FROM projects WHERE name = ''", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((id, tag)) = found else {
+        return Ok(None);
+    };
+    delete_project_row(conn, id)?;
+    Ok(Some(tag))
+}
+
 // --- Tauri commands -------------------------------------------------------
 
 /// Returns the Unnamed Project, creating it on first call. The frontend
@@ -681,6 +702,20 @@ pub fn get_or_create_unnamed_project(app: AppHandle) -> Result<ProjectSummary, S
     let conn = open_db(&app)?;
     let id = get_or_create_unnamed_project_id(&conn)?;
     summary_for_id(&conn, id)
+}
+
+/// Throws away the Unnamed Project row if one exists, returning its tag (so
+/// the caller can discard that tag's generation records) or `None` when
+/// there was nothing to throw away.
+///
+/// What "New" needs when it is *not* itself the discard — i.e. from a named
+/// Project. Detaching alone isn't a blank slate: an Unnamed Project row can
+/// already exist, and get_or_create would hand that row — its cards, its
+/// tag — to the supposedly new project at its first write.
+#[tauri::command]
+pub fn discard_unnamed_project(app: AppHandle) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    discard_unnamed_project_row(&conn)
 }
 
 fn create_project_row(conn: &Connection, name: &str) -> Result<ProjectSummary, String> {
@@ -1491,6 +1526,46 @@ mod tests {
         assert_eq!(created.name, "");
         assert_eq!(created.tag.len(), 32, "lower(hex(randomblob(16))) is 32 hex chars");
         assert!(created.tag.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn discard_unnamed_project_clears_the_way_for_a_blank_slate() {
+        // New, from a named Project: the Unnamed Project row left behind by
+        // an earlier session has to go, or get_or_create hands it (cards and
+        // all) to the supposedly new project at its first write.
+        let mut conn = test_conn();
+        let stale = get_or_create_unnamed_project_id(&conn).expect("stale unnamed");
+        let stale_tag = summary(&conn, stale).tag;
+        import_decklist_into(&mut conn, stale, "1 Sol Ring (c21) 263").expect("import");
+        let named = create_project_row(&conn, "Krenko").expect("named");
+
+        let discarded = discard_unnamed_project_row(&conn).expect("discard");
+
+        assert_eq!(discarded.as_deref(), Some(stale_tag.as_str()));
+        assert!(load_project(&conn, stale).is_err(), "the stale row is gone");
+        assert_eq!(
+            summary(&conn, named.id).name,
+            "Krenko",
+            "the named project the user came from is untouched"
+        );
+        // And the next write starts genuinely fresh — new row, new tag.
+        let fresh = get_or_create_unnamed_project_id(&conn).expect("fresh unnamed");
+        assert_ne!(summary(&conn, fresh).tag, stale_tag);
+        assert!(cards_for_project(&conn, fresh).expect("cards").is_empty());
+    }
+
+    #[test]
+    fn discard_unnamed_project_is_a_no_op_with_nothing_to_discard() {
+        let conn = test_conn();
+        create_project_row(&conn, "Krenko").expect("named");
+
+        assert_eq!(discard_unnamed_project_row(&conn).expect("discard"), None);
+
+        assert_eq!(
+            list_project_summaries(&conn).expect("list").len(),
+            1,
+            "a named project is never mistaken for the Unnamed one"
+        );
     }
 
     #[test]

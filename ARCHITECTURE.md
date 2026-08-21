@@ -228,6 +228,7 @@ generation-server state.
 |---|---|
 | `get_or_create_unnamed_project` | The Unnamed Project's summary (id + tag), creating the row on first call. Called from the write paths — never from `open_db`, which runs on every command and must not write |
 | `create_project` | New **named** project (name, empty decklist, default settings). Still rejects an empty name: it always INSERTs, so an Unnamed Project reaching it would mint a second tag |
+| `discard_unnamed_project` | Delete the Unnamed Project row if one exists, returning its tag (never creating one). What **New from a named Project** uses: detaching alone isn't a blank slate, since `get_or_create` would otherwise hand a pre-existing Unnamed row — cards, tag and all — to the "new" project at its first write |
 | `list_projects` | Summaries for the project picker. `WHERE name <> ''` — the Unnamed Project is deliberately absent. Any future query that lists or counts projects needs the same clause; nothing in the schema enforces it |
 | `get_project` | Full record: name, decklist text, unresolved card list, settings. By id, so the Unnamed Project loads like any other |
 | `update_project` | Write name + settings. Also the **promotion** path: naming an Unnamed Project is an `UPDATE ... SET name = ?` that never touches `tag`. Accepts `''` (the row must be writable before it is named) but never *un-names* — a blank name leaves the stored one alone, and the UNIQUE constraint is the collision check |

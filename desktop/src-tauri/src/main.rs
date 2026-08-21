@@ -63,7 +63,8 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project,
-    get_card_db_prompt_dismissed, get_last_project_id, get_or_create_unnamed_project, get_project,
+    discard_unnamed_project, get_card_db_prompt_dismissed, get_last_project_id,
+    get_or_create_unnamed_project, get_project,
     get_quit_prompt_suppressed, get_show_digital_printings, get_update_skipped_version,
     import_decklist_text, import_resolved_cards, list_projects, list_recent_hosts, parse_decklist,
     remove_card, remove_recent_host, set_card_db_prompt_dismissed, set_card_printing,
@@ -824,6 +825,7 @@ fn main() {
             cancel_download,
             create_project,
             get_or_create_unnamed_project,
+            discard_unnamed_project,
             list_projects,
             get_project,
             update_project,
