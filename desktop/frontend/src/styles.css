@@ -698,14 +698,18 @@ button:disabled {
    every selected DPI × every face exists (for the current model), yellow =
    some but not all. Same status colors as the .badge-* pills. */
 .printing-option-main {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  /* Full row width so the coverage mark can sit flush right, aligned
+     across rows, instead of trailing the variable-length mono label. */
+  align-self: stretch;
 }
 .printing-gen-mark {
   font-size: 12px;
   line-height: 1;
   font-weight: 700;
+  margin-left: auto;
 }
 .printing-gen-mark.gen-full {
   color: var(--ok);

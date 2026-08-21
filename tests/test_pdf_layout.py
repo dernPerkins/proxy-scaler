@@ -604,6 +604,46 @@ def test_match_quantities_no_duplicate_units_across_models() -> None:
     assert units[0].quantity == 3
 
 
+def test_match_quantities_unwanted_group_not_reported_missing_at_dpi() -> None:
+    """A gallery group no current entry references (card removed, or
+    repointed to a different printing after this one generated) is silently
+    excluded even when it also lacks the preferred DPI — the deck stopped
+    wanting it, so a 'missing at DPI' report for it is a phantom error.
+    Regression: the DPI filter used to run before decklist matching, so
+    swapping printings left stale groups complaining about resolutions
+    nobody asked to print."""
+    gallery = [
+        # The printing currently picked, present at the preferred DPI.
+        _face("sol-msc", None, "Sol Ring", "Sol Ring", "msc", "211", 1200),
+        # A leftover from a previously-picked printing, 800 only.
+        _face("sol-sld", None, "Sol Ring", "Sol Ring", "sld", "2807", 800),
+    ]
+    entries = [
+        DeckEntry(quantity=4, name="Sol Ring", set_code="msc", collector_number="211")
+    ]
+    units, missing, missing_at_dpi = match_quantities(entries, gallery, preferred_dpi=1200)
+
+    assert [u.best.scryfall_id for u in units] == ["sol-msc"]
+    assert missing == []
+    assert missing_at_dpi == []
+
+
+def test_match_quantities_matched_entry_lacking_dpi_not_double_reported() -> None:
+    """An entry whose image exists but not at the preferred DPI belongs in
+    missing_at_dpi only — 'no generated image yet' would be a lie."""
+    gallery = [
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, missing, missing_at_dpi = match_quantities(entries, gallery, preferred_dpi=1200)
+
+    assert units == []
+    assert missing == []
+    assert missing_at_dpi == ["Sol Ring [C21 263]"]
+
+
 def test_match_quantities_preferred_dpi_excludes_and_reports_when_missing() -> None:
     """A preferred DPI is a hard filter, not a preference: a card with no
     image at it must be left out of the print run and reported, never

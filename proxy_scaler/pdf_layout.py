@@ -529,13 +529,6 @@ def match_quantities(
 
     for key, face_items in group_by_face(gallery):
         rep = face_items[0]
-        best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
-        if best is None:
-            # No image at the requested DPI. Reported to the caller and left
-            # out of the print run entirely — never substituted with another
-            # resolution (see _pick_dpi_variant).
-            missing_at_dpi.append(_describe_face(rep))
-            continue
         set_code = (rep.set_code or "").lower() or None
         collector = rep.collector_number
         card_name = (rep.card_name or rep.face_name or "").casefold()
@@ -575,16 +568,37 @@ def match_quantities(
                     matched_qty += entry.quantity
                     matched_indices.add(i)
 
-        if matched_indices:
-            units.append(
-                PrintUnit(face_key=key, quantity=matched_qty, best=best, dpi_fallback=unavailable)
-            )
-            for i in matched_indices:
-                matched_face_counts[i] += 1
-                if rep.total_faces is not None:
-                    expected_faces_by_entry[i] = rep.total_faces
-        # else: no current decklist entry wants this printing any more —
-        # silently excluded from the print run, not reported.
+        if not matched_indices:
+            # No current decklist entry wants this printing any more (e.g.
+            # a card removed, or repointed to a different printing after
+            # generating this one) — silently excluded from the print run,
+            # not reported. Matching runs BEFORE the preferred-DPI filter
+            # on purpose: an unwanted group that also lacks the requested
+            # DPI is still just unwanted, and reporting it would surface
+            # phantom "missing at DPI" errors for printings the deck no
+            # longer references.
+            continue
+
+        for i in matched_indices:
+            # Counted regardless of the DPI filter below: an image for
+            # this entry exists, so it must not ALSO be reported as "never
+            # generated" — a group excluded at the requested DPI gets its
+            # own, more precise report instead.
+            matched_face_counts[i] += 1
+            if rep.total_faces is not None:
+                expected_faces_by_entry[i] = rep.total_faces
+
+        best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
+        if best is None:
+            # No image at the requested DPI. Reported to the caller and left
+            # out of the print run entirely — never substituted with another
+            # resolution (see _pick_dpi_variant).
+            missing_at_dpi.append(_describe_face(rep))
+            continue
+
+        units.append(
+            PrintUnit(face_key=key, quantity=matched_qty, best=best, dpi_fallback=unavailable)
+        )
 
     missing: list[str] = []
     for i, entry in enumerate(entries):
