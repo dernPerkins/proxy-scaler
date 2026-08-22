@@ -4,7 +4,9 @@ import base64
 import io
 import re
 import threading
+from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
 from PIL import Image
@@ -23,14 +25,20 @@ from proxy_scaler.api.schemas import (
 from proxy_scaler.decklist import DeckEntry
 from proxy_scaler import pdf_jobs
 from proxy_scaler.pdf_jobs import PdfRenderCanceled
+from proxy_scaler import backs
 from proxy_scaler.pdf_layout import (
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
     MM_PER_IN,
+    FlipEdge,
+    GuideVisibility,
     PageLayout,
+    PageOrder,
+    PrintSlot,
     add_bleed,
+    back_page_cells,
     build_pdf,
-    expand_print_slots,
+    build_print_slots,
     match_quantities,
     paginate,
     resolve_page_layout,
@@ -70,9 +78,47 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
     )
 
 
-def _prepare(
-    body: PdfLayoutIn,
-) -> tuple[PageLayout, list[list[FaceResult]], list[str], list[str]]:
+@dataclass(frozen=True)
+class PreparedRender:
+    """Everything both the preview and the render need, resolved once.
+
+    Bundled rather than returned as a widening tuple: back printing added
+    four more things to carry, and a seven-element tuple is a bug waiting
+    for someone to unpack it in the wrong order.
+    """
+
+    layout: PageLayout
+    back_layout: PageLayout
+    pages: list[list[PrintSlot]]
+    missing: list[str]
+    missing_at_dpi: list[str]
+    back_image_path: Path | None
+    back_image_not_upscaled: bool
+    reverses_needing_back_image: int
+
+    @property
+    def missing_back_image(self) -> bool:
+        """Back printing is on, at least one Reverse would take the Back
+        Image, and there is no usable one. Only an error when a Reverse
+        would actually come up empty — an all-double-faced sheet
+        legitimately needs no Back Image."""
+        return self.reverses_needing_back_image > 0 and self.back_image_path is None
+
+    @property
+    def total_page_count(self) -> int:
+        return len(self.pages)
+
+
+def _guides(body: PdfLayoutIn) -> GuideVisibility:
+    return GuideVisibility(
+        hide_card_guides_front=body.hide_card_guides_front,
+        hide_page_guides_front=body.hide_page_guides_front,
+        hide_card_guides_back=body.hide_card_guides_back,
+        hide_page_guides_back=body.hide_page_guides_back,
+    )
+
+
+def _prepare(body: PdfLayoutIn) -> PreparedRender:
     if not body.entries:
         raise HTTPException(status_code=400, detail="No cards to print.")
     db_path = get_db_path()
@@ -85,34 +131,156 @@ def _prepare(
         preferred_dpi=body.preferred_dpi,
         preferred_model=body.preferred_model,
     )
-    layout = resolve_page_layout(
-        page_w_mm=body.page_width_mm,
-        page_h_mm=body.page_height_mm,
-        cols=body.cols,
-        rows=body.rows,
-        bleed_mm=body.bleed_mm,
-        spacing_x_mm=body.spacing_x_mm,
-        spacing_y_mm=body.spacing_y_mm,
-        offset_x_mm=body.offset_x_mm,
-        offset_y_mm=body.offset_y_mm,
-        guide_width_pt=body.guide_width_pt,
-        guide_length_mm=body.guide_length_mm,
+
+    def layout_with(offset_x: float, offset_y: float) -> PageLayout:
+        return resolve_page_layout(
+            page_w_mm=body.page_width_mm,
+            page_h_mm=body.page_height_mm,
+            cols=body.cols,
+            rows=body.rows,
+            bleed_mm=body.bleed_mm,
+            spacing_x_mm=body.spacing_x_mm,
+            spacing_y_mm=body.spacing_y_mm,
+            offset_x_mm=offset_x,
+            offset_y_mm=offset_y,
+            guide_width_pt=body.guide_width_pt,
+            guide_length_mm=body.guide_length_mm,
+        )
+
+    layout = layout_with(body.offset_x_mm, body.offset_y_mm)
+    # Back Pages carry their own offset ON TOP of nothing — not on top of
+    # the front's. The two are independent calibrations of two physical
+    # passes through the printer, and adding them would make nudging the
+    # fronts silently move the backs too.
+    back_layout = layout_with(body.back_offset_x_mm, body.back_offset_y_mm)
+
+    # Pairing only means anything while back printing is on: with it off,
+    # a Back Face has no Reverse to live on and stays its own card, which
+    # is exactly the historical behaviour.
+    slots = build_print_slots(
+        units, pair_back_faces=body.back_printing and body.back_faces_as_reverse
     )
-    slots = expand_print_slots(units)
     pages = paginate(slots, layout.cards_per_page)
-    return layout, pages, missing, missing_at_dpi
+
+    back_image_path: Path | None = None
+    back_image_not_upscaled = False
+    reverses_needing_back_image = 0
+    if body.back_printing:
+        reverses_needing_back_image = sum(
+            1 for page in pages for slot in page if slot.reverse is None
+        )
+        if reverses_needing_back_image and body.back_image_hash:
+            try:
+                back_image_path, back_image_not_upscaled = backs.resolve_print_source(
+                    body.back_image_hash,
+                    preferred_model=body.preferred_model,
+                    db_path=db_path,
+                )
+            except backs.BackImageError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return PreparedRender(
+        layout=layout,
+        back_layout=back_layout,
+        pages=pages,
+        missing=missing,
+        missing_at_dpi=missing_at_dpi,
+        back_image_path=back_image_path,
+        back_image_not_upscaled=back_image_not_upscaled,
+        reverses_needing_back_image=reverses_needing_back_image,
+    )
+
+
+def _render_kwargs(body: PdfLayoutIn, prepared: PreparedRender) -> dict:
+    """The back-printing half of build_pdf's arguments, shared by the
+    synchronous route and the job thread so the two can't drift."""
+    return dict(
+        guides=_guides(body),
+        back_printing=body.back_printing,
+        back_layout=prepared.back_layout,
+        back_image_path=prepared.back_image_path,
+        back_image_includes_bleed=body.back_image_includes_bleed,
+        flip_edge=FlipEdge(body.flip_edge.value),
+        page_order=PageOrder(body.page_order.value),
+    )
+
+
+def _guard_printable(prepared: PreparedRender) -> None:
+    """Refuse a render that would produce blank Reverses. Stated as an
+    error rather than silently printing empty backs: the user finds out
+    either way, but this way it costs no cardstock."""
+    if not prepared.pages:
+        raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
+    if prepared.missing_back_image:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Back printing is on, but no back image is available for "
+                f"{prepared.reverses_needing_back_image} card(s). Pick one on the "
+                "Backs tab, or turn back printing off."
+            ),
+        )
 
 
 @router.post("/preview", response_model=PdfPreviewOut)
 def preview(body: PdfLayoutIn) -> PdfPreviewOut:
-    _layout, pages, missing, missing_at_dpi = _prepare(body)
-    total_units = sum(len(p) for p in pages)
+    prepared = _prepare(body)
+    total_units = sum(len(p) for p in prepared.pages)
+    # page_count stays the number of Front Pages — the count of sheets you
+    # feed the printer — while total_page_count is what the PDF actually
+    # contains. Back printing doubles the second and leaves the first
+    # alone, and conflating them would double the "slots left on your last
+    # page" arithmetic the client does from it.
     return PdfPreviewOut(
         units=total_units,
-        missing=missing,
-        page_count=len(pages),
-        missing_at_dpi=missing_at_dpi,
+        missing=prepared.missing,
+        page_count=len(prepared.pages),
+        missing_at_dpi=prepared.missing_at_dpi,
+        reverses_needing_back_image=prepared.reverses_needing_back_image,
+        missing_back_image=prepared.missing_back_image,
+        back_image_not_upscaled=prepared.back_image_not_upscaled,
+        total_page_count=len(prepared.pages) * (2 if body.back_printing else 1),
     )
+
+
+def _preview_cell(
+    cell: PrintSlot | None, *, is_back: bool, back_image_path: Path | None
+) -> tuple[FaceResult | None, bool]:
+    """What one grid position shows in the page preview: (face, is_back_image).
+    (None, False) is a genuinely empty position."""
+    if cell is None:
+        return None, False
+    if not is_back:
+        return cell.front, False
+    if cell.reverse is not None:
+        return cell.reverse, False
+    return None, back_image_path is not None
+
+
+def _back_image_thumbnail(path: Path | None, *, bleed_mm: float) -> str | None:
+    """A small preview of the Back Image, built on the fly.
+
+    Unlike a card, a Back Image has no cached original thumbnail to reuse
+    (nothing generated it), so this decodes and downsamples the stored
+    original each call. Bounded work: it happens at most once per preview
+    request no matter how many Reverses the Back Image fills, because
+    every one of them shows the same picture.
+    """
+    if path is None or not path.is_file():
+        return None
+    try:
+        with Image.open(path) as raw:
+            thumb = raw.convert("RGB")
+            thumb.thumbnail((220, 220), Image.Resampling.LANCZOS)
+            preview_dpi = max(thumb.width, thumb.height) / (
+                max(CARD_WIDTH_MM, CARD_HEIGHT_MM) / MM_PER_IN
+            )
+            bled = add_bleed(thumb, dpi=preview_dpi, bleed_mm=bleed_mm)
+        buf = io.BytesIO()
+        bled.save(buf, format="JPEG", quality=85)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:  # noqa: BLE001 — a preview thumbnail is never worth a 500
+        return None
 
 
 @router.post("/preview/page", response_model=PdfPagePreviewOut)
@@ -123,10 +291,57 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
     thumbnails, which is trivially small, and avoids needing a dedicated
     file-serving route (FaceResult carries no gallery_item_id to route
     through gallery.py's existing /full,/original endpoints)."""
-    layout, pages, _missing, _missing_at_dpi = _prepare(body)
-    first_page = pages[0] if pages else []
+    prepared = _prepare(body)
+    layout = prepared.back_layout if body.preview_back_page else prepared.layout
+    pages = prepared.pages
+    # The Back Page preview is the cheapest way to catch a wrong Flip Edge
+    # before a sheet of cardstock pays for it, so it renders the real
+    # mirrored grid rather than a mirrored-looking approximation: same
+    # back_page_cells() the renderer uses, same full-grid mirroring on a
+    # partial page.
+    if body.preview_back_page and pages:
+        # Full grid, empty positions included: a Back Page's cells are
+        # placed by mirrored index, so dropping the empty ones would shift
+        # every later card and the preview would stop matching the sheet.
+        cells = back_page_cells(
+            pages[0], layout=prepared.layout, flip_edge=FlipEdge(body.flip_edge.value)
+        )
+    elif pages:
+        # Fronts fill left-to-right from position 0, so the occupied
+        # prefix IS the layout — no padding, keeping this response the
+        # same shape it has always had for front previews.
+        cells = list(pages[0])
+    else:
+        cells = []
+
     slots: list[PdfPageSlotOut] = []
-    for face in first_page:
+    for cell in cells:
+        # Three states per grid position, not two: a card, the Back Image
+        # filling a Reverse that has no Back Face, or a position no card
+        # occupies at all (a partial last page). The empty one has to be
+        # rendered as an empty cell rather than skipped, or every slot
+        # after it shifts and the mirrored preview stops matching the
+        # sheet it is previewing.
+        face, is_back_image = _preview_cell(
+            cell, is_back=body.preview_back_page, back_image_path=prepared.back_image_path
+        )
+        if face is None and not is_back_image:
+            slots.append(PdfPageSlotOut(card_name="", face_label=None, model="", dpi=0))
+            continue
+        if is_back_image:
+            slots.append(
+                PdfPageSlotOut(
+                    card_name="Card back",
+                    face_label=None,
+                    model="",
+                    dpi=0,
+                    thumbnail_data_url=_back_image_thumbnail(
+                        prepared.back_image_path, bleed_mm=body.bleed_mm
+                    ),
+                    is_back_image=True,
+                )
+            )
+            continue
         thumb_path = ensure_original_thumbnail(face.original_path)
         data_url = None
         if thumb_path is not None:
@@ -168,7 +383,12 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         bleed_mm=layout.bleed_mm,
         guide_width_pt=layout.guide_width_pt,
         guide_length_mm=layout.guide_length_mm,
-        show_cut_lines=body.show_cut_lines,
+        hide_card_guides=(
+            body.hide_card_guides_back if body.preview_back_page else body.hide_card_guides_front
+        ),
+        hide_page_guides=(
+            body.hide_page_guides_back if body.preview_back_page else body.hide_page_guides_front
+        ),
         page_count=len(pages),
         slots=slots,
     )
@@ -180,14 +400,13 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
     st.download_button silently doing nothing inside Tauri's webview
     (a known WKWebView gap around the HTML download attribute). A client
     fetch() -> blob() -> <a download> click has none of that gap."""
-    layout, pages, _missing, _missing_at_dpi = _prepare(body)
-    if not pages:
-        raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
+    prepared = _prepare(body)
+    _guard_printable(prepared)
     pdf_bytes = build_pdf(
-        pages,
-        layout=layout,
+        prepared.pages,
+        layout=prepared.layout,
         export_dpi=body.export_dpi,
-        show_cut_lines=body.show_cut_lines,
+        **_render_kwargs(body, prepared),
     )
     filename = f"{_slugify(body.project_name or _default_pdf_basename())}.pdf"
     return Response(
@@ -207,7 +426,7 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
 # runs on its own thread and the client polls (completed, total).
 
 
-def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfLayoutIn) -> None:
+def _run_render(job_id: str, *, prepared: PreparedRender, body: PdfLayoutIn) -> None:
     """Render thread body. Owns the job's terminal state: every exit path
     (success, cancel, failure) marks the job, or the client would poll a
     "rendering" job forever."""
@@ -219,11 +438,11 @@ def _run_render(job_id: str, *, pages, layout: PageLayout, body: PdfLayoutIn) ->
 
     try:
         pdf_bytes = build_pdf(
-            pages,
-            layout=layout,
+            prepared.pages,
+            layout=prepared.layout,
             export_dpi=body.export_dpi,
             on_progress=on_progress,
-            show_cut_lines=body.show_cut_lines,
+            **_render_kwargs(body, prepared),
         )
         pdf_jobs.finish(job_id, pdf_bytes)
     except PdfRenderCanceled:
@@ -241,9 +460,8 @@ def start_pdf_job(body: PdfLayoutIn) -> PdfJobOut:
     request, so those still land on this call rather than surfacing much
     later as a failed job the user has already started waiting on.
     """
-    layout, pages, _missing, _missing_at_dpi = _prepare(body)
-    if not pages:
-        raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
+    prepared = _prepare(body)
+    _guard_printable(prepared)
     # One render at a time: each finished job pins a whole PDF in memory
     # until it's fetched, and the client single-flights downloads anyway.
     if pdf_jobs.active_count() > 0:
@@ -252,11 +470,18 @@ def start_pdf_job(body: PdfLayoutIn) -> PdfJobOut:
         )
 
     filename = f"{_slugify(body.project_name or _default_pdf_basename())}.pdf"
-    job = pdf_jobs.create_job(filename=filename, total=unique_image_count(pages))
+    job = pdf_jobs.create_job(
+        filename=filename,
+        total=unique_image_count(
+            prepared.pages,
+            back_printing=body.back_printing,
+            back_image_path=prepared.back_image_path,
+        ),
+    )
     threading.Thread(
         target=_run_render,
         args=(job.id,),
-        kwargs={"pages": pages, "layout": layout, "body": body},
+        kwargs={"prepared": prepared, "body": body},
         daemon=True,
     ).start()
     return PdfJobOut(job_id=job.id, total=job.total)

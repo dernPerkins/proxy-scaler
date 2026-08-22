@@ -5,6 +5,8 @@ checked as both sides evolve."""
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel
 
 
@@ -197,6 +199,16 @@ class GalleryItemOut(BaseModel):
     lang: str = "en"
 
 
+class PageOrderIn(str, Enum):
+    INTERLEAVED = "interleaved"
+    FRONTS_THEN_BACKS = "fronts_then_backs"
+
+
+class FlipEdgeIn(str, Enum):
+    LONG = "long"
+    SHORT = "short"
+
+
 class PdfLayoutIn(BaseModel):
     # project_tag scopes which generated images to draw from; entries carry
     # the quantities (not persisted server-side any more — see
@@ -218,9 +230,57 @@ class PdfLayoutIn(BaseModel):
     guide_width_pt: float = 0.75
     guide_length_mm: float = 2.75
     export_dpi: int = 1200
-    show_cut_lines: bool = True
     preferred_dpi: int | None = None
     preferred_model: str | None = None
+
+    # --- Guides ----------------------------------------------------------
+    #
+    # Four independent HIDE flags, replacing the single `show_cut_lines`
+    # boolean. Required, with NO defaults, and that is the enforcement
+    # mechanism rather than an oversight: an older client still sending
+    # `show_cut_lines` gets a 422 here instead of silently rendering with
+    # guide settings the user never chose.
+    #
+    # The reverse drift direction cannot be caught here at all — Pydantic
+    # ignores unknown fields, so a NEW client's flags sent to an OLD server
+    # are dropped without a word and that server renders with its own
+    # `show_cut_lines=True` default. The only place that break is
+    # detectable is the client, which carries a version floor and refuses
+    # to render against a server older than back printing. See
+    # desktop/frontend/src/config.ts.
+    #
+    # Stored as `hide_*` to match the checkbox the user actually ticks —
+    # one polarity from the UI through to pdf_layout.GuideVisibility, with
+    # no `not` in between to invert by accident.
+    hide_card_guides_front: bool
+    hide_page_guides_front: bool
+    hide_card_guides_back: bool
+    hide_page_guides_back: bool
+
+    # --- Back printing ---------------------------------------------------
+    back_printing: bool = False
+    # Whether a double-faced card's transform side prints on its own back
+    # (True) or stays a separate card of its own (False, and the historical
+    # behaviour). Changes the print-slot count and therefore the page
+    # count, which is why it lives beside the layout rather than beside the
+    # Back Image. Inert while back_printing is False.
+    back_faces_as_reverse: bool = True
+    page_order: PageOrderIn = PageOrderIn.INTERLEAVED
+    flip_edge: FlipEdgeIn = FlipEdgeIn.LONG
+    # Back Pages get their own position offset: duplex registration drifts,
+    # and a single shared offset cannot express "the backs land 0.4mm left
+    # of the fronts on this printer".
+    back_offset_x_mm: float = 0.0
+    back_offset_y_mm: float = 0.0
+    # Content hash of the project's Selected Back. The bytes themselves are
+    # synced separately (POST /api/backs/{hash}) and cached server-side, so
+    # this stays a 64-char string on every preview call rather than a
+    # multi-MB base64 blob.
+    back_image_hash: str | None = None
+    back_image_includes_bleed: bool = False
+    # Preview-only: render the Back Page of page 1 instead of its front,
+    # mirrored exactly as the renderer would. Ignored by the render routes.
+    preview_back_page: bool = False
 
 
 class PdfPreviewOut(BaseModel):
@@ -237,6 +297,26 @@ class PdfPreviewOut(BaseModel):
     # resolution, so the UI must surface them as an error — otherwise they
     # would silently vanish from the sheet.
     missing_at_dpi: list[str] = []
+
+    # --- Back printing ---------------------------------------------------
+    # How many Reverses would take the Back Image rather than a Back Face.
+    # Zero with back printing on means an all-double-faced sheet, which
+    # legitimately needs no Back Image at all — which is why "no back
+    # selected" is only an error when this is non-zero.
+    reverses_needing_back_image: int = 0
+    # Back printing is on, at least one Reverse needs the Back Image, and
+    # no usable one is present on this server. A blocking error: the
+    # alternative is burning a full duplex pass printing blank card backs.
+    missing_back_image: bool = False
+    # The Back Image is being printed from its plain uploaded original
+    # rather than an upscale — usually because it was upscaled on a
+    # different generation server. A warning, never a block: printing
+    # works, only quality varies.
+    back_image_not_upscaled: bool = False
+    # Pages the PDF will actually contain, Back Pages included. page_count
+    # above stays the count of Front Pages, so the UI can say "9 sheets,
+    # 18 pages" without recomputing the doubling itself.
+    total_page_count: int = 0
 
 
 class PdfJobOut(BaseModel):
@@ -260,6 +340,10 @@ class PdfPageSlotOut(BaseModel):
     model: str | None = None
     dpi: int | None = None
     thumbnail_data_url: str | None = None  # "data:image/jpeg;base64,..."; None if unavailable
+    # This position shows the project's Back Image rather than a card.
+    # The frontend labels it differently — "Card back" is not a card name,
+    # and showing it in the same style would read as a card called that.
+    is_back_image: bool = False
 
 
 class PdfPagePreviewOut(BaseModel):
@@ -282,7 +366,11 @@ class PdfPagePreviewOut(BaseModel):
     bleed_mm: float
     guide_width_pt: float
     guide_length_mm: float
-    show_cut_lines: bool
+    # Resolved for the page kind actually being previewed, so the frontend
+    # draws what that page will really carry rather than re-deriving which
+    # of the four flags applies.
+    hide_card_guides: bool
+    hide_page_guides: bool
     page_count: int
     slots: list[PdfPageSlotOut]
 
@@ -308,6 +396,10 @@ class GenPathsOut(BaseModel):
     output_dir: str
     cache_dir: str
     weights_dir: str
+    # Where Back Images and their upscales live — a sibling of the two
+    # above, deliberately outside both wipe paths. Defaulted so an older
+    # server answering a newer client still validates.
+    backs_dir: str = ""
 
 
 class DiscardTagOut(BaseModel):
@@ -410,3 +502,47 @@ class GalleryStatusOut(BaseModel):
     # project counts, and no filesystem is consulted (a row can briefly
     # outlive a deleted file until the next adopt/prune reconcile).
     statuses: dict[str, list[GeneratedPairOut]]
+
+
+class BackVariantOut(BaseModel):
+    """One upscaled variant of a Back Image that exists on this server."""
+
+    id: int
+    dpi: int
+    model: str
+    created_at: str | None = None
+
+
+class BackImageOut(BaseModel):
+    content_hash: str
+    # Whether this server holds the bytes. False means the client should
+    # sync before rendering or upscaling — the normal state on a server
+    # the user just switched to.
+    present: bool
+    # Effective print DPI of the stored original at card size, or None
+    # when nothing is stored.
+    source_dpi: float | None = None
+    # Below what a decent printer resolves at card size. A warning the
+    # client shows, never a block — plenty of people knowingly print a
+    # flat logo at low DPI.
+    low_resolution: bool = False
+    variants: list[BackVariantOut] = []
+
+
+class BackUpscaleIn(BaseModel):
+    model: str
+    dpi_targets: list[int]
+    tile_size: int = 0
+    weights_dir: str = ""
+
+
+class BackUpscaleOut(BaseModel):
+    queued: int
+    # Variants that already existed at the requested model/DPI — not an
+    # error, just nothing to do.
+    skipped: int = 0
+    task_ids: list[int] = []
+
+
+class DeleteBackOut(BaseModel):
+    removed: int

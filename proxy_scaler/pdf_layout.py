@@ -9,13 +9,14 @@ from __future__ import annotations
 import io
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from fpdf import FPDF
 from PIL import Image
 
 from .decklist import DeckEntry
-from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN
+from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN, target_pixels
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
 
 # fpdf2 embeds raw PIL images losslessly (FlateDecode/zlib), which compresses
@@ -38,6 +39,58 @@ PAGE_SIZE_PRESETS_MM: dict[str, tuple[float, float]] = {
     "letter": (215.9, 279.4),
     "a4": (210.0, 297.0),
 }
+
+
+class FlipEdge(str, Enum):
+    """Which edge a duplex printer turns the sheet on. It decides which
+    axis a Back Page mirrors, and it must match the printer's own duplex
+    setting or every card gets someone else's back.
+
+    Which axis that is depends on the page's orientation, because "long
+    edge" names a physical edge of the paper, not a direction: a portrait
+    sheet's long edges are its left and right sides, so flipping on them
+    turns the sheet about a vertical axis and mirrors COLUMNS; a landscape
+    sheet's long edges are top and bottom, so the same setting mirrors
+    ROWS. See mirror_page_index.
+    """
+
+    LONG = "long"
+    SHORT = "short"
+
+
+class PageOrder(str, Enum):
+    """INTERLEAVED (front 1, back 1, front 2, back 2, ...) is what a duplex
+    printer driver expects. FRONTS_THEN_BACKS emits every Front Page first,
+    then every Back Page in matching order, for hand-feeding a stack back
+    through a single-sided printer. Mirroring applies to both: it is about
+    how paper physically turns over, not about what order the pages come
+    out in.
+    """
+
+    INTERLEAVED = "interleaved"
+    FRONTS_THEN_BACKS = "fronts_then_backs"
+
+
+@dataclass(frozen=True)
+class GuideVisibility:
+    """Which guides to draw, per guide kind and per page kind.
+
+    Stored as HIDE flags rather than show flags so the wire format, the
+    stored setting, and the checkbox the user actually ticks all share one
+    polarity — there is no `not` anywhere between the UI and here to invert
+    by accident.
+
+    The Back Page defaults are `True` (hidden) while the Front Page
+    defaults are `False`. That asymmetry is deliberate and is NOT just
+    "preserve the old behaviour": you cut a duplex sheet against the guides
+    on its front, so guides on the back are ink you cannot use, printed on
+    the side of the card that shows.
+    """
+
+    hide_card_guides_front: bool = False
+    hide_page_guides_front: bool = False
+    hide_card_guides_back: bool = True
+    hide_page_guides_back: bool = True
 
 # Outer guide lines run from the page edge to the card grid block — full,
 # dark, and continuous (there's no card content there to obscure, and a
@@ -153,13 +206,23 @@ def _card_trim_edges(
     return edges
 
 
-def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
-    """Black lines from the page edge to the grid block (outer margins,
-    nothing to obscure there) — two closely-spaced lines per interior gap,
-    one per card's own trim edge; small green "+" crop marks at each card's
-    own trim-corner (the grid is regular, so the full xs × ys cross product
-    is exactly every card's 4 corners, no card ever gets a mark that isn't
-    its own).
+def _draw_cut_marks(
+    pdf: FPDF,
+    layout: PageLayout,
+    *,
+    card_guides: bool = True,
+    page_guides: bool = True,
+) -> None:
+    """Draw Page Guides (black lines from the page edge to the grid block —
+    outer margins, nothing to obscure there; two closely-spaced lines per
+    interior gap, one per card's own trim edge) and Card Guides (small
+    green "+" marks at each card's own trim corner — the grid is regular,
+    so the full xs × ys cross product is exactly every card's 4 corners, no
+    card ever gets a mark that isn't its own).
+
+    The two kinds are independently switchable per page kind — see
+    GuideVisibility. They share the geometry below, so the flags gate the
+    drawing, not the computation.
 
     Every guide is nudged OUTWARD from its card by half its stroke width.
     A stroke centered on the trim coordinate puts half its ink inside the
@@ -168,6 +231,9 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
     (card edge, then guide) and a perfectly cut card carries no guide ink.
     Which way is outward falls out of _card_trim_edges' ordering: even
     indices are leading (left/top) edges, odd are trailing (right/bottom)."""
+    if not card_guides and not page_guides:
+        return
+
     width_mm = layout.guide_width_pt / 72 * MM_PER_IN
     half = width_mm / 2
     xs = [
@@ -186,23 +252,26 @@ def _draw_cut_marks(pdf: FPDF, layout: PageLayout) -> None:
     grid_y0, grid_y1 = ys[0], ys[-1]
 
     pdf.set_line_width(width_mm)
-    pdf.set_draw_color(*_OUTER_LINE_COLOR)
-    for x in xs:
-        if grid_y0 > 0:
-            pdf.line(x, 0, x, grid_y0)
-        if grid_y1 < layout.page_h_mm:
-            pdf.line(x, grid_y1, x, layout.page_h_mm)
-    for y in ys:
-        if grid_x0 > 0:
-            pdf.line(0, y, grid_x0, y)
-        if grid_x1 < layout.page_w_mm:
-            pdf.line(grid_x1, y, layout.page_w_mm, y)
 
-    pdf.set_draw_color(*_MARK_COLOR)
-    for x in xs:
+    if page_guides:
+        pdf.set_draw_color(*_OUTER_LINE_COLOR)
+        for x in xs:
+            if grid_y0 > 0:
+                pdf.line(x, 0, x, grid_y0)
+            if grid_y1 < layout.page_h_mm:
+                pdf.line(x, grid_y1, x, layout.page_h_mm)
         for y in ys:
-            pdf.line(x - layout.guide_length_mm, y, x + layout.guide_length_mm, y)
-            pdf.line(x, y - layout.guide_length_mm, x, y + layout.guide_length_mm)
+            if grid_x0 > 0:
+                pdf.line(0, y, grid_x0, y)
+            if grid_x1 < layout.page_w_mm:
+                pdf.line(grid_x1, y, layout.page_w_mm, y)
+
+    if card_guides:
+        pdf.set_draw_color(*_MARK_COLOR)
+        for x in xs:
+            for y in ys:
+                pdf.line(x - layout.guide_length_mm, y, x + layout.guide_length_mm, y)
+                pdf.line(x, y - layout.guide_length_mm, x, y + layout.guide_length_mm)
 
 
 def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -> None:
@@ -610,49 +679,254 @@ def match_quantities(
     return units, missing, missing_at_dpi
 
 
-def expand_print_slots(units: list[PrintUnit]) -> list[FaceResult]:
-    """Flatten to one FaceResult per physical printed card."""
-    slots: list[FaceResult] = []
+@dataclass(frozen=True)
+class PrintSlot:
+    """One physical printed card: a front, and what goes on its Reverse.
+
+    `reverse` is the Back Face image when this card's transform side is
+    being printed on its own back, and None when the Reverse should take
+    the project's Back Image instead. None does NOT mean "nothing gets
+    printed there" — an empty cell on a partial page is represented by the
+    absence of a PrintSlot, not by a PrintSlot with no reverse.
+    """
+
+    front: FaceResult
+    reverse: FaceResult | None = None
+
+
+def _pairable_faces(units: list[PrintUnit]) -> dict[str, tuple[PrintUnit, PrintUnit]]:
+    """Find the (front, back) unit pairs eligible to share one card.
+
+    Keyed on scryfall_id, which already identifies a printing *including*
+    its language — an Italian and an English copy of the same set/collector
+    are different ids, so they can never pair with each other by accident.
+
+    A card whose faces don't form a clean 0/1 pair is excluded entirely:
+    every one of its faces stays its own card. Scryfall doesn't currently
+    produce a printing with three printable faces, so this is a guard
+    rather than a feature — and guessing which of three faces is "the back"
+    would be wrong more often than useful. Excluding falls back to exactly
+    today's behaviour, which is a safe answer rather than a broken one.
+    """
+    by_id: dict[str, dict[int | None, PrintUnit]] = {}
     for unit in units:
-        slots.extend([unit.best] * unit.quantity)
+        by_id.setdefault(unit.best.scryfall_id, {})[unit.best.face_index] = unit
+
+    pairs: dict[str, tuple[PrintUnit, PrintUnit]] = {}
+    for scryfall_id, faces in by_id.items():
+        if len(faces) != 2:
+            continue
+        front, back = faces.get(0), faces.get(1)
+        if front is None or back is None:
+            continue
+        pairs[scryfall_id] = (front, back)
+    return pairs
+
+
+def build_print_slots(units: list[PrintUnit], *, pair_back_faces: bool) -> list[PrintSlot]:
+    """Flatten matched units into one PrintSlot per physical printed card.
+
+    With `pair_back_faces` off this is the historical behaviour: every face
+    is its own card, and every Reverse takes the Back Image. With it on, a
+    double-faced card's two faces collapse into ONE card carrying both — so
+    the same decklist produces roughly half as many print slots, and the
+    page count changes with it. That is why the setting lives next to the
+    page count it changes.
+
+    The paired slot takes the front's position in the ordering and the
+    front's quantity; the back's own unit is consumed. Quantities are
+    re-derived per face group from the same decklist entries, so the two
+    agree except in the degenerate case where only one face matched an
+    entry — and there the front is the one that decides how many cards
+    exist to have backs at all.
+    """
+    pairs = _pairable_faces(units) if pair_back_faces else {}
+    consumed_backs = {id(back) for _front, back in pairs.values()}
+
+    slots: list[PrintSlot] = []
+    for unit in units:
+        if id(unit) in consumed_backs:
+            continue
+        pair = pairs.get(unit.best.scryfall_id)
+        reverse = pair[1].best if pair is not None and pair[0] is unit else None
+        slots.extend([PrintSlot(front=unit.best, reverse=reverse)] * unit.quantity)
     return slots
 
 
-def paginate(slots: list[FaceResult], per_page: int) -> list[list[FaceResult]]:
+def paginate(slots: list[PrintSlot], per_page: int) -> list[list[PrintSlot]]:
     """Chunk into per-page lists; last page may be shorter."""
     if per_page <= 0:
         return [slots] if slots else []
     return [slots[i : i + per_page] for i in range(0, len(slots), per_page)]
 
 
-def unique_image_count(pages: list[list[FaceResult]]) -> int:
+def mirror_page_index(index: int, *, layout: PageLayout, flip_edge: FlipEdge) -> int:
+    """Where a front's slot index lands on the Back Page.
+
+    Mirrored across the axis the sheet physically turns about — columns
+    reverse for a portrait sheet flipped on its long edge, rows reverse for
+    a landscape one (see FlipEdge). Always computed over the FULL grid, so
+    a partial last page mirrors into the positions its complete grid would
+    give: four cards on a nine-slot page occupy mirrored cells and leave
+    five empty. Mirroring over just the four filled cells is the classic
+    duplex bug — it lines the backs up against the wrong fronts.
+    """
+    row, col = divmod(index, layout.cols)
+    mirror_columns = (flip_edge is FlipEdge.LONG) == (layout.orientation == "portrait")
+    if mirror_columns:
+        col = layout.cols - 1 - col
+    else:
+        row = layout.rows - 1 - row
+    return row * layout.cols + col
+
+
+def back_page_cells(
+    page_slots: list[PrintSlot], *, layout: PageLayout, flip_edge: FlipEdge
+) -> list[PrintSlot | None]:
+    """The Back Page for one Front Page: a full-grid list of cells, each
+    holding the PrintSlot whose Reverse belongs there, or None for a grid
+    position no card occupies."""
+    cells: list[PrintSlot | None] = [None] * layout.cards_per_page
+    for i, slot in enumerate(page_slots):
+        cells[mirror_page_index(i, layout=layout, flip_edge=flip_edge)] = slot
+    return cells
+
+
+def unique_image_count(
+    pages: list[list[PrintSlot]],
+    *,
+    back_printing: bool = False,
+    back_image_path: Path | None = None,
+) -> int:
     """How many source images build_pdf will actually process.
 
-    The per-image work is cached per out_path, so this — not the number of
-    print slots — is the real unit of progress: a card printed eight times
-    costs one decode/resize/bleed/encode and seven near-free placements.
-    Exposed so a caller can size a progress bar before starting the build.
+    The per-image work is cached per source path, so this — not the number
+    of print slots — is the real unit of progress: a card printed eight
+    times costs one decode/resize/bleed/encode and seven near-free
+    placements. Exposed so a caller can size a progress bar before starting
+    the build.
+
+    With back printing on, Back Face images count too (they are distinct
+    images with their own cost), and the Back Image counts once no matter
+    how many Reverses it fills.
     """
-    return len({face.out_path for page in pages for face in page})
+    paths: set[Path] = {slot.front.out_path for page in pages for slot in page}
+    if back_printing:
+        paths |= {
+            slot.reverse.out_path
+            for page in pages
+            for slot in page
+            if slot.reverse is not None
+        }
+        if back_image_path is not None and any(
+            slot.reverse is None for page in pages for slot in page
+        ):
+            paths.add(back_image_path)
+    return len(paths)
+
+
+def fit_cover(image: Image.Image, target: tuple[int, int]) -> Image.Image:
+    """Scale to fill `target` and centre-crop the overflow, preserving
+    aspect ratio.
+
+    Card art from Scryfall is already 63:88 and needs none of this, but a
+    Back Image is whatever file the user picked. _resize_to_dpi would
+    stretch a square logo into a distorted rectangle; cover-cropping
+    distorts nothing and loses only the edges, which is the right trade for
+    art that is going to be printed full-bleed and then cut anyway.
+    """
+    tw, th = target
+    w, h = image.size
+    if (w, h) == (tw, th):
+        return image
+    scale = max(tw / w, th / h)
+    scaled = image.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
+    sw, sh = scaled.size
+    left = (sw - tw) // 2
+    top = (sh - th) // 2
+    return scaled.crop((left, top, left + tw, top + th))
+
+
+def _bled_pixels(dpi: int, bleed_mm: float) -> tuple[int, int]:
+    """Pixel size of one card *including* its bleed border on all sides."""
+    return (
+        round((CARD_WIDTH_MM + 2 * bleed_mm) / MM_PER_IN * dpi),
+        round((CARD_HEIGHT_MM + 2 * bleed_mm) / MM_PER_IN * dpi),
+    )
+
+
+def render_back_image(
+    path: Path, *, export_dpi: int, bleed_mm: float, includes_bleed: bool
+) -> Image.Image:
+    """Prepare a Back Image for placement, as an opaque bled RGB image the
+    same size add_bleed would produce for a card.
+
+    Two paths, per the user's declaration about their own file. When the
+    art does NOT include bleed, it is cover-fitted to the trim size and
+    then edge-extended exactly like card art. When it DOES, edge-extending
+    would add a duplicate ~1mm border and shrink the visible design, so it
+    is cover-fitted straight to the bled size instead and the outer border
+    it already carries becomes the bleed.
+    """
+    with Image.open(path) as raw:
+        img = raw.convert("RGB")
+        if includes_bleed:
+            return fit_cover(img, _bled_pixels(export_dpi, bleed_mm))
+        trimmed = fit_cover(img, target_pixels(export_dpi))
+    return add_bleed(trimmed, dpi=export_dpi, bleed_mm=bleed_mm)
+
+
+def _encode_card(face: FaceResult, *, export_dpi: int, bleed_mm: float) -> bytes:
+    """One card image, bled and JPEG-encoded, ready for placement."""
+    with Image.open(face.out_path) as raw:
+        # Flatten the rounded-corner alpha to opaque BEFORE any resize —
+        # resizing while corners are still transparent lets the resample
+        # filter (LANCZOS) blend the transparent region's RGB into the
+        # opaque body right at the boundary (classic alpha fringing),
+        # baking in a visible smear at every corner. add_bleed() below
+        # also flattens internally, but that's now a safe no-op
+        # (already-opaque corners have nothing left to flatten).
+        img = flatten_corner_alpha(raw.convert("RGBA"))
+    if export_dpi != face.dpi:
+        img = _resize_to_dpi(img, export_dpi)
+    bled = add_bleed(img, dpi=export_dpi, bleed_mm=bleed_mm)
+    buf = io.BytesIO()
+    bled.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+    return buf.getvalue()
 
 
 def build_pdf(
-    pages: list[list[FaceResult]],
+    pages: list[list[PrintSlot]],
     *,
     layout: PageLayout,
     export_dpi: int,
-    show_cut_lines: bool = True,
+    guides: GuideVisibility | None = None,
+    back_printing: bool = False,
+    back_layout: PageLayout | None = None,
+    back_image_path: Path | None = None,
+    back_image_includes_bleed: bool = False,
+    flip_edge: FlipEdge = FlipEdge.LONG,
+    page_order: PageOrder = PageOrder.INTERLEAVED,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> bytes:
-    """Render pages of card slots into a print-ready PDF, in memory.
+    """Render pages of PrintSlots into a print-ready PDF, in memory.
 
-    Caches the bled+JPEG-encoded bytes per unique out_path so a card printed
-    N times only pays the resize+corner-flatten+bleed+encode cost once.
-    `export_dpi` is one value for the whole PDF (not per-card) — when it
-    differs from a source image's own native `face.dpi`, that image is
-    resized to `export_dpi`'s pixel density before bleed is added, so e.g. a
-    1200 DPI generated source can still be exported into an 800 DPI PDF for
-    a smaller file.
+    Caches the bled+JPEG-encoded bytes per unique source path so a card
+    printed N times only pays the resize+corner-flatten+bleed+encode cost
+    once. `export_dpi` is one value for the whole PDF (not per-card) — when
+    it differs from a source image's own native `face.dpi`, that image is
+    resized to `export_dpi`'s pixel density before bleed is added, so e.g.
+    a 1200 DPI generated source can still be exported into an 800 DPI PDF
+    for a smaller file.
+
+    With `back_printing` on, each Front Page is followed (INTERLEAVED) or
+    trailed (FRONTS_THEN_BACKS) by its Back Page: the same grid mirrored
+    across the sheet's flip axis, each cell carrying either that card's
+    Back Face or the Back Image. `back_layout` carries the Back Pages' own
+    position offsets — duplex registration drifts, and calibrating it is
+    the whole reason those offsets exist — and defaults to the front
+    layout when not given. Guides are drawn per page kind (see
+    GuideVisibility).
 
     `on_progress(completed, total)` fires once per *unique* image, right
     after that image's expensive work lands in the cache — see
@@ -661,56 +935,116 @@ def build_pdf(
     user-requested cancel); nothing here catches it, so the exception
     unwinds to the caller with no partial PDF produced.
     """
-    # Pre-oriented tuple — always pass orientation="portrait" to fpdf2 here,
-    # since FPDF._set_orientation() swaps w_pt/h_pt for any non-portrait
-    # orientation even with a tuple format, which would silently undo our
-    # own already-correct page_w_mm/page_h_mm ordering.
+    guides = guides or GuideVisibility()
+    back_layout = back_layout or layout
+
+    # Pre-oriented tuple — always pass orientation="portrait" to fpdf2
+    # here, since FPDF._set_orientation() swaps w_pt/h_pt for any
+    # non-portrait orientation even with a tuple format, which would
+    # silently undo our own already-correct page_w_mm/page_h_mm ordering.
     pdf = FPDF(orientation="portrait", unit="mm", format=(layout.page_w_mm, layout.page_h_mm))
     pdf.set_auto_page_break(False)
     pdf.set_margins(0, 0, 0)
 
     cache: dict[Path, bytes] = {}
-    total_images = unique_image_count(pages)
-    for page_slots in pages:
+    total_images = unique_image_count(
+        pages, back_printing=back_printing, back_image_path=back_image_path
+    )
+
+    def encoded(source: Path, face: FaceResult | None) -> bytes:
+        """Cached bled JPEG bytes for one source image. `face` is None for
+        the Back Image, which has no generated-image record to carry a
+        native DPI and takes the cover-fit path instead."""
+        cached = cache.get(source)
+        if cached is not None:
+            return cached
+        if face is not None:
+            data = _encode_card(face, export_dpi=export_dpi, bleed_mm=layout.bleed_mm)
+        else:
+            bled = render_back_image(
+                source,
+                export_dpi=export_dpi,
+                bleed_mm=layout.bleed_mm,
+                includes_bleed=back_image_includes_bleed,
+            )
+            buf = io.BytesIO()
+            bled.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+            data = buf.getvalue()
+        cache[source] = data
+        if on_progress is not None:
+            on_progress(len(cache), total_images)
+        return data
+
+    def draw_page(cells: list[PrintSlot | None], *, is_back: bool) -> None:
+        page_layout = back_layout if is_back else layout
         pdf.add_page()
-        for idx, face in enumerate(page_slots):
-            col, row = idx % layout.cols, idx // layout.cols
-            x = layout.margin_x_mm + col * layout.cell_w_mm
-            y = layout.margin_y_mm + row * layout.cell_h_mm
-            jpeg_bytes = cache.get(face.out_path)
-            if jpeg_bytes is None:
-                with Image.open(face.out_path) as raw:
-                    # Flatten the rounded-corner alpha to opaque BEFORE any
-                    # resize — resizing while corners are still transparent
-                    # lets the resample filter (LANCZOS) blend the
-                    # transparent region's RGB into the opaque body right
-                    # at the boundary (classic alpha fringing), baking in a
-                    # visible smear at every corner. add_bleed() below also
-                    # flattens internally, but that's now a safe no-op
-                    # (already-opaque corners have nothing left to flatten).
-                    img = flatten_corner_alpha(raw.convert("RGBA"))
-                if export_dpi != face.dpi:
-                    img = _resize_to_dpi(img, export_dpi)
-                bled = add_bleed(img, dpi=export_dpi, bleed_mm=layout.bleed_mm)
-                buf = io.BytesIO()
-                bled.save(buf, format="JPEG", quality=_JPEG_QUALITY)
-                jpeg_bytes = buf.getvalue()
-                cache[face.out_path] = jpeg_bytes
-                if on_progress is not None:
-                    on_progress(len(cache), total_images)
+        for idx, slot in enumerate(cells):
+            if slot is None:
+                continue
+            if is_back:
+                face = slot.reverse
+                source = face.out_path if face is not None else back_image_path
+                if source is None:
+                    # No Back Face and no Back Image: nothing to draw. The
+                    # router refuses this combination up front (an empty
+                    # Reverse is a stated error, not a blank card), so
+                    # reaching here means a caller bypassed that check.
+                    continue
+            else:
+                face = slot.front
+                source = face.out_path
+
+            col, row = idx % page_layout.cols, idx // page_layout.cols
+            x = page_layout.margin_x_mm + col * page_layout.cell_w_mm
+            y = page_layout.margin_y_mm + row * page_layout.cell_h_mm
             # Fresh BytesIO per call — fpdf2's fast DCTDecode passthrough
             # path re-reads from position 0 each time, but a shared object
-            # across repeated copies of the same card is an easy footgun to
-            # avoid entirely by just re-wrapping the cached immutable bytes.
+            # across repeated copies of the same card is an easy footgun
+            # to avoid entirely by just re-wrapping the cached immutable
+            # bytes.
             pdf.image(
-                io.BytesIO(jpeg_bytes),
+                io.BytesIO(encoded(source, face)),
                 x=x,
                 y=y,
-                w=layout.bled_card_w_mm,
-                h=layout.bled_card_h_mm,
+                w=page_layout.bled_card_w_mm,
+                h=page_layout.bled_card_h_mm,
             )
 
-        if show_cut_lines:
-            _draw_cut_marks(pdf, layout)
+        if is_back:
+            _draw_cut_marks(
+                pdf,
+                page_layout,
+                card_guides=not guides.hide_card_guides_back,
+                page_guides=not guides.hide_page_guides_back,
+            )
+        else:
+            _draw_cut_marks(
+                pdf,
+                page_layout,
+                card_guides=not guides.hide_card_guides_front,
+                page_guides=not guides.hide_page_guides_front,
+            )
+
+    def front_cells(page_slots: list[PrintSlot]) -> list[PrintSlot | None]:
+        padded: list[PrintSlot | None] = list(page_slots)
+        padded += [None] * (layout.cards_per_page - len(padded))
+        return padded
+
+    if not back_printing:
+        for page_slots in pages:
+            draw_page(front_cells(page_slots), is_back=False)
+    elif page_order is PageOrder.FRONTS_THEN_BACKS:
+        for page_slots in pages:
+            draw_page(front_cells(page_slots), is_back=False)
+        for page_slots in pages:
+            draw_page(
+                back_page_cells(page_slots, layout=layout, flip_edge=flip_edge), is_back=True
+            )
+    else:
+        for page_slots in pages:
+            draw_page(front_cells(page_slots), is_back=False)
+            draw_page(
+                back_page_cells(page_slots, layout=layout, flip_edge=flip_edge), is_back=True
+            )
 
     return bytes(pdf.output())

@@ -125,6 +125,63 @@ export function useServerVersion(): string | null {
   return useSyncExternalStore(subscribeServerVersion, getServerVersion);
 }
 
+// --- The back-printing version floor ---------------------------------------
+//
+// Back printing replaced PdfLayoutIn's `show_cut_lines` with four required
+// hide flags. An OLD client talking to a NEW server fails loudly on its
+// own: the flags are required, so the request 422s.
+//
+// This direction cannot fail loudly by itself. Pydantic ignores unknown
+// fields, so a NEW client's flags sent to an OLD server are dropped
+// without a word and that server renders with its own `show_cut_lines`
+// default — guides on every page, no error, no clue. The only place the
+// break is detectable is here, before the request goes out.
+//
+// Unlike VersionMismatchToast (a dismissible caution about drift in
+// general), this is a hard block on one operation, because its failure
+// mode is a wrong PDF rather than a confusing one.
+//
+// 0.2.0 is the release that shipped back printing. packaging/set-version.py
+// deliberately does NOT rewrite this constant, and it must not start
+// tracking the current version: it names one specific historical release
+// forever, and bumping it in lockstep would block every server that is
+// merely a release behind rather than actually too old.
+export const BACK_PRINTING_MIN_SERVER_VERSION = "0.2.0";
+
+function parseVersion(version: string): number[] | null {
+  const parts = version.trim().split(".");
+  if (parts.length === 0 || parts.length > 4) return null;
+  const numbers = parts.map((p) => Number.parseInt(p, 10));
+  return numbers.some((n) => Number.isNaN(n)) ? null : numbers;
+}
+
+/** Negative if a < b, 0 if equal, positive if a > b. */
+export function compareVersions(a: string, b: string): number | null {
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  if (left == null || right == null) return null;
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * Is the connected server too old to be sent a back-printing render?
+ *
+ * A null server version means the server predates `/api/version` entirely
+ * (connection.tsx swallows that 404) — which puts it far below this floor,
+ * so it counts as too old rather than as unknown. An unparseable version
+ * is treated as fine: refusing to print because a version string had an
+ * unexpected shape would be worse than the drift it's guarding against.
+ */
+export function serverSupportsBackPrinting(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, BACK_PRINTING_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
 // Server-readiness gate. Local mode's sidecar can take real time to
 // start (cold model-loading, disk I/O) — rather than block the whole UI
 // behind a "Connecting…" screen, ConnectGate renders the app immediately

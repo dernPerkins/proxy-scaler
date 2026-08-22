@@ -88,54 +88,63 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
   const lines: ReactNode[] = [];
   let key = 0;
 
-  for (const x of xs) {
-    if (gridY0 > 0) {
-      lines.push(
-        <Line key={key++} x1={x * scale} y1={0} x2={x * scale} y2={gridY0 * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-      );
+  // The two guide kinds share all the geometry above and are gated
+  // independently below, mirroring pdf_layout.py::_draw_cut_marks. Which
+  // page kind's flags arrive here is already resolved server-side, so a
+  // Back Page preview draws exactly what that page will carry.
+  if (!preview.hide_page_guides) {
+    for (const x of xs) {
+      if (gridY0 > 0) {
+        lines.push(
+          <Line key={key++} x1={x * scale} y1={0} x2={x * scale} y2={gridY0 * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
+        );
+      }
+      if (gridY1 < preview.page_h_mm) {
+        lines.push(
+          <Line key={key++} x1={x * scale} y1={gridY1 * scale} x2={x * scale} y2={preview.page_h_mm * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
+        );
+      }
     }
-    if (gridY1 < preview.page_h_mm) {
-      lines.push(
-        <Line key={key++} x1={x * scale} y1={gridY1 * scale} x2={x * scale} y2={preview.page_h_mm * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-      );
-    }
-  }
-  for (const y of ys) {
-    if (gridX0 > 0) {
-      lines.push(
-        <Line key={key++} x1={0} y1={y * scale} x2={gridX0 * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-      );
-    }
-    if (gridX1 < preview.page_w_mm) {
-      lines.push(
-        <Line key={key++} x1={gridX1 * scale} y1={y * scale} x2={preview.page_w_mm * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-      );
-    }
-  }
-  for (const x of xs) {
     for (const y of ys) {
-      lines.push(
-        <Line
-          key={key++}
-          x1={(x - markLenMm) * scale}
-          y1={y * scale}
-          x2={(x + markLenMm) * scale}
-          y2={y * scale}
-          widthPx={strokeWidthPx}
-          color={MARK_COLOR}
-        />,
-      );
-      lines.push(
-        <Line
-          key={key++}
-          x1={x * scale}
-          y1={(y - markLenMm) * scale}
-          x2={x * scale}
-          y2={(y + markLenMm) * scale}
-          widthPx={strokeWidthPx}
-          color={MARK_COLOR}
-        />,
-      );
+      if (gridX0 > 0) {
+        lines.push(
+          <Line key={key++} x1={0} y1={y * scale} x2={gridX0 * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
+        );
+      }
+      if (gridX1 < preview.page_w_mm) {
+        lines.push(
+          <Line key={key++} x1={gridX1 * scale} y1={y * scale} x2={preview.page_w_mm * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
+        );
+      }
+    }
+  }
+
+  if (!preview.hide_card_guides) {
+    for (const x of xs) {
+      for (const y of ys) {
+        lines.push(
+          <Line
+            key={key++}
+            x1={(x - markLenMm) * scale}
+            y1={y * scale}
+            x2={(x + markLenMm) * scale}
+            y2={y * scale}
+            widthPx={strokeWidthPx}
+            color={MARK_COLOR}
+          />,
+        );
+        lines.push(
+          <Line
+            key={key++}
+            x1={x * scale}
+            y1={(y - markLenMm) * scale}
+            x2={x * scale}
+            y2={(y + markLenMm) * scale}
+            widthPx={strokeWidthPx}
+            color={MARK_COLOR}
+          />,
+        );
+      }
     }
   }
   return <>{lines}</>;
@@ -169,6 +178,12 @@ export default function PdfPagePreview({ preview }: { preview: PdfPagePreviewDat
         const row = Math.floor(idx / preview.cols);
         const x = preview.margin_x_mm + col * preview.cell_w_mm;
         const y = preview.margin_y_mm + row * preview.cell_h_mm;
+        // A Back Page preview returns every grid position, empty ones
+        // included, because its cells are placed by mirrored index — an
+        // empty position has to stay empty rather than collapsing and
+        // shifting every card after it.
+        const empty = !slot.thumbnail_data_url && !slot.card_name;
+        if (empty) return null;
         return (
           <div
             key={idx}
@@ -193,7 +208,9 @@ export default function PdfPagePreview({ preview }: { preview: PdfPagePreviewDat
           </div>
         );
       })}
-      {preview.show_cut_lines && <CutMarks preview={preview} scale={scale} />}
+      {(!preview.hide_card_guides || !preview.hide_page_guides) && (
+        <CutMarks preview={preview} scale={scale} />
+      )}
     </div>
   );
 }

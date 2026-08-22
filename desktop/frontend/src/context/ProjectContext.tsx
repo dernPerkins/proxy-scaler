@@ -77,11 +77,25 @@ function getDefaultSettings(): ProjectSettings {
     guide_width_pt: 0.75,
     guide_length_mm: 2.75,
     export_dpi: 1200,
-    show_cut_lines: true,
     preferred_dpi: null,
     preferred_model: null,
     preferred_lang: "en",
     lang_any: false,
+    // Guides: front pages keep every guide (they're the side you cut
+    // against), back pages get none by default (that ink lands on the
+    // visible side of the card). Mirrors project_store.rs's column
+    // defaults and pdf_layout.GuideVisibility.
+    hide_card_guides_front: false,
+    hide_page_guides_front: false,
+    hide_card_guides_back: true,
+    hide_page_guides_back: true,
+    back_printing: false,
+    back_faces_as_reverse: true,
+    page_order: "interleaved",
+    flip_edge: "long",
+    back_offset_x_mm: 0,
+    back_offset_y_mm: 0,
+    back_image_id: null,
   };
 }
 

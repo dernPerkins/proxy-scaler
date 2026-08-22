@@ -60,15 +60,13 @@ the deck list, with the English name in the tooltip.
 
 Planned, in roughly the order they're likely to land:
 
-1. **Back printing** — printing card backs onto the reverse side of each
-   page. I've personally found back printing too finicky to bother with,
-   but plenty of people do use it, and it shouldn't be difficult to add.
-   It would likely mean loading a back image in from your own files.
-2. **Custom image upload** — use an artist's custom cards, or your own
-   images, instead of the Scryfall printing.
-3. **Better project management** — see how much storage space each
+1. **Custom image upload** — use an artist's custom cards, or your own
+   images, instead of the Scryfall printing. The [Backs](#backs) tab
+   already does the uploading half of this for card backs; what's left is
+   pointing a *card* at an uploaded image.
+2. **Better project management** — see how much storage space each
    project is consuming, and clean up the ones you no longer need.
-4. **MPCFill exploration** — browsing and selecting already-created
+3. **MPCFill exploration** — browsing and selecting already-created
    custom art the way other proxy tools do. Custom image upload above is
    the stop-gap until something like this exists.
 
@@ -143,12 +141,48 @@ when you want the project to be findable later — it keeps the images you
 have already generated.
 
 **PDF generation** is a full tab of its own: page size presets or custom
-dimensions, columns/rows, bleed, spacing, position offset, cut-guide
+dimensions, columns/rows, bleed, spacing, position offset, guide
 width/length, and a preferred model/DPI for picking among
 already-generated images. It also tells you how many print slots are left
-on your last page (a double-faced card counts as two), and flags any card
-still missing a generated image — or, for a double-faced card, missing
-one of its two faces — before you print.
+on your last page, and flags any card still missing a generated image —
+or, for a double-faced card, missing one of its two faces — before you
+print. Guides are switchable per kind and per side: **card guides** (the
+marks at each card's own corners) and **page guides** (the lines running
+in from the page edge), each independently hideable on front and back
+pages.
+
+**Back printing** puts something on the reverse of every card so a sheet
+can be duplex-printed. See [Backs](#backs).
+
+### Backs
+
+A **Backs** tab holds your library of card-back images — upload a PNG,
+JPEG or WebP, pick one for the project, and optionally mark one as the
+default new projects start with. The library is shared across every
+project on your machine.
+
+Turn **Print card backs** on from the PDF tab and every sheet is followed
+by its reverse, mirrored so the backs land on the right cards once the
+paper turns over. Things worth knowing:
+
+- **Flip edge** must match your printer's own duplex setting (*flip on
+  long edge* or *flip on short edge* in the print dialog). If the two
+  disagree, every card gets someone else's back. Use the **Back of page
+  1** preview to check before spending cardstock.
+- **Double-faced cards** print as one card with both faces on it, so a
+  transform card takes one print slot instead of two. Turn that off and
+  each face goes back to being its own card with the back image on its
+  reverse.
+- **Page order** is interleaved by default (front, back, front, back…),
+  which is what duplex printer drivers expect. *All fronts, then all
+  backs* is there for hand-feeding a stack through a single-sided printer.
+- **Back offsets** nudge only the back pages, for printers whose duplex
+  registration drifts a fraction of a millimetre.
+- **Upscaling a back** is optional and uses the same models as your cards.
+  Upscales live on whichever generation server produced them, so a back
+  upscaled on your GPU box prints from its original if you switch to
+  Local — it still prints, it just won't be as sharp, and the PDF tab says
+  so.
 
 A **Tasks** tab shows the generation queue — what's pending, running,
 done, or failed — since upscaling a full decklist runs in the background
@@ -301,7 +335,7 @@ side by side.
 ### Debian/Ubuntu package
 
 ```bash
-sudo apt install ./proxy-scaler_0.1.0_amd64.deb
+sudo apt install ./proxy-scaler_0.2.0_amd64.deb
 ```
 
 Installs a self-contained bundle to `/opt/proxy-scaler` (no system Python

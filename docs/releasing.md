@@ -285,7 +285,8 @@ Tauri would copy the tree a second time during the build.
 ### Always verify before distributing
 
 ```bash
-hdiutil attach dist/proxy-scaler-client_0.1.0_macos-$(uname -m).dmg \
+VER=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+hdiutil attach dist/proxy-scaler-client_${VER}_macos-$(uname -m).dmg \
   -nobrowse -mountpoint /tmp/psdmg
 ls /tmp/psdmg                                     # app + Applications symlink
 ls /tmp/psdmg/"Proxy Scaler.app"/Contents/Resources/  # sidecar dir
@@ -511,6 +512,18 @@ CAB format and the `.msi` container cap out near 2GB.
 
 First time only: `cd desktop/frontend && npm install && cd ../..`
 
+Every pass below refers to the release version as `$VER`. Set it once per
+shell, derived rather than typed — these commands name files that
+`cargo tauri build` has already produced under the *real* version, so a
+hardcoded number that has drifted from `pyproject.toml` fails at the `cp`
+(or, worse, produces correctly-built artifacts under stale names, which
+`generate-manifest.py` then silently drops for not matching):
+
+```bash
+VER=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+echo "$VER"    # sanity-check before continuing
+```
+
 ### Pass 1 — Nvidia RTX (`cuda`, cu128)
 
 ```bash
@@ -536,15 +549,15 @@ cd desktop/server-app && cargo tauri build && cd ../..     # server app MSI
 
 # Assemble each app's distributable set (.msi + its cab files) into its
 # own dist/ folder. The cabs are in wix/x64, NOT next to the built .msi.
-mkdir -p dist/proxy-scaler-client_0.1.0_windows-x64_cuda dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda
-cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_0.1.0_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_0.1.0_windows-x64_cuda/
-cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_0.1.0_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda/
+mkdir -p dist/proxy-scaler-client_${VER}_windows-x64_cuda dist/proxy-scaler-server-app_${VER}_windows-x64_cuda
+cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_${VER}_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_${VER}_windows-x64_cuda/
+cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_${VER}_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_${VER}_windows-x64_cuda/
 
 # Zip each folder — the zip is what gets uploaded: one file per app, and
 # nobody can download the .msi without the cabs it needs. (tar here is
 # Windows' built-in bsdtar; -a picks zip format from the output name.)
-tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_cuda.zip -C dist proxy-scaler-client_0.1.0_windows-x64_cuda
-tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_cuda
+tar -a -c -f dist/proxy-scaler-client_${VER}_windows-x64_cuda.zip -C dist proxy-scaler-client_${VER}_windows-x64_cuda
+tar -a -c -f dist/proxy-scaler-server-app_${VER}_windows-x64_cuda.zip -C dist proxy-scaler-server-app_${VER}_windows-x64_cuda
 ```
 
 ### Pass 2 — Nvidia GTX legacy (`cuda-legacy`, cu126)
@@ -564,11 +577,11 @@ make install PY="py -3.12"
 make sidecar
 cd desktop/src-tauri && cargo tauri build && cd ../..
 cd desktop/server-app && cargo tauri build && cd ../..
-mkdir -p dist/proxy-scaler-client_0.1.0_windows-x64_cuda-legacy dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy
-cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_0.1.0_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_0.1.0_windows-x64_cuda-legacy/
-cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_0.1.0_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy/
-tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_cuda-legacy.zip -C dist proxy-scaler-client_0.1.0_windows-x64_cuda-legacy
-tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_cuda-legacy
+mkdir -p dist/proxy-scaler-client_${VER}_windows-x64_cuda-legacy dist/proxy-scaler-server-app_${VER}_windows-x64_cuda-legacy
+cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_${VER}_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_${VER}_windows-x64_cuda-legacy/
+cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_${VER}_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_${VER}_windows-x64_cuda-legacy/
+tar -a -c -f dist/proxy-scaler-client_${VER}_windows-x64_cuda-legacy.zip -C dist proxy-scaler-client_${VER}_windows-x64_cuda-legacy
+tar -a -c -f dist/proxy-scaler-server-app_${VER}_windows-x64_cuda-legacy.zip -C dist proxy-scaler-server-app_${VER}_windows-x64_cuda-legacy
 ```
 
 ### Pass 3 — AMD (DirectML)
@@ -594,11 +607,11 @@ ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/torch_directml/DirectML
 
 cd desktop/src-tauri && cargo tauri build && cd ../..
 cd desktop/server-app && cargo tauri build && cd ../..
-mkdir -p dist/proxy-scaler-client_0.1.0_windows-x64_directml dist/proxy-scaler-server-app_0.1.0_windows-x64_directml
-cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_0.1.0_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_0.1.0_windows-x64_directml/
-cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_0.1.0_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_0.1.0_windows-x64_directml/
-tar -a -c -f dist/proxy-scaler-client_0.1.0_windows-x64_directml.zip -C dist proxy-scaler-client_0.1.0_windows-x64_directml
-tar -a -c -f dist/proxy-scaler-server-app_0.1.0_windows-x64_directml.zip -C dist proxy-scaler-server-app_0.1.0_windows-x64_directml
+mkdir -p dist/proxy-scaler-client_${VER}_windows-x64_directml dist/proxy-scaler-server-app_${VER}_windows-x64_directml
+cp "desktop/src-tauri/target/release/bundle/msi/Proxy Scaler_${VER}_x64_en-US.msi" desktop/src-tauri/target/release/wix/x64/cab*.cab dist/proxy-scaler-client_${VER}_windows-x64_directml/
+cp "desktop/server-app/target/release/bundle/msi/Proxy Scaler Server_${VER}_x64_en-US.msi" desktop/server-app/target/release/wix/x64/cab*.cab dist/proxy-scaler-server-app_${VER}_windows-x64_directml/
+tar -a -c -f dist/proxy-scaler-client_${VER}_windows-x64_directml.zip -C dist proxy-scaler-client_${VER}_windows-x64_directml
+tar -a -c -f dist/proxy-scaler-server-app_${VER}_windows-x64_directml.zip -C dist proxy-scaler-server-app_${VER}_windows-x64_directml
 ```
 
 ### Single-file setup.exe (the uploaded artifact)
@@ -629,20 +642,20 @@ paths must be Windows-style, which is what `pwd -W` prints.
 ```bash
 ISCC="$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe"
 
-MSYS_NO_PATHCONV=1 "$ISCC" "/DAppName=Proxy Scaler" /DAppVersion=0.1.0 \
-  "/DMsiDir=$(pwd -W)/dist/proxy-scaler-client_0.1.0_windows-x64_cuda" \
-  "/DMsiName=Proxy Scaler_0.1.0_x64_en-US.msi" \
+MSYS_NO_PATHCONV=1 "$ISCC" "/DAppName=Proxy Scaler" /DAppVersion=$VER \
+  "/DMsiDir=$(pwd -W)/dist/proxy-scaler-client_${VER}_windows-x64_cuda" \
+  "/DMsiName=Proxy Scaler_${VER}_x64_en-US.msi" \
   "/DIconPath=$(pwd -W)/desktop/src-tauri/icons/icon.ico" \
   "/DOutputDir=$(pwd -W)/dist" \
-  /DOutputBaseName=proxy-scaler-client_0.1.0_windows-x64_cuda-setup \
+  /DOutputBaseName=proxy-scaler-client_${VER}_windows-x64_cuda-setup \
   /Q desktop/inno/setup.iss
 
-MSYS_NO_PATHCONV=1 "$ISCC" "/DAppName=Proxy Scaler Server" /DAppVersion=0.1.0 \
-  "/DMsiDir=$(pwd -W)/dist/proxy-scaler-server-app_0.1.0_windows-x64_cuda" \
-  "/DMsiName=Proxy Scaler Server_0.1.0_x64_en-US.msi" \
+MSYS_NO_PATHCONV=1 "$ISCC" "/DAppName=Proxy Scaler Server" /DAppVersion=$VER \
+  "/DMsiDir=$(pwd -W)/dist/proxy-scaler-server-app_${VER}_windows-x64_cuda" \
+  "/DMsiName=Proxy Scaler Server_${VER}_x64_en-US.msi" \
   "/DIconPath=$(pwd -W)/desktop/server-app/icons/icon.ico" \
   "/DOutputDir=$(pwd -W)/dist" \
-  /DOutputBaseName=proxy-scaler-server-app_0.1.0_windows-x64_cuda-setup \
+  /DOutputBaseName=proxy-scaler-server-app_${VER}_windows-x64_cuda-setup \
   /Q desktop/inno/setup.iss
 ```
 

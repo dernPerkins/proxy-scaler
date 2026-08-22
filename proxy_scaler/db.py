@@ -1413,6 +1413,32 @@ def find_generated_image(
     return _gallery_row_to_dict(row) if row is not None else None
 
 
+def list_generated_by_scryfall_id(
+    scryfall_id: str, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """Every registry row for one identity, across all models and DPIs.
+
+    Unscoped by project on purpose: its caller is the Back Image store
+    (backs.py), whose images belong to the machine rather than to any one
+    project — a Back Image has no project_tag membership at all, so a
+    membership-joined listing would always come back empty.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM generated_images WHERE scryfall_id = ?", (scryfall_id,)
+        ).fetchall()
+    return [_gallery_row_to_dict(r) for r in rows]
+
+
+def delete_gallery_item(image_id: int, db_path: Path | str | None = None) -> bool:
+    """Drop one registry row by id; memberships cascade. Returns whether a
+    row was actually there. Deleting the FILE is the caller's job — this
+    only unsays the claim that it exists."""
+    with connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM generated_images WHERE id = ?", (image_id,))
+    return cur.rowcount > 0
+
+
 def add_membership(
     project_tag: str, image_id: int, db_path: Path | str | None = None
 ) -> None:

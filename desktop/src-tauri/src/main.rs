@@ -47,6 +47,7 @@
 //     before, ships as a .tar.gz.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod back_images;
 mod project_store;
 mod update;
 
@@ -861,7 +862,17 @@ fn main() {
             set_update_check_enabled,
             check_for_update,
             download_update,
-            launch_installer
+            launch_installer,
+            back_images::list_back_images,
+            back_images::add_back_image,
+            back_images::set_back_image_label,
+            back_images::set_back_image_includes_bleed,
+            back_images::count_projects_using_back_image,
+            back_images::delete_back_image,
+            back_images::back_image_thumbnail,
+            back_images::get_default_back_image_id,
+            back_images::set_default_back_image_id,
+            back_images::sync_back_image
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

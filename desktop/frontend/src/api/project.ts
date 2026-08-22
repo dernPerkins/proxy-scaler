@@ -3,6 +3,7 @@
 // project_store.rs — in-process, no network, no server-side project
 // concept at all any more. See ARCHITECTURE.md.
 import { invokeCommand } from "../tauri";
+import type { BackImage, BackSyncResult, FlipEdge, PageOrder } from "./types";
 
 export interface ProjectSummary {
   id: number;
@@ -31,7 +32,6 @@ export interface ProjectSettings {
   guide_width_pt: number;
   guide_length_mm: number;
   export_dpi: number;
-  show_cut_lines: boolean;
   preferred_dpi: number | null;
   preferred_model: string | null;
   // Import-language preference (Scryfall code, "en" default): the language
@@ -41,6 +41,23 @@ export interface ProjectSettings {
   // The import box's "All Languages" checkbox: best-effort matching across
   // languages instead of strictly preferred_lang.
   lang_any: boolean;
+  // Guides: one HIDE flag per guide kind per page kind, replacing the old
+  // single show_cut_lines. Back Pages default to hidden — you cut a duplex
+  // sheet against the guides on its front, so guides on the back are ink
+  // you can't use printed on the side that shows.
+  hide_card_guides_front: boolean;
+  hide_page_guides_front: boolean;
+  hide_card_guides_back: boolean;
+  hide_page_guides_back: boolean;
+  // Back printing.
+  back_printing: boolean;
+  back_faces_as_reverse: boolean;
+  page_order: PageOrder;
+  flip_edge: FlipEdge;
+  back_offset_x_mm: number;
+  back_offset_y_mm: number;
+  /** This project's Selected Back — an id into the Back Library, or null. */
+  back_image_id: number | null;
 }
 
 export interface CardRow {
@@ -209,4 +226,65 @@ export const projectApi = {
     invokeCommand<RecentHost[]>("add_recent_host", { host, port }),
   removeRecentHost: (host: string, port: number) =>
     invokeCommand<RecentHost[]>("remove_recent_host", { host, port }),
+
+  // --- The Back Library ------------------------------------------------
+  //
+  // App-global and client-owned: every uploaded Back Image is visible in
+  // every project, and a project points at one by id. The bytes never
+  // cross this boundary on the way out — Rust hashes the file, writes it,
+  // and (syncBackImage) uploads it to the generation server directly.
+  // See docs/adr/0003.
+  listBackImages: () => invokeCommand<BackImage[]>("list_back_images"),
+
+  /**
+   * Add a file to the library. `thumbnail` is a small JPEG the caller
+   * already rendered for its own preview — generating it in Rust would
+   * mean adding an image-decoding crate to a build that ships in six
+   * platform variants, for one 220px picture.
+   *
+   * Content-addressed: re-adding identical bytes returns the existing
+   * entry rather than a duplicate.
+   */
+  addBackImage: (args: {
+    bytes: number[];
+    thumbnail: number[];
+    originalFilename: string;
+    label: string;
+    width: number;
+    height: number;
+  }) => invokeCommand<BackImage>("add_back_image", { ...args }),
+
+  setBackImageLabel: (id: number, label: string) =>
+    invokeCommand<void>("set_back_image_label", { id, label }),
+
+  setBackImageIncludesBleed: (id: number, includesBleed: boolean) =>
+    invokeCommand<void>("set_back_image_includes_bleed", { id, includesBleed }),
+
+  /** How many projects have this back selected — the delete confirmation
+   *  says so out loud, because those projects end up with NO back rather
+   *  than inheriting a replacement. */
+  countProjectsUsingBackImage: (id: number) =>
+    invokeCommand<number>("count_projects_using_back_image", { id }),
+
+  deleteBackImage: (id: number) =>
+    invokeCommand<void>("delete_back_image", { id }),
+
+  backImageThumbnail: (id: number) =>
+    invokeCommand<string | null>("back_image_thumbnail", { id }),
+
+  getDefaultBackImageId: () =>
+    invokeCommand<number | null>("get_default_back_image_id"),
+
+  /** Set the back NEW projects start with. Existing projects keep the id
+   *  they copied at creation — a project you printed last month must print
+   *  identically today, so the default never reaches back into them. */
+  setDefaultBackImageId: (id: number | null) =>
+    invokeCommand<void>("set_default_back_image_id", { id }),
+
+  /** Make sure a generation server holds this back's bytes. Cheap to call
+   *  unconditionally: Rust GETs first and only uploads on a miss, so
+   *  switching servers self-heals through exactly this path. */
+  syncBackImage: (id: number, serverBaseUrl: string) =>
+    invokeCommand<BackSyncResult>("sync_back_image", { id, serverBaseUrl }),
 };
+

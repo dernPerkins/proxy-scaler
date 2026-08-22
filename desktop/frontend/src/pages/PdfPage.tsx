@@ -1,12 +1,18 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
-import type { CardRow } from "../api/project";
+import { projectApi, type CardRow } from "../api/project";
 import NumberInput from "../components/NumberInput";
 import PdfPagePreview from "../components/PdfPagePreview";
 import { DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
-import { useServerReadiness } from "../config";
+import {
+  BACK_PRINTING_MIN_SERVER_VERSION,
+  getApiBaseUrl,
+  serverSupportsBackPrinting,
+  useServerReadiness,
+  useServerVersion,
+} from "../config";
 import { useProject } from "../context/ProjectContext";
 import {
   DownloadCanceled,
@@ -15,7 +21,7 @@ import {
   setDownloadPhase,
 } from "../download";
 import { pdfFilename } from "../pdfFilename";
-import type { DeckEntryIn, PdfLayoutRequest } from "../api/types";
+import type { DeckEntryIn, FlipEdge, PageOrder, PdfLayoutRequest } from "../api/types";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -54,6 +60,46 @@ export default function PdfPage() {
   // no feedback.
   const serverUnavailable =
     connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
+  const layoutWantsBacks = settings.back_printing;
+  // The one drift direction the server cannot reject for itself: an old
+  // server ignores the guide flags silently and renders with its own
+  // defaults, so this has to be caught before the request goes out. A hard
+  // block on rendering, not a dismissible toast — the failure mode is a
+  // wrong PDF, not a confusing one. See config.ts.
+  const serverVersion = useServerVersion();
+  const serverTooOld = !serverUnavailable && !serverSupportsBackPrinting(serverVersion);
+  // The project's Selected Back, resolved out of the app-global library.
+  // Library reads are local invokes — they work with no server reachable,
+  // which is the whole point of the client owning it (docs/adr/0003).
+  const backLibraryQuery = useQuery({
+    queryKey: ["back-images"],
+    queryFn: () => projectApi.listBackImages(),
+  });
+  const selectedBack =
+    settings.back_image_id != null
+      ? backLibraryQuery.data?.find((b) => b.id === settings.back_image_id)
+      : undefined;
+
+  // Make sure the CONNECTED server holds this back's bytes before anything
+  // asks it to render with them. Keyed on the base URL as well as the
+  // back, so switching to a server that has never seen this file re-syncs
+  // rather than silently previewing a back that isn't there. Rust GETs
+  // first and only uploads on a miss, so the steady-state cost is one
+  // small request.
+  const backSyncQuery = useQuery({
+    queryKey: ["back-image-sync", selectedBack?.id, getApiBaseUrl()],
+    queryFn: () => projectApi.syncBackImage(selectedBack!.id, getApiBaseUrl()),
+    enabled: selectedBack != null && layoutWantsBacks && !serverUnavailable,
+  });
+  // Only gates the queries when a back is actually needed: an all-DFC
+  // sheet, or back printing off, has nothing to wait for.
+  const backReady = selectedBack == null || !layoutWantsBacks || backSyncQuery.isSuccess;
+
+  // Which side of page 1 the visual preview shows. Local state, not a
+  // persisted setting — it's a way of looking at the sheet, not a property
+  // of it.
+  const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
+
   // Persisted on the project itself (ProjectContext's `settings`, saved via
   // the same project-bar Save button as the Decklist tab's generation
   // settings) rather than local component state — these used to live in a
@@ -71,9 +117,20 @@ export default function PdfPage() {
     guide_width_pt: settings.guide_width_pt,
     guide_length_mm: settings.guide_length_mm,
     export_dpi: settings.export_dpi,
-    show_cut_lines: settings.show_cut_lines,
     preferred_dpi: settings.preferred_dpi,
     preferred_model: settings.preferred_model,
+    hide_card_guides_front: settings.hide_card_guides_front,
+    hide_page_guides_front: settings.hide_page_guides_front,
+    hide_card_guides_back: settings.hide_card_guides_back,
+    hide_page_guides_back: settings.hide_page_guides_back,
+    back_printing: settings.back_printing,
+    back_faces_as_reverse: settings.back_faces_as_reverse,
+    page_order: settings.page_order,
+    flip_edge: settings.flip_edge,
+    back_offset_x_mm: settings.back_offset_x_mm,
+    back_offset_y_mm: settings.back_offset_y_mm,
+    back_image_hash: selectedBack?.content_hash ?? null,
+    back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
   };
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -92,26 +149,49 @@ export default function PdfPage() {
     queryKey: ["pdf-preview", projectTag, entries, layout],
     queryFn: () =>
       generationApi.pdfPreview({ project_tag: projectTag as string, entries, ...layout }),
-    enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
+    enabled:
+      projectTag != null &&
+      entries.length > 0 &&
+      !serverUnavailable &&
+      !serverTooOld &&
+      backReady,
   });
 
   // Page-1-only visual layout preview — separate query/endpoint from the
   // numeric one above (see api/types.ts's PdfPagePreview comment for why
   // they're kept distinct). Same enabled-gating as previewQuery.
   const pagePreviewQuery = useQuery({
-    queryKey: ["pdf-page-preview", projectTag, entries, layout],
+    queryKey: ["pdf-page-preview", projectTag, entries, layout, previewSide],
     queryFn: () =>
-      generationApi.pdfPagePreview({ project_tag: projectTag as string, entries, ...layout }),
-    enabled: projectTag != null && entries.length > 0 && !serverUnavailable,
+      generationApi.pdfPagePreview({
+        project_tag: projectTag as string,
+        entries,
+        ...layout,
+        preview_back_page: previewSide === "back",
+      }),
+    enabled:
+      projectTag != null &&
+      entries.length > 0 &&
+      !serverUnavailable &&
+      !serverTooOld &&
+      backReady,
   });
 
   // cards_per_page is always cols*rows server-side (pdf_layout.resolve_page_
   // layout) and every page but the last is filled to exactly that (pdf_
   // layout.paginate) — so total capacity minus units is precisely how many
-  // print slots are open on the last page. units already counts a
-  // double-faced card's front/back as two slots, so no separate DFC
-  // handling is needed here.
+  // print slots are open on the last page.
+  //
+  // What a double-faced card COSTS in slots is now mode-dependent: two
+  // when its faces print as separate cards, one when the transform side
+  // goes on its own back. `units` already reflects whichever mode is on
+  // (the server pairs before paginating), so the arithmetic is unchanged —
+  // only the sentence explaining it below has to follow the mode.
   const cardsPerPage = layout.cols * layout.rows;
+  const dfcSlotHint =
+    layout.back_printing && layout.back_faces_as_reverse
+      ? "a double-faced card uses 1 slot, with its transform side on the back"
+      : "a double-faced card uses 2 slots";
   const leftoverSlots = previewQuery.data
     ? cardsPerPage * previewQuery.data.page_count - previewQuery.data.units
     : 0;
@@ -370,34 +450,178 @@ export default function PdfPage() {
             />
           </label>
 
+          <div style={{ display: "flex", gap: 10 }}>
+            <label className="field">
+              <span>Guide width (pt)</span>
+              <NumberInput
+                step={0.05}
+                value={layout.guide_width_pt}
+                onChange={(v) => updateLayout("guide_width_pt", v)}
+              />
+            </label>
+            <label className="field">
+              <span>Guide length (mm)</span>
+              <NumberInput
+                step={0.1}
+                value={layout.guide_length_mm}
+                onChange={(v) => updateLayout("guide_length_mm", v)}
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Guides, split by kind and by page kind. Card Guides are the
+            small marks at each card's own trim corners; Page Guides are
+            the lines running from the page edge in to the grid. They used
+            to share one switch, which couldn't express the setting most
+            duplex printers actually want: guides on the fronts you cut
+            against, none on the backs that show. */}
+        <h3 style={{ margin: "18px 0 14px" }}>
+          Guides{" "}
+          <span
+            className="hint"
+            title="Front pages are the side you cut against, so guides there are the ones you use. Back pages default to none — that ink lands on the visible side of the card."
+          >
+            (?)
+          </span>
+        </h3>
+
+        <div className="field-group">
           <label className="check">
             <input
               type="checkbox"
-              checked={layout.show_cut_lines}
-              onChange={(e) => updateLayout("show_cut_lines", e.target.checked)}
+              checked={layout.hide_card_guides_front}
+              onChange={(e) => updateLayout("hide_card_guides_front", e.target.checked)}
             />
-            Show cut lines
+            Hide card guides on front pages
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={layout.hide_page_guides_front}
+              onChange={(e) => updateLayout("hide_page_guides_front", e.target.checked)}
+            />
+            Hide page guides on front pages
+          </label>
+          {/* Still shown (not hidden) while back printing is off, so the
+              settings stay comparable side by side — just inert, and said
+              so rather than silently ignored. */}
+          <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+            <input
+              type="checkbox"
+              disabled={!layout.back_printing}
+              checked={layout.hide_card_guides_back}
+              onChange={(e) => updateLayout("hide_card_guides_back", e.target.checked)}
+            />
+            Hide card guides on back pages
+          </label>
+          <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+            <input
+              type="checkbox"
+              disabled={!layout.back_printing}
+              checked={layout.hide_page_guides_back}
+              onChange={(e) => updateLayout("hide_page_guides_back", e.target.checked)}
+            />
+            Hide page guides on back pages
+          </label>
+        </div>
+
+        <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
+
+        <div className="field-group">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={layout.back_printing}
+              onChange={(e) => updateLayout("back_printing", e.target.checked)}
+            />
+            Print card backs
           </label>
 
-          {layout.show_cut_lines && (
-            <div style={{ display: "flex", gap: 10 }}>
-              <label className="field">
-                <span>Guide width (pt)</span>
-                <NumberInput
-                  step={0.05}
-                  value={layout.guide_width_pt}
-                  onChange={(v) => updateLayout("guide_width_pt", v)}
+          {layout.back_printing && (
+            <>
+              <p className="hint" style={{ margin: "2px 0 8px" }}>
+                {selectedBack ? (
+                  <>
+                    Using <strong>{selectedBack.label}</strong> — change it on the
+                    Backs tab.
+                  </>
+                ) : (
+                  <>No back selected. Pick one on the Backs tab.</>
+                )}
+              </p>
+
+              {/* Changes the print-slot count and therefore the page
+                  count, which is why it lives here rather than with the
+                  Back Image on the Backs tab. */}
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={layout.back_faces_as_reverse}
+                  onChange={(e) =>
+                    updateLayout("back_faces_as_reverse", e.target.checked)
+                  }
                 />
+                Print a double-faced card&apos;s transform side on its own back
               </label>
+              <p className="hint" style={{ margin: "-2px 0 8px" }}>
+                {layout.back_faces_as_reverse
+                  ? "A double-faced card is one printed card with both faces on it."
+                  : "Each face prints as its own card, and both get the back image."}
+              </p>
+
               <label className="field">
-                <span>Guide length (mm)</span>
-                <NumberInput
-                  step={0.1}
-                  value={layout.guide_length_mm}
-                  onChange={(v) => updateLayout("guide_length_mm", v)}
-                />
+                <span>
+                  Flip edge{" "}
+                  <span
+                    className="hint"
+                    title="Match this to your printer's duplex setting — 'Flip on long edge' or 'Flip on short edge' in the print dialog. If they disagree, every card gets someone else's back."
+                  >
+                    (?)
+                  </span>
+                </span>
+                <select
+                  value={layout.flip_edge}
+                  onChange={(e) => updateLayout("flip_edge", e.target.value as FlipEdge)}
+                >
+                  <option value="long">Long edge</option>
+                  <option value="short">Short edge</option>
+                </select>
               </label>
-            </div>
+
+              <label className="field">
+                <span>Page order</span>
+                <select
+                  value={layout.page_order}
+                  onChange={(e) => updateLayout("page_order", e.target.value as PageOrder)}
+                >
+                  <option value="interleaved">Interleaved (front, back, front…)</option>
+                  <option value="fronts_then_backs">All fronts, then all backs</option>
+                </select>
+              </label>
+
+              {/* Independent of the front offsets rather than added to
+                  them: they calibrate two separate passes through the
+                  printer, and duplex registration genuinely drifts. */}
+              <div style={{ display: "flex", gap: 10 }}>
+                <label className="field">
+                  <span>Back offset X (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.back_offset_x_mm ?? 0}
+                    onChange={(v) => updateLayout("back_offset_x_mm", v)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Back offset Y (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.back_offset_y_mm ?? 0}
+                    onChange={(v) => updateLayout("back_offset_y_mm", v)}
+                  />
+                </label>
+              </div>
+            </>
           )}
         </div>
       </aside>
@@ -411,11 +635,21 @@ export default function PdfPage() {
           </p>
         )}
 
+        {serverTooOld && (
+          <p className="error-text" style={{ marginTop: 10 }}>
+            <strong>This generation server is too old for this version of the app.</strong>{" "}
+            It needs v{BACK_PRINTING_MIN_SERVER_VERSION} or newer
+            {serverVersion ? ` (it reports v${serverVersion})` : ""}. Rendering is
+            blocked rather than silently producing a PDF with the wrong guide settings
+            — update the server and reconnect.
+          </p>
+        )}
+
         {entries.length === 0 ? (
           <p className="hint" style={{ marginTop: 10 }}>
             No cards in this project yet — add some from the Decklist tab first.
           </p>
-        ) : serverUnavailable ? null : previewQuery.isLoading ? (
+        ) : serverUnavailable || serverTooOld ? null : previewQuery.isLoading ? (
           <p className="hint" style={{ marginTop: 10 }}>
             Calculating layout…
           </p>
@@ -428,13 +662,20 @@ export default function PdfPage() {
           <div className="panel" style={{ padding: 14, marginTop: 10 }}>
             <p>
               <strong>{previewQuery.data.units}</strong> card(s) across{" "}
-              <strong>{previewQuery.data.page_count}</strong> page(s).
+              <strong>{previewQuery.data.page_count}</strong> sheet(s)
+              {layout.back_printing && (
+                <>
+                  {" "}
+                  — <strong>{previewQuery.data.total_page_count}</strong> pages once
+                  backs are included
+                </>
+              )}
+              .
             </p>
             {leftoverSlots > 0 && (
               <p className="hint" style={{ marginTop: 6 }}>
                 <strong>{leftoverSlots}</strong> open slot{leftoverSlots === 1 ? "" : "s"}{" "}
-                left on your last page — add more cards to fill it out (a double-faced
-                card uses 2 slots).
+                left on your last page — add more cards to fill it out ({dfcSlotHint}).
               </p>
             )}
             {previewQuery.data.missing.length > 0 && (
@@ -454,6 +695,26 @@ export default function PdfPage() {
                   ))}
                 </ul>
               </>
+            )}
+            {/* Only an error when a Reverse would ACTUALLY come up empty:
+                an all-double-faced sheet fills every back with a transform
+                side and needs no back image at all. */}
+            {previewQuery.data.missing_back_image && (
+              <p className="error-text" style={{ marginTop: 10 }}>
+                <strong>
+                  Back printing is on, but no back image is available for{" "}
+                  {previewQuery.data.reverses_needing_back_image} card(s).
+                </strong>{" "}
+                Pick one on the Backs tab, or turn back printing off.
+              </p>
+            )}
+            {previewQuery.data.back_image_not_upscaled && (
+              <p className="hint" style={{ marginTop: 10 }}>
+                Your back image will print from the original upload rather than an
+                upscale on this server — usually because it was upscaled somewhere
+                else. It will still print; upscale it on the Backs tab for the best
+                result.
+              </p>
             )}
             {previewQuery.data.missing_at_dpi.length > 0 && (
               <>
@@ -477,8 +738,26 @@ export default function PdfPage() {
           </div>
         ) : null}
 
-        {!serverUnavailable && entries.length > 0 && (
+        {!serverUnavailable && !serverTooOld && entries.length > 0 && (
           <div style={{ marginTop: 14 }}>
+            {/* Checking the flip edge here costs nothing; checking it on
+                the printer costs a sheet of cardstock. */}
+            {layout.back_printing && (
+              <div className="summary-row" style={{ marginBottom: 8 }}>
+                <button
+                  className={previewSide === "front" ? "btn-primary" : "btn-sm"}
+                  onClick={() => setPreviewSide("front")}
+                >
+                  Front of page 1
+                </button>
+                <button
+                  className={previewSide === "back" ? "btn-primary" : "btn-sm"}
+                  onClick={() => setPreviewSide("back")}
+                >
+                  Back of page 1
+                </button>
+              </div>
+            )}
             {pagePreviewQuery.isLoading ? (
               <p className="hint">Loading page preview…</p>
             ) : pagePreviewQuery.isError ? (
@@ -498,8 +777,22 @@ export default function PdfPage() {
           <button
             className="btn-primary"
             onClick={() => handleDownload()}
-            disabled={downloading || entries.length === 0 || serverUnavailable}
-            title={serverUnavailable ? "Generation server is unreachable" : undefined}
+            disabled={
+              downloading ||
+              entries.length === 0 ||
+              serverUnavailable ||
+              serverTooOld ||
+              previewQuery.data?.missing_back_image === true
+            }
+            title={
+              serverUnavailable
+                ? "Generation server is unreachable"
+                : serverTooOld
+                  ? `This server needs to be v${BACK_PRINTING_MIN_SERVER_VERSION} or newer`
+                  : previewQuery.data?.missing_back_image
+                  ? "Pick a back image on the Backs tab, or turn back printing off"
+                  : undefined
+            }
           >
             {downloading ? "Generating…" : "Generate & Download PDF"}
           </button>

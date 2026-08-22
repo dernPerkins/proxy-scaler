@@ -5,6 +5,7 @@ minisign.key
 minisign.pub
 test.key
 
+backs/
 imgcache/
 output/
 output_smoke/

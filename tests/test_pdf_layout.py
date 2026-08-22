@@ -9,7 +9,9 @@ from fpdf import FPDF
 from PIL import Image
 
 from proxy_scaler.decklist import DeckEntry
+from proxy_scaler.dpi import target_pixels
 from proxy_scaler.pdf_layout import (
+    _bled_pixels,
     BLEED_MM,
     CARD_WIDTH_MM,
     MM_PER_IN,
@@ -18,7 +20,15 @@ from proxy_scaler.pdf_layout import (
     _card_trim_edges,
     add_bleed,
     build_pdf,
-    expand_print_slots,
+    FlipEdge,
+    GuideVisibility,
+    PageOrder,
+    PrintSlot,
+    back_page_cells,
+    build_print_slots,
+    fit_cover,
+    mirror_page_index,
+    render_back_image,
     flatten_corner_alpha,
     match_quantities,
     paginate,
@@ -362,7 +372,7 @@ def test_build_pdf_flattens_corners_before_resizing_for_export_dpi(tmp_path) -> 
         dpi=800,  # differs from export_dpi below, forcing the resize path
     )
     layout = _a4_portrait_layout(cols=1, rows=1)
-    pages = paginate([face], layout.cards_per_page)
+    pages = paginate([_slot(face)], layout.cards_per_page)
 
     call_order: list[str] = []
     real_flatten = pdf_layout_module.flatten_corner_alpha
@@ -379,7 +389,7 @@ def test_build_pdf_flattens_corners_before_resizing_for_export_dpi(tmp_path) -> 
     pdf_layout_module.flatten_corner_alpha = spy_flatten
     pdf_layout_module._resize_to_dpi = spy_resize
     try:
-        build_pdf(pages, layout=layout, export_dpi=1200, show_cut_lines=False)
+        build_pdf(pages, layout=layout, export_dpi=1200, guides=_no_guides())
     finally:
         pdf_layout_module.flatten_corner_alpha = real_flatten
         pdf_layout_module._resize_to_dpi = real_resize
@@ -722,14 +732,17 @@ def test_match_quantities_preferred_model_beats_recency_at_that_dpi() -> None:
 # --- Expansion / pagination ------------------------------------------------
 
 
-def test_expand_print_slots_and_paginate() -> None:
+def test_build_print_slots_and_paginate() -> None:
     face = _face("z-id", None, "Plains", "Plains", "mh2", "482", 800)
     units = [PrintUnit(face_key="k", quantity=4, best=face)]
-    slots = expand_print_slots(units)
+    slots = build_print_slots(units, pair_back_faces=False)
     assert len(slots) == 4
-    assert all(s is face for s in slots)
+    assert all(s.front is face for s in slots)
+    # Nothing pairs a single-faced card, so every Reverse falls to the
+    # Back Image.
+    assert all(s.reverse is None for s in slots)
 
-    pages = paginate(slots + [face] * 5, per_page=8)  # 9 total
+    pages = paginate(slots + [_slot(face)] * 5, per_page=8)  # 9 total
     assert [len(p) for p in pages] == [8, 1]
 
 
@@ -755,8 +768,8 @@ def test_build_pdf_smoke(tmp_path) -> None:
     )
     w, h = PAGE_SIZE_PRESETS_MM["letter"]
     layout = resolve_page_layout(page_w_mm=h, page_h_mm=w, cols=4, rows=2)
-    pages = paginate([face], layout.cards_per_page)
-    pdf_bytes = build_pdf(pages, layout=layout, export_dpi=800, show_cut_lines=True)
+    pages = paginate([_slot(face)], layout.cards_per_page)
+    pdf_bytes = build_pdf(pages, layout=layout, export_dpi=800)
 
     assert pdf_bytes.startswith(b"%PDF")
     assert pdf_bytes.rstrip().endswith(b"%%EOF")
@@ -784,10 +797,10 @@ def test_build_pdf_export_dpi_resizes_source(tmp_path) -> None:
         dpi=800,
     )
     layout = _a4_portrait_layout(cols=1, rows=1)
-    pages = paginate([face], layout.cards_per_page)
+    pages = paginate([_slot(face)], layout.cards_per_page)
 
-    small = build_pdf(pages, layout=layout, export_dpi=800, show_cut_lines=False)
-    large = build_pdf(pages, layout=layout, export_dpi=1200, show_cut_lines=False)
+    small = build_pdf(pages, layout=layout, export_dpi=800, guides=_no_guides())
+    large = build_pdf(pages, layout=layout, export_dpi=1200, guides=_no_guides())
     assert len(large) > len(small)
 
 
@@ -826,6 +839,20 @@ def test_flatten_corner_alpha_only_touches_transparent_pixels() -> None:
 # --- Render progress -------------------------------------------------------
 
 
+def _no_guides() -> GuideVisibility:
+    """Every guide off, on both page kinds — the old `show_cut_lines=False`."""
+    return GuideVisibility(
+        hide_card_guides_front=True,
+        hide_page_guides_front=True,
+        hide_card_guides_back=True,
+        hide_page_guides_back=True,
+    )
+
+
+def _slot(face: FaceResult, reverse: FaceResult | None = None) -> PrintSlot:
+    return PrintSlot(front=face, reverse=reverse)
+
+
 def _pdf_source_face(tmp_path: Path, name: str, dpi: int = 800) -> FaceResult:
     """A FaceResult backed by a real (tiny) PNG on disk, so build_pdf can
     actually decode/resize/encode it."""
@@ -854,7 +881,7 @@ def test_build_pdf_reports_progress_once_per_unique_image(tmp_path: Path) -> Non
     a = _pdf_source_face(tmp_path, "a")
     b = _pdf_source_face(tmp_path, "b")
     # 5 slots, 2 unique images (a appears three times).
-    pages = [[a, b, a], [a]]
+    pages = [[_slot(a), _slot(b), _slot(a)], [_slot(a)]]
     layout = _a4_portrait_layout(cols=3, rows=1)
 
     calls: list[tuple[int, int]] = []
@@ -866,7 +893,7 @@ def test_build_pdf_reports_progress_once_per_unique_image(tmp_path: Path) -> Non
 
 def test_build_pdf_progress_is_optional(tmp_path: Path) -> None:
     """Omitting on_progress must keep the CLI/test call shape working."""
-    pages = [[_pdf_source_face(tmp_path, "solo")]]
+    pages = [[_slot(_pdf_source_face(tmp_path, "solo"))]]
     pdf_bytes = build_pdf(pages, layout=_a4_portrait_layout(cols=1, rows=1), export_dpi=800)
     assert pdf_bytes.startswith(b"%PDF")
 
@@ -876,7 +903,7 @@ def test_build_pdf_progress_callback_can_abort_the_build(tmp_path: Path) -> None
     build_pdf has to poll — so the render function stays unaware that jobs
     exist. Nothing catches it here: the exception reaches the caller and no
     partial PDF is produced."""
-    pages = [[_pdf_source_face(tmp_path, "a"), _pdf_source_face(tmp_path, "b")]]
+    pages = [[_slot(_pdf_source_face(tmp_path, "a")), _slot(_pdf_source_face(tmp_path, "b"))]]
 
     def stop_after_first(completed: int, _total: int) -> None:
         if completed >= 1:
@@ -923,3 +950,271 @@ def test_match_quantities_missing_language_is_reported() -> None:
     units, missing, _ = match_quantities(entries, gallery)
     assert units == []
     assert len(missing) == 1
+
+
+# --- Back printing: pairing ------------------------------------------------
+
+
+def _dfc_pair(sid: str = "dfc") -> tuple[FaceResult, FaceResult]:
+    front = _face(sid, 0, "Front", "Front // Back", "mom", "1", 800)
+    back = _face(sid, 1, "Back", "Front // Back", "mom", "1", 800)
+    return front, back
+
+
+def test_back_faces_pair_into_one_card_when_enabled() -> None:
+    """The whole point of the pairing mode: a double-faced card stops being
+    two cards on the sheet and becomes one card with two sides. The slot
+    count halves for that card, which is why this setting lives next to the
+    page count rather than next to the Back Image."""
+    front, back = _dfc_pair()
+    units = [
+        PrintUnit(face_key="f", quantity=2, best=front),
+        PrintUnit(face_key="b", quantity=2, best=back),
+    ]
+    slots = build_print_slots(units, pair_back_faces=True)
+    assert len(slots) == 2
+    assert all(s.front is front and s.reverse is back for s in slots)
+
+
+def test_back_faces_stay_separate_cards_when_disabled() -> None:
+    """Pairing off is exactly the historical behaviour: each face is its own
+    printed card, and each of their Reverses falls to the Back Image."""
+    front, back = _dfc_pair()
+    units = [
+        PrintUnit(face_key="f", quantity=2, best=front),
+        PrintUnit(face_key="b", quantity=2, best=back),
+    ]
+    slots = build_print_slots(units, pair_back_faces=False)
+    assert len(slots) == 4
+    assert all(s.reverse is None for s in slots)
+
+
+def test_pairing_never_crosses_two_different_printings() -> None:
+    """scryfall_id identifies a printing including its language, so two
+    different double-faced cards can never borrow each other's backs."""
+    a_front, a_back = _dfc_pair("dfc-a")
+    b_front, b_back = _dfc_pair("dfc-b")
+    units = [
+        PrintUnit(face_key="1", quantity=1, best=a_front),
+        PrintUnit(face_key="2", quantity=1, best=b_back),
+        PrintUnit(face_key="3", quantity=1, best=b_front),
+        PrintUnit(face_key="4", quantity=1, best=a_back),
+    ]
+    slots = build_print_slots(units, pair_back_faces=True)
+    assert {(s.front.scryfall_id, s.reverse.scryfall_id) for s in slots} == {
+        ("dfc-a", "dfc-a"),
+        ("dfc-b", "dfc-b"),
+    }
+
+
+def test_a_card_with_three_faces_never_pairs() -> None:
+    """A guard, not a feature — Scryfall doesn't produce three printable
+    faces. If one ever appeared, guessing which is "the back" would be
+    wrong more often than useful, so every face falls back to being its own
+    card: today's behaviour, which is safe rather than broken."""
+    units = [
+        PrintUnit(face_key=str(i), quantity=1, best=_face("tri", i, f"F{i}", "Tri", "x", "1", 800))
+        for i in range(3)
+    ]
+    slots = build_print_slots(units, pair_back_faces=True)
+    assert len(slots) == 3
+    assert all(s.reverse is None for s in slots)
+
+
+def test_a_front_whose_back_never_generated_does_not_pair() -> None:
+    """A half-generated double-faced card takes the Back Image rather than
+    a half-formed pairing. match_quantities separately reports it in
+    `missing`, which is where the user finds out."""
+    front, _back = _dfc_pair()
+    slots = build_print_slots(
+        [PrintUnit(face_key="f", quantity=1, best=front)], pair_back_faces=True
+    )
+    assert [s.reverse for s in slots] == [None]
+
+
+# --- Back printing: mirroring ----------------------------------------------
+
+
+def test_long_edge_flip_mirrors_columns_on_a_portrait_sheet() -> None:
+    layout = _a4_portrait_layout(cols=3, rows=3)
+    got = [mirror_page_index(i, layout=layout, flip_edge=FlipEdge.LONG) for i in range(9)]
+    assert got == [2, 1, 0, 5, 4, 3, 8, 7, 6]
+
+
+def test_short_edge_flip_mirrors_rows_on_a_portrait_sheet() -> None:
+    layout = _a4_portrait_layout(cols=3, rows=3)
+    got = [mirror_page_index(i, layout=layout, flip_edge=FlipEdge.SHORT) for i in range(9)]
+    assert got == [6, 7, 8, 3, 4, 5, 0, 1, 2]
+
+
+def test_flip_axis_follows_the_sheet_not_the_setting_name() -> None:
+    """"Long edge" names a physical edge of the paper, so which axis it
+    mirrors depends on orientation: a portrait sheet's long edges are its
+    sides (columns mirror), a landscape sheet's are top and bottom (rows
+    mirror). Treating the setting as "always mirror columns" puts every
+    back on the wrong card for landscape pages."""
+    landscape = resolve_page_layout(page_w_mm=297.0, page_h_mm=210.0, cols=3, rows=3)
+    assert landscape.orientation == "landscape"
+    got = [mirror_page_index(i, layout=landscape, flip_edge=FlipEdge.LONG) for i in range(9)]
+    assert got == [6, 7, 8, 3, 4, 5, 0, 1, 2]
+
+
+def test_partial_last_page_mirrors_over_the_full_grid() -> None:
+    """The classic duplex bug this guards: four cards on a nine-slot page
+    must mirror into the positions their COMPLETE grid gives them, leaving
+    five cells empty. Mirroring over only the four filled cells lines every
+    back up against the wrong front."""
+    layout = _a4_portrait_layout(cols=3, rows=3)
+    faces = [_face(f"s{i}", None, f"c{i}", f"c{i}", "x", "1", 800) for i in range(4)]
+    cells = back_page_cells(
+        [PrintSlot(front=f) for f in faces], layout=layout, flip_edge=FlipEdge.LONG
+    )
+    assert len(cells) == 9
+    names = [None if c is None else c.front.card_name for c in cells]
+    assert names == ["c2", "c1", "c0", None, None, "c3", None, None, None]
+
+
+# --- Back printing: assembly ----------------------------------------------
+
+
+def _back_image(tmp_path: Path, size: tuple[int, int] = (400, 400)) -> Path:
+    path = tmp_path / "back.png"
+    Image.new("RGB", size, (200, 30, 30)).save(path, format="PNG")
+    return path
+
+
+def _page_count(pdf_bytes: bytes) -> int:
+    """Real page objects, excluding the /Pages tree node."""
+    return pdf_bytes.count(b"/Type /Page\n") + pdf_bytes.count(b"/Type /Page/")
+
+
+def test_interleaved_back_printing_doubles_the_page_count(tmp_path: Path) -> None:
+    pages = [[_slot(_pdf_source_face(tmp_path, "a")), _slot(_pdf_source_face(tmp_path, "b"))]]
+    layout = _a4_portrait_layout(cols=2, rows=1)
+    single = build_pdf(pages, layout=layout, export_dpi=600)
+    duplex = build_pdf(
+        pages,
+        layout=layout,
+        export_dpi=600,
+        back_printing=True,
+        back_image_path=_back_image(tmp_path),
+    )
+    assert _page_count(duplex) == 2 * _page_count(single)
+
+
+def test_fronts_then_backs_emits_the_same_pages_in_a_different_order(tmp_path: Path) -> None:
+    pages = [
+        [_slot(_pdf_source_face(tmp_path, "a"))],
+        [_slot(_pdf_source_face(tmp_path, "b"))],
+    ]
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    kwargs = dict(
+        layout=layout,
+        export_dpi=600,
+        back_printing=True,
+        back_image_path=_back_image(tmp_path),
+    )
+    interleaved = build_pdf(pages, page_order=PageOrder.INTERLEAVED, **kwargs)
+    stacked = build_pdf(pages, page_order=PageOrder.FRONTS_THEN_BACKS, **kwargs)
+    assert _page_count(interleaved) == _page_count(stacked) == 4
+
+
+def test_back_printing_off_leaves_output_untouched(tmp_path: Path) -> None:
+    """Every back-printing argument is inert while back_printing is False —
+    the historical single-sided output must be byte-identical, or an
+    existing user's PDF silently changes the day they upgrade."""
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    plain = build_pdf(pages, layout=layout, export_dpi=600)
+    with_unused_back_settings = build_pdf(
+        pages,
+        layout=layout,
+        export_dpi=600,
+        back_printing=False,
+        back_image_path=_back_image(tmp_path),
+        flip_edge=FlipEdge.SHORT,
+        page_order=PageOrder.FRONTS_THEN_BACKS,
+    )
+    assert _page_count(plain) == 1
+    assert len(plain) == len(with_unused_back_settings)
+
+
+def test_unique_image_count_counts_the_back_image_once(tmp_path: Path) -> None:
+    """A Back Image filling nine Reverses is one decode, not nine — the
+    progress bar has to size itself by real work or it stalls."""
+    faces = [_pdf_source_face(tmp_path, name) for name in ("a", "b", "c")]
+    pages = [[_slot(f) for f in faces]]
+    back = _back_image(tmp_path)
+    assert unique_image_count(pages) == 3
+    assert unique_image_count(pages, back_printing=True, back_image_path=back) == 4
+
+
+def test_back_faces_count_toward_the_image_total(tmp_path: Path) -> None:
+    front = _pdf_source_face(tmp_path, "front")
+    reverse = _pdf_source_face(tmp_path, "reverse")
+    pages = [[PrintSlot(front=front, reverse=reverse)]]
+    # No Reverse needs the Back Image here, so it isn't counted even though
+    # one was supplied.
+    assert unique_image_count(
+        pages, back_printing=True, back_image_path=_back_image(tmp_path)
+    ) == 2
+
+
+# --- Guides ----------------------------------------------------------------
+
+
+def test_the_four_guide_flags_are_independent(tmp_path: Path) -> None:
+    """Each flag has to move the output on its own. A single shared switch
+    (what show_cut_lines was) can't express "guides on the fronts I cut
+    against, none on the backs that show"."""
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    common = dict(
+        layout=layout,
+        export_dpi=600,
+        back_printing=True,
+        back_image_path=_back_image(tmp_path),
+    )
+    everything = build_pdf(
+        pages,
+        guides=GuideVisibility(False, False, False, False),
+        **common,
+    )
+    nothing = build_pdf(pages, guides=GuideVisibility(True, True, True, True), **common)
+    fronts_only = build_pdf(pages, guides=GuideVisibility(False, False, True, True), **common)
+    assert len(everything) > len(fronts_only) > len(nothing)
+
+
+def test_default_guide_visibility_hides_back_page_guides() -> None:
+    """Deliberately NOT "preserve the old behaviour on both sides": you cut
+    a duplex sheet against the front, so guides on the back are ink you
+    can't use printed on the side that shows."""
+    guides = GuideVisibility()
+    assert (guides.hide_card_guides_front, guides.hide_page_guides_front) == (False, False)
+    assert (guides.hide_card_guides_back, guides.hide_page_guides_back) == (True, True)
+
+
+# --- Back Image preparation ------------------------------------------------
+
+
+def test_fit_cover_preserves_aspect_ratio_on_a_square_source() -> None:
+    """_resize_to_dpi stretches, which is fine for Scryfall art (already
+    63:88) and wrong for an arbitrary upload. Cover-cropping distorts
+    nothing and loses only the edges, which get cut off anyway."""
+    square = Image.new("RGB", (400, 400))
+    # Mark a horizontal band so a vertical squash would be detectable.
+    fitted = fit_cover(square, (300, 420))
+    assert fitted.size == (300, 420)
+
+
+def test_render_back_image_respects_the_includes_bleed_declaration(tmp_path: Path) -> None:
+    """Edge-extending art that already carries bleed would add a duplicate
+    border and shrink the visible design, so the declared case is fitted
+    straight to the bled size instead."""
+    path = _back_image(tmp_path, size=(1000, 1000))
+    already_bled = render_back_image(path, export_dpi=600, bleed_mm=1.0, includes_bleed=True)
+    assert already_bled.size == _bled_pixels(600, 1.0)
+    needs_bleed = render_back_image(path, export_dpi=600, bleed_mm=1.0, includes_bleed=False)
+    # Larger than the trim box on both axes: bleed really was added.
+    trim_w, trim_h = target_pixels(600)
+    assert needs_bleed.width > trim_w and needs_bleed.height > trim_h

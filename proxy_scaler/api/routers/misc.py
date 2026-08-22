@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 import proxy_scaler
-from proxy_scaler import db
+from proxy_scaler import backs, db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
     ClearGeneratedIn,
@@ -85,6 +85,12 @@ def get_device() -> DeviceOut:
 DEFAULT_OUTPUT_DIR = "output"
 DEFAULT_CACHE_DIR = "imgcache"
 DEFAULT_WEIGHTS_DIR = "weights"
+# A SIBLING of output/ and cache/, never inside them. clear_generated_data
+# empties those two and prune_registry_under_dir drops every registry row
+# found under output/ — living outside both is what makes "Back Images
+# survive the wipe" a property of where the files are rather than a
+# condition someone has to remember to re-check. See proxy_scaler/backs.py.
+DEFAULT_BACKS_DIR = backs.BACKS_DIR_NAME
 
 
 @router.get("/paths", response_model=GenPathsOut)
@@ -98,6 +104,7 @@ def get_paths() -> GenPathsOut:
         output_dir=str(Path(DEFAULT_OUTPUT_DIR).resolve()),
         cache_dir=str(Path(DEFAULT_CACHE_DIR).resolve()),
         weights_dir=str(Path(DEFAULT_WEIGHTS_DIR).resolve()),
+        backs_dir=str(Path(DEFAULT_BACKS_DIR).resolve()),
     )
 
 

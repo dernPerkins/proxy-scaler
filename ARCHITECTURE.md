@@ -300,6 +300,15 @@ the directory (remote server, `main.rs`'s `open_remote_terminal` —
 deliberately not an `sftp://` URL handed to the OS, whose scheme handler
 is a lottery: VLC commonly claims it on Linux).
 
+**Back Library** (`desktop/src-tauri/src/back_images.rs`):
+`list_back_images`, `add_back_image`, `set_back_image_label`,
+`set_back_image_includes_bleed`, `count_projects_using_back_image`,
+`delete_back_image`, `back_image_thumbnail`, `get_default_back_image_id`,
+`set_default_back_image_id`, `sync_back_image`. App-global rather than
+per-project; a project holds a nullable `back_image_id` pointing into it,
+copied once from the app default at creation and never live-followed. See
+[ADR-0003](./docs/adr/0003-back-images-are-client-owned-their-upscales-are-not.md).
+
 ### HTTP (generation server — `proxy_scaler/api/`)
 
 No "projects" router. Every request is scoped by an opaque `project_tag`
@@ -320,8 +329,8 @@ string, not a database relationship.
 | `POST /api/pdf` | Assemble a PDF from `project_tag` + layout + card list **with quantities** (quantity is project data the generation server has no other way to know) |
 | `GET /api/models` | Enumerate upscale models (static, unchanged) |
 | `GET /api/paths` | Absolute resolved output/cache/weights dirs on the generation machine (fixed relative names resolved against the server's cwd) |
-| `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine |
-| `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session: cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
+| `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine. Back Images are **not** touched: they live in `backs/`, a sibling of both, so the exemption is a property of where the files are rather than a condition anyone has to remember |
+| `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session (Back Images are exempt — the library is app-global, so a discarded tag has no claim on them): cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
 | `GET /api/cards/status` | Card corpus status: what's imported locally (dataset, updated_at, count) and whether an import is running. Purely local — a file-existence + schema check and a meta read, **no network** — because the client polls this on its launch path; the live catalog fetch it used to bundle in now happens only inside an import job |
 | `POST /api/cards/import` | Start a bulk import job (`{dataset: "default_cards" \| "all_cards"}`, 202 + job id; 409 while one runs). Background thread + in-memory registry (`card_jobs.py`), same polling idiom as the PDF render jobs |
 | `GET /api/cards/import/{job_id}` | Import job progress: phase (checking/downloading/importing/finalizing), bytes, rows |
@@ -330,6 +339,11 @@ string, not a database relationship.
 | `GET /api/cards/languages` | The full Scryfall language list (English first) — the import-language dropdown's options, independent of what corpus is imported: the dropdown is a request, resolution answers from corpus or live API |
 | `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
 | `GET /api/health` | Supervisor readiness probe |
+| `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |
+| `GET /api/backs/{hash}` | Does this server hold those bytes, and what has it upscaled them to. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST |
+| `POST /api/backs/{hash}/upscale` | Queue upscales of a Back Image at one or more DPIs. Rides the ordinary task queue via a synthetic `scryfall_id` (see [ADR-0004](./docs/adr/0004-back-images-reuse-the-generation-queue-via-a-synthetic-id.md)), untagged, writing into `backs/` |
+| `DELETE /api/backs/{hash}/variants` | Drop this back's upscales, keeping the synced original — the Backs tab's "Clear upscales" |
+| `DELETE /api/backs/{hash}` | Remove a Back Image from this server entirely. The client's library copy is canonical and untouched |
 | `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |
 
 ## Frontend data flow (`desktop/frontend/src`)
@@ -347,6 +361,12 @@ string, not a database relationship.
   back, only invalidated on explicit mutation) and generation status
   (`fetch`-based, 3s poll — the half that's actually live), merged via
   `mergeCardStatus.ts`.
+- `BacksPage.tsx` — the Back Library: local list (`invoke`) annotated
+  with per-server upscale status (`fetch`), the same
+  local-data-plus-live-status shape `mergeCardStatus.ts` uses on the
+  Decklist tab. A back's bytes never pass through the webview on the way
+  out — `sync_back_image` uploads from Rust, for the same reason
+  `main.rs::download_to_file` downloads there.
 - `connection.tsx` — switching Local/Remote generation no longer touches
   project data at all. `switchTo` only invalidates generation-scoped
   query keys (`tasks`, `gallery`, `worker-status`, `pdf-preview`) —

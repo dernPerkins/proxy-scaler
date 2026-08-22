@@ -75,6 +75,29 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- The Back Library: user-supplied art printed on a card's Reverse. App-
+-- global rather than per-project (a project points at one by id), and
+-- client-owned — the generation server only ever holds a content-addressed
+-- cache of these plus whatever it has upscaled. See docs/adr/0003.
+--
+-- The bytes are NOT in here. Files live hash-named under <app_data>/backs/,
+-- with a small JPEG thumbnail beside each; only their metadata is a row.
+-- A multi-MB BLOB per back would bloat the one database every project load
+-- reads, to store something no query ever looks inside.
+CREATE TABLE IF NOT EXISTS back_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_hash TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    thumb_name TEXT NOT NULL,
+    -- The user's declaration that their art already carries bleed, so the
+    -- renderer fits it to the bled size instead of edge-extending it.
+    includes_bleed INTEGER NOT NULL DEFAULT 0,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 ";
 
 // Columns added to `projects` after its initial release — `CREATE TABLE IF
@@ -103,6 +126,38 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("preferred_model", "TEXT"),
     ("preferred_lang", "TEXT NOT NULL DEFAULT 'en'"),
     ("lang_any", "INTEGER NOT NULL DEFAULT 0"),
+    // Guides, split from the single `show_cut_lines` boolean into one flag
+    // per guide kind per page kind. Stored as HIDE flags to match the
+    // checkbox the user ticks — one polarity all the way through to
+    // pdf_layout.GuideVisibility, with no `not` in between to invert by
+    // accident. `show_cut_lines` itself is left in place but unread:
+    // SQLite column drops mean a table rebuild, and this file's migration
+    // story is deliberately additive-only. migrate_guide_flags() below
+    // carries its value across once.
+    ("hide_card_guides_front", "INTEGER NOT NULL DEFAULT 0"),
+    ("hide_page_guides_front", "INTEGER NOT NULL DEFAULT 0"),
+    // Back Pages default to NO guides — not "preserve the old behaviour",
+    // a deliberate difference: you cut a duplex sheet against the guides
+    // on its front, so guides on the back are ink you can't use printed on
+    // the side of the card that shows.
+    ("hide_card_guides_back", "INTEGER NOT NULL DEFAULT 1"),
+    ("hide_page_guides_back", "INTEGER NOT NULL DEFAULT 1"),
+    // Back printing.
+    ("back_printing", "INTEGER NOT NULL DEFAULT 0"),
+    ("back_faces_as_reverse", "INTEGER NOT NULL DEFAULT 1"),
+    ("page_order", "TEXT NOT NULL DEFAULT 'interleaved'"),
+    ("flip_edge", "TEXT NOT NULL DEFAULT 'long'"),
+    // Independent of the front offsets, not added to them: the two are
+    // separate calibrations of two physical passes through the printer.
+    ("back_offset_x_mm", "REAL NOT NULL DEFAULT 0.0"),
+    ("back_offset_y_mm", "REAL NOT NULL DEFAULT 0.0"),
+    // This project's Selected Back — a pointer into back_images, nullable
+    // (a project may have none). Deliberately not a REAL foreign key:
+    // ALTER TABLE ADD COLUMN can't attach one in SQLite, and deleting a
+    // back nulls referencing projects explicitly (see delete_back_image)
+    // rather than reassigning them to the app default, so a project never
+    // quietly starts printing a different back than it did last month.
+    ("back_image_id", "INTEGER"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -134,7 +189,43 @@ fn add_missing_columns(
     Ok(())
 }
 
-fn open_db(app: &AppHandle) -> Result<Connection, String> {
+/// Carry a pre-split `show_cut_lines = 0` across to all four hide flags,
+/// exactly once.
+///
+/// Only the "off" case needs carrying: `show_cut_lines = 1` means every
+/// guide was drawn, and the new columns' defaults already say that for the
+/// fronts. The backs deliberately land on hidden regardless — before this
+/// existed there were no Back Pages to have guides on, so there is no old
+/// preference about them to preserve.
+fn migrate_guide_flags(conn: &Connection) -> Result<(), String> {
+    const MIGRATED_KEY: &str = "guide_flags_migrated";
+    if read_app_setting(conn, MIGRATED_KEY)?.is_some() {
+        return Ok(());
+    }
+    // Guarded rather than assumed: a database created fresh on this
+    // version has the new columns but never had the old one.
+    let has_old: bool = conn
+        .prepare("PRAGMA table_info(projects)")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<String>, _>>()
+        })
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|name| name == "show_cut_lines");
+    if has_old {
+        conn.execute(
+            "UPDATE projects SET hide_card_guides_front = 1, hide_page_guides_front = 1,
+                hide_card_guides_back = 1, hide_page_guides_back = 1
+             WHERE show_cut_lines = 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    write_app_setting(conn, MIGRATED_KEY, "1")
+}
+
+pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -144,10 +235,11 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)?;
+    migrate_guide_flags(&conn)?;
     Ok(conn)
 }
 
-fn now_timestamp() -> String {
+pub(crate) fn now_timestamp() -> String {
     // Not RFC3339 — SystemTime doesn't give calendar fields directly, and
     // pulling in chrono/time just to format one column is overkill here.
     // A plain epoch-seconds string still sorts correctly as text (fixed
@@ -288,7 +380,35 @@ pub struct ProjectSettings {
     pub guide_width_pt: f64,
     pub guide_length_mm: f64,
     pub export_dpi: i64,
-    pub show_cut_lines: bool,
+    // Guides: one HIDE flag per guide kind per page kind, replacing
+    // `show_cut_lines`. Defaulted on deserialize so a frontend build that
+    // predates one of them can't wipe the others.
+    #[serde(default)]
+    pub hide_card_guides_front: bool,
+    #[serde(default)]
+    pub hide_page_guides_front: bool,
+    #[serde(default = "default_true")]
+    pub hide_card_guides_back: bool,
+    #[serde(default = "default_true")]
+    pub hide_page_guides_back: bool,
+    // Back printing.
+    #[serde(default)]
+    pub back_printing: bool,
+    // Whether a double-faced card's transform side prints on its own back
+    // rather than as a separate card. Inert while back_printing is off.
+    #[serde(default = "default_true")]
+    pub back_faces_as_reverse: bool,
+    #[serde(default = "default_page_order")]
+    pub page_order: String,
+    #[serde(default = "default_flip_edge")]
+    pub flip_edge: String,
+    #[serde(default)]
+    pub back_offset_x_mm: f64,
+    #[serde(default)]
+    pub back_offset_y_mm: f64,
+    // This project's Selected Back — an id into back_images, or None.
+    #[serde(default)]
+    pub back_image_id: Option<i64>,
     pub preferred_dpi: Option<i64>,
     pub preferred_model: Option<String>,
     // Import-language preference (Scryfall code): stamped onto cards at
@@ -305,6 +425,18 @@ pub struct ProjectSettings {
 
 fn default_preferred_lang() -> String {
     "en".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_page_order() -> String {
+    "interleaved".to_string()
+}
+
+fn default_flip_edge() -> String {
+    "long".to_string()
 }
 
 impl Default for ProjectSettings {
@@ -326,7 +458,17 @@ impl Default for ProjectSettings {
             guide_width_pt: 0.75,
             guide_length_mm: 2.75,
             export_dpi: 1200,
-            show_cut_lines: true,
+            hide_card_guides_front: false,
+            hide_page_guides_front: false,
+            hide_card_guides_back: true,
+            hide_page_guides_back: true,
+            back_printing: false,
+            back_faces_as_reverse: true,
+            page_order: default_page_order(),
+            flip_edge: default_flip_edge(),
+            back_offset_x_mm: 0.0,
+            back_offset_y_mm: 0.0,
+            back_image_id: None,
             preferred_dpi: None,
             preferred_model: None,
             preferred_lang: default_preferred_lang(),
@@ -510,7 +652,17 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         guide_width_pt: f64,
         guide_length_mm: f64,
         export_dpi: i64,
-        show_cut_lines: bool,
+        hide_card_guides_front: bool,
+        hide_page_guides_front: bool,
+        hide_card_guides_back: bool,
+        hide_page_guides_back: bool,
+        back_printing: bool,
+        back_faces_as_reverse: bool,
+        page_order: String,
+        flip_edge: String,
+        back_offset_x_mm: f64,
+        back_offset_y_mm: f64,
+        back_image_id: Option<i64>,
         preferred_dpi: Option<i64>,
         preferred_model: Option<String>,
         preferred_lang: String,
@@ -524,7 +676,11 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             "SELECT tag, name, import_decklist_text, model, dpi_targets, skip_existing, tile_size,
                     page_width_mm, page_height_mm, cols, rows, bleed_mm, spacing_x_mm, spacing_y_mm,
                     offset_x_mm, offset_y_mm, guide_width_pt, guide_length_mm, export_dpi,
-                    show_cut_lines, preferred_dpi, preferred_model, preferred_lang, lang_any,
+                    hide_card_guides_front, hide_page_guides_front,
+                    hide_card_guides_back, hide_page_guides_back,
+                    back_printing, back_faces_as_reverse, page_order, flip_edge,
+                    back_offset_x_mm, back_offset_y_mm, back_image_id,
+                    preferred_dpi, preferred_model, preferred_lang, lang_any,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -549,7 +705,17 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     guide_width_pt: row.get("guide_width_pt")?,
                     guide_length_mm: row.get("guide_length_mm")?,
                     export_dpi: row.get("export_dpi")?,
-                    show_cut_lines: row.get("show_cut_lines")?,
+                    hide_card_guides_front: row.get("hide_card_guides_front")?,
+                    hide_page_guides_front: row.get("hide_page_guides_front")?,
+                    hide_card_guides_back: row.get("hide_card_guides_back")?,
+                    hide_page_guides_back: row.get("hide_page_guides_back")?,
+                    back_printing: row.get("back_printing")?,
+                    back_faces_as_reverse: row.get("back_faces_as_reverse")?,
+                    page_order: row.get("page_order")?,
+                    flip_edge: row.get("flip_edge")?,
+                    back_offset_x_mm: row.get("back_offset_x_mm")?,
+                    back_offset_y_mm: row.get("back_offset_y_mm")?,
+                    back_image_id: row.get("back_image_id")?,
                     preferred_dpi: row.get("preferred_dpi")?,
                     preferred_model: row.get("preferred_model")?,
                     preferred_lang: row.get("preferred_lang")?,
@@ -586,7 +752,17 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             guide_width_pt: loaded.guide_width_pt,
             guide_length_mm: loaded.guide_length_mm,
             export_dpi: loaded.export_dpi,
-            show_cut_lines: loaded.show_cut_lines,
+            hide_card_guides_front: loaded.hide_card_guides_front,
+            hide_page_guides_front: loaded.hide_page_guides_front,
+            hide_card_guides_back: loaded.hide_card_guides_back,
+            hide_page_guides_back: loaded.hide_page_guides_back,
+            back_printing: loaded.back_printing,
+            back_faces_as_reverse: loaded.back_faces_as_reverse,
+            page_order: loaded.page_order,
+            flip_edge: loaded.flip_edge,
+            back_offset_x_mm: loaded.back_offset_x_mm,
+            back_offset_y_mm: loaded.back_offset_y_mm,
+            back_image_id: loaded.back_image_id,
             preferred_dpi: loaded.preferred_dpi,
             preferred_model: loaded.preferred_model,
             preferred_lang: loaded.preferred_lang,
@@ -604,10 +780,27 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
 /// duplicate name means differs between them.
 fn insert_project(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
     let now = now_timestamp();
+    // The app default Back Image is COPIED here, once, and then belongs to
+    // the project. Changing the default later never reaches back into
+    // existing projects: a project you printed last month has to print
+    // identically today, and a live-following default would silently
+    // change the output of every project that never made a choice.
+    //
+    // Read directly rather than through back_images.rs to keep this a
+    // plain rusqlite call inside the same transaction as the INSERT.
+    let default_back: Option<i64> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'default_back_image_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|v| v.parse::<i64>().ok());
     conn.execute(
-        "INSERT INTO projects (tag, name, import_decklist_text, created_at, updated_at)
-         VALUES (lower(hex(randomblob(16))), ?1, '', ?2, ?2)",
-        params![name, now],
+        "INSERT INTO projects (tag, name, import_decklist_text, back_image_id,
+                               created_at, updated_at)
+         VALUES (lower(hex(randomblob(16))), ?1, '', ?2, ?3, ?3)",
+        params![name, default_back, now],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -806,9 +999,14 @@ fn update_project_row(
          tile_size = ?5, page_width_mm = ?6, page_height_mm = ?7, cols = ?8, rows = ?9,
          bleed_mm = ?10, spacing_x_mm = ?11, spacing_y_mm = ?12, offset_x_mm = ?13,
          offset_y_mm = ?14, guide_width_pt = ?15, guide_length_mm = ?16, export_dpi = ?17,
-         show_cut_lines = ?18, preferred_dpi = ?19, preferred_model = ?20,
-         preferred_lang = ?21, lang_any = ?22, updated_at = ?23
-         WHERE id = ?24",
+         preferred_dpi = ?18, preferred_model = ?19,
+         preferred_lang = ?20, lang_any = ?21,
+         hide_card_guides_front = ?22, hide_page_guides_front = ?23,
+         hide_card_guides_back = ?24, hide_page_guides_back = ?25,
+         back_printing = ?26, back_faces_as_reverse = ?27, page_order = ?28,
+         flip_edge = ?29, back_offset_x_mm = ?30, back_offset_y_mm = ?31,
+         back_image_id = ?32, updated_at = ?33
+         WHERE id = ?34",
         params![
             trimmed,
             settings.model,
@@ -827,11 +1025,21 @@ fn update_project_row(
             settings.guide_width_pt,
             settings.guide_length_mm,
             settings.export_dpi,
-            settings.show_cut_lines,
             settings.preferred_dpi,
             settings.preferred_model,
             settings.preferred_lang,
             settings.lang_any,
+            settings.hide_card_guides_front,
+            settings.hide_page_guides_front,
+            settings.hide_card_guides_back,
+            settings.hide_page_guides_back,
+            settings.back_printing,
+            settings.back_faces_as_reverse,
+            settings.page_order,
+            settings.flip_edge,
+            settings.back_offset_x_mm,
+            settings.back_offset_y_mm,
+            settings.back_image_id,
             now,
             project_id,
         ],
@@ -1222,6 +1430,24 @@ pub fn set_cards_resolution(
 
 const LAST_PROJECT_ID_KEY: &str = "last_project_id";
 
+/// Re-exports for back_images.rs, which shares this file's database but
+/// keeps its own module. Named `_pub` rather than making the originals
+/// public so the many in-file callers below stay visibly module-private.
+pub(crate) fn read_app_setting_pub(
+    conn: &Connection,
+    key: &str,
+) -> Result<Option<String>, String> {
+    read_app_setting(conn, key)
+}
+
+pub(crate) fn write_app_setting_pub(
+    conn: &Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    write_app_setting(conn, key, value)
+}
+
 fn read_app_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = ?1",
@@ -1509,6 +1735,23 @@ pub fn remove_recent_host(app: AppHandle, host: String, port: u16) -> Result<Vec
     Ok(hosts)
 }
 
+/// Test-only helpers shared with sibling modules' tests (back_images.rs).
+/// A current database is SCHEMA plus the post-release column lists, so a
+/// hand-rolled CREATE TABLE in a test would drift from what ships.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub(crate) fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(SCHEMA).expect("apply schema");
+        add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS).expect("projects columns");
+        add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)
+            .expect("project_cards columns");
+        conn
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1516,11 +1759,7 @@ mod tests {
     // The `_row`/`_id` helpers above exist so these can run against a plain
     // Connection — the #[tauri::command] wrappers need an AppHandle and a
     // real app data dir, neither of which a unit test has.
-    fn test_conn() -> Connection {
-        let conn = Connection::open_in_memory().expect("open in-memory db");
-        conn.execute_batch(SCHEMA).expect("apply schema");
-        conn
-    }
+    use super::test_support::test_conn;
 
     fn summary(conn: &Connection, id: i64) -> ProjectSummary {
         summary_for_id(conn, id).expect("summary")
@@ -1656,6 +1895,11 @@ mod tests {
         let winner = Connection::open("file:race-test-db?mode=memory&cache=shared")
             .expect("open shared db");
         winner.execute_batch(SCHEMA).expect("apply schema");
+        // Same two steps open_db() runs, in the same order — SCHEMA alone
+        // is only half a current database.
+        add_missing_columns(&winner, "projects", PROJECTS_ADDED_COLUMNS).expect("columns");
+        add_missing_columns(&winner, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)
+            .expect("card columns");
         let loser = Connection::open("file:race-test-db?mode=memory&cache=shared")
             .expect("open second handle");
 
@@ -2056,6 +2300,13 @@ mod tests {
             );",
         )
         .expect("legacy schema");
+
+        // A real upgrade re-runs SCHEMA first (open_db does), which leaves
+        // the legacy `projects` table alone — CREATE TABLE IF NOT EXISTS —
+        // while creating tables that didn't exist back then at all, like
+        // app_settings and back_images. Skipping it here tested a database
+        // shape the app never actually opens.
+        conn.execute_batch(SCHEMA).expect("current schema over the legacy one");
 
         add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS).expect("projects");
         add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)

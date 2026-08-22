@@ -42,6 +42,10 @@ SOL_RING_CARD = {
 def client(tmp_path: Path, monkeypatch) -> TestClient:
     db_path = tmp_path / "test.db"
     db.init_db(db_path)
+    # `backs/` resolves against the process cwd, exactly like output/ and
+    # imgcache/ do — without this the Back Image tests below write into
+    # the repo root and leave a directory behind.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PROXY_SCALER_DB_PATH", str(db_path))
     monkeypatch.setenv("PROXY_SCALER_WORKER_LOCK_PATH", str(tmp_path / "worker.lock"))
     # Not initialized on purpose — card-corpus endpoints must behave as
@@ -329,6 +333,10 @@ def test_get_paths_resolves_against_server_cwd(
         "output_dir": str(tmp_path / "output"),
         "cache_dir": str(tmp_path / "imgcache"),
         "weights_dir": str(tmp_path / "weights"),
+        # A sibling of output/ and imgcache/, never inside either — that
+        # placement is what exempts Back Images from the wipe paths, so it
+        # belongs in the contract this test pins.
+        "backs_dir": str(tmp_path / "backs"),
     }
 
 
@@ -693,6 +701,14 @@ def _pdf_layout_body(**overrides) -> dict:
         cols=3,
         rows=3,
         export_dpi=800,
+        # Required with no server-side default, on purpose: that is what
+        # makes an older client's `show_cut_lines` request a 422 rather
+        # than a silent render with guide settings nobody chose. Every
+        # request body in these tests therefore carries all four.
+        hide_card_guides_front=False,
+        hide_page_guides_front=False,
+        hide_card_guides_back=True,
+        hide_page_guides_back=True,
     )
     body.update(overrides)
     return body
@@ -1416,3 +1432,161 @@ def test_delete_card_database_refused_during_import(
     assert card_jobs.active_job() is not None
     resp = client.request("DELETE", "/api/cards/database")
     assert resp.status_code == 409
+
+
+# --- Back printing ---------------------------------------------------------
+
+
+def _back_png_bytes(size: tuple[int, int] = (600, 840)) -> tuple[bytes, str]:
+    import hashlib
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, (200, 30, 30)).save(buf, format="PNG")
+    data = buf.getvalue()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def test_pdf_request_without_the_guide_flags_is_rejected(client: TestClient) -> None:
+    """The deliberate version break. An older client still sending
+    `show_cut_lines` must fail loudly here rather than render with guide
+    settings the user never chose — the four flags are required precisely
+    so this 422 happens.
+
+    Note this only catches OLD client -> NEW server. The reverse direction
+    is undetectable server-side (Pydantic drops unknown fields silently),
+    so the client carries a version floor for it.
+    """
+    body = _pdf_layout_body()
+    for flag in (
+        "hide_card_guides_front",
+        "hide_page_guides_front",
+        "hide_card_guides_back",
+        "hide_page_guides_back",
+    ):
+        body.pop(flag)
+    body["show_cut_lines"] = True
+    assert client.post("/api/pdf/preview", json=body).status_code == 422
+
+
+def test_preview_reports_no_back_image_needed_when_back_printing_is_off(
+    client: TestClient, tmp_path: Path
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    body = client.post("/api/pdf/preview", json=_pdf_layout_body()).json()
+    assert body["reverses_needing_back_image"] == 0
+    assert body["missing_back_image"] is False
+    assert body["total_page_count"] == body["page_count"]
+
+
+def test_preview_blocks_only_when_a_reverse_would_actually_be_empty(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """"No back image" is not unconditionally an error: an all-double-faced
+    sheet fills every Reverse with a Back Face and needs no Back Image at
+    all. Only a Reverse that would genuinely come up blank is a problem."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    body = client.post(
+        "/api/pdf/preview", json=_pdf_layout_body(back_printing=True)
+    ).json()
+    assert body["reverses_needing_back_image"] == 1
+    assert body["missing_back_image"] is True
+
+    render = client.post("/api/pdf", json=_pdf_layout_body(back_printing=True))
+    assert render.status_code == 400
+    assert "back image" in render.json()["detail"].lower()
+
+
+def test_preview_accepts_a_synced_back_image(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    data, digest = _back_png_bytes()
+    assert client.post(f"/api/backs/{digest}", content=data).status_code == 200
+
+    body = client.post(
+        "/api/pdf/preview",
+        json=_pdf_layout_body(back_printing=True, back_image_hash=digest),
+    ).json()
+    assert body["missing_back_image"] is False
+    # Printing from the plain original rather than an upscale — a warning
+    # the client surfaces, never a block.
+    assert body["back_image_not_upscaled"] is True
+    assert body["total_page_count"] == body["page_count"] * 2
+
+
+def test_back_printing_doubles_the_reported_page_count(
+    client: TestClient, tmp_path: Path
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    data, digest = _back_png_bytes()
+    client.post(f"/api/backs/{digest}", content=data)
+
+    single = client.post("/api/pdf/preview", json=_pdf_layout_body()).json()
+    duplex = client.post(
+        "/api/pdf/preview",
+        json=_pdf_layout_body(back_printing=True, back_image_hash=digest),
+    ).json()
+    # page_count stays the number of SHEETS you feed the printer; only
+    # total_page_count doubles. Conflating them would double the "slots
+    # left on your last page" arithmetic the client does from page_count.
+    assert duplex["page_count"] == single["page_count"]
+    assert duplex["total_page_count"] == 2 * single["page_count"]
+
+
+def test_back_page_preview_returns_the_full_mirrored_grid(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The Back Page preview is how a user checks their Flip Edge before
+    spending a sheet of cardstock, so it must return every grid position —
+    including the empty ones — or the mirrored layout it shows won't match
+    the sheet it's previewing."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    data, digest = _back_png_bytes()
+    client.post(f"/api/backs/{digest}", content=data)
+
+    front = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(cols=3, rows=3, back_printing=True, back_image_hash=digest),
+    ).json()
+    back = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(
+            cols=3,
+            rows=3,
+            back_printing=True,
+            back_image_hash=digest,
+            preview_back_page=True,
+        ),
+    ).json()
+
+    assert len(front["slots"]) == 1  # one generated card, fills position 0
+    assert len(back["slots"]) == 9  # full grid, positions preserved
+    # A single card at front position 0 mirrors to position 2 on a
+    # long-edge-flipped portrait sheet.
+    occupied = [i for i, s in enumerate(back["slots"]) if s["thumbnail_data_url"]]
+    assert occupied == [2]
+    assert back["slots"][2]["is_back_image"] is True
+    assert back["slots"][2]["card_name"] == "Card back"
+
+
+def test_back_page_preview_reports_that_pages_guide_flags(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The preview resolves which of the four flags applies, so the
+    frontend draws what that page really carries instead of re-deriving
+    it."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    data, digest = _back_png_bytes()
+    client.post(f"/api/backs/{digest}", content=data)
+    common = dict(cols=1, rows=1, back_printing=True, back_image_hash=digest)
+
+    front = client.post("/api/pdf/preview/page", json=_pdf_layout_body(**common)).json()
+    back = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(preview_back_page=True, **common)
+    ).json()
+    assert (front["hide_card_guides"], front["hide_page_guides"]) == (False, False)
+    assert (back["hide_card_guides"], back["hide_page_guides"]) == (True, True)

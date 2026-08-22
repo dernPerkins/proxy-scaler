@@ -88,6 +88,10 @@ export interface GenerateRequest {
   output_dir: string;
   cache_dir: string;
   weights_dir: string;
+  /** Where Back Images and their upscales live — a sibling of the two
+   *  above, deliberately outside both wipe paths. Empty from servers
+   *  older than back printing. */
+  backs_dir?: string;
 }
 
 export interface RegenerateGalleryItemRequest {
@@ -257,10 +261,44 @@ export interface PdfLayoutRequest {
   guide_width_pt?: number;
   guide_length_mm?: number;
   export_dpi?: number;
-  show_cut_lines?: boolean;
   preferred_dpi?: number | null;
   preferred_model?: string | null;
+
+  // Guides — four independent HIDE flags, replacing show_cut_lines. NOT
+  // optional: the server requires them and 422s without them, which is
+  // deliberately how an out-of-date client finds out rather than silently
+  // rendering with guide settings nobody chose. Kept as `hide_*` so the
+  // wire, the stored setting and the checkbox all share one polarity.
+  hide_card_guides_front: boolean;
+  hide_page_guides_front: boolean;
+  hide_card_guides_back: boolean;
+  hide_page_guides_back: boolean;
+
+  // Back printing.
+  back_printing?: boolean;
+  /** A double-faced card's transform side prints on its own back rather
+   *  than as a separate card. Inert while back_printing is false. */
+  back_faces_as_reverse?: boolean;
+  page_order?: PageOrder;
+  flip_edge?: FlipEdge;
+  back_offset_x_mm?: number;
+  back_offset_y_mm?: number;
+  /** Content hash of the Selected Back. The bytes are synced separately
+   *  (sync_back_image), so this stays a short string on preview calls. */
+  back_image_hash?: string | null;
+  back_image_includes_bleed?: boolean;
+  /** Preview only: render page 1's Back Page, mirrored. */
+  preview_back_page?: boolean;
 }
+
+/** Interleaved is what a duplex driver expects; fronts-then-backs is for
+ *  hand-feeding a stack through a single-sided printer. */
+export type PageOrder = "interleaved" | "fronts_then_backs";
+
+/** Which edge the printer turns the sheet on. Must match the printer's own
+ *  duplex setting — it decides whether a Back Page mirrors its columns or
+ *  its rows, and getting it wrong puts every back on the wrong card. */
+export type FlipEdge = "long" | "short";
 
 // Mirrors PdfJobOut/PdfJobStatusOut. A render job exists because building
 // a sheet costs ~0.7s per unique card image, so the client needs something
@@ -292,6 +330,19 @@ export interface PdfPreview {
   // excluded from the sheet rather than printed at another resolution, so
   // this must be shown — otherwise they silently disappear.
   missing_at_dpi: string[];
+
+  /** Reverses that would take the Back Image rather than a Back Face.
+   *  Zero with back printing on means an all-double-faced sheet, which
+   *  legitimately needs no Back Image at all. */
+  reverses_needing_back_image: number;
+  /** At least one Reverse would come up blank. Blocks the render. */
+  missing_back_image: boolean;
+  /** Printing from the plain upload rather than an upscale — usually
+   *  because it was upscaled on a different server. A warning only. */
+  back_image_not_upscaled: boolean;
+  /** Pages the PDF will contain, Back Pages included. page_count stays
+   *  the number of sheets you feed the printer. */
+  total_page_count: number;
 }
 
 // Mirrors PdfPageSlotOut/PdfPagePreviewOut — a distinct, page-1-only
@@ -303,6 +354,9 @@ export interface PdfPageSlot {
   model: string | null;
   dpi: number | null;
   thumbnail_data_url: string | null;
+  /** This position shows the Back Image rather than a card. Labelled
+   *  differently — "Card back" is not a card name. */
+  is_back_image?: boolean;
 }
 
 export interface PdfPagePreview {
@@ -319,7 +373,56 @@ export interface PdfPagePreview {
   bleed_mm: number;
   guide_width_pt: number;
   guide_length_mm: number;
-  show_cut_lines: boolean;
+  /** Already resolved for the page kind being previewed, so this doesn't
+   *  re-derive which of the four flags applies. */
+  hide_card_guides: boolean;
+  hide_page_guides: boolean;
   page_count: number;
+  /** A Back Page preview returns the FULL grid including empty positions
+   *  (cells are placed by mirrored index); a front preview returns only
+   *  the occupied prefix. */
   slots: PdfPageSlot[];
+}
+
+// --- The Back Library ------------------------------------------------------
+
+/** One uploaded Back Image. Mirrors back_images::BackImage (Rust). The
+ *  library is client-side and app-global; a project points at one by id. */
+export interface BackImage {
+  id: number;
+  content_hash: string;
+  label: string;
+  original_filename: string;
+  includes_bleed: boolean;
+  width: number;
+  height: number;
+  created_at: string;
+  /** Effective print DPI at card size. Warned about below ~300, never
+   *  blocked — plenty of people knowingly print a flat logo at low DPI. */
+  source_dpi: number;
+}
+
+/** One upscaled variant of a Back Image on the CONNECTED server. Mirrors
+ *  BackVariantOut. */
+export interface BackVariant {
+  id: number;
+  dpi: number;
+  model: string;
+  created_at: string | null;
+}
+
+/** What the connected generation server holds for one Back Image. Changes
+ *  when you switch servers: the library is yours, the upscales belong to a
+ *  machine. Mirrors BackImageOut. */
+export interface BackImageServerStatus {
+  content_hash: string;
+  present: boolean;
+  source_dpi: number | null;
+  low_resolution: boolean;
+  variants: BackVariant[];
+}
+
+export interface BackSyncResult {
+  content_hash: string;
+  uploaded: boolean;
 }

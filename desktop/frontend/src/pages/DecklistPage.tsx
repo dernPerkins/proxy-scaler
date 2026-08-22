@@ -11,7 +11,7 @@ import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
-import { DPI_OPTIONS, modelDisplayName } from "../constants";
+import { DEFAULT_GEN_PATHS, DPI_OPTIONS, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
@@ -50,12 +50,6 @@ function annotateModelOptions(models: ModelOption[]): ModelOption[] {
 // (the sidebar shows that, read-only). Not in project.settings either —
 // a path valid on one machine means nothing against a Remote host. See
 // ARCHITECTURE.md.
-const DEFAULT_GEN_PATHS = {
-  output_dir: "output",
-  cache_dir: "imgcache",
-  weights_dir: "weights",
-};
-
 // The off switch for the boot-time update check (UpdatePrompt.tsx reads
 // the same setting before calling check_for_update). Tauri-only: in a
 // plain browser tab there's no check to disable. Reads as unchecked until

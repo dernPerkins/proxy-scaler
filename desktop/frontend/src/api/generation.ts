@@ -5,6 +5,7 @@
 // project.ts), never a server-side project id — see ARCHITECTURE.md.
 import { getApiBaseUrl, waitForServerReady } from "../config";
 import type {
+  BackImageServerStatus,
   CardDataset,
   CardDbStatus,
   CardImportStatus,
@@ -238,4 +239,45 @@ export const generationApi = {
   },
 
   health: () => request<{ status: string }>("/api/health"),
+
+  // --- Back Images ---------------------------------------------------
+  //
+  // The server holds a content-addressed cache of Back Images plus
+  // whatever IT has upscaled. The library itself is client-side (see
+  // api/project.ts), so everything here is per-server and changes when
+  // you switch — that asymmetry is the design, not a bug (docs/adr/0003).
+  // Uploading is Rust's job (projectApi.syncBackImage): multi-MB bodies
+  // never cross the webview.
+  getBackImageStatus: (contentHash: string) =>
+    request<BackImageServerStatus>(`/api/backs/${contentHash}`),
+
+  upscaleBackImage: (
+    contentHash: string,
+    body: {
+      model: string;
+      dpi_targets: number[];
+      tile_size?: number;
+      weights_dir?: string;
+    },
+  ) =>
+    request<{ queued: number; skipped: number; task_ids: number[] }>(
+      `/api/backs/${contentHash}/upscale`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /** Drop this back's upscales from the connected server, keeping the
+   *  synced original — reclaims disk on a GPU box without losing anything
+   *  that can't be rebuilt. */
+  clearBackImageUpscales: (contentHash: string) =>
+    request<{ removed: number }>(`/api/backs/${contentHash}/variants`, {
+      method: "DELETE",
+    }),
+
+  /** Remove a back from the connected server entirely. The client's
+   *  library copy is canonical and untouched. */
+  deleteBackImageFromServer: (contentHash: string) =>
+    request<{ removed: number }>(`/api/backs/${contentHash}`, {
+      method: "DELETE",
+    }),
 };
+
