@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useConnection } from "../connection";
+import ModalOverlay from "./ModalOverlay";
 
 // Watches the health ping connection.tsx already runs and tells the user
 // when it stops answering. It offers no save: this dialog concerns
@@ -42,7 +43,7 @@ export default function ConnectionLostDialog() {
   }
 
   return (
-    <div className="modal-overlay" onClick={busy ? undefined : () => setOpen(false)}>
+    <ModalOverlay onClick={busy ? undefined : () => setOpen(false)}>
       <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">Lost connection to the server</span>
@@ -67,6 +68,6 @@ export default function ConnectionLostDialog() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
+import ModalOverlay from "./ModalOverlay";
 import { invokeCancelDownload, isTauri, listenDownloadProgress } from "../tauri";
 import {
   checkForUpdate,
@@ -185,7 +186,7 @@ export default function UpdatePrompt() {
     const { downloaded, total } = state;
     const fraction = total != null && total > 0 ? downloaded / total : null;
     return (
-      <div className="modal-overlay">
+      <ModalOverlay>
         <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
           <div className="modal-head">
             <span className="modal-title">Downloading update…</span>
@@ -219,13 +220,13 @@ export default function UpdatePrompt() {
             </button>
           </div>
         </div>
-      </div>
+      </ModalOverlay>
     );
   }
 
   if (state.kind === "error") {
     return (
-      <div className="modal-overlay">
+      <ModalOverlay>
         <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
           <div className="modal-head">
             <span className="modal-title">Update failed</span>
@@ -251,13 +252,13 @@ export default function UpdatePrompt() {
             <button onClick={() => void startDownload()}>Try again</button>
           </div>
         </div>
-      </div>
+      </ModalOverlay>
     );
   }
 
   // The offer. Esc means "Later" — the answer that changes nothing.
   return (
-    <div className="modal-overlay" onClick={() => setState({ kind: "hidden" })}>
+    <ModalOverlay onClick={() => setState({ kind: "hidden" })}>
       <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">Update available</span>
@@ -297,6 +298,6 @@ export default function UpdatePrompt() {
           ) : null}
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

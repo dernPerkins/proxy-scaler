@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { RecentHost } from "../api/project";
 import { DEFAULT_REMOTE_PORT } from "../connection";
+import ModalOverlay from "./ModalOverlay";
 import RecentHostsList from "./RecentHostsList";
 
 export interface SwitchServerDialogProps {
@@ -42,7 +43,7 @@ export default function SwitchServerDialog({
   const hostReady = target === "local" || (host.trim().length > 0 && port > 0);
 
   return (
-    <div className="modal-overlay" onClick={busy ? undefined : onCancel}>
+    <ModalOverlay onClick={busy ? undefined : onCancel}>
       <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">
@@ -123,6 +124,6 @@ export default function SwitchServerDialog({
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

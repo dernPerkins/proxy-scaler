@@ -22,6 +22,7 @@ import {
 } from "../cardDbImport";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
+import ModalOverlay from "./ModalOverlay";
 
 function formatMB(bytes: number | null | undefined): string {
   if (bytes == null || bytes <= 0) return "?";
@@ -101,7 +102,7 @@ export default function CardDbImportModal() {
     // Error view — like ConfirmDialog, no overlay-dismiss shortcuts: the
     // single button is the whole choice.
     return (
-      <div className="modal-overlay">
+      <ModalOverlay>
         <div className="modal modal-sm">
           <div className="modal-head">
             <span className="modal-title">Card database import failed</span>
@@ -115,7 +116,7 @@ export default function CardDbImportModal() {
             </button>
           </div>
         </div>
-      </div>
+      </ModalOverlay>
     );
   }
 
@@ -129,7 +130,7 @@ export default function CardDbImportModal() {
           : "Finishing up…";
 
   return (
-    <div className="modal-overlay">
+    <ModalOverlay>
       <div className="modal modal-sm">
         <div className="modal-head">
           <span className="modal-title">
@@ -151,6 +152,6 @@ export default function CardDbImportModal() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

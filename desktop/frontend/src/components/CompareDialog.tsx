@@ -1,5 +1,7 @@
 import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slider";
 
+import ModalOverlay from "./ModalOverlay";
+
 interface CompareDialogProps {
   originalUrl: string;
   upscaledUrl: string;
@@ -19,7 +21,7 @@ export default function CompareDialog({
   onClose,
 }: CompareDialogProps) {
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <ModalOverlay onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">{label}</span>
@@ -50,6 +52,6 @@ export default function CompareDialog({
           }
         />
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

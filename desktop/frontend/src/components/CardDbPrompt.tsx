@@ -18,6 +18,7 @@ import type { CardDataset } from "../api/types";
 import { setCardDbImportJobId } from "../cardDbImport";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
+import ModalOverlay from "./ModalOverlay";
 import { isTauri } from "../tauri";
 import {
   getBootUpdateCheckSettled,
@@ -114,7 +115,7 @@ export default function CardDbPrompt() {
   };
 
   return (
-    <div className="modal-overlay">
+    <ModalOverlay>
       <div className="modal modal-sm">
         <div className="modal-head">
           <span className="modal-title">Download the card database?</span>
@@ -168,6 +169,6 @@ export default function CardDbPrompt() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

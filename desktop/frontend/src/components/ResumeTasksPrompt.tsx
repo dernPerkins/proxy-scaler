@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { generationApi } from "../api/generation";
 import { useConnection } from "../connection";
+import ModalOverlay from "./ModalOverlay";
 import { isTauri } from "../tauri";
 import {
   getBootUpdateCheckSettled,
@@ -160,7 +161,7 @@ export default function ResumeTasksPrompt() {
     // Like QuitPrompt: the two buttons are the whole choice — no overlay
     // dismiss and no Esc, because a quiet close would strand a held
     // worker with no visible way to release it.
-    <div className="modal-overlay">
+    <ModalOverlay>
       <div className="modal modal-sm">
         <div className="modal-head">
           <span className="modal-title">Unfinished tasks from your last session</span>
@@ -199,6 +200,6 @@ export default function ResumeTasksPrompt() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

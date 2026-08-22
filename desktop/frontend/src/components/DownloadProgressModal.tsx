@@ -1,4 +1,5 @@
 import { useDownloadStatus, type DownloadPhase } from "../download";
+import ModalOverlay from "./ModalOverlay";
 
 function formatMb(bytes: number): string {
   return (bytes / 1048576).toFixed(1);
@@ -47,7 +48,7 @@ export default function DownloadProgressModal() {
   const { title, detail, fraction } = describe(status.phase);
 
   return (
-    <div className="modal-overlay">
+    <ModalOverlay>
       <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title">{title}</span>
@@ -79,6 +80,6 @@ export default function DownloadProgressModal() {
           </div>
         )}
       </div>
-    </div>
+    </ModalOverlay>
   );
 }

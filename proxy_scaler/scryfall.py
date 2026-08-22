@@ -12,7 +12,7 @@ import requests
 from .decklist import DeckEntry
 
 SCRYFALL_API = "https://api.scryfall.com"
-USER_AGENT = "proxy-scaler/0.1.0 (home proxy printing; local tool)"
+USER_AGENT = "proxy-scaler/0.1.0 (https://proxy-scaler.com)"
 REQUEST_DELAY_S = 0.1
 
 # Every printed-language code Scryfall uses. The single source of truth:

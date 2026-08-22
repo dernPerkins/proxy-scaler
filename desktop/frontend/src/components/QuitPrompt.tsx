@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { projectApi } from "../api/project";
 import { useProject } from "../context/ProjectContext";
+import ModalOverlay from "./ModalOverlay";
 import {
   invokeAnswerQuitPrompt,
   invokeQuitPromptListening,
@@ -179,7 +180,7 @@ export default function QuitPrompt() {
     // keystroke or a stray click that conventionally closes a dialog
     // quietly terminating the app instead. "Not now" is focused, so Enter
     // and Space already reach the way out.
-    <div className="modal-overlay">
+    <ModalOverlay>
       <div className="modal modal-sm">
         <div className="modal-head">
           <span className="modal-title">Name this project before closing?</span>
@@ -242,6 +243,6 @@ export default function QuitPrompt() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalOverlay>
   );
 }
