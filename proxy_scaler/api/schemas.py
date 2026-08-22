@@ -327,19 +327,10 @@ class CardDbLocalOut(BaseModel):
     card_count: int
 
 
-class CardDbRemoteEntryOut(BaseModel):
-    updated_at: str
-    compressed_size: int
-
-
 class CardDbStatusOut(BaseModel):
+    # Purely local state — see card_db_status()'s docstring for why this
+    # carries no "what does Scryfall have today" half any more.
     local: CardDbLocalOut | None = None
-    # Keyed by dataset type ("default_cards"/"all_cards") so the client can
-    # both show live download sizes on the dataset choice and compare
-    # updated_at against local for the staleness hint. None whenever the
-    # live catalog can't be reached — the client must treat that as
-    # "unknown", never as an error.
-    remote: dict[str, CardDbRemoteEntryOut] | None = None
     import_running: bool
     active_job_id: str | None = None
 

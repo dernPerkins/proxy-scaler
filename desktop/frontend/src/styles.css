@@ -933,6 +933,15 @@ tbody tr:last-child td {
   z-index: 1000;
   padding: 24px;
 }
+/* The server-boot overlay deliberately sits UNDER every real dialog. It
+   asks nothing — it is a progress indicator that happens to block — so it
+   must never cover something that does. Without this it would: portals
+   append to document.body in mount order, and UpdatePrompt mounts above
+   ConnectGate, so a boot overlay mounted later inside App would paint over
+   an open update offer and eat its clicks. */
+.modal-overlay-boot {
+  z-index: 900;
+}
 .modal {
   width: min(85vw, 720px);
   max-height: 90vh;

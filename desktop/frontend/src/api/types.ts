@@ -182,17 +182,9 @@ export interface CardDbLocal {
   card_count: number;
 }
 
-export interface CardDbRemoteEntry {
-  updated_at: string;
-  compressed_size: number;
-}
-
 export interface CardDbStatus {
   // null until a first import fully finishes.
   local: CardDbLocal | null;
-  // Keyed by dataset; null whenever Scryfall's catalog is unreachable —
-  // "unknown", never an error state.
-  remote: Partial<Record<CardDataset, CardDbRemoteEntry>> | null;
   import_running: boolean;
   active_job_id: string | null;
 }

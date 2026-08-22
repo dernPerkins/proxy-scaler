@@ -28,10 +28,12 @@ import {
   subscribeUpdateStore,
 } from "../update";
 
-function formatMB(bytes: number | null | undefined, fallback: number): string {
-  const value = bytes != null && bytes > 0 ? bytes : fallback;
-  return `${Math.round(value / 1_000_000)}`;
-}
+// Approximate compressed download sizes — see CardDbPanel's copy of this
+// and card_db_status()'s docstring for why they aren't read live.
+const APPROX_DOWNLOAD_MB: Record<CardDataset, number> = {
+  default_cards: 80,
+  all_cards: 400,
+};
 
 export default function CardDbPrompt() {
   const queryClient = useQueryClient();
@@ -103,8 +105,6 @@ export default function CardDbPrompt() {
   if (!shownRef.current && eligible) shownRef.current = true;
   if (!shownRef.current || dismissedThisLaunch) return null;
 
-  const remote = status?.remote ?? null;
-
   const dismiss = () => {
     setDismissedThisLaunch(true);
     shownRef.current = false;
@@ -133,10 +133,10 @@ export default function CardDbPrompt() {
           style={{ marginBottom: 10 }}
         >
           <option value="default_cards">
-            English only (~{formatMB(remote?.default_cards?.compressed_size, 80_000_000)} MB)
+            English only (~{APPROX_DOWNLOAD_MB.default_cards} MB)
           </option>
           <option value="all_cards">
-            All languages (~{formatMB(remote?.all_cards?.compressed_size, 400_000_000)} MB)
+            All languages (~{APPROX_DOWNLOAD_MB.all_cards} MB)
           </option>
         </select>
 

@@ -1,7 +1,6 @@
 // Sidebar panel for the generation server's local Scryfall card corpus:
 // shows what's imported (with a staleness nudge), offers the dataset choice
-// (English-only vs all languages, sizes read live from Scryfall's catalog
-// via the status endpoint), and starts imports / deletes the database.
+// (English-only vs all languages), and starts imports / deletes the database.
 // Per-server on purpose: in Remote mode this reads and imports on the
 // connected machine.
 //
@@ -17,12 +16,23 @@ import type { CardDataset } from "../api/types";
 import { setCardDbImportJobId } from "../cardDbImport";
 import ConfirmDialog from "./ConfirmDialog";
 
-const STALE_AFTER_DAYS = 30;
+// Scryfall publishes constantly — Secret Lair drops, convention and
+// tournament exclusives — and a card the corpus has never heard of fails
+// *silently* in the printing picker rather than announcing itself. So the
+// nudge runs on the short side: it is one line of hint text next to an
+// Import button, and being a week eager costs nothing.
+const STALE_AFTER_DAYS = 7;
 
-function formatMB(bytes: number | null | undefined): string {
-  if (bytes == null || bytes <= 0) return "?";
-  return `${Math.round(bytes / 1_000_000)}`;
-}
+// Approximate compressed download sizes, for the choice made before any
+// import exists to measure. Static on purpose: reading the real numbers
+// meant a live Scryfall catalog fetch on every card-db status poll, and
+// that poll sits on the app's launch path (see card_db_status()'s
+// docstring in api/routers/cards.py). The import job fetches the true
+// size the moment it starts, and the progress modal reports it.
+const APPROX_DOWNLOAD_MB: Record<CardDataset, number> = {
+  default_cards: 80,
+  all_cards: 400,
+};
 
 function formatDate(iso: string): string {
   return iso.slice(0, 10);
@@ -38,8 +48,9 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
     queryKey: ["card-db-status"],
     queryFn: () => generationApi.cardDbStatus(),
     enabled: !serverUnavailable,
-    // The remote half can change daily and an import may be running from
-    // another window — a slow refresh keeps the hint honest without chatter.
+    // An import may be running from another window, and one started here
+    // finishes without telling us. Cheap now that this endpoint is a local
+    // file check, but there is still nothing to gain from polling faster.
     refetchInterval: 60_000,
   });
   const status = statusQuery.data;
@@ -74,30 +85,21 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
   });
 
   const local = status?.local ?? null;
-  const remote = status?.remote ?? null;
-  const remoteEntry = remote?.[dataset];
 
+  // Age of the user's own import, which is the whole staleness signal now.
+  // There used to be a second one — "Scryfall has newer card data" — but
+  // answering that meant asking Scryfall on every poll, and the answer was
+  // very nearly always yes (they republish daily), so it said little that
+  // this day count doesn't.
   const staleDays = local
     ? Math.floor((Date.now() - Date.parse(local.imported_at)) / 86_400_000)
     : null;
-  // Scryfall republishes daily, so "remote is newer" is true within hours
-  // of almost any import — only worth nagging about once the user's own
-  // import is at least a day old. Someone who updated this morning
-  // doesn't care that tonight's dump exists.
-  const behindRemote =
-    local != null &&
-    staleDays != null &&
-    staleDays >= 1 &&
-    remote?.[local.dataset_type] != null &&
-    remote[local.dataset_type]!.updated_at > local.dataset_updated_at;
   const nudge =
     local == null
       ? "No local card database — printings can't be browsed until one is imported."
-      : behindRemote
-        ? "Scryfall has newer card data than the local copy."
-        : staleDays != null && staleDays > STALE_AFTER_DAYS
-          ? `Card data last imported ${staleDays} days ago.`
-          : null;
+      : staleDays != null && staleDays > STALE_AFTER_DAYS
+        ? `Card data last imported ${staleDays} days ago.`
+        : null;
 
   // While a job runs the blocking modal owns the screen, so this state is
   // mostly invisible — it exists so the controls aren't clickable in the
@@ -126,10 +128,10 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         disabled={serverUnavailable || importRunning}
       >
         <option value="default_cards">
-          English only (~{formatMB(remote?.default_cards?.compressed_size ?? 80_000_000)} MB)
+          English only (~{APPROX_DOWNLOAD_MB.default_cards} MB)
         </option>
         <option value="all_cards">
-          All languages (~{formatMB(remote?.all_cards?.compressed_size ?? 400_000_000)} MB)
+          All languages (~{APPROX_DOWNLOAD_MB.all_cards} MB)
         </option>
       </select>
       {switching && !importRunning && (
@@ -139,13 +141,7 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         className="btn-sm"
         onClick={() => startMutation.mutate(dataset)}
         disabled={serverUnavailable || importRunning || startMutation.isPending}
-        title={
-          serverUnavailable
-            ? "Generation server is unreachable"
-            : remoteEntry == null
-              ? "Scryfall's catalog is unreachable from the server right now — the import will re-check when started."
-              : undefined
-        }
+        title={serverUnavailable ? "Generation server is unreachable" : undefined}
       >
         {local ? "Update card database" : "Import card database"}
       </button>
@@ -170,8 +166,8 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         >
           This removes the imported Scryfall card data from this server.
           The printing picker stops working until it's imported again
-          (~{formatMB(remote?.[dataset]?.compressed_size ?? 80_000_000)} MB
-          download). Your decks and generated images are untouched.
+          (~{APPROX_DOWNLOAD_MB[dataset]} MB download). Your decks and
+          generated images are untouched.
         </ConfirmDialog>
       )}
 

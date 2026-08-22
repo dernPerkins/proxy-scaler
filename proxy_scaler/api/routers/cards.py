@@ -1,9 +1,10 @@
 """Card-corpus endpoints: bulk import lifecycle (status/start/poll/cancel),
 the languages present in the corpus, and the printing-variants listing that
-feeds the client's change-printing picker. All of it reads the local corpus
-(carddb.py) — the only live Scryfall call here is the small bulk-catalog
-fetch inside /status, and its failure is reported as "unknown", never as an
-error, because the client renders the staleness hint offline too."""
+feeds the client's change-printing picker. Every read here answers from the
+local corpus (carddb.py) — nothing on this router touches the network. The
+one Scryfall call in the card feature lives inside the import job itself
+(card_import.run_import's CHECKING phase), which is where the user has
+actually asked for fresh data."""
 
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ from proxy_scaler.api.deps import get_card_db_path
 from proxy_scaler.scryfall import SCRYFALL_LANGUAGES, expected_face_count
 from proxy_scaler.api.schemas import (
     CardDbLocalOut,
-    CardDbRemoteEntryOut,
     CardDbStatusOut,
     CardImportIn,
     CardImportStartedOut,
@@ -58,21 +58,20 @@ def _local_status() -> CardDbLocalOut | None:
 
 @router.get("/status", response_model=CardDbStatusOut)
 def card_db_status() -> CardDbStatusOut:
-    remote: dict[str, CardDbRemoteEntryOut] | None
-    try:
-        catalog = card_import.fetch_bulk_catalog(timeout=5.0)
-        remote = {
-            dataset: CardDbRemoteEntryOut(
-                updated_at=info.updated_at, compressed_size=info.compressed_size
-            )
-            for dataset, info in catalog.items()
-        }
-    except Exception:  # noqa: BLE001 — offline is a normal state here
-        remote = None
+    """Is a usable corpus imported, and is an import running right now —
+    answered entirely from local state: a file-existence + schema-version
+    check and a four-row meta read.
+
+    This deliberately makes no network call. It used to fetch Scryfall's
+    bulk catalog too, so the sidebar could size the download and say "newer
+    data exists" — but this endpoint sits on the client's LAUNCH path and
+    polls every 60s, so that put a live HTTPS round-trip (a full 5s stall
+    when offline) in front of an answer that is a stat() away. Deciding
+    when to re-import is the user's call, made from the sidebar; the import
+    job fetches the catalog itself when they make it."""
     active = card_jobs.active_job()
     return CardDbStatusOut(
         local=_local_status(),
-        remote=remote,
         import_running=active is not None,
         active_job_id=active.id if active else None,
     )

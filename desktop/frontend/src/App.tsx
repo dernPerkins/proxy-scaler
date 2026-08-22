@@ -7,6 +7,7 @@ import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
 import QuitPrompt from "./components/QuitPrompt";
 import ResumeTasksPrompt from "./components/ResumeTasksPrompt";
+import ServerBootModal from "./components/ServerBootModal";
 import ServerStatusToast from "./components/ServerStatusToast";
 import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
@@ -65,6 +66,10 @@ export default function App() {
       <div className="app">
         <ServerStatusToast />
         <VersionMismatchToast />
+        {/* Holds the screen while the local sidecar starts, and owns the
+            failure when it doesn't. Renders nothing once the server is
+            ready — which is always, immediately, in Remote mode. */}
+        <ServerBootModal />
         <ConnectionLostDialog />
         <DownloadProgressModal />
         {/* Mounted for its close-request listener, not for what it draws:

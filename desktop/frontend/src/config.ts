@@ -166,7 +166,19 @@ export function setServerStarting(): void {
 
 export function setServerReady(): void {
   readiness = { status: "ready" };
+  // Two halves, and the second is easy to miss. Resolving wakes whoever is
+  // already parked. Replacing the promise is what stops a gate that
+  // REJECTED from staying rejected forever: setServerStarting is the only
+  // other place readyPromise is assigned, so after a failed local start,
+  // every later "we're ready now" left the dead server's rejection in
+  // place and every request on the connection that replaced it failed with
+  // its error message. That is precisely the recovery route out of a failed
+  // boot — give up on Local, connect to a remote server instead — which
+  // must not inherit the failure it is escaping.
   readyResolve?.();
+  readyResolve = null;
+  readyReject = null;
+  readyPromise = Promise.resolve();
   notify();
 }
 

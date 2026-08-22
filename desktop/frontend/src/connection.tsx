@@ -87,6 +87,13 @@ interface ConnectionValue {
   /** Mid-session switch. Returns an error message, or null on success. */
   switchTo: (target: ConnectionTarget) => Promise<string | null>;
   /**
+   * Re-attempt a local sidecar start after one failed — ServerBootModal's
+   * "Try again". Safe to call repeatedly: main.rs hard-kills the child and
+   * clears its slot on a failed start, precisely so a retry respawns
+   * rather than hitting its "already running" early return.
+   */
+  retryLocal: () => void;
+  /**
    * Manual re-check of the current remote host, for a "Reconnect" button
    * rather than waiting up to HEALTH_PING_INTERVAL_MS for the next
    * automatic ping. Returns whether it's reachable now. A no-op (returns
@@ -192,6 +199,28 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
   }
 
+  // Everything that fires the instant a connection goes ready, in the one
+  // order that matters. /api/device imports torch — tens of seconds on a
+  // real GPU box, holding the GIL in long stretches — and on the local
+  // path every request parked on the readiness gate unblocks at this same
+  // instant. Letting the card-db check (a local stat + a four-row read)
+  // go first is the difference between it answering immediately and it
+  // answering after torch finishes loading, which is exactly how the card
+  // database used to look like the slow, last thing about launching.
+  //
+  // Nothing is lost by making the probe wait: it is fire-and-forget, only
+  // refines the default-model guess, and ProjectContext already corrects
+  // that guess whenever the answer lands late (subscribeProbedDevice).
+  function probeAfterReady(): void {
+    probeServerVersion();
+    void queryClient
+      .prefetchQuery({
+        queryKey: ["card-db-status"],
+        queryFn: () => generationApi.cardDbStatus(),
+      })
+      .finally(probeGpu);
+  }
+
   // Heartbeat for remote mode only — local's liveness is already implied
   // by the sidecar process this app itself spawned and watches. A remote
   // server has no such signal: if it stops, nothing here notices unless
@@ -259,8 +288,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // hangs or fails every single request against the remote host with
       // no visible cause.
       setServerReady();
-      probeGpu();
-      probeServerVersion();
+      probeAfterReady();
       setMode("remote");
       setHost(target.host);
       setPort(target.port);
@@ -269,14 +297,20 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
     setConnectionMode("local");
     setApiBaseUrl(LOCAL_URL);
-    setServerStarting();
     setMode("local");
+    startLocal();
+  }
+
+  // The sidecar spawn itself, split out of applyTarget so retryLocal can
+  // re-run exactly this and nothing else — a retry must not redo the
+  // base-URL/mode bookkeeping, which is already correct and unchanged.
+  function startLocal(): void {
+    setServerStarting();
     invokeStartLocalServer()
       .then((url) => {
         setApiBaseUrl(url);
         setServerReady();
-        probeGpu();
-        probeServerVersion();
+        probeAfterReady();
       })
       .catch((err) => {
         setServerError(err instanceof Error ? err.message : String(err));
@@ -343,6 +377,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return null;
   }
 
+  function retryLocal(): void {
+    startLocal();
+  }
+
   async function reconnect(): Promise<boolean> {
     if (mode !== "remote" || !host) return true;
     const url = `http://${host}:${port}`;
@@ -370,6 +408,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     remoteHealthy,
     connect,
     switchTo,
+    retryLocal,
     reconnect,
     recentHosts,
     removeRecentHost,

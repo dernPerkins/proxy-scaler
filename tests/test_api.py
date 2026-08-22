@@ -1259,41 +1259,40 @@ def _clean_card_jobs():
     card_jobs._reset_for_tests()
 
 
-def test_card_status_no_corpus_offline(client: TestClient, monkeypatch) -> None:
-    from proxy_scaler import card_import
-
-    monkeypatch.setattr(
-        card_import,
-        "fetch_bulk_catalog",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")),
-    )
+def test_card_status_no_corpus(client: TestClient) -> None:
+    # Deliberately no monkeypatching: this endpoint reaches nothing but the
+    # local filesystem, so it answers the same with or without a network.
     body = client.get("/api/cards/status").json()
     assert body["local"] is None
-    assert body["remote"] is None  # unreachable catalog is "unknown", not a 5xx
     assert body["import_running"] is False
 
 
-def test_card_status_reports_local_and_remote(client: TestClient, monkeypatch) -> None:
-    from proxy_scaler import card_import
-    from proxy_scaler.card_import import BulkDatasetInfo
-
+def test_card_status_reports_local(client: TestClient) -> None:
     _seed_card_db()
-    monkeypatch.setattr(
-        card_import,
-        "fetch_bulk_catalog",
-        lambda *a, **k: {
-            "default_cards": BulkDatasetInfo(
-                dataset="default_cards",
-                updated_at="2026-08-20T00:00:00Z",
-                download_uri="https://data.example/d.jsonl.gz",
-                compressed_size=77,
-            )
-        },
-    )
     body = client.get("/api/cards/status").json()
     assert body["local"]["dataset_type"] == "default_cards"
     assert body["local"]["card_count"] == 1
-    assert body["remote"]["default_cards"]["updated_at"] == "2026-08-20T00:00:00Z"
+    # The "what does Scryfall have today" half is gone on purpose — see
+    # card_db_status()'s docstring.
+    assert "remote" not in body
+
+
+def test_card_status_never_calls_scryfall(client: TestClient, monkeypatch) -> None:
+    """The regression guard for the whole point of this endpoint: it sits on
+    the client's launch path and polls every 60s, so a live catalog fetch
+    here cost a round-trip (a 5s stall offline) before a stat()-cheap
+    answer. Blow up if one ever comes back."""
+    from proxy_scaler import card_import
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("/api/cards/status must not reach Scryfall")
+
+    monkeypatch.setattr(card_import, "fetch_bulk_catalog", _explode)
+    monkeypatch.setattr(card_import, "fetch_bulk_info", _explode)
+    _seed_card_db()
+    resp = client.get("/api/cards/status")
+    assert resp.status_code == 200
+    assert resp.json()["local"]["card_count"] == 1
 
 
 def test_card_import_validates_dataset(client: TestClient) -> None:

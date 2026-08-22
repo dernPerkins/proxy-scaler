@@ -12,16 +12,23 @@ import { createPortal } from "react-dom";
 // through the open modal.
 export default function ModalOverlay({
   onClick,
+  className,
   children,
 }: {
   /** Backdrop click (dialogs pass their cancel/close action; the inner
    *  panel stops propagation). Omit while busy to make the dialog
    *  undismissable, same contract as before the portal. */
   onClick?: () => void;
+  /** Extra class on the backdrop, for the one case that needs to opt OUT
+   *  of the default layering: portals stack in MOUNT order at equal
+   *  z-index, and UpdatePrompt is mounted above ConnectGate (main.tsx) —
+   *  so anything mounted later inside App would paint over an open update
+   *  dialog and swallow its clicks. See .modal-overlay-boot. */
+  className?: string;
   children: ReactNode;
 }) {
   return createPortal(
-    <div className="modal-overlay" onClick={onClick}>
+    <div className={className ? `modal-overlay ${className}` : "modal-overlay"} onClick={onClick}>
       {children}
     </div>,
     document.body,

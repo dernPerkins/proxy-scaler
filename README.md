@@ -37,7 +37,10 @@ server keeps its own copy). Once imported, card resolution runs against
 the local database first, so most decklist imports and generations make
 no live Scryfall API calls at all; only cards newer than your last import
 fall back to the live API. Update it from the same panel whenever the
-staleness hint suggests it. (Upgrading across a card-database format
+staleness hint suggests it — it nudges once your copy is more than a week
+old, since Secret Lair drops and convention exclusives appear far more
+often than that, and a card the corpus has never heard of fails quietly in
+the printing picker rather than announcing itself. (Upgrading across a card-database format
 change shows "Not imported yet" — just import again.) A first launch with
 no database offers the download in a dialog; declining leaves the sidebar
 panel as the way in, and the same panel can delete the database again.

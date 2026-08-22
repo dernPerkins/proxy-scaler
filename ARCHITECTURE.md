@@ -322,7 +322,7 @@ string, not a database relationship.
 | `GET /api/paths` | Absolute resolved output/cache/weights dirs on the generation machine (fixed relative names resolved against the server's cwd) |
 | `POST /api/generated-data/clear` | Wipe output/cache dirs on the generation machine |
 | `POST /api/tags/{project_tag}/discard` | Forget a thrown-away session: cancel that tag's pending tasks + drop its generation records. Deletes **no** files — output filenames carry no tag, so the images are shared with every other Project |
-| `GET /api/cards/status` | Card corpus status: what's imported locally (dataset, updated_at, count) + Scryfall's advertised catalog (null when offline — "unknown", never an error). Feeds the sidebar's staleness hint |
+| `GET /api/cards/status` | Card corpus status: what's imported locally (dataset, updated_at, count) and whether an import is running. Purely local — a file-existence + schema check and a meta read, **no network** — because the client polls this on its launch path; the live catalog fetch it used to bundle in now happens only inside an import job |
 | `POST /api/cards/import` | Start a bulk import job (`{dataset: "default_cards" \| "all_cards"}`, 202 + job id; 409 while one runs). Background thread + in-memory registry (`card_jobs.py`), same polling idiom as the PDF render jobs |
 | `GET /api/cards/import/{job_id}` | Import job progress: phase (checking/downloading/importing/finalizing), bytes, rows |
 | `POST /api/cards/import/{job_id}/cancel` | Ask a running import to stop at its next chunk/batch boundary |
