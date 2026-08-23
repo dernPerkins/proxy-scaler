@@ -4,12 +4,13 @@ import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
 import NumberInput from "../components/NumberInput";
 import PdfPagePreview from "../components/PdfPagePreview";
-import { DPI_OPTIONS } from "../constants";
+import { DPI_OPTIONS, EXPORT_DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import {
   BACK_PRINTING_MIN_SERVER_VERSION,
   getApiBaseUrl,
   serverSupportsBackPrinting,
+  serverSupportsOriginals,
   useServerReadiness,
   useServerVersion,
 } from "../config";
@@ -101,6 +102,12 @@ export default function PdfPage() {
   // wrong PDF, not a confusing one. See config.ts.
   const serverVersion = useServerVersion();
   const serverTooOld = !serverUnavailable && !serverSupportsBackPrinting(serverVersion);
+  // Older servers silently drop use_originals (Pydantic ignores unknown
+  // fields) and would render with the preferred settings while the
+  // checkbox claims originals — so the checkbox is disabled against them,
+  // and a stored true is not sent.
+  const originalsSupported = serverSupportsOriginals(serverVersion);
+  const useOriginals = settings.use_originals && originalsSupported;
   // The project's Selected Back, resolved out of the app-global library.
   // Library reads are local invokes — they work with no server reachable,
   // which is the whole point of the client owning it (docs/adr/0003).
@@ -159,6 +166,7 @@ export default function PdfPage() {
     export_dpi: settings.export_dpi,
     preferred_dpi: settings.preferred_dpi,
     preferred_model: settings.preferred_model,
+    use_originals: useOriginals,
     hide_card_guides_front: settings.hide_card_guides_front,
     hide_page_guides_front: settings.hide_page_guides_front,
     hide_card_guides_back: settings.hide_card_guides_back,
@@ -362,7 +370,7 @@ export default function PdfPage() {
                 <span>Preferred model</span>
                 <select
                   value={layout.preferred_model ?? ""}
-                  disabled={modelsQuery.isLoading || modelsQuery.isError}
+                  disabled={modelsQuery.isLoading || modelsQuery.isError || useOriginals}
                   onChange={(e) => updateLayout("preferred_model", e.target.value || null)}
                 >
                   <option value="">Any (highest DPI available)</option>
@@ -378,6 +386,7 @@ export default function PdfPage() {
                 <span>Preferred DPI</span>
                 <select
                   value={layout.preferred_dpi ?? ""}
+                  disabled={useOriginals}
                   onChange={(e) =>
                     updateLayout("preferred_dpi", e.target.value ? Number(e.target.value) : null)
                   }
@@ -389,6 +398,27 @@ export default function PdfPage() {
                     </option>
                   ))}
                 </select>
+              </label>
+
+              {/* An override, not a third "preferred" value: originals are
+                  a different world of images (the ~300 DPI Scryfall
+                  downloads), so while it's on the two selectors above are
+                  inert and disabled rather than silently ignored. */}
+              <label
+                className="check"
+                title={
+                  !originalsSupported
+                    ? "The connected generation server is too old for this — update it."
+                    : "Print from the downloaded ~300 DPI Scryfall originals; the preferred model/DPI don't apply."
+                }
+              >
+                <input
+                  type="checkbox"
+                  disabled={!originalsSupported}
+                  checked={useOriginals}
+                  onChange={(e) => updateLayout("use_originals", e.target.checked)}
+                />
+                Use 300 DPI originals
               </label>
             </div>
 
@@ -520,12 +550,31 @@ export default function PdfPage() {
                 </label>
               </div>
 
+              {/* A fixed list rather than the free-form NumberInput it used
+                  to be: any source image is resized to this density at
+                  render time, so arbitrary values only invited typos (0,
+                  negative) with no matching source anywhere. 300 is offered
+                  for printing straight from the Scryfall originals. */}
               <label className="field">
                 <span>Export DPI</span>
-                <NumberInput
+                <select
                   value={layout.export_dpi}
-                  onChange={(v) => updateLayout("export_dpi", v)}
-                />
+                  onChange={(e) => updateLayout("export_dpi", Number(e.target.value))}
+                >
+                  {/* A legacy project may hold a hand-typed value from the
+                      free-form era — shown as-is so loading it doesn't
+                      silently change its output; picking any standard value
+                      replaces it for good. */}
+                  {layout.export_dpi != null &&
+                    !EXPORT_DPI_OPTIONS.includes(layout.export_dpi) && (
+                      <option value={layout.export_dpi}>{layout.export_dpi} (custom)</option>
+                    )}
+                  {EXPORT_DPI_OPTIONS.map((dpi) => (
+                    <option key={dpi} value={dpi}>
+                      {dpi}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <div style={{ display: "flex", gap: 10 }}>
@@ -791,11 +840,24 @@ export default function PdfPage() {
             {previewQuery.data.missing.length > 0 && (
               <>
                 <p className="error-text" style={{ marginTop: 10 }}>
-                  <strong>
-                    {previewQuery.data.missing.length} card(s) from your decklist have no
-                    generated image yet
-                  </strong>{" "}
-                  and are left out of this PDF — generate them from the Decklist tab.
+                  {useOriginals ? (
+                    <>
+                      <strong>
+                        {previewQuery.data.missing.length} card(s) from your decklist have
+                        no downloaded original
+                      </strong>{" "}
+                      and are left out of this PDF — use Download images on the Decklist
+                      tab.
+                    </>
+                  ) : (
+                    <>
+                      <strong>
+                        {previewQuery.data.missing.length} card(s) from your decklist have
+                        no generated image yet
+                      </strong>{" "}
+                      and are left out of this PDF — generate them from the Decklist tab.
+                    </>
+                  )}
                 </p>
                 <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                   {previewQuery.data.missing.map((note, i) => (

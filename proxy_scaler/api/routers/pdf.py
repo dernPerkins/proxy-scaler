@@ -130,8 +130,12 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     units, missing, missing_at_dpi = match_quantities(
         entries,
         items,
-        preferred_dpi=body.preferred_dpi,
-        preferred_model=body.preferred_model,
+        # With use_originals there's exactly one variant per face, so the
+        # preferred pair is meaningless — forced to None rather than
+        # trusting the client to blank them.
+        preferred_dpi=None if body.use_originals else body.preferred_dpi,
+        preferred_model=None if body.use_originals else body.preferred_model,
+        use_originals=body.use_originals,
     )
 
     def layout_with(offset_x: float, offset_y: float) -> PageLayout:

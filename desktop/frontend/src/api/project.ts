@@ -40,6 +40,10 @@ export interface ProjectSettings {
   export_dpi: number;
   preferred_dpi: number | null;
   preferred_model: string | null;
+  // Source PDF/export runs from the cached ~300 DPI Scryfall originals
+  // instead of upscaled outputs; the preferred pair above is inert while
+  // set. Shared by the PDF and Export tabs like the pair itself.
+  use_originals: boolean;
   // Import-language preference (Scryfall code, "en" default): the language
   // the resolve-gated import demands ("strictly literal" — see
   // ARCHITECTURE.md's resolve flow).

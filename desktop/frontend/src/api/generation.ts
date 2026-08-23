@@ -11,6 +11,7 @@ import type {
   CardVariantsResult,
   DeckEntryIn,
   Device,
+  DownloadOriginalsRequest,
   ExportZipPreview,
   ExportZipRequest,
   GalleryItem,
@@ -25,6 +26,7 @@ import type {
   PdfLayoutRequest,
   PdfPagePreview,
   PdfPreview,
+  RefetchOriginalRequest,
   RegenerateGalleryItemRequest,
   ResolveResult,
   Task,
@@ -105,8 +107,24 @@ export const generationApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // Download-only batch — fetch and cache the ~300 DPI Scryfall originals
+  // with no upscaling. A separate route on the server so an old one 404s
+  // loudly instead of silently enqueueing upscale work.
+  downloadOriginals: (body: DownloadOriginalsRequest) =>
+    request<GenerateResult>("/api/generate/downloads", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   regenerateGalleryItem: (galleryItemId: number, body: RegenerateGalleryItemRequest) =>
     request<GenerateResult>(`/api/gallery/${galleryItemId}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Re-download one face's Scryfall original, overwriting the cached copy
+  // — works from any of the face's gallery item ids (upscale or download
+  // row), see gallery.py::refetch_original.
+  refetchOriginal: (galleryItemId: number, body: RefetchOriginalRequest) =>
+    request<GenerateResult>(`/api/gallery/${galleryItemId}/refetch`, {
       method: "POST",
       body: JSON.stringify(body),
     }),

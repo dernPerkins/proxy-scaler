@@ -148,6 +148,36 @@ class RegenerateGalleryItemIn(BaseModel):
     weights_dir: str
 
 
+class DownloadOriginalsIn(BaseModel):
+    # Download-only batch: fetch and cache the ~300 DPI Scryfall originals
+    # for each face, no upscaling — tasks are enqueued under the
+    # (ORIGINAL_DPI, ORIGINAL_MODEL) sentinel variant (see dpi.py). A
+    # separate route rather than a flag on GenerateIn so an older server
+    # 404s loudly instead of silently enqueueing upscale work (Pydantic
+    # ignores unknown fields). No model/dpi_targets/skip_existing:
+    # downloads always target the sentinel and always skip existing.
+    # output_dir/weights_dir are only here because generation_tasks
+    # requires them NOT NULL — the download handler ignores both.
+    project_tag: str
+    entries: list[DeckEntryIn]
+    output_dir: str
+    cache_dir: str
+    weights_dir: str
+
+
+class RefetchOriginalIn(BaseModel):
+    # Re-download one face's Scryfall original, overwriting the cached
+    # copy (for when Scryfall updates a card's art/scan). Same shape as
+    # RegenerateGalleryItemIn minus tile_size (no upscaling happens);
+    # the face identity + png_url come from the stored gallery item
+    # server-side — any of the face's variants (upscale or download row)
+    # carries them.
+    project_tag: str
+    output_dir: str
+    cache_dir: str
+    weights_dir: str
+
+
 class GenerateOut(BaseModel):
     queued: int
     failed: int
@@ -237,6 +267,15 @@ class PdfLayoutIn(BaseModel):
     export_dpi: int = 1200
     preferred_dpi: int | None = None
     preferred_model: str | None = None
+    # Source the print run from the cached ~300 DPI Scryfall originals
+    # (download-only variants) instead of upscaled outputs — when true the
+    # preferred_dpi/preferred_model pair is ignored (the routers pass None
+    # through), since there's exactly one original per face. See
+    # pdf_layout.match_quantities. Defaulted so older clients are
+    # unaffected; a NEW client's flag sent to an OLD server is silently
+    # dropped (Pydantic ignores unknown fields), which the client guards
+    # with a version floor — see desktop/frontend/src/config.ts.
+    use_originals: bool = False
 
     # --- Guides ----------------------------------------------------------
     #
@@ -414,6 +453,10 @@ class ExportZipIn(BaseModel):
     # substituted); preferred_model wins among the eligible variants.
     preferred_dpi: int | None = None
     preferred_model: str | None = None
+    # Same semantics as PdfLayoutIn.use_originals: export the cached ~300
+    # DPI Scryfall originals instead of upscaled outputs; the preferred
+    # pair is ignored when set.
+    use_originals: bool = False
     format: ExportFormatIn = ExportFormatIn.DEFAULT
     # Content hash of the project's Selected Back (see PdfLayoutIn's
     # back_image_hash) — bytes are synced separately via POST /api/backs.

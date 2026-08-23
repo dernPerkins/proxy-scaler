@@ -7,6 +7,7 @@ import { useConnection } from "../connection";
 import {
   EXPORT_ZIP_MIN_SERVER_VERSION,
   getApiBaseUrl,
+  serverSupportsOriginals,
   serverSupportsZipExport,
   useServerReadiness,
   useServerVersion,
@@ -30,6 +31,11 @@ export default function ExportPage() {
   // "server too old, update it" beats a bare "Not Found". See config.ts.
   const serverVersion = useServerVersion();
   const serverTooOld = !serverUnavailable && !serverSupportsZipExport(serverVersion);
+  // Same guard as PdfPage: an older server drops the flag silently and
+  // would export the preferred variants while the checkbox claims
+  // originals.
+  const originalsSupported = serverSupportsOriginals(serverVersion);
+  const useOriginals = settings.use_originals && originalsSupported;
 
   // The project's Selected Back, resolved out of the app-global library —
   // same resolution + sync-to-connected-server dance as PdfPage (the
@@ -72,6 +78,7 @@ export default function ExportPage() {
       project_name: projectName ?? "",
       preferred_dpi: settings.preferred_dpi,
       preferred_model: settings.preferred_model,
+      use_originals: useOriginals,
       format,
       back_image_hash: selectedBack?.content_hash ?? null,
     };
@@ -84,6 +91,7 @@ export default function ExportPage() {
       entries,
       settings.preferred_dpi,
       settings.preferred_model,
+      useOriginals,
     ],
     queryFn: () => generationApi.exportZipPreview(requestBody("default")),
     enabled:
@@ -153,7 +161,7 @@ export default function ExportPage() {
             <span>Preferred model</span>
             <select
               value={settings.preferred_model ?? ""}
-              disabled={modelsQuery.isLoading || modelsQuery.isError}
+              disabled={modelsQuery.isLoading || modelsQuery.isError || useOriginals}
               onChange={(e) =>
                 setSettings((s) => ({ ...s, preferred_model: e.target.value || null }))
               }
@@ -171,6 +179,7 @@ export default function ExportPage() {
             <span>Preferred DPI</span>
             <select
               value={settings.preferred_dpi ?? ""}
+              disabled={useOriginals}
               onChange={(e) =>
                 setSettings((s) => ({
                   ...s,
@@ -185,6 +194,27 @@ export default function ExportPage() {
                 </option>
               ))}
             </select>
+          </label>
+
+          {/* Same override, same persisted setting as the PDF tab's
+              checkbox — see PdfPage's Source images section. */}
+          <label
+            className="check"
+            title={
+              !originalsSupported
+                ? "The connected generation server is too old for this — update it."
+                : "Export the downloaded ~300 DPI Scryfall originals; the preferred model/DPI don't apply."
+            }
+          >
+            <input
+              type="checkbox"
+              disabled={!originalsSupported}
+              checked={useOriginals}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, use_originals: e.target.checked }))
+              }
+            />
+            Use 300 DPI originals
           </label>
         </div>
 
@@ -262,11 +292,24 @@ export default function ExportPage() {
             {previewQuery.data.missing.length > 0 && (
               <>
                 <p className="error-text" style={{ marginTop: 10 }}>
-                  <strong>
-                    {previewQuery.data.missing.length} card(s) from your decklist have no
-                    generated image yet
-                  </strong>{" "}
-                  and are left out of these ZIPs — generate them from the Decklist tab.
+                  {useOriginals ? (
+                    <>
+                      <strong>
+                        {previewQuery.data.missing.length} card(s) from your decklist have
+                        no downloaded original
+                      </strong>{" "}
+                      and are left out of these ZIPs — use Download images on the Decklist
+                      tab.
+                    </>
+                  ) : (
+                    <>
+                      <strong>
+                        {previewQuery.data.missing.length} card(s) from your decklist have
+                        no generated image yet
+                      </strong>{" "}
+                      and are left out of these ZIPs — generate them from the Decklist tab.
+                    </>
+                  )}
                 </p>
                 <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                   {previewQuery.data.missing.map((note, i) => (

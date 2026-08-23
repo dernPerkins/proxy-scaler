@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import StatusBadge from "../components/StatusBadge";
+import { ORIGINAL_DPI, ORIGINAL_MODEL } from "../constants";
 import { useProject } from "../context/ProjectContext";
 import type { Task, TaskStatus } from "../api/types";
 
@@ -44,14 +45,23 @@ export default function TasksPage() {
   // Retries every failed task whose model/dpi match what the current
   // project is actually configured to generate, not the PDF tab's
   // separate preferred_dpi — dpi_targets is what enqueue_decklist_entries
-  // used to produce each task's own dpi in the first place.
+  // used to produce each task's own dpi in the first place. Failed
+  // download tasks live under the (300, "original") sentinel, which can
+  // never appear in the project's model/dpi_targets — a second scoped
+  // call covers them.
   const retryAllMutation = useMutation({
-    mutationFn: () =>
-      generationApi.retryAllTasks(
-        project.projectTag ?? "",
+    mutationFn: async () => {
+      const tag = project.projectTag ?? "";
+      const upscales = await generationApi.retryAllTasks(
+        tag,
         project.settings.model,
         project.settings.dpi_targets,
-      ),
+      );
+      const downloads = await generationApi.retryAllTasks(tag, ORIGINAL_MODEL, [
+        ORIGINAL_DPI,
+      ]);
+      return { retried: upscales.retried + downloads.retried };
+    },
     onSuccess: invalidateTasks,
   });
 
@@ -137,7 +147,9 @@ export default function TasksPage() {
                     )}
                   </td>
                   <td className="mono">{task.dpi}</td>
-                  <td className="mono">{task.model}</td>
+                  {/* A download task has no upscale model — its sentinel
+                      value is an implementation detail, not a model name. */}
+                  <td className="mono">{task.model === ORIGINAL_MODEL ? "-" : task.model}</td>
                   <td>
                     <StatusBadge status={task.status} />
                   </td>

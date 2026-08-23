@@ -117,6 +117,10 @@ def clear_generated(body: ClearGeneratedIn) -> ClearGeneratedOut:
     # ever statting disk, so it must be told, not left to notice. The
     # membership cascade clears the affected galleries along the way.
     removed = db.prune_registry_under_dir(Path(body.output_dir), db_path=get_db_path())
+    # Download-only rows point their out_path at the cached original under
+    # cache_dir/originals/ (see dpi.ORIGINAL_MODEL) — the cache was just
+    # emptied too, so those rows are equally stale.
+    removed += db.prune_registry_under_dir(Path(body.cache_dir), db_path=get_db_path())
     if removed:
         notes.append(f"unregistered {removed} generated image record(s)")
     if body.project_tag:

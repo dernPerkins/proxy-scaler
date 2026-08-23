@@ -3,6 +3,18 @@
 // variant to *print*). Kept in one place so the two lists can't drift.
 export const DPI_OPTIONS = [600, 800, 1200];
 
+// Export DPI is a print-density choice, not a variant selector, so it
+// carries 300 too — printing straight from the ~300 DPI Scryfall
+// originals is a supported path (see ORIGINAL_MODEL below), and any
+// source gets resized to this density at render time regardless.
+export const EXPORT_DPI_OPTIONS = [300, 600, 800, 1200];
+
+// Sentinel variant for a download-only Scryfall original (no upscale) —
+// mirrors ORIGINAL_MODEL/ORIGINAL_DPI in proxy_scaler/dpi.py. Never a
+// pickable upscale model (the /api/models list can't contain it).
+export const ORIGINAL_MODEL = "original";
+export const ORIGINAL_DPI = 300;
+
 // Acronyms for compact spots (deck-list status badges, thumbnail labels)
 // where the full model names wrap; raw enum values stay in API calls,
 // filenames, and the Tasks table. Unknown models fall back to their raw
@@ -11,6 +23,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   realesrgan_anime_fast: "REAF",
   illustrationjanai: "IJ",
   ultrasharp_v2: "USV2",
+  [ORIGINAL_MODEL]: "Original",
 };
 
 export function modelDisplayName(model: string): string {

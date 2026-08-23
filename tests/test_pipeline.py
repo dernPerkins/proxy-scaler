@@ -8,6 +8,7 @@ from pathlib import Path
 from PIL import Image
 
 from proxy_scaler.db import TaskRow
+from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
 from proxy_scaler.pipeline import (
     FaceResult,
     _THUMB_TARGET_BYTES,
@@ -16,12 +17,18 @@ from proxy_scaler.pipeline import (
     expected_face_result,
     face_group_key,
     group_by_face,
+    process_download_task,
     process_entries,
     process_task,
     regenerate_face_multi,
 )
 from proxy_scaler.scryfall import ScryfallClient
-from proxy_scaler.upscale import DEFAULT_TILE_SIZE, UpscaleModel, original_thumb_path
+from proxy_scaler.upscale import (
+    DEFAULT_TILE_SIZE,
+    UpscaleModel,
+    original_cache_path,
+    original_thumb_path,
+)
 
 
 def _face(
@@ -325,6 +332,48 @@ def test_expected_face_result_matches_process_task_output(tmp_path, monkeypatch)
     assert expected.device == actual.device
     assert expected.dpi == actual.dpi
     assert expected.model == actual.model
+
+
+def test_process_task_dispatches_download_task_on_sentinel(tmp_path, monkeypatch) -> None:
+    """A download task (model == ORIGINAL_MODEL) must branch before
+    parse_model — the sentinel isn't an UpscaleModel and would raise."""
+    task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+
+    result = process_task(task)
+
+    assert result.model == ORIGINAL_MODEL
+    assert result.dpi == ORIGINAL_DPI
+    # The download's artifact IS the cached original — one file, both roles.
+    assert result.out_path == result.original_path
+    assert result.out_path == original_cache_path(Path(task.cache_dir), "sol-id", None)
+    assert result.out_path.is_file()
+    assert original_thumb_path(result.out_path).is_file()
+
+
+def test_process_download_task_overwrites_cached_original(tmp_path, monkeypatch) -> None:
+    """Downloads always overwrite (skip-existing lives at enqueue time) —
+    that's what makes Re-Fetch just "enqueue a download task". The derived
+    thumbnail must be regenerated too, not left describing the old art."""
+    task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    original = original_cache_path(Path(task.cache_dir), "sol-id", None)
+    original.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), color=(200, 0, 0)).save(original, format="PNG")
+    stale_bytes = original.read_bytes()
+    stale_thumb = original_thumb_path(original)
+    stale_thumb.write_bytes(b"stale thumb")
+
+    fresh = _fake_png_bytes()
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None: fresh)
+
+    result = process_download_task(task)
+
+    assert result.original_path.read_bytes() == fresh
+    assert result.original_path.read_bytes() != stale_bytes
+    assert stale_thumb.is_file()
+    assert stale_thumb.read_bytes() != b"stale thumb"
 
 
 def _write_fake_original(tmp_path: Path, *, size: tuple[int, int] = (600, 840)) -> Path:

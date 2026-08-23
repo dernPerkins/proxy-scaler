@@ -16,7 +16,7 @@ from fpdf import FPDF
 from PIL import Image
 
 from .decklist import DeckEntry
-from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN, target_pixels
+from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN, ORIGINAL_MODEL, target_pixels
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
 
 # fpdf2 embeds raw PIL images losslessly (FlateDecode/zlib), which compresses
@@ -567,6 +567,7 @@ def match_quantities(
     *,
     preferred_dpi: int | None = None,
     preferred_model: str | None = None,
+    use_originals: bool = False,
 ) -> tuple[list[PrintUnit], list[str], list[str]]:
     """Match gallery face-groups to decklist quantities — decklist-driven:
     the current decklist decides what's eligible to print, not the
@@ -604,8 +605,19 @@ def match_quantities(
     given, wins among the eligible images; otherwise the most recently
     produced one does. See _pick_dpi_variant.
 
+    `use_originals` flips which world of variants is visible at all: True
+    makes only the download-only rows (model == ORIGINAL_MODEL, the cached
+    ~300 DPI Scryfall originals) eligible — callers pass preferred_dpi/
+    preferred_model as None then, since there's exactly one original per
+    face. False (the default) hides those rows, so a face with only a
+    download reads as `missing` for an upscale print run, and originals
+    can never silently mix into one via the "highest available" pick.
+
     Returns (units, missing, missing_at_dpi).
     """
+    gallery = [
+        item for item in gallery if (item.model == ORIGINAL_MODEL) == use_originals
+    ]
     units: list[PrintUnit] = []
     missing_at_dpi: list[str] = []
     matched_face_counts = [0] * len(entries)

@@ -1315,7 +1315,9 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
     if not project_tag:
         return 0
     # Local import: pipeline imports this module at runtime.
+    from .dpi import ORIGINAL_MODEL
     from .pipeline import output_filename
+    from .upscale import original_cache_path
 
     pruned = 0
     with connect(db_path) as conn:
@@ -1340,11 +1342,22 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
 
         stale_tasks = []
         for t in conn.execute(
-            "SELECT id, scryfall_id, face_name, set_code, collector_number, "
-            "face_label, model, dpi, output_dir, lang FROM generation_tasks "
+            "SELECT id, scryfall_id, face_index, face_name, set_code, "
+            "collector_number, face_label, model, dpi, output_dir, cache_dir, "
+            "lang FROM generation_tasks "
             "WHERE project_tag = ? AND status = 'done'",
             (project_tag,),
         ):
+            # Download tasks have no output file — their artifact is the
+            # cached original itself, at a deterministic path (and their
+            # sentinel model would crash output_filename's parse_model).
+            if t["model"] == ORIGINAL_MODEL:
+                original = original_cache_path(
+                    Path(t["cache_dir"]), t["scryfall_id"], t["face_index"]
+                )
+                if not original.is_file():
+                    stale_tasks.append(int(t["id"]))
+                continue
             # A done task's file may carry either filename format: tasks
             # completed since the registry embed their scryfall_id, older
             # ones don't — and legacy files are never renamed. Stale only

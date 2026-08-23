@@ -502,6 +502,69 @@ def test_match_quantities_entry_with_no_image_is_missing() -> None:
     assert "Sol Ring" in missing[0]
 
 
+def test_match_quantities_use_originals_picks_only_download_variants() -> None:
+    """With use_originals, only the (300, "original") download rows are
+    eligible — an upscaled variant for the same face is invisible, never a
+    substitute."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    gallery = [
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 1200),
+        _face(
+            "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263",
+            ORIGINAL_DPI, model=ORIGINAL_MODEL,
+        ),
+    ]
+    entries = [
+        DeckEntry(quantity=2, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, missing, missing_at_dpi = match_quantities(
+        entries, gallery, use_originals=True
+    )
+    assert missing == []
+    assert missing_at_dpi == []
+    [unit] = units
+    assert unit.quantity == 2
+    assert unit.best.model == ORIGINAL_MODEL
+    assert unit.best.dpi == ORIGINAL_DPI
+
+
+def test_match_quantities_use_originals_reports_face_without_download() -> None:
+    """A face with only upscaled variants has no original to print — it
+    reads as plain `missing`, pointing at Download images, not silently
+    substituted with an upscale."""
+    gallery = [_face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 1200)]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, missing, _missing_at_dpi = match_quantities(
+        entries, gallery, use_originals=True
+    )
+    assert units == []
+    assert len(missing) == 1
+    assert "Sol Ring" in missing[0]
+
+
+def test_match_quantities_download_only_face_is_missing_for_upscale_run() -> None:
+    """The reverse direction: with use_originals off (the default), a face
+    that only has a download must read as missing — originals never mix
+    into an upscale print run via the "highest available" pick."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    gallery = [
+        _face(
+            "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263",
+            ORIGINAL_DPI, model=ORIGINAL_MODEL,
+        )
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert units == []
+    assert len(missing) == 1
+
+
 def test_match_quantities_dfc_partial_generation_reported_when_total_faces_known() -> None:
     """Only the front face was ever generated — its own total_faces=2 (set
     at generation time from Scryfall's card data, see db migration 003)

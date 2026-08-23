@@ -16,6 +16,15 @@ CARD_HEIGHT_MM = 88.0
 DPI_OPTIONS: tuple[int, ...] = (600, 800, 1200)
 DEFAULT_DPI = 1200
 
+# Sentinel variant for a download-only Scryfall original (no upscale).
+# Deliberately NOT an UpscaleModel and NOT in DPI_OPTIONS: parse_model()
+# and resolve_dpi_targets() must never see these — download tasks bypass
+# both (pipeline.process_task branches on ORIGINAL_MODEL before parsing,
+# and /api/generate/downloads doesn't take dpi_targets). Scryfall's png
+# is 745×1040, which is ~300 DPI at card size.
+ORIGINAL_DPI = 300
+ORIGINAL_MODEL = "original"
+
 
 def target_pixels(dpi: int) -> tuple[int, int]:
     """Exact pixel size for a given print DPI at card dimensions."""

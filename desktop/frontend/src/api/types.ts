@@ -94,6 +94,29 @@ export interface GenerateRequest {
   backs_dir?: string;
 }
 
+/** Mirrors DownloadOriginalsIn: download-only batch — fetch and cache the
+ *  ~300 DPI Scryfall originals, no upscaling. No model/dpi_targets/
+ *  skip_existing: downloads always target the (300, "original") sentinel
+ *  variant and always skip already-cached originals. output_dir/
+ *  weights_dir ride along only because the task table requires them. */
+export interface DownloadOriginalsRequest {
+  project_tag: string;
+  entries: DeckEntryIn[];
+  output_dir: string;
+  cache_dir: string;
+  weights_dir: string;
+}
+
+/** Mirrors RefetchOriginalIn: re-download one face's Scryfall original,
+ *  overwriting the cached copy. Same shape as RegenerateGalleryItemRequest
+ *  minus tile_size (nothing is upscaled). */
+export interface RefetchOriginalRequest {
+  project_tag: string;
+  output_dir: string;
+  cache_dir: string;
+  weights_dir: string;
+}
+
 export interface RegenerateGalleryItemRequest {
   // Redo one exact existing variant unchanged — its scryfall_id/png_url/
   // model/dpi come from the stored gallery item server-side, not from
@@ -263,6 +286,11 @@ export interface PdfLayoutRequest {
   export_dpi?: number;
   preferred_dpi?: number | null;
   preferred_model?: string | null;
+  /** Source the run from the cached ~300 DPI Scryfall originals instead
+   *  of upscaled outputs; the preferred pair is ignored when true. Only
+   *  send true after serverSupportsOriginals() — older servers silently
+   *  drop the field and render with the preferred settings. */
+  use_originals?: boolean;
 
   // Guides — four independent HIDE flags, replacing show_cut_lines. NOT
   // optional: the server requires them and 422s without them, which is
@@ -418,6 +446,9 @@ export interface ExportZipRequest {
   project_name: string;
   preferred_dpi: number | null;
   preferred_model: string | null;
+  /** Same semantics (and same server-version caveat) as
+   *  PdfLayoutRequest.use_originals. */
+  use_originals?: boolean;
   format: ExportZipFormat;
   back_image_hash: string | null;
 }

@@ -8,6 +8,7 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_card_db_path, get_db_path, get_lock_path
 from proxy_scaler.api.schemas import (
     DeckEntryIn,
+    DownloadOriginalsIn,
     GenerateIn,
     GenerateOut,
     TaskOut,
@@ -75,6 +76,26 @@ def generate(body: GenerateIn) -> GenerateOut:
         project_tag=body.project_tag,
         on_note=notes.append,
         db_path=db_path,
+        card_db_path=get_card_db_path(),
+    )
+    return GenerateOut(queued=queued, failed=failed, task_ids=task_ids, notes=notes)
+
+
+@router.post("/generate/downloads", response_model=GenerateOut)
+def generate_downloads(body: DownloadOriginalsIn) -> GenerateOut:
+    if not body.entries:
+        raise HTTPException(status_code=400, detail="No cards to download.")
+    entries = [_to_deck_entry(e) for e in body.entries]
+
+    notes: list[str] = []
+    queued, failed, task_ids = generation_service.enqueue_download_entries(
+        entries,
+        output_dir=Path(body.output_dir),
+        cache_dir=Path(body.cache_dir),
+        weights_dir=Path(body.weights_dir),
+        project_tag=body.project_tag,
+        on_note=notes.append,
+        db_path=get_db_path(),
         card_db_path=get_card_db_path(),
     )
     return GenerateOut(queued=queued, failed=failed, task_ids=task_ids, notes=notes)

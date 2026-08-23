@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 from .decklist import DeckEntry
 from .dpi import (
     DEFAULT_DPI,
+    ORIGINAL_DPI,
+    ORIGINAL_MODEL,
     native_scale_for_dpi,
     resolve_dpi_targets,
     target_pixels,
@@ -244,10 +246,12 @@ def _save_original(
     cache_dir: Path,
     scryfall_id: str,
     face_index: int | None,
+    *,
+    overwrite: bool = False,
 ) -> Path:
     path = original_cache_path(cache_dir, scryfall_id, face_index)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
+    if overwrite or not path.exists():
         path.write_bytes(png_bytes)
     return path
 
@@ -528,6 +532,51 @@ def regenerate_face_multi(
     )
 
 
+def process_download_task(
+    task: TaskRow, *, on_progress: ProgressCallback | None = None
+) -> FaceResult:
+    """Process one download task (model == ORIGINAL_MODEL): fetch the
+    Scryfall original and cache it, no upscaling. Always overwrites the
+    cached original — skip-existing economy lives at enqueue time (see
+    services/generation.py::enqueue_download_entries), which is what makes
+    Re-Fetch just "enqueue a download task" with no delete-then-download
+    race against _save_original's default write-if-missing behavior. The
+    resulting FaceResult points out_path at the original itself, so the
+    gallery row's out_path and original_path coincide."""
+    if on_progress:
+        on_progress(f"Downloading original for {task.face_name}…")
+    png_bytes = download_png(task.png_url)
+    original_path = _save_original(
+        png_bytes,
+        Path(task.cache_dir),
+        task.scryfall_id,
+        task.face_index,
+        overwrite=True,
+    )
+    # The thumbnail is derived from the original, so a re-fetch must
+    # invalidate it — delete before the ensure call regenerates it.
+    thumb = original_thumb_path(original_path)
+    thumb.unlink(missing_ok=True)
+    ensure_original_thumbnail(original_path)
+    return FaceResult(
+        out_path=original_path,
+        original_path=original_path,
+        scryfall_id=task.scryfall_id,
+        face_index=task.face_index,
+        face_name=task.face_name,
+        card_name=task.card_name,
+        set_code=task.set_code,
+        collector_number=task.collector_number,
+        png_url=task.png_url,
+        dpi=ORIGINAL_DPI,
+        model=ORIGINAL_MODEL,
+        face_label=task.face_label,
+        native_scale=1,
+        total_faces=task.total_faces,
+        lang=task.lang,
+    )
+
+
 def process_task(
     task: TaskRow, *, on_progress: ProgressCallback | None = None
 ) -> FaceResult:
@@ -537,6 +586,9 @@ def process_task(
     already-resolved fields (set at enqueue time, no Scryfall call needed
     here) instead of an existing FaceResult, and always exactly one target
     DPI (one task = one face+dpi+model unit of work)."""
+    if task.model == ORIGINAL_MODEL:
+        # Must branch before parse_model — the sentinel isn't an UpscaleModel.
+        return process_download_task(task, on_progress=on_progress)
     model_id = parse_model(task.model)
     face = CardFaceImage(
         scryfall_id=task.scryfall_id,
@@ -565,6 +617,8 @@ def process_task(
 def expected_face_result(task: TaskRow) -> FaceResult:
     """Deterministically reconstruct the FaceResult a *done* task produced,
     purely from the task row's own fields — no DB gallery lookup needed.
+    Must not be fed download tasks (model == ORIGINAL_MODEL) — parse_model
+    below raises on the sentinel.
     Lets the UI sync a task it enqueued into st.session_state.gallery the
     moment it's done, even when no project has been saved yet (so there's
     no project_id for the worker to attach a DB gallery row to). Mirrors

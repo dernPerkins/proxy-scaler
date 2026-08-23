@@ -11,7 +11,7 @@ import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
-import { DEFAULT_GEN_PATHS, DPI_OPTIONS, modelDisplayName } from "../constants";
+import { DEFAULT_GEN_PATHS, DPI_OPTIONS, ORIGINAL_MODEL, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
@@ -354,6 +354,26 @@ export default function DecklistPage() {
     onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
   });
 
+  const downloadAllMutation = useMutation({
+    mutationFn: () =>
+      generationApi.downloadOriginals({
+        project_tag: projectTag as string,
+        entries: cards.map(cardToEntry),
+        output_dir: DEFAULT_GEN_PATHS.output_dir,
+        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
+        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+      }),
+    onSuccess: (result) => {
+      setStatus(
+        result.queued
+          ? `Queued ${result.queued} download(s) — see the Tasks tab to monitor progress.`
+          : `Nothing to do — every original is already downloaded.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
+      );
+      invalidateStatus();
+    },
+    onError: (err: Error) => setStatus(`Download failed: ${err.message}`),
+  });
+
   const generateCardMutation = useMutation({
     mutationFn: (card: CardRow) =>
       generationApi.generate({
@@ -384,6 +404,18 @@ export default function DecklistPage() {
       }),
     onSuccess: invalidateStatus,
     onError: (err: Error) => setStatus(`Regenerate failed: ${err.message}`),
+  });
+
+  const refetchMutation = useMutation({
+    mutationFn: (galleryItemId: number) =>
+      generationApi.refetchOriginal(galleryItemId, {
+        project_tag: projectTag as string,
+        output_dir: DEFAULT_GEN_PATHS.output_dir,
+        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
+        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+      }),
+    onSuccess: invalidateStatus,
+    onError: (err: Error) => setStatus(`Re-fetch failed: ${err.message}`),
   });
 
   // ConfirmDialog rather than a checkbox-arm: destructive actions ask
@@ -722,6 +754,17 @@ export default function DecklistPage() {
               <option value="(none)">Sort: (none)</option>
             </select>
             <button
+              onClick={() => downloadAllMutation.mutate()}
+              disabled={!cards.length || downloadAllMutation.isPending || serverUnavailable}
+              title={
+                serverUnavailable
+                  ? "Generation server is unreachable"
+                  : "Download the ~300 DPI Scryfall originals without upscaling"
+              }
+            >
+              Download images
+            </button>
+            <button
               className="btn-primary"
               onClick={() => generateAllMutation.mutate()}
               disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
@@ -784,6 +827,7 @@ export default function DecklistPage() {
               onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
               onGenerate={() => generateCardMutation.mutate(card)}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+              onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
               preferredLang={settings.preferred_lang}
               onPickPrinting={(printing) => {
                 // Persisting the pick changes the card's identity string,
@@ -834,6 +878,9 @@ function CardRowView(props: {
   onSetQuantity: (quantity: number) => void;
   onGenerate: () => void;
   onRegenerate: (galleryItemId: number) => void;
+  /** Re-download this face's Scryfall original, overwriting the cached
+   *  copy — takes any of the face's gallery item ids. */
+  onRefetch: (galleryItemId: number) => void;
   /** The project's import-language preference — PrintingPicker's default
    *  language filter for cards that don't carry their own. */
   preferredLang: string;
@@ -859,6 +906,7 @@ function CardRowView(props: {
     onSetQuantity,
     onGenerate,
     onRegenerate,
+    onRefetch,
     preferredLang,
     onPickPrinting,
     disabled,
@@ -967,8 +1015,14 @@ function CardRowView(props: {
           // upscale.py), not by model/dpi — so any one "done" variant's
           // gallery_item_id resolves to the same underlying file via
           // GET /api/gallery/{id}/original. Shown once per face, not
-          // once per variant.
-          const originalSource = doneVariants[0];
+          // once per variant. A download-only variant (ORIGINAL_MODEL)
+          // is preferred as the source when present, and excluded from
+          // the per-variant thumbs below — its "full" image IS the
+          // original, so a "300 DPI · Original" tile with Compare/Regen
+          // would be nonsense.
+          const originalVariant = doneVariants.find((v) => v.model === ORIGINAL_MODEL);
+          const upscaleVariants = doneVariants.filter((v) => v.model !== ORIGINAL_MODEL);
+          const originalSource = originalVariant ?? upscaleVariants[0];
           return (
             <div key={i} className="thumbs">
               {originalSource && (
@@ -992,10 +1046,18 @@ function CardRowView(props: {
                     >
                       {downloadStatus ? "Downloading…" : "Download"}
                     </button>
+                    <button
+                      className="btn-sm"
+                      onClick={() => onRefetch(originalSource.galleryItemId)}
+                      disabled={disabled}
+                      title="Re-download the original from Scryfall (overwrites the cached copy)"
+                    >
+                      Re-Fetch
+                    </button>
                   </div>
                 </div>
               )}
-              {doneVariants.map((v) => (
+              {upscaleVariants.map((v) => (
                 <div key={`${v.dpi}-${v.model}`} className="thumb">
                   <div className="thumb-label" title={`${v.dpi} DPI · ${v.model}`}>
                     {v.dpi} DPI · {modelDisplayName(v.model)}

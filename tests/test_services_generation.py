@@ -522,3 +522,155 @@ def test_enqueue_decklist_entries_resolves_from_local_corpus_without_network(
     [task] = db.list_tasks(project_tag="tag-local", db_path=db_path)
     assert task.scryfall_id == "sol-id"
     assert task.png_url == "https://example.com/sol.png"
+
+
+# --- enqueue_download_entries -----------------------------------------------
+
+
+def test_enqueue_download_entries_queues_one_sentinel_task_per_face(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+
+    queued, failed, task_ids = generation.enqueue_download_entries(
+        [_entry()],
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-dl",
+        db_path=db_path,
+    )
+    assert (queued, failed) == (1, 0)
+    [task] = db.list_tasks(db_path=db_path)
+    assert task.model == ORIGINAL_MODEL
+    assert task.dpi == ORIGINAL_DPI
+    assert task.status == "pending"
+
+
+def test_enqueue_download_entries_skips_active_download(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """A pending/running download for the same face must not be duplicated
+    by a second batch — same in-flight rule as upscale enqueueing."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    generation.enqueue_face(
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi_targets=[ORIGINAL_DPI],
+        model=ORIGINAL_MODEL,
+        tile_size=0,
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-dl",
+        db_path=db_path,
+    )
+
+    notes: list[str] = []
+    queued, failed, task_ids = generation.enqueue_download_entries(
+        [_entry()],
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-dl",
+        db_path=db_path,
+        on_note=notes.append,
+    )
+    assert queued == 0
+    assert task_ids == []
+    assert len(db.list_tasks(db_path=db_path)) == 1
+    assert any("already queued" in n for n in notes)
+
+
+def test_enqueue_download_entries_registry_hit_adds_membership_only(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.pipeline import FaceResult
+    from proxy_scaler.upscale import original_cache_path
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    cache_dir = tmp_path / "cache"
+    original = original_cache_path(cache_dir, "sol-id", None)
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(b"fake png")
+    db.upsert_gallery_item(
+        "tag-other",
+        FaceResult(
+            out_path=original,
+            original_path=original,
+            scryfall_id="sol-id",
+            face_index=None,
+            face_name="Sol Ring",
+            card_name="Sol Ring",
+            set_code="c21",
+            collector_number="263",
+            png_url="https://example.com/sol.png",
+            dpi=ORIGINAL_DPI,
+            model=ORIGINAL_MODEL,
+        ),
+        db_path=db_path,
+    )
+
+    queued, failed, task_ids = generation.enqueue_download_entries(
+        [_entry()],
+        output_dir=tmp_path / "out",
+        cache_dir=cache_dir,
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-dl",
+        db_path=db_path,
+    )
+    assert queued == 0
+    assert db.list_tasks(db_path=db_path) == []
+    # The requesting project joined the existing registry row.
+    [item] = db.list_gallery_items("tag-dl", db_path=db_path)
+    assert item["model"] == ORIGINAL_MODEL
+
+
+def test_enqueue_download_entries_backfills_registry_for_on_disk_original(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """An original already cached by an earlier upscale run (no download-
+    variant row anywhere) is registered rather than re-downloaded — same
+    rationale as enqueue_decklist_entries' skip-existing backfill."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.upscale import original_cache_path
+
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    cache_dir = tmp_path / "cache"
+    original = original_cache_path(cache_dir, "sol-id", None)
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(b"fake png")
+
+    queued, failed, task_ids = generation.enqueue_download_entries(
+        [_entry()],
+        output_dir=tmp_path / "out",
+        cache_dir=cache_dir,
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-dl",
+        db_path=db_path,
+    )
+    assert queued == 0
+    assert db.list_tasks(db_path=db_path) == []
+    [item] = db.list_gallery_items("tag-dl", db_path=db_path)
+    assert item["model"] == ORIGINAL_MODEL
+    assert item["dpi"] == ORIGINAL_DPI
+    assert item["out_path"] == str(original)

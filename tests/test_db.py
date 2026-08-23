@@ -1192,6 +1192,51 @@ def test_prune_stale_gallery_items_keeps_live_records(db_path: Path, tmp_path: P
     assert db_module.prune_stale_gallery_items("tag-a", db_path=db_path) == 0
 
 
+def test_prune_stale_gallery_items_handles_done_download_tasks(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Done download tasks (model == ORIGINAL_MODEL) must not crash the
+    prune's filename reconstruction (parse_model raises on the sentinel) —
+    their staleness is judged against the cached original's deterministic
+    path instead: kept while the file exists, pruned once it's gone."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.upscale import original_cache_path
+
+    cache_dir = tmp_path / "cache"
+    original = original_cache_path(cache_dir, "sol-id", None)
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(b"png")
+    db_module.upsert_gallery_item(
+        "tag-a",
+        _result(
+            out_path=original,
+            original_path=original,
+            dpi=ORIGINAL_DPI,
+            model=ORIGINAL_MODEL,
+        ),
+        db_path=db_path,
+    )
+    tid = _enqueue_sol_ring(
+        db_path,
+        project_tag="tag-a",
+        dpi=ORIGINAL_DPI,
+        model=ORIGINAL_MODEL,
+        cache_dir=str(cache_dir),
+    )
+    claim_next_task(db_path=db_path)
+    mark_task_done(tid, db_path=db_path)
+
+    # Original present: nothing is stale — no ValueError either.
+    assert db_module.prune_stale_gallery_items("tag-a", db_path=db_path) == 0
+
+    original.unlink()
+    # Now both the gallery row and the done task must go, or task history
+    # would re-assert the green badge for a deleted file.
+    assert db_module.prune_stale_gallery_items("tag-a", db_path=db_path) == 2
+    assert list_gallery_items("tag-a", db_path=db_path) == []
+    assert list_tasks(db_path=db_path) == []
+
+
 def test_migration_005_adds_lang_to_existing_rows_as_en(tmp_path: Path) -> None:
     """A version-4 database gains lang on both tables at DEFAULT 'en' —
     unlike 002/003's nullable-no-backfill, 'en' is the honest value for

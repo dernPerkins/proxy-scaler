@@ -124,6 +124,7 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("show_cut_lines", "INTEGER NOT NULL DEFAULT 1"),
     ("preferred_dpi", "INTEGER"),
     ("preferred_model", "TEXT"),
+    ("use_originals", "INTEGER NOT NULL DEFAULT 0"),
     ("preferred_lang", "TEXT NOT NULL DEFAULT 'en'"),
     ("lang_any", "INTEGER NOT NULL DEFAULT 0"),
     // Guides, split from the single `show_cut_lines` boolean into one flag
@@ -440,6 +441,12 @@ pub struct ProjectSettings {
     pub back_image_id: Option<i64>,
     pub preferred_dpi: Option<i64>,
     pub preferred_model: Option<String>,
+    // Source PDF/export runs from the cached ~300 DPI Scryfall originals
+    // instead of upscaled outputs (the preferred pair above is inert while
+    // set). Defaulted on deserialize so an older frontend build that
+    // doesn't send it doesn't wipe the setting.
+    #[serde(default)]
+    pub use_originals: bool,
     // Import-language preference (Scryfall code): stamped onto cards at
     // decklist import and used to steer server-side resolution. Defaulted
     // on deserialize so an older frontend build that doesn't send it
@@ -505,6 +512,7 @@ impl Default for ProjectSettings {
             back_image_id: None,
             preferred_dpi: None,
             preferred_model: None,
+            use_originals: false,
             preferred_lang: default_preferred_lang(),
             lang_any: false,
         }
@@ -700,6 +708,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         back_image_id: Option<i64>,
         preferred_dpi: Option<i64>,
         preferred_model: Option<String>,
+        use_originals: bool,
         preferred_lang: String,
         lang_any: bool,
         created_at: String,
@@ -716,7 +725,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     back_printing, back_faces_as_reverse, reverse_fill,
                     page_order, flip_edge,
                     back_offset_x_mm, back_offset_y_mm, back_image_id,
-                    preferred_dpi, preferred_model, preferred_lang, lang_any,
+                    preferred_dpi, preferred_model, use_originals, preferred_lang, lang_any,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -755,6 +764,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     back_image_id: row.get("back_image_id")?,
                     preferred_dpi: row.get("preferred_dpi")?,
                     preferred_model: row.get("preferred_model")?,
+                    use_originals: row.get("use_originals")?,
                     preferred_lang: row.get("preferred_lang")?,
                     lang_any: row.get("lang_any")?,
                     created_at: row.get("created_at")?,
@@ -803,6 +813,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             back_image_id: loaded.back_image_id,
             preferred_dpi: loaded.preferred_dpi,
             preferred_model: loaded.preferred_model,
+            use_originals: loaded.use_originals,
             preferred_lang: loaded.preferred_lang,
             lang_any: loaded.lang_any,
         },
@@ -1037,14 +1048,14 @@ fn update_project_row(
          tile_size = ?5, page_width_mm = ?6, page_height_mm = ?7, cols = ?8, rows = ?9,
          bleed_mm = ?10, spacing_x_mm = ?11, spacing_y_mm = ?12, offset_x_mm = ?13,
          offset_y_mm = ?14, guide_width_pt = ?15, guide_length_mm = ?16, export_dpi = ?17,
-         preferred_dpi = ?18, preferred_model = ?19,
-         preferred_lang = ?20, lang_any = ?21,
-         hide_card_guides_front = ?22, hide_page_guides_front = ?23,
-         hide_card_guides_back = ?24, hide_page_guides_back = ?25,
-         back_printing = ?26, back_faces_as_reverse = ?27, reverse_fill = ?28,
-         page_order = ?29, flip_edge = ?30, back_offset_x_mm = ?31,
-         back_offset_y_mm = ?32, back_image_id = ?33, updated_at = ?34
-         WHERE id = ?35",
+         preferred_dpi = ?18, preferred_model = ?19, use_originals = ?20,
+         preferred_lang = ?21, lang_any = ?22,
+         hide_card_guides_front = ?23, hide_page_guides_front = ?24,
+         hide_card_guides_back = ?25, hide_page_guides_back = ?26,
+         back_printing = ?27, back_faces_as_reverse = ?28, reverse_fill = ?29,
+         page_order = ?30, flip_edge = ?31, back_offset_x_mm = ?32,
+         back_offset_y_mm = ?33, back_image_id = ?34, updated_at = ?35
+         WHERE id = ?36",
         params![
             trimmed,
             settings.model,
@@ -1065,6 +1076,7 @@ fn update_project_row(
             settings.export_dpi,
             settings.preferred_dpi,
             settings.preferred_model,
+            settings.use_originals,
             settings.preferred_lang,
             settings.lang_any,
             settings.hide_card_guides_front,

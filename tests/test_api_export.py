@@ -309,3 +309,58 @@ def test_preview_reports_missing_at_dpi(client: TestClient, tmp_path: Path) -> N
 
     zip_resp = client.post("/api/export/zip", json=_body(preferred_dpi=1200))
     assert zip_resp.status_code == 400
+
+
+def test_use_originals_exports_download_variant_bytes(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """With use_originals the ZIP ships the (300, "original") download
+    variant's bytes verbatim, even when a higher-DPI upscale exists for
+    the same face — and without the flag, the upscale ships instead."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    db_path = tmp_path / "test.db"
+    upscale_path = _seed_face(tmp_path, db_path, "tag-a", dpi=1200)
+
+    original_path = tmp_path / "sol-id-original.png"
+    Image.new("RGBA", (200, 280), (250, 240, 10, 255)).save(original_path, format="PNG")
+    db.upsert_gallery_item(
+        "tag-a",
+        FaceResult(
+            out_path=original_path,
+            original_path=original_path,
+            scryfall_id="sol-id",
+            face_index=None,
+            face_name="Sol Ring",
+            card_name="Sol Ring",
+            set_code="c21",
+            collector_number="263",
+            png_url="https://example.com/sol-id.png",
+            dpi=ORIGINAL_DPI,
+            model=ORIGINAL_MODEL,
+        ),
+        db_path=db_path,
+    )
+
+    resp = client.post("/api/export/zip", json=_body(use_originals=True))
+    archive = _open_zip(resp)
+    assert archive.read("Deck/FRONT/001.png") == original_path.read_bytes()
+
+    resp = client.post("/api/export/zip", json=_body())
+    archive = _open_zip(resp)
+    assert archive.read("Deck/FRONT/001.png") == upscale_path.read_bytes()
+
+
+def test_use_originals_preview_reports_missing_download(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A face with only upscaled variants counts as missing under
+    use_originals — never silently substituted with an upscale."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a", dpi=1200)
+
+    resp = client.post("/api/export/zip/preview", json=_body(use_originals=True))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["fronts"] == 0
+    assert len(body["missing"]) == 1

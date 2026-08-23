@@ -85,6 +85,43 @@ def test_process_one_marks_task_done_on_success(tmp_path, monkeypatch) -> None:
     assert claim_next_task(db_path=db_path) is None
 
 
+def test_process_one_download_task_upserts_original_gallery_row(
+    tmp_path, monkeypatch
+) -> None:
+    """A download task flows through the exact same worker path as an
+    upscale — done + a gallery row — with the sentinel (300, "original")
+    variant key and out_path pointing at the cached original itself."""
+    from proxy_scaler import db as db_module
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.upscale import original_cache_path
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    tid = _enqueue(db_path, project_tag="tag-a", dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    task = claim_next_task(db_path=db_path)
+    assert task.id == tid
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+    )
+
+    _process_one(task, db_path=db_path)
+
+    done = get_task(tid, db_path=db_path)
+    assert done.status == "done"
+
+    [item] = db_module.list_gallery_items("tag-a", db_path=db_path)
+    assert item["model"] == ORIGINAL_MODEL
+    assert item["dpi"] == ORIGINAL_DPI
+    expected = original_cache_path(Path(task.cache_dir), "sol-id", None)
+    assert Path(item["out_path"]) == expected
+    assert Path(item["original_path"]) == expected
+    assert expected.is_file()
+
+
 def test_process_one_marks_task_failed_on_exception(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "test.db"
     init_db(db_path)

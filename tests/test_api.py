@@ -692,6 +692,93 @@ def test_regenerate_gallery_item_not_found(client: TestClient, tmp_path: Path) -
     assert resp.status_code == 404
 
 
+def test_generate_downloads_enqueues_sentinel_tasks(
+    client: TestClient, tmp_path: Path
+) -> None:
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    resp = client.post(
+        "/api/generate/downloads",
+        json={
+            "project_tag": "tag-a",
+            "entries": [_sol_ring_entry()],
+            "output_dir": str(tmp_path / "out"),
+            "cache_dir": str(tmp_path / "cache"),
+            "weights_dir": str(tmp_path / "weights"),
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["queued"] == 1
+    assert len(body["task_ids"]) == 1
+
+    [task] = client.get("/api/tasks", params={"project_tag": "tag-a"}).json()
+    assert task["status"] == "pending"
+    assert task["dpi"] == ORIGINAL_DPI
+    assert task["model"] == ORIGINAL_MODEL
+
+
+def test_generate_downloads_requires_entries(client: TestClient, tmp_path: Path) -> None:
+    resp = client.post(
+        "/api/generate/downloads",
+        json={
+            "project_tag": "tag-a",
+            "entries": [],
+            "output_dir": str(tmp_path / "out"),
+            "cache_dir": str(tmp_path / "cache"),
+            "weights_dir": str(tmp_path / "weights"),
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_refetch_original_enqueues_download_from_any_variant(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Re-Fetch works from an UPSCALE row's id too — it always enqueues the
+    (300, "original") download variant, never a regen of the row's own
+    model/dpi."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    body_json = {
+        "project_tag": "tag-a",
+        "output_dir": str(tmp_path),
+        "cache_dir": str(tmp_path),
+        "weights_dir": str(tmp_path),
+    }
+    resp = client.post(f"/api/gallery/{item['id']}/refetch", json=body_json)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["queued"] == 1
+
+    new_task = client.get(f"/api/tasks/{body['task_ids'][0]}").json()
+    assert new_task["scryfall_id"] == "sol-id"
+    assert new_task["dpi"] == ORIGINAL_DPI
+    assert new_task["model"] == ORIGINAL_MODEL
+
+    # A second click while the first is still pending is a no-op, not a
+    # duplicate task.
+    resp = client.post(f"/api/gallery/{item['id']}/refetch", json=body_json)
+    assert resp.status_code == 200
+    assert resp.json()["queued"] == 0
+
+
+def test_refetch_original_not_found(client: TestClient, tmp_path: Path) -> None:
+    resp = client.post(
+        "/api/gallery/999/refetch",
+        json={
+            "project_tag": "tag-a",
+            "output_dir": str(tmp_path),
+            "cache_dir": str(tmp_path),
+            "weights_dir": str(tmp_path),
+        },
+    )
+    assert resp.status_code == 404
+
+
 def _pdf_layout_body(**overrides) -> dict:
     body = dict(
         project_tag="tag-a",

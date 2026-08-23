@@ -162,6 +162,17 @@ export const BACK_PRINTING_MIN_SERVER_VERSION = "0.2.0";
 // one specific historical release forever.
 export const EXPORT_ZIP_MIN_SERVER_VERSION = "0.2.0";
 
+// --- The originals-override version floor -----------------------------------
+//
+// PdfLayoutIn/ExportZipIn.use_originals doesn't exist on older servers,
+// and its failure mode is the silent kind (Pydantic drops unknown
+// fields): the server would render with the preferred model/DPI settings
+// while the checkbox claims originals — a wrong PDF, like the
+// back-printing floor above. Same 0.2.0 as its neighbours since all
+// three land in that still-unreleased version; packaging/set-version.py
+// must never rewrite it.
+export const ORIGINALS_MIN_SERVER_VERSION = "0.2.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -201,6 +212,15 @@ export function serverSupportsBackPrinting(serverVersion: string | null): boolea
 export function serverSupportsZipExport(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, EXPORT_ZIP_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server understand use_originals (and the download
+ *  routes)? Same null/unparseable semantics as
+ *  serverSupportsBackPrinting. */
+export function serverSupportsOriginals(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, ORIGINALS_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

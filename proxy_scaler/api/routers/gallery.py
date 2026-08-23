@@ -15,9 +15,11 @@ from proxy_scaler.api.schemas import (
     GalleryStatusOut,
     GeneratedPairOut,
     GenerateOut,
+    RefetchOriginalIn,
     RegenerateGalleryItemIn,
 )
 from proxy_scaler.decklist import DeckEntry
+from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
 from proxy_scaler.services import generation as generation_service
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
@@ -157,6 +159,51 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         dpi_targets=[item["dpi"]],
         model=item["model"],
         tile_size=body.tile_size,
+        output_dir=Path(body.output_dir),
+        cache_dir=Path(body.cache_dir),
+        weights_dir=Path(body.weights_dir),
+        project_tag=body.project_tag,
+        total_faces=item["total_faces"],
+        lang=item["lang"],
+        db_path=db_path,
+    )
+    return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])
+
+
+@router.post("/{gallery_item_id}/refetch", response_model=GenerateOut)
+def refetch_original(gallery_item_id: int, body: RefetchOriginalIn) -> GenerateOut:
+    """Re-download this face's Scryfall original, overwriting the cached
+    copy — for when Scryfall replaces a card's scan. A dedicated route
+    rather than regenerate: that one reuses the stored row's model/dpi,
+    which would re-run the upscale when called on an upscale row. This
+    always enqueues the (ORIGINAL_DPI, ORIGINAL_MODEL) download variant,
+    and works from any of the face's gallery rows since they all carry
+    the face identity + png_url. Existing upscaled outputs are left
+    alone — their next Regen reads the refreshed original automatically
+    (upscale tasks always run force=True from the cached original)."""
+    db_path = get_db_path()
+    item = _find_item(gallery_item_id)
+    active = generation_service.active_task_keys(body.project_tag, db_path=db_path)
+    key = (item["scryfall_id"], item["face_index"], ORIGINAL_DPI, ORIGINAL_MODEL)
+    if key in active:
+        return GenerateOut(
+            queued=0,
+            failed=0,
+            task_ids=[],
+            notes=["Download already queued or running for this face."],
+        )
+    task_ids = generation_service.enqueue_face(
+        scryfall_id=item["scryfall_id"],
+        face_index=item["face_index"],
+        face_label=item["face_label"],
+        face_name=item["face_name"],
+        card_name=item["card_name"],
+        set_code=item["set_code"],
+        collector_number=item["collector_number"],
+        png_url=item["png_url"],
+        dpi_targets=[ORIGINAL_DPI],
+        model=ORIGINAL_MODEL,
+        tile_size=0,
         output_dir=Path(body.output_dir),
         cache_dir=Path(body.cache_dir),
         weights_dir=Path(body.weights_dir),

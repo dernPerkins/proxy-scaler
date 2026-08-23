@@ -12,6 +12,7 @@ from pathlib import Path
 
 from proxy_scaler import db
 from proxy_scaler.card_lookup import CardResolver
+from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
 from proxy_scaler.pipeline import FaceResult, output_filename
 from proxy_scaler.scryfall import ScryfallError, expand_faces
 from proxy_scaler.upscale import original_cache_path
@@ -271,5 +272,141 @@ def enqueue_decklist_entries(
             )
         if skipped_active:
             on_note(f"{skipped_active} image(s) already queued or running.")
+
+    return queued, failed, task_ids
+
+
+def enqueue_download_entries(
+    entries: list,
+    *,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    project_tag: str | None,
+    on_note=None,
+    db_path: Path | str | None = None,
+    card_db_path: Path | str | None = None,
+) -> tuple[int, int, list[int]]:
+    """Resolve entries and queue one download-only task per face whose
+    Scryfall original isn't already cached — the download-only analogue of
+    enqueue_decklist_entries, using the (ORIGINAL_DPI, ORIGINAL_MODEL)
+    sentinel variant. Skip-existing is always on here: a cached original
+    is shared by every variant of a face, so re-downloading an existing
+    one is never useful in a batch (Re-Fetch, which deliberately
+    overwrites, goes through gallery.py's refetch route instead).
+    output_dir/weights_dir are threaded through only because
+    db.enqueue_task requires them NOT NULL — the download handler ignores
+    both. Returns (queued_count, failed_count, task_ids)."""
+    resolver = CardResolver(card_db_path=card_db_path)
+    resolved = resolver.resolve_many(entries)
+    active = active_task_keys(project_tag, db_path=db_path)
+    queued = 0
+    failed = 0
+    task_ids: list[int] = []
+    seen_keys: set[str] = set()
+    skipped_existing = 0
+    skipped_active = 0
+    for entry, pre in zip(entries, resolved):
+        try:
+            if isinstance(pre, ScryfallError):
+                raise pre
+            card, warnings = pre
+            for w in warnings:
+                if on_note:
+                    on_note(w)
+            for face in expand_faces(card):
+                face_key = f"{face.scryfall_id}:{face.face_index}"
+                if face_key in seen_keys:
+                    continue
+                seen_keys.add(face_key)
+
+                if (
+                    face.scryfall_id,
+                    face.face_index,
+                    ORIGINAL_DPI,
+                    ORIGINAL_MODEL,
+                ) in active:
+                    skipped_active += 1
+                    continue
+
+                original_path = original_cache_path(
+                    cache_dir, face.scryfall_id, face.face_index
+                )
+                known = db.find_generated_image(
+                    face.scryfall_id,
+                    face.face_index,
+                    ORIGINAL_MODEL,
+                    ORIGINAL_DPI,
+                    db_path=db_path,
+                )
+                if known is not None and Path(known["out_path"]).exists():
+                    skipped_existing += 1
+                    db.add_membership(project_tag, known["id"], db_path=db_path)
+                    continue
+                if original_path.exists():
+                    # The original is already on disk (downloaded as part of
+                    # an earlier upscale run, or under another project) but
+                    # has no download-variant registry row — register it so
+                    # the UI shows the badge, same rationale as the
+                    # skip-existing backfill in enqueue_decklist_entries.
+                    skipped_existing += 1
+                    db.upsert_gallery_item(
+                        project_tag,
+                        FaceResult(
+                            out_path=original_path,
+                            original_path=original_path,
+                            scryfall_id=face.scryfall_id,
+                            face_index=face.face_index,
+                            face_name=face.face_name,
+                            card_name=face.card_name,
+                            set_code=face.set_code,
+                            collector_number=face.collector_number,
+                            png_url=face.png_url,
+                            dpi=ORIGINAL_DPI,
+                            model=ORIGINAL_MODEL,
+                            face_label=face.face_label,
+                            native_scale=1,
+                            total_faces=face.total_faces,
+                            lang=face.lang,
+                        ),
+                        db_path=db_path,
+                    )
+                    continue
+
+                new_ids = enqueue_face(
+                    scryfall_id=face.scryfall_id,
+                    face_index=face.face_index,
+                    face_label=face.face_label,
+                    face_name=face.face_name,
+                    card_name=face.card_name,
+                    set_code=face.set_code,
+                    collector_number=face.collector_number,
+                    png_url=face.png_url,
+                    dpi_targets=[ORIGINAL_DPI],
+                    model=ORIGINAL_MODEL,
+                    tile_size=0,
+                    output_dir=output_dir,
+                    cache_dir=cache_dir,
+                    weights_dir=weights_dir,
+                    project_tag=project_tag,
+                    total_faces=face.total_faces,
+                    lang=face.lang,
+                    db_path=db_path,
+                )
+                task_ids.extend(new_ids)
+                queued += 1
+        except ScryfallError as exc:
+            failed += 1
+            if on_note:
+                on_note(f"FAIL [{entry.raw_line}]: {exc}")
+
+    if queued == 0 and on_note:
+        if skipped_existing:
+            on_note(
+                f"{skipped_existing} original(s) already downloaded to "
+                f"{cache_dir / 'originals'}."
+            )
+        if skipped_active:
+            on_note(f"{skipped_active} download(s) already queued or running.")
 
     return queued, failed, task_ids

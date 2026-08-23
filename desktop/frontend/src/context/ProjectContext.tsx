@@ -79,6 +79,7 @@ function getDefaultSettings(): ProjectSettings {
     export_dpi: 1200,
     preferred_dpi: null,
     preferred_model: null,
+    use_originals: false,
     preferred_lang: "en",
     lang_any: false,
     // Guides: front pages keep every guide (they're the side you cut
