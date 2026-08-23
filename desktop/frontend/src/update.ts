@@ -141,10 +141,11 @@ export function getPromptRequestSeq(): number {
 //
 // Two dialogs can want the screen at launch: UpdatePrompt (boot update
 // check, mounted above ConnectGate) and ResumeTasksPrompt (leftover tasks
-// from the last session, mounted in App). They must never stack; the
+// on the connected server, mounted in App). They must never stack; the
 // update comes first. These two flags are what ResumeTasksPrompt waits
-// on — deferring it is free, because the worker stays held (nothing
-// processes) until it acts. UpdatePrompt publishes both.
+// on — deferring it is free, because a held local worker stays held
+// (nothing processes) until it acts, and a remote worker's tasks were
+// already running anyway. UpdatePrompt publishes both.
 
 // True once the boot check has finished — an update was offered, there
 // was none, the check failed (offline), or the version was skipped. In a

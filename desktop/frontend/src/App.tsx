@@ -78,8 +78,9 @@ export default function App() {
             it renders nothing until the window is actually closing. */}
         <QuitPrompt />
         {/* The launch-time resume-or-cancel choice for tasks left over
-            from the last session — renders nothing unless the local
-            worker was spawned held AND leftovers exist. */}
+            found on the connected server — the local flavor holds the
+            worker until answered, the remote flavor informs about tasks
+            already processing. Renders nothing unless leftovers exist. */}
         <ResumeTasksPrompt />
         {/* The launch-time card-database offer — renders nothing unless
             the connected server has no imported corpus, and waits its
