@@ -21,7 +21,13 @@ import {
   setDownloadPhase,
 } from "../download";
 import { pdfFilename } from "../pdfFilename";
-import type { DeckEntryIn, FlipEdge, PageOrder, PdfLayoutRequest } from "../api/types";
+import type {
+  DeckEntryIn,
+  FlipEdge,
+  PageOrder,
+  PdfLayoutRequest,
+  ReverseFill,
+} from "../api/types";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -96,9 +102,16 @@ export default function PdfPage() {
   const backReady = selectedBack == null || !layoutWantsBacks || backSyncQuery.isSuccess;
 
   // Which side of page 1 the visual preview shows. Local state, not a
-  // persisted setting — it's a way of looking at the sheet, not a property
-  // of it.
-  const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
+  // persisted setting — it's a way of looking at the sheet, not a
+  // property of it.
+  //
+  // Derived rather than reset, because the choice has to survive back
+  // printing being switched off and on again while never being *acted*
+  // on while it's off. Storing it alone left the preview showing a Back
+  // Page after the toggle went off — and the front/back buttons are
+  // hidden then, so there was no way to get back to the front.
+  const [previewSideChoice, setPreviewSideChoice] = useState<"front" | "back">("front");
+  const previewSide = settings.back_printing ? previewSideChoice : "front";
 
   // Persisted on the project itself (ProjectContext's `settings`, saved via
   // the same project-bar Save button as the Decklist tab's generation
@@ -125,6 +138,7 @@ export default function PdfPage() {
     hide_page_guides_back: settings.hide_page_guides_back,
     back_printing: settings.back_printing,
     back_faces_as_reverse: settings.back_faces_as_reverse,
+    reverse_fill: settings.reverse_fill,
     page_order: settings.page_order,
     flip_edge: settings.flip_edge,
     back_offset_x_mm: settings.back_offset_x_mm,
@@ -280,349 +294,388 @@ export default function PdfPage() {
 
   return (
     <div className="layout">
-      <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Source images</h3>
+      <aside className="sidebar sidebar-split panel">
+        {/* Two columns rather than one tall stack: four sections stacked
+            pushed the Generate button below the fold on a laptop screen.
+            The split lands at Guides so the halves come out roughly even.
+            Collapses back to one column on a narrow window — see
+            .sidebar-split in styles.css. */}
+        <div className="sidebar-cols">
+          <div>
+            <h3 style={{ marginBottom: 14 }}>Source images</h3>
 
-        {/* Which already-generated variant to print for each card. These
-            only select among existing images — they never trigger
-            generation. Preferred DPI is a hard filter: a card with no
-            image at it is left out and listed below, not substituted at
-            another resolution. Within that DPI the preferred model wins,
-            else the most recently generated image (see
-            pdf_layout.py::_pick_dpi_variant). */}
-        <div className="field-group">
-          <label className="field">
-            <span>Preferred model</span>
-            <select
-              value={layout.preferred_model ?? ""}
-              disabled={modelsQuery.isLoading || modelsQuery.isError}
-              onChange={(e) => updateLayout("preferred_model", e.target.value || null)}
-            >
-              <option value="">Any (highest DPI available)</option>
-              {(modelsQuery.data ?? []).map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            {/* Which already-generated variant to print for each card. These
+                only select among existing images — they never trigger
+                generation. Preferred DPI is a hard filter: a card with no
+                image at it is left out and listed below, not substituted at
+                another resolution. Within that DPI the preferred model wins,
+                else the most recently generated image (see
+                pdf_layout.py::_pick_dpi_variant). */}
+            <div className="field-group">
+              <label className="field">
+                <span>Preferred model</span>
+                <select
+                  value={layout.preferred_model ?? ""}
+                  disabled={modelsQuery.isLoading || modelsQuery.isError}
+                  onChange={(e) => updateLayout("preferred_model", e.target.value || null)}
+                >
+                  <option value="">Any (highest DPI available)</option>
+                  {(modelsQuery.data ?? []).map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <label className="field">
-            <span>Preferred DPI</span>
-            <select
-              value={layout.preferred_dpi ?? ""}
-              onChange={(e) =>
-                updateLayout("preferred_dpi", e.target.value ? Number(e.target.value) : null)
-              }
-            >
-              <option value="">Any (highest available)</option>
-              {DPI_OPTIONS.map((dpi) => (
-                <option key={dpi} value={dpi}>
-                  {dpi}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {modelsQuery.isError && (
-          <p className="error-text">
-            Couldn&apos;t load the model list:{" "}
-            {modelsQuery.error instanceof Error
-              ? modelsQuery.error.message
-              : String(modelsQuery.error)}
-          </p>
-        )}
-
-        <h3 style={{ margin: "18px 0 14px" }}>Layout</h3>
-
-        <div className="field-group">
-          <label className="field">
-            <span>Page size</span>
-            <select onChange={(e) => applyPreset(e.target.value)} defaultValue="A4">
-              {Object.keys(PAGE_PRESETS).map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* Paired dimensions sit side by side — they're read together and
-              each is narrow enough that a full-width row each just adds
-              vertical scrolling to the sidebar. */}
-          <div style={{ display: "flex", gap: 10 }}>
-            <label className="field">
-              <span>Width (mm)</span>
-              <NumberInput
-                value={layout.page_width_mm}
-                onChange={(v) => updateLayout("page_width_mm", v)}
-              />
-            </label>
-            <label className="field">
-              <span>Height (mm)</span>
-              <NumberInput
-                value={layout.page_height_mm}
-                onChange={(v) => updateLayout("page_height_mm", v)}
-              />
-            </label>
-          </div>
-
-          <div style={{ display: "flex", gap: 10 }}>
-            <label className="field">
-              <span>Columns</span>
-              <NumberInput
-                min={1}
-                value={layout.cols}
-                onChange={(v) => updateLayout("cols", v)}
-              />
-            </label>
-            <label className="field">
-              <span>Rows</span>
-              <NumberInput
-                min={1}
-                value={layout.rows}
-                onChange={(v) => updateLayout("rows", v)}
-              />
-            </label>
-          </div>
-
-          {/* The preview approximates bleed by edge-extending a small
-              cached thumbnail, while the real render extends the
-              full-resolution art — close, but not identical. Flagged in
-              the UI rather than chased, since keeping the two pipelines
-              pixel-identical isn't worth the coupling. */}
-          <label
-            className="field"
-            title="Not accurate to what you'll see in the final generated PDF currently."
-          >
-            <span>Bleed (mm)</span>
-            <NumberInput
-              step={0.1}
-              value={layout.bleed_mm}
-              onChange={(v) => updateLayout("bleed_mm", v)}
-            />
-          </label>
-
-          <div style={{ display: "flex", gap: 10 }}>
-            <label className="field">
-              <span>Spacing X (mm)</span>
-              <NumberInput
-                step={0.1}
-                value={layout.spacing_x_mm}
-                onChange={(v) => updateLayout("spacing_x_mm", v)}
-              />
-            </label>
-            <label className="field">
-              <span>Spacing Y (mm)</span>
-              <NumberInput
-                step={0.1}
-                value={layout.spacing_y_mm}
-                onChange={(v) => updateLayout("spacing_y_mm", v)}
-              />
-            </label>
-          </div>
-
-          <div style={{ display: "flex", gap: 10 }}>
-            <label className="field">
-              <span>Offset X (mm)</span>
-              <NumberInput
-                step={0.1}
-                value={layout.offset_x_mm}
-                onChange={(v) => updateLayout("offset_x_mm", v)}
-              />
-            </label>
-            <label className="field">
-              <span>Offset Y (mm)</span>
-              <NumberInput
-                step={0.1}
-                value={layout.offset_y_mm}
-                onChange={(v) => updateLayout("offset_y_mm", v)}
-              />
-            </label>
-          </div>
-
-          <label className="field">
-            <span>Export DPI</span>
-            <NumberInput
-              value={layout.export_dpi}
-              onChange={(v) => updateLayout("export_dpi", v)}
-            />
-          </label>
-
-          <div style={{ display: "flex", gap: 10 }}>
-            <label className="field">
-              <span>Guide width (pt)</span>
-              <NumberInput
-                step={0.05}
-                value={layout.guide_width_pt}
-                onChange={(v) => updateLayout("guide_width_pt", v)}
-              />
-            </label>
-            <label className="field">
-              <span>Guide length (mm)</span>
-              <NumberInput
-                step={0.1}
-                value={layout.guide_length_mm}
-                onChange={(v) => updateLayout("guide_length_mm", v)}
-              />
-            </label>
-          </div>
-        </div>
-
-        {/* Guides, split by kind and by page kind. Card Guides are the
-            small marks at each card's own trim corners; Page Guides are
-            the lines running from the page edge in to the grid. They used
-            to share one switch, which couldn't express the setting most
-            duplex printers actually want: guides on the fronts you cut
-            against, none on the backs that show. */}
-        <h3 style={{ margin: "18px 0 14px" }}>
-          Guides{" "}
-          <span
-            className="hint"
-            title="Front pages are the side you cut against, so guides there are the ones you use. Back pages default to none — that ink lands on the visible side of the card."
-          >
-            (?)
-          </span>
-        </h3>
-
-        <div className="field-group">
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={layout.hide_card_guides_front}
-              onChange={(e) => updateLayout("hide_card_guides_front", e.target.checked)}
-            />
-            Hide card guides on front pages
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={layout.hide_page_guides_front}
-              onChange={(e) => updateLayout("hide_page_guides_front", e.target.checked)}
-            />
-            Hide page guides on front pages
-          </label>
-          {/* Still shown (not hidden) while back printing is off, so the
-              settings stay comparable side by side — just inert, and said
-              so rather than silently ignored. */}
-          <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-            <input
-              type="checkbox"
-              disabled={!layout.back_printing}
-              checked={layout.hide_card_guides_back}
-              onChange={(e) => updateLayout("hide_card_guides_back", e.target.checked)}
-            />
-            Hide card guides on back pages
-          </label>
-          <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-            <input
-              type="checkbox"
-              disabled={!layout.back_printing}
-              checked={layout.hide_page_guides_back}
-              onChange={(e) => updateLayout("hide_page_guides_back", e.target.checked)}
-            />
-            Hide page guides on back pages
-          </label>
-        </div>
-
-        <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
-
-        <div className="field-group">
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={layout.back_printing}
-              onChange={(e) => updateLayout("back_printing", e.target.checked)}
-            />
-            Print card backs
-          </label>
-
-          {layout.back_printing && (
-            <>
-              <p className="hint" style={{ margin: "2px 0 8px" }}>
-                {selectedBack ? (
-                  <>
-                    Using <strong>{selectedBack.label}</strong> — change it on the
-                    Backs tab.
-                  </>
-                ) : (
-                  <>No back selected. Pick one on the Backs tab.</>
-                )}
-              </p>
-
-              {/* Changes the print-slot count and therefore the page
-                  count, which is why it lives here rather than with the
-                  Back Image on the Backs tab. */}
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={layout.back_faces_as_reverse}
+              <label className="field">
+                <span>Preferred DPI</span>
+                <select
+                  value={layout.preferred_dpi ?? ""}
                   onChange={(e) =>
-                    updateLayout("back_faces_as_reverse", e.target.checked)
+                    updateLayout("preferred_dpi", e.target.value ? Number(e.target.value) : null)
                   }
-                />
-                Print a double-faced card&apos;s transform side on its own back
+                >
+                  <option value="">Any (highest available)</option>
+                  {DPI_OPTIONS.map((dpi) => (
+                    <option key={dpi} value={dpi}>
+                      {dpi}
+                    </option>
+                  ))}
+                </select>
               </label>
-              <p className="hint" style={{ margin: "-2px 0 8px" }}>
-                {layout.back_faces_as_reverse
-                  ? "A double-faced card is one printed card with both faces on it."
-                  : "Each face prints as its own card, and both get the back image."}
+            </div>
+
+            {modelsQuery.isError && (
+              <p className="error-text">
+                Couldn&apos;t load the model list:{" "}
+                {modelsQuery.error instanceof Error
+                  ? modelsQuery.error.message
+                  : String(modelsQuery.error)}
               </p>
+            )}
 
+            <h3 style={{ margin: "18px 0 14px" }}>Layout</h3>
+
+            <div className="field-group">
               <label className="field">
-                <span>
-                  Flip edge{" "}
-                  <span
-                    className="hint"
-                    title="Match this to your printer's duplex setting — 'Flip on long edge' or 'Flip on short edge' in the print dialog. If they disagree, every card gets someone else's back."
-                  >
-                    (?)
-                  </span>
-                </span>
-                <select
-                  value={layout.flip_edge}
-                  onChange={(e) => updateLayout("flip_edge", e.target.value as FlipEdge)}
-                >
-                  <option value="long">Long edge</option>
-                  <option value="short">Short edge</option>
+                <span>Page size</span>
+                <select onChange={(e) => applyPreset(e.target.value)} defaultValue="A4">
+                  {Object.keys(PAGE_PRESETS).map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
                 </select>
               </label>
 
-              <label className="field">
-                <span>Page order</span>
-                <select
-                  value={layout.page_order}
-                  onChange={(e) => updateLayout("page_order", e.target.value as PageOrder)}
-                >
-                  <option value="interleaved">Interleaved (front, back, front…)</option>
-                  <option value="fronts_then_backs">All fronts, then all backs</option>
-                </select>
-              </label>
-
-              {/* Independent of the front offsets rather than added to
-                  them: they calibrate two separate passes through the
-                  printer, and duplex registration genuinely drifts. */}
+              {/* Paired dimensions sit side by side — they're read together and
+                  each is narrow enough that a full-width row each just adds
+                  vertical scrolling to the sidebar. */}
               <div style={{ display: "flex", gap: 10 }}>
                 <label className="field">
-                  <span>Back offset X (mm)</span>
+                  <span>Width (mm)</span>
                   <NumberInput
-                    step={0.1}
-                    value={layout.back_offset_x_mm ?? 0}
-                    onChange={(v) => updateLayout("back_offset_x_mm", v)}
+                    value={layout.page_width_mm}
+                    onChange={(v) => updateLayout("page_width_mm", v)}
                   />
                 </label>
                 <label className="field">
-                  <span>Back offset Y (mm)</span>
+                  <span>Height (mm)</span>
                   <NumberInput
-                    step={0.1}
-                    value={layout.back_offset_y_mm ?? 0}
-                    onChange={(v) => updateLayout("back_offset_y_mm", v)}
+                    value={layout.page_height_mm}
+                    onChange={(v) => updateLayout("page_height_mm", v)}
                   />
                 </label>
               </div>
-            </>
-          )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <label className="field">
+                  <span>Columns</span>
+                  <NumberInput
+                    min={1}
+                    value={layout.cols}
+                    onChange={(v) => updateLayout("cols", v)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Rows</span>
+                  <NumberInput
+                    min={1}
+                    value={layout.rows}
+                    onChange={(v) => updateLayout("rows", v)}
+                  />
+                </label>
+              </div>
+
+              {/* The preview approximates bleed by edge-extending a small
+                  cached thumbnail, while the real render extends the
+                  full-resolution art — close, but not identical. Flagged in
+                  the UI rather than chased, since keeping the two pipelines
+                  pixel-identical isn't worth the coupling. */}
+              <label
+                className="field"
+                title="Not accurate to what you'll see in the final generated PDF currently."
+              >
+                <span>Bleed (mm)</span>
+                <NumberInput
+                  step={0.1}
+                  value={layout.bleed_mm}
+                  onChange={(v) => updateLayout("bleed_mm", v)}
+                />
+              </label>
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <label className="field">
+                  <span>Spacing X (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.spacing_x_mm}
+                    onChange={(v) => updateLayout("spacing_x_mm", v)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Spacing Y (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.spacing_y_mm}
+                    onChange={(v) => updateLayout("spacing_y_mm", v)}
+                  />
+                </label>
+              </div>
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <label className="field">
+                  <span>Offset X (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.offset_x_mm}
+                    onChange={(v) => updateLayout("offset_x_mm", v)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Offset Y (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.offset_y_mm}
+                    onChange={(v) => updateLayout("offset_y_mm", v)}
+                  />
+                </label>
+              </div>
+
+              <label className="field">
+                <span>Export DPI</span>
+                <NumberInput
+                  value={layout.export_dpi}
+                  onChange={(v) => updateLayout("export_dpi", v)}
+                />
+              </label>
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <label className="field">
+                  <span>Guide width (pt)</span>
+                  <NumberInput
+                    step={0.05}
+                    value={layout.guide_width_pt}
+                    onChange={(v) => updateLayout("guide_width_pt", v)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Guide length (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.guide_length_mm}
+                    onChange={(v) => updateLayout("guide_length_mm", v)}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            {/* Guides, split by kind and by page kind. Card Guides are the
+                small marks at each card's own trim corners; Page Guides are
+                the lines running from the page edge in to the grid. They used
+                to share one switch, which couldn't express the setting most
+                duplex printers actually want: guides on the fronts you cut
+                against, none on the backs that show. */}
+            <h3 style={{ margin: "18px 0 14px" }}>
+              Guides{" "}
+              <span
+                className="hint"
+                title="Front pages are the side you cut against, so guides there are the ones you use. Back pages default to none — that ink lands on the visible side of the card."
+              >
+                (?)
+              </span>
+            </h3>
+
+            <div className="field-group">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={layout.hide_card_guides_front}
+                  onChange={(e) => updateLayout("hide_card_guides_front", e.target.checked)}
+                />
+                Hide card guides on front pages
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={layout.hide_page_guides_front}
+                  onChange={(e) => updateLayout("hide_page_guides_front", e.target.checked)}
+                />
+                Hide page guides on front pages
+              </label>
+              {/* Still shown (not hidden) while back printing is off, so the
+                  settings stay comparable side by side — just inert, and said
+                  so rather than silently ignored. */}
+              <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+                <input
+                  type="checkbox"
+                  disabled={!layout.back_printing}
+                  checked={layout.hide_card_guides_back}
+                  onChange={(e) => updateLayout("hide_card_guides_back", e.target.checked)}
+                />
+                Hide card guides on back pages
+              </label>
+              <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+                <input
+                  type="checkbox"
+                  disabled={!layout.back_printing}
+                  checked={layout.hide_page_guides_back}
+                  onChange={(e) => updateLayout("hide_page_guides_back", e.target.checked)}
+                />
+                Hide page guides on back pages
+              </label>
+            </div>
+
+            <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
+
+            <div className="field-group">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={layout.back_printing}
+                  onChange={(e) => updateLayout("back_printing", e.target.checked)}
+                />
+                Print card backs
+              </label>
+
+              {layout.back_printing && (
+                <>
+                  {/* What goes on the back of a card that has no
+                      transform side. "Leave blank" is the mode for
+                      printing a deck purely so its double-faced cards get
+                      their own backs — it needs no back image at all,
+                      which is why the picker below it goes away entirely
+                      in that mode. */}
+                  <label className="field">
+                    <span>Backs of single-faced cards</span>
+                    <select
+                      value={layout.reverse_fill}
+                      onChange={(e) =>
+                        updateLayout("reverse_fill", e.target.value as ReverseFill)
+                      }
+                    >
+                      <option value="back_image">Use the back image</option>
+                      <option value="blank">Leave blank</option>
+                    </select>
+                  </label>
+
+                  {layout.reverse_fill === "back_image" ? (
+                    <p className="hint" style={{ margin: "2px 0 8px" }}>
+                      {selectedBack ? (
+                        <>
+                          Using <strong>{selectedBack.label}</strong> — change it on
+                          the Backs tab.
+                        </>
+                      ) : (
+                        <>No back selected. Pick one on the Backs tab.</>
+                      )}
+                    </p>
+                  ) : (
+                    <p className="hint" style={{ margin: "2px 0 8px" }}>
+                      Only double-faced cards get anything on their back. No back
+                      image needed.
+                    </p>
+                  )}
+
+                  {/* Changes the print-slot count and therefore the page
+                      count, which is why it lives here rather than with the
+                      Back Image on the Backs tab. */}
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={layout.back_faces_as_reverse}
+                      onChange={(e) =>
+                        updateLayout("back_faces_as_reverse", e.target.checked)
+                      }
+                    />
+                    Print a double-faced card&apos;s transform side on its own back
+                  </label>
+                  <p className="hint" style={{ margin: "-2px 0 8px" }}>
+                    {layout.back_faces_as_reverse
+                      ? "A double-faced card is one printed card with both faces on it."
+                      : layout.reverse_fill === "blank"
+                        ? "Each face prints as its own card — so with blank backs, every back page comes out empty."
+                        : "Each face prints as its own card, and both get the back image."}
+                  </p>
+
+                  <label className="field">
+                    <span>
+                      Flip edge{" "}
+                      <span
+                        className="hint"
+                        title="Match this to your printer's duplex setting — 'Flip on long edge' or 'Flip on short edge' in the print dialog. If they disagree, every card gets someone else's back."
+                      >
+                        (?)
+                      </span>
+                    </span>
+                    <select
+                      value={layout.flip_edge}
+                      onChange={(e) => updateLayout("flip_edge", e.target.value as FlipEdge)}
+                    >
+                      <option value="long">Long edge</option>
+                      <option value="short">Short edge</option>
+                    </select>
+                  </label>
+
+                  <label className="field">
+                    <span>Page order</span>
+                    <select
+                      value={layout.page_order}
+                      onChange={(e) => updateLayout("page_order", e.target.value as PageOrder)}
+                    >
+                      <option value="interleaved">Interleaved (front, back, front…)</option>
+                      <option value="fronts_then_backs">All fronts, then all backs</option>
+                    </select>
+                  </label>
+
+                  {/* Independent of the front offsets rather than added to
+                      them: they calibrate two separate passes through the
+                      printer, and duplex registration genuinely drifts. */}
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <label className="field">
+                      <span>Back offset X (mm)</span>
+                      <NumberInput
+                        step={0.1}
+                        value={layout.back_offset_x_mm ?? 0}
+                        onChange={(v) => updateLayout("back_offset_x_mm", v)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Back offset Y (mm)</span>
+                      <NumberInput
+                        step={0.1}
+                        value={layout.back_offset_y_mm ?? 0}
+                        onChange={(v) => updateLayout("back_offset_y_mm", v)}
+                      />
+                    </label>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         </div>
       </aside>
 
@@ -708,14 +761,6 @@ export default function PdfPage() {
                 Pick one on the Backs tab, or turn back printing off.
               </p>
             )}
-            {previewQuery.data.back_image_not_upscaled && (
-              <p className="hint" style={{ marginTop: 10 }}>
-                Your back image will print from the original upload rather than an
-                upscale on this server — usually because it was upscaled somewhere
-                else. It will still print; upscale it on the Backs tab for the best
-                result.
-              </p>
-            )}
             {previewQuery.data.missing_at_dpi.length > 0 && (
               <>
                 <p className="error-text" style={{ marginTop: 10 }}>
@@ -746,13 +791,13 @@ export default function PdfPage() {
               <div className="summary-row" style={{ marginBottom: 8 }}>
                 <button
                   className={previewSide === "front" ? "btn-primary" : "btn-sm"}
-                  onClick={() => setPreviewSide("front")}
+                  onClick={() => setPreviewSideChoice("front")}
                 >
                   Front of page 1
                 </button>
                 <button
                   className={previewSide === "back" ? "btn-primary" : "btn-sm"}
-                  onClick={() => setPreviewSide("back")}
+                  onClick={() => setPreviewSideChoice("back")}
                 >
                   Back of page 1
                 </button>

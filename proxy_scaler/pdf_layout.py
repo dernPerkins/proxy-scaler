@@ -58,6 +58,24 @@ class FlipEdge(str, Enum):
     SHORT = "short"
 
 
+class ReverseFill(str, Enum):
+    """What goes on a Reverse that has no Back Face of its own.
+
+    BACK_IMAGE prints the project's Selected Back there. BLANK prints
+    nothing, leaving that side of the card empty — which is the whole
+    point of it: someone printing a deck for its double-faced cards wants
+    those transform sides on their own backs and does not want (or have)
+    a card back for everything else.
+
+    BLANK still emits the Back Page. The page has to exist for the sheet
+    to stay in register: drop it and every later Front Page pairs with the
+    wrong Back Page.
+    """
+
+    BACK_IMAGE = "back_image"
+    BLANK = "blank"
+
+
 class PageOrder(str, Enum):
     """INTERLEAVED (front 1, back 1, front 2, back 2, ...) is what a duplex
     printer driver expects. FRONTS_THEN_BACKS emits every Front Page first,
@@ -797,6 +815,7 @@ def unique_image_count(
     *,
     back_printing: bool = False,
     back_image_path: Path | None = None,
+    reverse_fill: ReverseFill = ReverseFill.BACK_IMAGE,
 ) -> int:
     """How many source images build_pdf will actually process.
 
@@ -818,8 +837,10 @@ def unique_image_count(
             for slot in page
             if slot.reverse is not None
         }
-        if back_image_path is not None and any(
-            slot.reverse is None for page in pages for slot in page
+        if (
+            reverse_fill is ReverseFill.BACK_IMAGE
+            and back_image_path is not None
+            and any(slot.reverse is None for page in pages for slot in page)
         ):
             paths.add(back_image_path)
     return len(paths)
@@ -905,6 +926,7 @@ def build_pdf(
     back_layout: PageLayout | None = None,
     back_image_path: Path | None = None,
     back_image_includes_bleed: bool = False,
+    reverse_fill: ReverseFill = ReverseFill.BACK_IMAGE,
     flip_edge: FlipEdge = FlipEdge.LONG,
     page_order: PageOrder = PageOrder.INTERLEAVED,
     on_progress: Callable[[int, int], None] | None = None,
@@ -937,6 +959,11 @@ def build_pdf(
     """
     guides = guides or GuideVisibility()
     back_layout = back_layout or layout
+    # One place to collapse "blank" into "no image to draw", so the
+    # drawing code below has a single condition rather than two that can
+    # disagree.
+    if reverse_fill is ReverseFill.BLANK:
+        back_image_path = None
 
     # Pre-oriented tuple — always pass orientation="portrait" to fpdf2
     # here, since FPDF._set_orientation() swaps w_pt/h_pt for any
@@ -985,10 +1012,12 @@ def build_pdf(
                 face = slot.reverse
                 source = face.out_path if face is not None else back_image_path
                 if source is None:
-                    # No Back Face and no Back Image: nothing to draw. The
-                    # router refuses this combination up front (an empty
-                    # Reverse is a stated error, not a blank card), so
-                    # reaching here means a caller bypassed that check.
+                    # Nothing to print on this Reverse. Either deliberate
+                    # (reverse_fill=BLANK — a card with no transform side
+                    # gets an empty back), or the missing-Back-Image case
+                    # the router refuses up front. Both draw nothing; the
+                    # page itself is still emitted, which is what keeps
+                    # the sheet in register.
                     continue
             else:
                 face = slot.front

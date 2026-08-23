@@ -24,6 +24,7 @@ from proxy_scaler.pdf_layout import (
     GuideVisibility,
     PageOrder,
     PrintSlot,
+    ReverseFill,
     back_page_cells,
     build_print_slots,
     fit_cover,
@@ -1218,3 +1219,74 @@ def test_render_back_image_respects_the_includes_bleed_declaration(tmp_path: Pat
     # Larger than the trim box on both axes: bleed really was added.
     trim_w, trim_h = target_pixels(600)
     assert needs_bleed.width > trim_w and needs_bleed.height > trim_h
+
+
+def test_blank_reverse_fill_still_emits_the_back_page(tmp_path: Path) -> None:
+    """The mode for "print my transform cards' backs and nothing else".
+
+    The Back Page has to exist even when every cell on it is empty:
+    dropping it would pair every later Front Page with the wrong Back
+    Page, which is worse than a blank sheet by a wide margin.
+    """
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    blank = build_pdf(
+        pages,
+        layout=layout,
+        export_dpi=600,
+        back_printing=True,
+        reverse_fill=ReverseFill.BLANK,
+    )
+    assert _page_count(blank) == 2
+
+
+def test_blank_reverse_fill_ignores_a_supplied_back_image(tmp_path: Path) -> None:
+    """Choosing blank backs means blank backs — a Back Image that happens
+    to still be selected must not sneak onto the sheet."""
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    common = dict(layout=layout, export_dpi=600, back_printing=True)
+    with_image = build_pdf(pages, back_image_path=_back_image(tmp_path), **common)
+    blank = build_pdf(
+        pages,
+        back_image_path=_back_image(tmp_path),
+        reverse_fill=ReverseFill.BLANK,
+        **common,
+    )
+    assert len(blank) < len(with_image)
+    # And it is not counted as work to do, either — a progress bar sized
+    # for an image that never gets drawn stalls one tick short.
+    assert (
+        unique_image_count(
+            pages,
+            back_printing=True,
+            back_image_path=_back_image(tmp_path),
+            reverse_fill=ReverseFill.BLANK,
+        )
+        == 1
+    )
+
+
+def test_blank_fill_still_prints_back_faces(tmp_path: Path) -> None:
+    """The point of the mode: transform sides still print on their own
+    backs. Only the cards that HAVE no transform side come out blank."""
+    dfc = PrintSlot(
+        front=_pdf_source_face(tmp_path, "front"),
+        reverse=_pdf_source_face(tmp_path, "transform"),
+    )
+    plain = _slot(_pdf_source_face(tmp_path, "plain"))
+    pages = [[dfc, plain]]
+    assert (
+        unique_image_count(
+            [[dfc, plain]], back_printing=True, reverse_fill=ReverseFill.BLANK
+        )
+        == 3
+    )
+    pdf = build_pdf(
+        pages,
+        layout=_a4_portrait_layout(cols=2, rows=1),
+        export_dpi=600,
+        back_printing=True,
+        reverse_fill=ReverseFill.BLANK,
+    )
+    assert _page_count(pdf) == 2

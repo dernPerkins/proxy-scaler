@@ -307,7 +307,7 @@ is a lottery: VLC commonly claims it on Linux).
 `set_default_back_image_id`, `sync_back_image`. App-global rather than
 per-project; a project holds a nullable `back_image_id` pointing into it,
 copied once from the app default at creation and never live-followed. See
-[ADR-0003](./docs/adr/0003-back-images-are-client-owned-their-upscales-are-not.md).
+[ADR-0003](./docs/adr/0003-back-images-are-client-owned-and-never-upscaled.md).
 
 ### HTTP (generation server — `proxy_scaler/api/`)
 
@@ -340,9 +340,7 @@ string, not a database relationship.
 | `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
 | `GET /api/health` | Supervisor readiness probe |
 | `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |
-| `GET /api/backs/{hash}` | Does this server hold those bytes, and what has it upscaled them to. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST |
-| `POST /api/backs/{hash}/upscale` | Queue upscales of a Back Image at one or more DPIs. Rides the ordinary task queue via a synthetic `scryfall_id` (see [ADR-0004](./docs/adr/0004-back-images-reuse-the-generation-queue-via-a-synthetic-id.md)), untagged, writing into `backs/` |
-| `DELETE /api/backs/{hash}/variants` | Drop this back's upscales, keeping the synced original — the Backs tab's "Clear upscales" |
+| `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Back Images are never upscaled — see ADR-0003 for why that asymmetry with card art is deliberate |
 | `DELETE /api/backs/{hash}` | Remove a Back Image from this server entirely. The client's library copy is canonical and untouched |
 | `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |
 
@@ -361,12 +359,11 @@ string, not a database relationship.
   back, only invalidated on explicit mutation) and generation status
   (`fetch`-based, 3s poll — the half that's actually live), merged via
   `mergeCardStatus.ts`.
-- `BacksPage.tsx` — the Back Library: local list (`invoke`) annotated
-  with per-server upscale status (`fetch`), the same
-  local-data-plus-live-status shape `mergeCardStatus.ts` uses on the
-  Decklist tab. A back's bytes never pass through the webview on the way
-  out — `sync_back_image` uploads from Rust, for the same reason
-  `main.rs::download_to_file` downloads there.
+- `BacksPage.tsx` — the Back Library: an entirely local list (`invoke`),
+  usable with no generation server reachable at all. A back's bytes never
+  pass through the webview on the way out — `sync_back_image` uploads
+  from Rust, for the same reason `main.rs::download_to_file` downloads
+  there.
 - `connection.tsx` — switching Local/Remote generation no longer touches
   project data at all. `switchTo` only invalidates generation-scoped
   query keys (`tasks`, `gallery`, `worker-status`, `pdf-preview`) —

@@ -199,6 +199,11 @@ class GalleryItemOut(BaseModel):
     lang: str = "en"
 
 
+class ReverseFillIn(str, Enum):
+    BACK_IMAGE = "back_image"
+    BLANK = "blank"
+
+
 class PageOrderIn(str, Enum):
     INTERLEAVED = "interleaved"
     FRONTS_THEN_BACKS = "fronts_then_backs"
@@ -265,6 +270,12 @@ class PdfLayoutIn(BaseModel):
     # count, which is why it lives beside the layout rather than beside the
     # Back Image. Inert while back_printing is False.
     back_faces_as_reverse: bool = True
+    # What fills a Reverse belonging to a card with no transform side.
+    # BLANK leaves it empty and needs no Back Image at all — the mode for
+    # printing a deck purely so its double-faced cards get their own
+    # backs. The Back Page is still emitted either way, or the sheet
+    # falls out of register.
+    reverse_fill: ReverseFillIn = ReverseFillIn.BACK_IMAGE
     page_order: PageOrderIn = PageOrderIn.INTERLEAVED
     flip_edge: FlipEdgeIn = FlipEdgeIn.LONG
     # Back Pages get their own position offset: duplex registration drifts,
@@ -308,11 +319,6 @@ class PdfPreviewOut(BaseModel):
     # no usable one is present on this server. A blocking error: the
     # alternative is burning a full duplex pass printing blank card backs.
     missing_back_image: bool = False
-    # The Back Image is being printed from its plain uploaded original
-    # rather than an upscale — usually because it was upscaled on a
-    # different generation server. A warning, never a block: printing
-    # works, only quality varies.
-    back_image_not_upscaled: bool = False
     # Pages the PDF will actually contain, Back Pages included. page_count
     # above stays the count of Front Pages, so the UI can say "9 sheets,
     # 18 pages" without recomputing the doubling itself.
@@ -504,44 +510,20 @@ class GalleryStatusOut(BaseModel):
     statuses: dict[str, list[GeneratedPairOut]]
 
 
-class BackVariantOut(BaseModel):
-    """One upscaled variant of a Back Image that exists on this server."""
-
-    id: int
-    dpi: int
-    model: str
-    created_at: str | None = None
-
-
 class BackImageOut(BaseModel):
     content_hash: str
     # Whether this server holds the bytes. False means the client should
-    # sync before rendering or upscaling — the normal state on a server
-    # the user just switched to.
+    # sync before rendering — the normal state on a server the user just
+    # switched to.
     present: bool
     # Effective print DPI of the stored original at card size, or None
     # when nothing is stored.
     source_dpi: float | None = None
     # Below what a decent printer resolves at card size. A warning the
-    # client shows, never a block — plenty of people knowingly print a
-    # flat logo at low DPI.
+    # client shows, never a block. Back Images are never upscaled, so this
+    # is the only thing standing between a soft source and a soft print —
+    # it has to be visible without being a refusal.
     low_resolution: bool = False
-    variants: list[BackVariantOut] = []
-
-
-class BackUpscaleIn(BaseModel):
-    model: str
-    dpi_targets: list[int]
-    tile_size: int = 0
-    weights_dir: str = ""
-
-
-class BackUpscaleOut(BaseModel):
-    queued: int
-    # Variants that already existed at the requested model/DPI — not an
-    # error, just nothing to do.
-    skipped: int = 0
-    task_ids: list[int] = []
 
 
 class DeleteBackOut(BaseModel):

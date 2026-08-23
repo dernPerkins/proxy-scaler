@@ -91,6 +91,7 @@ function getDefaultSettings(): ProjectSettings {
     hide_page_guides_back: true,
     back_printing: false,
     back_faces_as_reverse: true,
+    reverse_fill: "back_image",
     page_order: "interleaved",
     flip_edge: "long",
     back_offset_x_mm: 0,

@@ -3,7 +3,13 @@
 // project_store.rs — in-process, no network, no server-side project
 // concept at all any more. See ARCHITECTURE.md.
 import { invokeCommand } from "../tauri";
-import type { BackImage, BackSyncResult, FlipEdge, PageOrder } from "./types";
+import type {
+  BackImage,
+  BackSyncResult,
+  FlipEdge,
+  PageOrder,
+  ReverseFill,
+} from "./types";
 
 export interface ProjectSummary {
   id: number;
@@ -52,6 +58,7 @@ export interface ProjectSettings {
   // Back printing.
   back_printing: boolean;
   back_faces_as_reverse: boolean;
+  reverse_fill: ReverseFill;
   page_order: PageOrder;
   flip_edge: FlipEdge;
   back_offset_x_mm: number;

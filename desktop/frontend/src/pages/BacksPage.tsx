@@ -3,22 +3,25 @@
 //
 // The library is app-global and lives on THIS machine (docs/adr/0003) —
 // every project sees every back, and a project points at one by id. The
-// upscales do not: those belong to whichever generation server is
-// connected, which is why a back can read "original only" on Local and
-// "1200 DPI" on a GPU box. That asymmetry is shown rather than hidden.
+// generation server only ever holds a synced copy of the bytes, pushed
+// lazily when something actually needs to render with them, so this whole
+// tab works with no server reachable at all.
+//
+// Back Images are never upscaled, unlike card art. The low-resolution
+// warning below is therefore the only quality signal there is, which is
+// why it says what to do about it rather than just noting the number.
 //
 // Where back printing is configured — the toggle, flip edge, page order,
 // offsets, guides — is the PDF tab, because all of those change the sheet
 // rather than the image. This tab owns the image and nothing else.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { BackImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
-import { DEFAULT_GEN_PATHS, DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
-import { getApiBaseUrl, useServerReadiness } from "../config";
+import { useServerReadiness } from "../config";
 import { useProject } from "../context/ProjectContext";
 
 // Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
@@ -44,7 +47,15 @@ async function readPickedImage(file: File): Promise<{
   height: number;
 }> {
   const buffer = await file.arrayBuffer();
-  const bitmap = await createImageBitmap(new Blob([buffer], { type: file.type }));
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(new Blob([buffer], { type: file.type }));
+  } catch {
+    // A file that claims an image type but isn't one (or is a format this
+    // webview can't decode) — say so in the user's terms rather than
+    // letting a decoder exception through.
+    throw new Error(`${file.name} couldn't be read as an image.`);
+  }
   const scale = Math.min(1, THUMB_MAX_PX / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
@@ -63,6 +74,30 @@ async function readPickedImage(file: File): Promise<{
     width: bitmap.width,
     height: bitmap.height,
   };
+}
+
+/* Inline rather than an asset or an icon package: it is one drawing used
+   in one place, and `currentColor` lets it follow the dropzone's own
+   hover/drag state in both themes without a second copy for dark mode. */
+function UploadIcon() {
+  return (
+    <svg
+      className="dropzone-icon"
+      width="56"
+      height="56"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20.4 14.5A4 4 0 0 0 18 7.5h-1.3A6 6 0 1 0 6 12.9" />
+      <path d="M12 12v9" />
+      <path d="m8.5 15.5 3.5-3.5 3.5 3.5" />
+    </svg>
+  );
 }
 
 function BackTile({
@@ -94,6 +129,11 @@ function BackTile({
         textAlign: "left",
         cursor: "pointer",
         background: "transparent",
+        // Grid items size to their content by default, so a long label
+        // would stretch the tile rather than being clamped by the rule
+        // above.
+        minWidth: 0,
+        overflow: "hidden",
       }}
     >
       <div
@@ -113,7 +153,22 @@ function BackTile({
           />
         )}
       </div>
-      <div style={{ marginTop: 6, fontWeight: selected ? 600 : 400 }}>{back.label}</div>
+      {/* Uploaded filenames run long (and some are near-unreadable
+          hashes), so the label is clamped to one ellipsised line with the
+          full name in the tooltip — an unclamped name escaped the tile and
+          overlapped its neighbours. */}
+      <div
+        title={back.label}
+        style={{
+          marginTop: 6,
+          fontWeight: selected ? 600 : 400,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {back.label}
+      </div>
       <div className="hint" style={{ fontSize: 12 }}>
         {back.width}×{back.height}
         {back.source_dpi < LOW_DPI && " · low resolution"}
@@ -136,6 +191,12 @@ export default function BacksPage() {
   const [pendingDelete, setPendingDelete] = useState<{ back: BackImage; uses: number } | null>(
     null,
   );
+  // Drag events fire for every child element entered, so a plain boolean
+  // flickers off the moment the pointer crosses a tile. Counting
+  // enter/leave pairs is what keeps the highlight steady across the whole
+  // drop zone.
+  const [dragDepth, setDragDepth] = useState(0);
+  const dragging = dragDepth > 0;
 
   const libraryQuery = useQuery({
     queryKey: ["back-images"],
@@ -148,22 +209,14 @@ export default function BacksPage() {
   const backs = useMemo(() => libraryQuery.data ?? [], [libraryQuery.data]);
   const selected = backs.find((b) => b.id === settings.back_image_id) ?? null;
 
-  // Server-side state for every back in the library, annotated on top of
-  // the local list — the same local-data-plus-live-status shape
-  // mergeCardStatus.ts already uses on the Decklist tab. Absent while
-  // disconnected rather than wrong: the library is still fully usable then.
-  const statusQueries = useQueries({
-    queries: backs.map((back) => ({
-      queryKey: ["back-server-status", back.content_hash, getApiBaseUrl()],
-      queryFn: () => generationApi.getBackImageStatus(back.content_hash),
-      enabled: !serverUnavailable,
-    })),
-  });
-  const selectedIndex = backs.findIndex((b) => b.id === settings.back_image_id);
-  const selectedStatus = selectedIndex >= 0 ? statusQueries[selectedIndex]?.data : undefined;
-
   const addMutation = useMutation({
     mutationFn: async (file: File) => {
+      // The file picker filters by accept=""; a drop does not, so anything
+      // at all can land here. Without this check a dropped PDF reaches
+      // createImageBitmap and surfaces a raw DOMException.
+      if (file.type && !file.type.startsWith("image/")) {
+        throw new Error(`${file.name} isn't an image — use a PNG, JPEG or WebP.`);
+      }
       if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
         throw new Error(`Back images are limited to ${MAX_UPLOAD_MB}MB.`);
       }
@@ -171,7 +224,11 @@ export default function BacksPage() {
       return projectApi.addBackImage({
         ...picked,
         originalFilename: file.name,
-        label: file.name.replace(/\.[^.]+$/, ""),
+        // The filename exactly as picked, extension included — it's what
+        // the user recognises the file by, and stripping the extension
+        // made two files that differ only by format indistinguishable.
+        // Renameable afterwards from the sidebar.
+        label: file.name,
       });
     },
     onSuccess: (added) => {
@@ -182,25 +239,6 @@ export default function BacksPage() {
       setUploadError(null);
     },
     onError: (err) => setUploadError(err instanceof Error ? err.message : String(err)),
-  });
-
-  const upscaleMutation = useMutation({
-    mutationFn: (args: { hash: string; dpi: number }) =>
-      generationApi.upscaleBackImage(args.hash, {
-        model: settings.model,
-        dpi_targets: [args.dpi],
-        tile_size: settings.tile_size,
-        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
-      }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["back-server-status"] });
-      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
-    },
-  });
-
-  const clearUpscalesMutation = useMutation({
-    mutationFn: (hash: string) => generationApi.clearBackImageUpscales(hash),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["back-server-status"] }),
   });
 
   const deleteMutation = useMutation({
@@ -307,60 +345,10 @@ export default function BacksPage() {
 
             {selected.source_dpi < LOW_DPI && (
               <p className="hint">
-                This image works out to about {Math.round(selected.source_dpi)} DPI across
-                a card. It will still print — upscaling it below, or using a larger
-                source image, will look sharper.
+                This image works out to about {Math.round(selected.source_dpi)} DPI
+                across a card, which will look soft in print. It will still print —
+                replace it with a larger source image if you want it sharp.
               </p>
-            )}
-
-            <h3 style={{ margin: "18px 0 10px" }}>Upscaling</h3>
-            {serverUnavailable ? (
-              <p className="hint">
-                Connect a generation server to upscale this back. Upscales live on the
-                server that made them, not in your library.
-              </p>
-            ) : (
-              <>
-                <p className="hint" style={{ marginTop: 0 }}>
-                  Using this project&apos;s model ({settings.model}). Upscales belong to
-                  the connected server — switching servers means upscaling again there.
-                </p>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {DPI_OPTIONS.map((dpi) => {
-                    const have = selectedStatus?.variants.some((v) => v.dpi === dpi);
-                    return (
-                      <button
-                        key={dpi}
-                        className="btn-sm"
-                        disabled={have || upscaleMutation.isPending}
-                        onClick={() =>
-                          upscaleMutation.mutate({ hash: selected.content_hash, dpi })
-                        }
-                        title={have ? "Already upscaled at this DPI" : undefined}
-                      >
-                        {have ? `${dpi} ✓` : `Upscale ${dpi}`}
-                      </button>
-                    );
-                  })}
-                </div>
-                {upscaleMutation.isError && (
-                  <p className="error-text">
-                    {upscaleMutation.error instanceof Error
-                      ? upscaleMutation.error.message
-                      : String(upscaleMutation.error)}
-                  </p>
-                )}
-                {(selectedStatus?.variants.length ?? 0) > 0 && (
-                  <button
-                    className="btn-sm"
-                    style={{ marginTop: 8 }}
-                    disabled={clearUpscalesMutation.isPending}
-                    onClick={() => clearUpscalesMutation.mutate(selected.content_hash)}
-                  >
-                    Clear upscales on this server
-                  </button>
-                )}
-              </>
             )}
 
             <button
@@ -374,62 +362,100 @@ export default function BacksPage() {
         )}
       </aside>
 
-      <main className="content">
+      {/*
+        Dropping a file works anywhere on this pane, not only on the
+        dropzone — the dropzone is the affordance, the whole pane is the
+        target, and dropping slightly wide of it still works. Clicking it
+        opens the picker instead. All three land in one code path, because
+        a drop hands us the same `File` the input does.
+
+        This only receives events because the main window sets
+        `dragDropEnabled: false` (tauri.conf.json). Tauri v2 defaults that
+        to true, which makes the native layer consume OS file drops before
+        the webview ever sees them — the drop silently does nothing, with
+        no error to explain why.
+      */}
+      <main
+        className="content"
+        onDragEnter={(e) => {
+          e.preventDefault();
+          setDragDepth((d) => d + 1);
+        }}
+        onDragOver={(e) => {
+          // Without preventDefault here the browser treats the drop as
+          // navigation and opens the image instead.
+          e.preventDefault();
+        }}
+        onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragDepth(0);
+          const file = e.dataTransfer.files?.[0];
+          if (file) addMutation.mutate(file);
+        }}
+      >
         <h2>Backs</h2>
         <p className="hint" style={{ marginTop: 8 }}>
           Art printed on the reverse of your cards. Your library is shared across every
           project on this machine; turn back printing on from the PDF tab.
         </p>
 
-        <div className="summary-row" style={{ marginTop: 12 }}>
+        {/* The dropzone is the grid's first tile rather than a control
+            above it: card-shaped and card-sized, so the row reads as
+            "your backs, and a slot to add another". It is also why the
+            empty state needs no separate copy — an empty library is just
+            the grid with one tile in it. */}
+        <div
+          style={{
+            marginTop: 16,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
+            gap: 12,
+            alignItems: "start",
+          }}
+        >
           <button
-            className="btn-primary"
+            type="button"
+            className={`dropzone${dragging ? " is-dragging" : ""}`}
             onClick={() => fileInput.current?.click()}
             disabled={addMutation.isPending}
           >
-            {addMutation.isPending ? "Adding…" : "Add a back image"}
+            <UploadIcon />
+            <span className="dropzone-title">
+              {addMutation.isPending ? "Adding…" : "Drag and drop or click here"}
+            </span>
+            <span className="dropzone-hint">
+              PNG, JPEG or WebP
+              <br />
+              up to {MAX_UPLOAD_MB}MB
+            </span>
           </button>
-          <span className="hint">PNG, JPEG or WebP, up to {MAX_UPLOAD_MB}MB.</span>
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              // Reset first: picking the same file twice in a row fires no
-              // change event otherwise, which reads as the button being
-              // broken.
-              e.target.value = "";
-              if (file) addMutation.mutate(file);
-            }}
-          />
-        </div>
-        {uploadError && <p className="error-text">{uploadError}</p>}
 
-        {backs.length === 0 ? (
-          <p className="hint" style={{ marginTop: 16 }}>
-            Nothing here yet. Add an image and it will be available to every project.
+          {backs.map((back) => (
+            <BackTile
+              key={back.id}
+              back={back}
+              selected={back.id === settings.back_image_id}
+              isDefault={defaultQuery.data === back.id}
+              onSelect={() => setSettings((s) => ({ ...s, back_image_id: back.id }))}
+            />
+          ))}
+        </div>
+
+        {/* Rejections (wrong file type, over the size cap) surface here
+            rather than inside the tile — the tile is small, and the
+            message needs room to say which file and why. */}
+        {uploadError && (
+          <p className="error-text" style={{ marginTop: 12 }}>
+            {uploadError}
           </p>
-        ) : (
-          <div
-            style={{
-              marginTop: 16,
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
-              gap: 12,
-            }}
-          >
-            {backs.map((back) => (
-              <BackTile
-                key={back.id}
-                back={back}
-                selected={back.id === settings.back_image_id}
-                isDefault={defaultQuery.data === back.id}
-                onSelect={() => setSettings((s) => ({ ...s, back_image_id: back.id }))}
-              />
-            ))}
-          </div>
+        )}
+
+        {backs.length === 0 && (
+          <p className="hint" style={{ marginTop: 12 }}>
+            Whatever you add is shared with every project on this machine, not just
+            this one.
+          </p>
         )}
       </main>
 

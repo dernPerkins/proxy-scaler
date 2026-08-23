@@ -16,7 +16,8 @@
         "title": "Proxy Scaler",
         "url": "index.html",
         "width": 1280,
-        "height": 900
+        "height": 900,
+        "dragDropEnabled": false
       }
     ],
     "security": {

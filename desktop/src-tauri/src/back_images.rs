@@ -1,9 +1,9 @@
 // The Back Library: user-supplied art printed on a card's Reverse.
 //
-// App-global and client-owned. A project points at one of these by id; the
-// generation server only ever holds a content-addressed cache of the bytes
-// plus whatever it has upscaled, and losing all of that costs the user one
-// re-sync. See docs/adr/0003 for why ownership splits that way.
+// App-global and client-owned. A project points at one of these by id;
+// the generation server only ever holds a content-addressed cache of the
+// bytes, and losing that costs the user one re-sync. See docs/adr/0003
+// for why ownership splits that way, and why these are never upscaled.
 //
 // Two things live here that could plausibly have lived elsewhere:
 //

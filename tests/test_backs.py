@@ -4,6 +4,10 @@ The generation server's half of the Back Library. The client owns the
 canonical copy (docs/adr/0003), so everything here is a cache keyed by
 content hash — which is exactly why the hash checks are worth testing:
 a cache that stores the wrong bytes under a hash is wrong forever after.
+
+Back Images are never upscaled. The low-resolution warning is therefore
+the only quality signal a user gets, which is why it is tested here
+rather than treated as cosmetic.
 """
 
 from __future__ import annotations
@@ -44,23 +48,6 @@ def _png(size: tuple[int, int] = (600, 840), color=(20, 40, 90)) -> tuple[bytes,
     return data, hashlib.sha256(data).hexdigest()
 
 
-def test_synthetic_id_has_no_characters_illegal_in_a_filename() -> None:
-    """The id is interpolated straight into a filename by
-    upscale.original_cache_path. A colon — the obvious separator, and the
-    first one used — is an alternate-data-stream separator on Windows, so
-    the file becomes unopenable on one of the three shipped platforms."""
-    sid = backs.synthetic_id("a" * 64)
-    assert ":" not in sid
-    assert not set(sid) & set('<>:"/\\|?*')
-    assert backs.hash_from_id(sid) == "a" * 64
-
-
-def test_a_back_image_id_is_recognisable_as_one() -> None:
-    assert backs.is_back_image_id(backs.synthetic_id("b" * 64))
-    assert not backs.is_back_image_id("5d59c8f2-f6af-40a6-8dfe-8cc45bf231ce")
-    assert not backs.is_back_image_id(None)
-
-
 def test_upload_is_idempotent_and_reports_status(client: TestClient) -> None:
     data, digest = _png()
     assert client.get(f"/api/backs/{digest}").json()["present"] is False
@@ -68,9 +55,7 @@ def test_upload_is_idempotent_and_reports_status(client: TestClient) -> None:
     # Re-syncing identical bytes is a no-op, which is what lets the client
     # call this unconditionally before every render.
     assert client.post(f"/api/backs/{digest}", content=data).status_code == 200
-    body = client.get(f"/api/backs/{digest}").json()
-    assert body["present"] is True
-    assert body["variants"] == []
+    assert client.get(f"/api/backs/{digest}").json()["present"] is True
 
 
 def test_bytes_that_do_not_match_their_hash_are_refused(client: TestClient) -> None:
@@ -100,68 +85,6 @@ def test_low_resolution_is_reported_but_never_blocks(client: TestClient) -> None
     assert body["source_dpi"] < backs.MIN_COMFORTABLE_DPI
 
 
-def test_upscale_queues_an_untagged_task_in_the_backs_directory(
-    client: TestClient, db_path: Path
-) -> None:
-    """Two properties in one: no project_tag (a Back Image is app-global,
-    and tagging it would expose it to that tag's discard), and both
-    directories pointing at `backs/` (which is what keeps its output
-    outside clear_generated_data and prune_registry_under_dir)."""
-    data, digest = _png()
-    client.post(f"/api/backs/{digest}", content=data)
-    resp = client.post(
-        f"/api/backs/{digest}/upscale",
-        json={"model": "ultrasharp_v2", "dpi_targets": [800], "weights_dir": "weights"},
-    )
-    assert resp.status_code == 202
-    assert resp.json()["queued"] == 1
-
-    [task] = client.get("/api/tasks").json()
-    assert task["project_tag"] is None
-    assert task["scryfall_id"] == backs.synthetic_id(digest)
-    row = db.get_task(task["id"], db_path=db_path)
-    assert Path(row.output_dir).name == backs.BACKS_DIR_NAME
-    assert Path(row.cache_dir).name == backs.BACKS_DIR_NAME
-
-
-def test_upscaling_seeds_the_cache_so_no_download_is_needed(client: TestClient) -> None:
-    """The upload is stored at exactly the path _regenerate_faces probes
-    before it reaches for png_url, so an upscale of a Back Image makes no
-    network call — with no change to pipeline.py at all (docs/adr/0004)."""
-    data, digest = _png()
-    client.post(f"/api/backs/{digest}", content=data)
-    from proxy_scaler.upscale import original_cache_path
-
-    probed = original_cache_path(
-        Path(backs.BACKS_DIR_NAME), backs.synthetic_id(digest), None
-    )
-    assert probed.is_file()
-    assert probed == backs.original_path(digest)
-
-
-def test_upscaling_an_unsynced_back_is_a_conflict_not_a_crash(client: TestClient) -> None:
-    _data, digest = _png()
-    resp = client.post(
-        f"/api/backs/{digest}/upscale", json={"model": "ultrasharp_v2", "dpi_targets": [800]}
-    )
-    assert resp.status_code == 409
-
-
-def test_upscale_rejects_unknown_models_and_dpis(client: TestClient) -> None:
-    data, digest = _png()
-    client.post(f"/api/backs/{digest}", content=data)
-    bad_dpi = client.post(
-        f"/api/backs/{digest}/upscale", json={"model": "ultrasharp_v2", "dpi_targets": [999]}
-    )
-    bad_model = client.post(
-        f"/api/backs/{digest}/upscale", json={"model": "nope", "dpi_targets": [800]}
-    )
-    no_dpi = client.post(
-        f"/api/backs/{digest}/upscale", json={"model": "ultrasharp_v2", "dpi_targets": []}
-    )
-    assert bad_dpi.status_code == bad_model.status_code == no_dpi.status_code == 400
-
-
 def test_delete_removes_the_original_from_this_server_only(client: TestClient) -> None:
     data, digest = _png()
     client.post(f"/api/backs/{digest}", content=data)
@@ -169,34 +92,18 @@ def test_delete_removes_the_original_from_this_server_only(client: TestClient) -
     assert client.get(f"/api/backs/{digest}").json()["present"] is False
 
 
-def test_clearing_upscales_keeps_the_synced_original(client: TestClient) -> None:
-    """"Clear upscales" is the action that reclaims disk on a GPU box
-    without losing anything that can't be rebuilt — so the original, which
-    a re-upscale needs, has to survive it."""
-    data, digest = _png()
-    client.post(f"/api/backs/{digest}", content=data)
-    client.delete(f"/api/backs/{digest}/variants")
-    assert client.get(f"/api/backs/{digest}").json()["present"] is True
-
-
-def test_a_missing_variant_falls_back_to_the_plain_original(
-    client: TestClient, db_path: Path
+def test_resolve_print_source_is_the_synced_original_or_nothing(
+    client: TestClient,
 ) -> None:
-    """Switching to a server that never upscaled this back must still
-    print. Quality varies; correctness does not."""
+    """There is exactly one candidate image for a Reverse, because Back
+    Images are never upscaled — build_pdf cover-fits and resizes the
+    original at export time instead."""
     data, digest = _png()
+    assert backs.resolve_print_source(digest) is None
+    assert backs.resolve_print_source(None) is None
+
     client.post(f"/api/backs/{digest}", content=data)
-    path, not_upscaled = backs.resolve_print_source(digest, db_path=db_path)
-    assert path == backs.original_path(digest)
-    assert not_upscaled is True
-
-
-def test_resolve_print_source_is_empty_when_nothing_is_synced(
-    client: TestClient, db_path: Path
-) -> None:
-    _data, digest = _png()
-    assert backs.resolve_print_source(digest, db_path=db_path) == (None, False)
-    assert backs.resolve_print_source(None, db_path=db_path) == (None, False)
+    assert backs.resolve_print_source(digest) == backs.original_path(digest)
 
 
 def test_oversized_uploads_are_refused(client: TestClient, monkeypatch) -> None:
@@ -242,3 +149,5 @@ def test_discarding_a_tag_leaves_back_images_alone(client: TestClient) -> None:
     client.post(f"/api/backs/{digest}", content=data)
     client.post("/api/tags/some-tag/discard")
     assert client.get(f"/api/backs/{digest}").json()["present"] is True
+
+

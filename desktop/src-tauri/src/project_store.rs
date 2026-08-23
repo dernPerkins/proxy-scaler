@@ -145,6 +145,11 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // Back printing.
     ("back_printing", "INTEGER NOT NULL DEFAULT 0"),
     ("back_faces_as_reverse", "INTEGER NOT NULL DEFAULT 1"),
+    // What fills a Reverse belonging to a card with no transform side:
+    // 'back_image' or 'blank'. Blank needs no Back Image at all — the
+    // mode for printing a deck purely so its double-faced cards get their
+    // own backs.
+    ("reverse_fill", "TEXT NOT NULL DEFAULT 'back_image'"),
     ("page_order", "TEXT NOT NULL DEFAULT 'interleaved'"),
     ("flip_edge", "TEXT NOT NULL DEFAULT 'long'"),
     // Independent of the front offsets, not added to them: the two are
@@ -398,6 +403,8 @@ pub struct ProjectSettings {
     // rather than as a separate card. Inert while back_printing is off.
     #[serde(default = "default_true")]
     pub back_faces_as_reverse: bool,
+    #[serde(default = "default_reverse_fill")]
+    pub reverse_fill: String,
     #[serde(default = "default_page_order")]
     pub page_order: String,
     #[serde(default = "default_flip_edge")]
@@ -429,6 +436,10 @@ fn default_preferred_lang() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_reverse_fill() -> String {
+    "back_image".to_string()
 }
 
 fn default_page_order() -> String {
@@ -464,6 +475,7 @@ impl Default for ProjectSettings {
             hide_page_guides_back: true,
             back_printing: false,
             back_faces_as_reverse: true,
+            reverse_fill: default_reverse_fill(),
             page_order: default_page_order(),
             flip_edge: default_flip_edge(),
             back_offset_x_mm: 0.0,
@@ -658,6 +670,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         hide_page_guides_back: bool,
         back_printing: bool,
         back_faces_as_reverse: bool,
+        reverse_fill: String,
         page_order: String,
         flip_edge: String,
         back_offset_x_mm: f64,
@@ -678,7 +691,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     offset_x_mm, offset_y_mm, guide_width_pt, guide_length_mm, export_dpi,
                     hide_card_guides_front, hide_page_guides_front,
                     hide_card_guides_back, hide_page_guides_back,
-                    back_printing, back_faces_as_reverse, page_order, flip_edge,
+                    back_printing, back_faces_as_reverse, reverse_fill,
+                    page_order, flip_edge,
                     back_offset_x_mm, back_offset_y_mm, back_image_id,
                     preferred_dpi, preferred_model, preferred_lang, lang_any,
                     created_at, updated_at
@@ -711,6 +725,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     hide_page_guides_back: row.get("hide_page_guides_back")?,
                     back_printing: row.get("back_printing")?,
                     back_faces_as_reverse: row.get("back_faces_as_reverse")?,
+                    reverse_fill: row.get("reverse_fill")?,
                     page_order: row.get("page_order")?,
                     flip_edge: row.get("flip_edge")?,
                     back_offset_x_mm: row.get("back_offset_x_mm")?,
@@ -758,6 +773,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             hide_page_guides_back: loaded.hide_page_guides_back,
             back_printing: loaded.back_printing,
             back_faces_as_reverse: loaded.back_faces_as_reverse,
+            reverse_fill: loaded.reverse_fill,
             page_order: loaded.page_order,
             flip_edge: loaded.flip_edge,
             back_offset_x_mm: loaded.back_offset_x_mm,
@@ -1003,10 +1019,10 @@ fn update_project_row(
          preferred_lang = ?20, lang_any = ?21,
          hide_card_guides_front = ?22, hide_page_guides_front = ?23,
          hide_card_guides_back = ?24, hide_page_guides_back = ?25,
-         back_printing = ?26, back_faces_as_reverse = ?27, page_order = ?28,
-         flip_edge = ?29, back_offset_x_mm = ?30, back_offset_y_mm = ?31,
-         back_image_id = ?32, updated_at = ?33
-         WHERE id = ?34",
+         back_printing = ?26, back_faces_as_reverse = ?27, reverse_fill = ?28,
+         page_order = ?29, flip_edge = ?30, back_offset_x_mm = ?31,
+         back_offset_y_mm = ?32, back_image_id = ?33, updated_at = ?34
+         WHERE id = ?35",
         params![
             trimmed,
             settings.model,
@@ -1035,6 +1051,7 @@ fn update_project_row(
             settings.hide_page_guides_back,
             settings.back_printing,
             settings.back_faces_as_reverse,
+            settings.reverse_fill,
             settings.page_order,
             settings.flip_edge,
             settings.back_offset_x_mm,

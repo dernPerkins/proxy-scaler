@@ -5,7 +5,6 @@
 // project.ts), never a server-side project id — see ARCHITECTURE.md.
 import { getApiBaseUrl, waitForServerReady } from "../config";
 import type {
-  BackImageServerStatus,
   CardDataset,
   CardDbStatus,
   CardImportStatus,
@@ -45,7 +44,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!resp.ok) {
-    const detail = await resp.text();
+    const body = await resp.text();
+    // FastAPI puts the human-readable message in `detail` — surfacing the
+    // raw body instead printed `{"detail":"Upload the back image..."}`
+    // verbatim into the UI, JSON braces and all. A 422's `detail` is a
+    // list of validation objects rather than a string, so only a string
+    // is unwrapped; anything else falls back to the body text.
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.detail === "string") detail = parsed.detail;
+    } catch {
+      // Not JSON (a proxy error page, an empty body) — use it as-is.
+    }
     throw new ApiError(resp.status, detail || resp.statusText);
   }
   if (resp.status === 204) {
@@ -242,37 +253,11 @@ export const generationApi = {
 
   // --- Back Images ---------------------------------------------------
   //
-  // The server holds a content-addressed cache of Back Images plus
-  // whatever IT has upscaled. The library itself is client-side (see
-  // api/project.ts), so everything here is per-server and changes when
-  // you switch — that asymmetry is the design, not a bug (docs/adr/0003).
-  // Uploading is Rust's job (projectApi.syncBackImage): multi-MB bodies
-  // never cross the webview.
-  getBackImageStatus: (contentHash: string) =>
-    request<BackImageServerStatus>(`/api/backs/${contentHash}`),
-
-  upscaleBackImage: (
-    contentHash: string,
-    body: {
-      model: string;
-      dpi_targets: number[];
-      tile_size?: number;
-      weights_dir?: string;
-    },
-  ) =>
-    request<{ queued: number; skipped: number; task_ids: number[] }>(
-      `/api/backs/${contentHash}/upscale`,
-      { method: "POST", body: JSON.stringify(body) },
-    ),
-
-  /** Drop this back's upscales from the connected server, keeping the
-   *  synced original — reclaims disk on a GPU box without losing anything
-   *  that can't be rebuilt. */
-  clearBackImageUpscales: (contentHash: string) =>
-    request<{ removed: number }>(`/api/backs/${contentHash}/variants`, {
-      method: "DELETE",
-    }),
-
+  // The server holds a content-addressed cache of Back Image bytes and
+  // nothing else — backs are never upscaled (see proxy_scaler/backs.py
+  // for why that asymmetry with card art is deliberate). The library
+  // itself is client-side, see api/project.ts. Uploading is Rust's job
+  // (projectApi.syncBackImage): multi-MB bodies never cross the webview.
   /** Remove a back from the connected server entirely. The client's
    *  library copy is canonical and untouched. */
   deleteBackImageFromServer: (contentHash: string) =>

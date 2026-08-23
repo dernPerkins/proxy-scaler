@@ -15,6 +15,7 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
     DeckEntryIn,
+    ReverseFillIn,
     PdfJobOut,
     PdfJobStatusOut,
     PdfLayoutIn,
@@ -35,6 +36,7 @@ from proxy_scaler.pdf_layout import (
     PageLayout,
     PageOrder,
     PrintSlot,
+    ReverseFill,
     add_bleed,
     back_page_cells,
     build_pdf,
@@ -93,7 +95,6 @@ class PreparedRender:
     missing: list[str]
     missing_at_dpi: list[str]
     back_image_path: Path | None
-    back_image_not_upscaled: bool
     reverses_needing_back_image: int
 
     @property
@@ -163,19 +164,17 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     pages = paginate(slots, layout.cards_per_page)
 
     back_image_path: Path | None = None
-    back_image_not_upscaled = False
     reverses_needing_back_image = 0
-    if body.back_printing:
+    # Counted only when a Back Image is what would actually go there. With
+    # reverse_fill=BLANK those same Reverses are meant to be empty, so
+    # they need nothing and must not be reported as missing anything.
+    if body.back_printing and body.reverse_fill is ReverseFillIn.BACK_IMAGE:
         reverses_needing_back_image = sum(
             1 for page in pages for slot in page if slot.reverse is None
         )
         if reverses_needing_back_image and body.back_image_hash:
             try:
-                back_image_path, back_image_not_upscaled = backs.resolve_print_source(
-                    body.back_image_hash,
-                    preferred_model=body.preferred_model,
-                    db_path=db_path,
-                )
+                back_image_path = backs.resolve_print_source(body.back_image_hash)
             except backs.BackImageError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -186,7 +185,6 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         missing=missing,
         missing_at_dpi=missing_at_dpi,
         back_image_path=back_image_path,
-        back_image_not_upscaled=back_image_not_upscaled,
         reverses_needing_back_image=reverses_needing_back_image,
     )
 
@@ -202,6 +200,7 @@ def _render_kwargs(body: PdfLayoutIn, prepared: PreparedRender) -> dict:
         back_image_includes_bleed=body.back_image_includes_bleed,
         flip_edge=FlipEdge(body.flip_edge.value),
         page_order=PageOrder(body.page_order.value),
+        reverse_fill=ReverseFill(body.reverse_fill.value),
     )
 
 
@@ -238,7 +237,6 @@ def preview(body: PdfLayoutIn) -> PdfPreviewOut:
         missing_at_dpi=prepared.missing_at_dpi,
         reverses_needing_back_image=prepared.reverses_needing_back_image,
         missing_back_image=prepared.missing_back_image,
-        back_image_not_upscaled=prepared.back_image_not_upscaled,
         total_page_count=len(prepared.pages) * (2 if body.back_printing else 1),
     )
 
@@ -292,14 +290,19 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
     file-serving route (FaceResult carries no gallery_item_id to route
     through gallery.py's existing /full,/original endpoints)."""
     prepared = _prepare(body)
-    layout = prepared.back_layout if body.preview_back_page else prepared.layout
+    # There is no Back Page to preview when back printing is off, so the
+    # flag is ignored rather than honoured — honouring it renders a page
+    # that does not exist in the output, which comes out blank and looks
+    # like a broken preview rather than like a setting being off.
+    show_back = body.preview_back_page and body.back_printing
+    layout = prepared.back_layout if show_back else prepared.layout
     pages = prepared.pages
     # The Back Page preview is the cheapest way to catch a wrong Flip Edge
     # before a sheet of cardstock pays for it, so it renders the real
     # mirrored grid rather than a mirrored-looking approximation: same
     # back_page_cells() the renderer uses, same full-grid mirroring on a
     # partial page.
-    if body.preview_back_page and pages:
+    if show_back and pages:
         # Full grid, empty positions included: a Back Page's cells are
         # placed by mirrored index, so dropping the empty ones would shift
         # every later card and the preview would stop matching the sheet.
@@ -323,7 +326,16 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         # after it shifts and the mirrored preview stops matching the
         # sheet it is previewing.
         face, is_back_image = _preview_cell(
-            cell, is_back=body.preview_back_page, back_image_path=prepared.back_image_path
+            cell,
+            is_back=show_back,
+            # None under reverse_fill=BLANK, so a card with no transform
+            # side previews as an empty position — which is exactly what
+            # it will print as.
+            back_image_path=(
+                prepared.back_image_path
+                if body.reverse_fill is ReverseFillIn.BACK_IMAGE
+                else None
+            ),
         )
         if face is None and not is_back_image:
             slots.append(PdfPageSlotOut(card_name="", face_label=None, model="", dpi=0))
@@ -384,10 +396,10 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         guide_width_pt=layout.guide_width_pt,
         guide_length_mm=layout.guide_length_mm,
         hide_card_guides=(
-            body.hide_card_guides_back if body.preview_back_page else body.hide_card_guides_front
+            body.hide_card_guides_back if show_back else body.hide_card_guides_front
         ),
         hide_page_guides=(
-            body.hide_page_guides_back if body.preview_back_page else body.hide_page_guides_front
+            body.hide_page_guides_back if show_back else body.hide_page_guides_front
         ),
         page_count=len(pages),
         slots=slots,
@@ -476,6 +488,7 @@ def start_pdf_job(body: PdfLayoutIn) -> PdfJobOut:
             prepared.pages,
             back_printing=body.back_printing,
             back_image_path=prepared.back_image_path,
+            reverse_fill=ReverseFill(body.reverse_fill.value),
         ),
     )
     threading.Thread(

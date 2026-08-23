@@ -279,6 +279,9 @@ export interface PdfLayoutRequest {
   /** A double-faced card's transform side prints on its own back rather
    *  than as a separate card. Inert while back_printing is false. */
   back_faces_as_reverse?: boolean;
+  /** What fills a Reverse for a card with no transform side. "blank"
+   *  needs no Back Image at all. */
+  reverse_fill?: ReverseFill;
   page_order?: PageOrder;
   flip_edge?: FlipEdge;
   back_offset_x_mm?: number;
@@ -290,6 +293,12 @@ export interface PdfLayoutRequest {
   /** Preview only: render page 1's Back Page, mirrored. */
   preview_back_page?: boolean;
 }
+
+/** What goes on a Reverse belonging to a card with no transform side.
+ *  "blank" leaves it empty — the mode for printing a deck purely so its
+ *  double-faced cards get their own backs. The Back Page is still
+ *  emitted either way, or the sheet falls out of register. */
+export type ReverseFill = "back_image" | "blank";
 
 /** Interleaved is what a duplex driver expects; fronts-then-backs is for
  *  hand-feeding a stack through a single-sided printer. */
@@ -337,9 +346,6 @@ export interface PdfPreview {
   reverses_needing_back_image: number;
   /** At least one Reverse would come up blank. Blocks the render. */
   missing_back_image: boolean;
-  /** Printing from the plain upload rather than an upscale — usually
-   *  because it was upscaled on a different server. A warning only. */
-  back_image_not_upscaled: boolean;
   /** Pages the PDF will contain, Back Pages included. page_count stays
    *  the number of sheets you feed the printer. */
   total_page_count: number;
@@ -402,24 +408,15 @@ export interface BackImage {
   source_dpi: number;
 }
 
-/** One upscaled variant of a Back Image on the CONNECTED server. Mirrors
- *  BackVariantOut. */
-export interface BackVariant {
-  id: number;
-  dpi: number;
-  model: string;
-  created_at: string | null;
-}
-
-/** What the connected generation server holds for one Back Image. Changes
- *  when you switch servers: the library is yours, the upscales belong to a
- *  machine. Mirrors BackImageOut. */
+/** What the connected generation server holds for one Back Image — just
+ *  the bytes; Back Images are never upscaled. Mirrors BackImageOut. */
 export interface BackImageServerStatus {
   content_hash: string;
   present: boolean;
   source_dpi: number | null;
+  /** Below what a decent printer resolves at card size. Since there is no
+   *  upscaling, this warning is the only quality signal there is. */
   low_resolution: boolean;
-  variants: BackVariant[];
 }
 
 export interface BackSyncResult {

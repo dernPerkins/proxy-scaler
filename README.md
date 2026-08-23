@@ -156,10 +156,14 @@ can be duplex-printed. See [Backs](#backs).
 
 ### Backs
 
-A **Backs** tab holds your library of card-back images — upload a PNG,
-JPEG or WebP, pick one for the project, and optionally mark one as the
-default new projects start with. The library is shared across every
-project on your machine.
+A **Backs** tab holds your library of card-back images — drag one in (or
+click to pick a file), choose one for the project, and optionally mark one
+as the default new projects start with. PNG, JPEG or WebP. The library is
+shared across every project on your machine.
+
+Back images are **not** upscaled, unlike your card images — upload art
+that's already sharp enough to print. The tab warns you when an image
+works out below about 300 DPI across a card.
 
 Turn **Print card backs** on from the PDF tab and every sheet is followed
 by its reverse, mirrored so the backs land on the right cards once the
@@ -173,16 +177,16 @@ paper turns over. Things worth knowing:
   transform card takes one print slot instead of two. Turn that off and
   each face goes back to being its own card with the back image on its
   reverse.
+- **Backs of single-faced cards** can be left *blank* instead of taking
+  the back image. That's the mode for printing a deck purely so its
+  double-faced cards get their own backs — it needs no back image at all.
+  The back pages are still produced (they have to be, or the sheet falls
+  out of register), just empty except for the transform cards.
 - **Page order** is interleaved by default (front, back, front, back…),
   which is what duplex printer drivers expect. *All fronts, then all
   backs* is there for hand-feeding a stack through a single-sided printer.
 - **Back offsets** nudge only the back pages, for printers whose duplex
   registration drifts a fraction of a millimetre.
-- **Upscaling a back** is optional and uses the same models as your cards.
-  Upscales live on whichever generation server produced them, so a back
-  upscaled on your GPU box prints from its original if you switch to
-  Local — it still prints, it just won't be as sharp, and the PDF tab says
-  so.
 
 A **Tasks** tab shows the generation queue — what's pending, running,
 done, or failed — since upscaling a full decklist runs in the background

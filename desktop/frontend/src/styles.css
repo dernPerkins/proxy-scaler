@@ -413,6 +413,101 @@ button:disabled {
   min-width: 0;
 }
 
+/* The PDF tab's sidebar carries four sections (source images, layout,
+   guides, back printing) and ran off the bottom of a laptop window, which
+   put the Generate button below the fold. `.sidebar-split` widens it and
+   `.sidebar-cols` lays the sections out in two columns instead of one
+   tall stack — the second column starts at Guides, so the two halves come
+   out roughly even.
+
+   align-items: start keeps each column its own height rather than
+   stretching both to match the taller one. */
+.sidebar.sidebar-split {
+  width: 560px;
+}
+.sidebar-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+/* Below this the two columns plus the preview stop fitting side by side,
+   so fall back to the single tall column — scrolling a narrow window is
+   better than a preview squeezed to nothing. */
+@media (max-width: 1180px) {
+  .sidebar.sidebar-split {
+    width: 268px;
+  }
+  .sidebar-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- dropzone ---------- */
+
+/* The Backs tab's upload affordance, sized and shaped to sit in the
+   library grid as its first tile — same card aspect as a back, so the row
+   reads as "your backs, and a slot to add another" rather than as a
+   separate control bolted on above them.
+
+   Rendered as a <button> rather than a styled <div>: it is genuinely a
+   control, and that gets keyboard focus and Enter/Space for free instead
+   of needing tabIndex/onKeyDown bolted on to imitate them.
+
+   `.is-dragging` is driven by a drag anywhere over the pane, not just
+   over this tile, so dropping slightly wide of it still works and still
+   looks like it will. */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: center;
+  /* Same card proportions as the tiles beside it. A BackTile's own label
+     sits below its image box, so the dropzone carries a little extra
+     height to line its bottom edge up with theirs. */
+  aspect-ratio: 63 / 88;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.dropzone:hover:not(:disabled),
+.dropzone.is-dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.dropzone:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.dropzone-icon {
+  /* currentColor throughout the SVG, so the icon follows the same token
+     the rest of the tile does in both light and dark. */
+  color: var(--border-strong);
+  flex-shrink: 0;
+}
+.dropzone.is-dragging .dropzone-icon,
+.dropzone:hover:not(:disabled) .dropzone-icon {
+  color: var(--accent);
+}
+.dropzone-title {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text);
+}
+.dropzone-hint {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 /* ---------- project bar ---------- */
 
 .project-bar {

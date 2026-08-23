@@ -1509,9 +1509,6 @@ def test_preview_accepts_a_synced_back_image(client: TestClient, tmp_path: Path)
         json=_pdf_layout_body(back_printing=True, back_image_hash=digest),
     ).json()
     assert body["missing_back_image"] is False
-    # Printing from the plain original rather than an upscale — a warning
-    # the client surfaces, never a block.
-    assert body["back_image_not_upscaled"] is True
     assert body["total_page_count"] == body["page_count"] * 2
 
 
@@ -1590,3 +1587,88 @@ def test_back_page_preview_reports_that_pages_guide_flags(
     ).json()
     assert (front["hide_card_guides"], front["hide_page_guides"]) == (False, False)
     assert (back["hide_card_guides"], back["hide_page_guides"]) == (True, True)
+
+
+def test_blank_reverses_need_no_back_image(client: TestClient, tmp_path: Path) -> None:
+    """"Print my transform cards' backs, nothing else" must not demand a
+    Back Image — the whole point of the mode is that there isn't one."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    body = client.post(
+        "/api/pdf/preview",
+        json=_pdf_layout_body(back_printing=True, reverse_fill="blank"),
+    ).json()
+    assert body["reverses_needing_back_image"] == 0
+    assert body["missing_back_image"] is False
+    assert body["total_page_count"] == body["page_count"] * 2
+
+    # And it renders, where the back_image fill would have been a 400.
+    assert (
+        client.post(
+            "/api/pdf", json=_pdf_layout_body(back_printing=True, reverse_fill="blank")
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/pdf", json=_pdf_layout_body(back_printing=True)
+        ).status_code
+        == 400
+    )
+
+
+def test_blank_reverses_preview_as_empty_positions(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A card with no transform side previews as an empty cell, because
+    that is what it will print as."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    data, digest = _back_png_bytes()
+    client.post(f"/api/backs/{digest}", content=data)
+
+    back = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(
+            cols=3,
+            rows=3,
+            back_printing=True,
+            # Deliberately still selected: choosing blank means blank, and
+            # a leftover Back Image must not sneak into the preview any
+            # more than it does into the PDF.
+            back_image_hash=digest,
+            reverse_fill="blank",
+            preview_back_page=True,
+        ),
+    ).json()
+    assert len(back["slots"]) == 9
+    assert all(not s["thumbnail_data_url"] for s in back["slots"])
+    assert not any(s["is_back_image"] for s in back["slots"])
+
+
+def test_back_page_preview_is_ignored_when_back_printing_is_off(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Toggling back printing off while the preview was showing the back
+    used to render a blank page: there are no Back Pages in that output,
+    but the flag was still honoured, so the preview showed a mirrored grid
+    of empty cells. It reads as a broken preview rather than as a setting
+    being off, so the flag is ignored instead.
+    """
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    front = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(cols=3, rows=3)
+    ).json()
+    stale = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(cols=3, rows=3, back_printing=False, preview_back_page=True),
+    ).json()
+
+    assert stale["slots"] == front["slots"]
+    assert stale["slots"][0]["thumbnail_data_url"]
+    # And it reports the FRONT page's guide flags, not the back's.
+    assert stale["hide_card_guides"] == front["hide_card_guides"]
+    assert stale["hide_page_guides"] == front["hide_page_guides"]
