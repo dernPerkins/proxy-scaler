@@ -26,6 +26,7 @@ from proxy_scaler.pdf_layout import (
     PrintSlot,
     ReverseFill,
     back_page_cells,
+    back_pages_are_rotated,
     build_print_slots,
     fit_cover,
     mirror_page_index,
@@ -1079,8 +1080,17 @@ def test_partial_last_page_mirrors_over_the_full_grid() -> None:
 
 
 def _back_image(tmp_path: Path, size: tuple[int, int] = (400, 400)) -> Path:
+    """A back image with a mark in one corner.
+
+    Asymmetric on purpose: a solid colour is identical after a 180°
+    rotation, so a flat fixture silently passes every rotation test
+    whether the code rotates or not.
+    """
     path = tmp_path / "back.png"
-    Image.new("RGB", size, (200, 30, 30)).save(path, format="PNG")
+    img = Image.new("RGB", size, (200, 30, 30))
+    corner = Image.new("RGB", (size[0] // 4, size[1] // 4), (255, 255, 0))
+    img.paste(corner, (0, 0))
+    img.save(path, format="PNG")
     return path
 
 
@@ -1089,7 +1099,7 @@ def _page_count(pdf_bytes: bytes) -> int:
     return pdf_bytes.count(b"/Type /Page\n") + pdf_bytes.count(b"/Type /Page/")
 
 
-def test_interleaved_back_printing_doubles_the_page_count(tmp_path: Path) -> None:
+def test_duplex_back_printing_doubles_the_page_count(tmp_path: Path) -> None:
     pages = [[_slot(_pdf_source_face(tmp_path, "a")), _slot(_pdf_source_face(tmp_path, "b"))]]
     layout = _a4_portrait_layout(cols=2, rows=1)
     single = build_pdf(pages, layout=layout, export_dpi=600)
@@ -1115,9 +1125,9 @@ def test_fronts_then_backs_emits_the_same_pages_in_a_different_order(tmp_path: P
         back_printing=True,
         back_image_path=_back_image(tmp_path),
     )
-    interleaved = build_pdf(pages, page_order=PageOrder.INTERLEAVED, **kwargs)
+    duplex = build_pdf(pages, page_order=PageOrder.DUPLEX, **kwargs)
     stacked = build_pdf(pages, page_order=PageOrder.FRONTS_THEN_BACKS, **kwargs)
-    assert _page_count(interleaved) == _page_count(stacked) == 4
+    assert _page_count(duplex) == _page_count(stacked) == 4
 
 
 def test_back_printing_off_leaves_output_untouched(tmp_path: Path) -> None:
@@ -1290,3 +1300,77 @@ def test_blank_fill_still_prints_back_faces(tmp_path: Path) -> None:
         reverse_fill=ReverseFill.BLANK,
     )
     assert _page_count(pdf) == 2
+
+
+# --- Back Page rotation ----------------------------------------------------
+
+
+def test_rotation_follows_the_flip_axis_not_the_orientation() -> None:
+    """Back images are drawn upside down exactly when the sheet turns about
+    a HORIZONTAL axis, because that inverts up/down between the two sides
+    of any one card. Turning about a vertical axis preserves up, so nothing
+    is rotated — and that is the common case (portrait paper, long-edge
+    duplex), which is why the correction is easy to miss."""
+    portrait = _a4_portrait_layout(cols=3, rows=3)
+    landscape = resolve_page_layout(page_w_mm=297.0, page_h_mm=210.0, cols=3, rows=3)
+
+    assert back_pages_are_rotated(portrait, FlipEdge.LONG) is False
+    assert back_pages_are_rotated(portrait, FlipEdge.SHORT) is True
+    assert back_pages_are_rotated(landscape, FlipEdge.LONG) is True
+    assert back_pages_are_rotated(landscape, FlipEdge.SHORT) is False
+
+
+def test_rotation_and_mirroring_always_agree_on_the_axis() -> None:
+    """The two halves of the same fact: whichever axis is mirrored decides
+    whether up is preserved. Rows mirrored means rotate; columns mirrored
+    means don't. Letting these disagree would put every back on the right
+    card the wrong way up."""
+    for page in ((210.0, 297.0), (297.0, 210.0)):
+        layout = resolve_page_layout(page_w_mm=page[0], page_h_mm=page[1], cols=2, rows=2)
+        for flip_edge in (FlipEdge.LONG, FlipEdge.SHORT):
+            # Slot 0 mirrors to slot 1 when columns reverse, slot 2 when
+            # rows reverse, on a 2×2 grid.
+            mirrored_to = mirror_page_index(0, layout=layout, flip_edge=flip_edge)
+            rows_mirrored = mirrored_to == 2
+            assert back_pages_are_rotated(layout, flip_edge) is rows_mirrored
+
+
+def test_a_rotated_back_page_actually_renders_differently(tmp_path: Path) -> None:
+    """The table above is only worth anything if it reaches the page.
+
+    Landscape sheet: long edge rotates, short edge does not, so the two
+    renders of the same deck must differ in their bytes.
+    """
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    landscape = resolve_page_layout(page_w_mm=297.0, page_h_mm=210.0, cols=1, rows=1)
+    common = dict(
+        layout=landscape,
+        export_dpi=600,
+        back_printing=True,
+        back_image_path=_back_image(tmp_path),
+    )
+    rotated = build_pdf(pages, flip_edge=FlipEdge.LONG, **common)
+    upright = build_pdf(pages, flip_edge=FlipEdge.SHORT, **common)
+    assert rotated != upright
+
+
+def test_rotating_a_back_image_does_not_break_its_caching(tmp_path: Path) -> None:
+    """The render cache is keyed on (path, rotated) rather than the path
+    alone. Widening the key must not stop it being a cache: one back image
+    filling four Reverses is still one decode, not four."""
+    faces = [_pdf_source_face(tmp_path, name) for name in ("a", "b", "c", "d")]
+    pages = [[_slot(f) for f in faces]]
+    landscape = resolve_page_layout(page_w_mm=297.0, page_h_mm=210.0, cols=4, rows=1)
+    calls: list[tuple[int, int]] = []
+    build_pdf(
+        pages,
+        layout=landscape,
+        export_dpi=600,
+        back_printing=True,
+        back_image_path=_back_image(tmp_path),
+        # The rotating case, so the widened key is the one in use.
+        flip_edge=FlipEdge.LONG,
+        on_progress=lambda c, t: calls.append((c, t)),
+    )
+    # Four distinct fronts plus the one back image, each encoded once.
+    assert calls == [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]

@@ -300,9 +300,10 @@ export interface PdfLayoutRequest {
  *  emitted either way, or the sheet falls out of register. */
 export type ReverseFill = "back_image" | "blank";
 
-/** Interleaved is what a duplex driver expects; fronts-then-backs is for
- *  hand-feeding a stack through a single-sided printer. */
-export type PageOrder = "interleaved" | "fronts_then_backs";
+/** "duplex" (front, back, front, back…) is what a duplex printer driver
+ *  expects; "fronts_then_backs" is for hand-feeding a stack through a
+ *  single-sided printer. */
+export type PageOrder = "duplex" | "fronts_then_backs";
 
 /** Which edge the printer turns the sheet on. Must match the printer's own
  *  duplex setting — it decides whether a Back Page mirrors its columns or
@@ -379,6 +380,16 @@ export interface PdfPagePreview {
   bleed_mm: number;
   guide_width_pt: number;
   guide_length_mm: number;
+  /** Total size of the card grid. The server reports it rather than
+   *  refusing an oversized grid — a custom offset may push past an edge
+   *  on purpose — so the client compares these against the page and
+   *  warns. Absent (0) from servers older than this. */
+  grid_w_mm: number;
+  grid_h_mm: number;
+  /** This page's images are drawn upside down — true only for a Back Page
+   *  whose sheet turns about a horizontal axis. The preview has to show
+   *  it, since checking the flip edge is what the preview is for. */
+  rotated?: boolean;
   /** Already resolved for the page kind being previewed, so this doesn't
    *  re-derive which of the four flags applies. */
   hide_card_guides: boolean;

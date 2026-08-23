@@ -140,10 +140,14 @@ decklist and go, and everything is persisted as you work. Type a name
 when you want the project to be findable later — it keeps the images you
 have already generated.
 
-**PDF generation** is a full tab of its own: page size presets or custom
-dimensions, columns/rows, bleed, spacing, position offset, guide
+**PDF generation** is a full tab of its own: page size presets (A4 and
+Letter, each in portrait and landscape — paper grain makes a sheet more
+rigid one way than the other, and which way depends on the stock; each
+preset also sets the grid that fits it, 3×3 portrait or 4×2 landscape) or
+custom dimensions, columns/rows, bleed, spacing, position offset, guide
 width/length, and a preferred model/DPI for picking among
-already-generated images. It also tells you how many print slots are left
+already-generated images. It warns you when your grid is bigger than the
+page rather than silently printing cards off the edge. It also tells you how many print slots are left
 on your last page, and flags any card still missing a generated image —
 or, for a double-faced card, missing one of its two faces — before you
 print. Guides are switchable per kind and per side: **card guides** (the
@@ -172,7 +176,9 @@ paper turns over. Things worth knowing:
 - **Flip edge** must match your printer's own duplex setting (*flip on
   long edge* or *flip on short edge* in the print dialog). If the two
   disagree, every card gets someone else's back. Use the **Back of page
-  1** preview to check before spending cardstock.
+  1** preview to check before spending cardstock — it shows the real
+  mirrored layout, including the 180° rotation a horizontal flip needs
+  (portrait paper on the short edge, or landscape paper on the long one).
 - **Double-faced cards** print as one card with both faces on it, so a
   transform card takes one print slot instead of two. Turn that off and
   each face goes back to being its own card with the back image on its
@@ -182,7 +188,7 @@ paper turns over. Things worth knowing:
   double-faced cards get their own backs — it needs no back image at all.
   The back pages are still produced (they have to be, or the sheet falls
   out of register), just empty except for the transform cards.
-- **Page order** is interleaved by default (front, back, front, back…),
+- **Page order** is *duplex* by default (front, back, front, back…),
   which is what duplex printer drivers expect. *All fronts, then all
   backs* is there for hand-feeding a stack through a single-sided printer.
 - **Back offsets** nudge only the back pages, for printers whose duplex

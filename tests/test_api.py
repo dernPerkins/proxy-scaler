@@ -1672,3 +1672,73 @@ def test_back_page_preview_is_ignored_when_back_printing_is_off(
     # And it reports the FRONT page's guide flags, not the back's.
     assert stale["hide_card_guides"] == front["hide_card_guides"]
     assert stale["hide_page_guides"] == front["hide_page_guides"]
+
+
+def test_page_preview_reports_the_grid_size(client: TestClient, tmp_path: Path) -> None:
+    """resolve_page_layout deliberately does not raise when the grid
+    exceeds the page — a custom offset may push past an edge on purpose —
+    so it asks callers to check instead. These are the numbers the client
+    checks."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    body = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(cols=3, rows=3)
+    ).json()
+    # 3 cards wide at 63mm + 2×1mm bleed each, 3 tall at 88mm + bleed.
+    assert body["grid_w_mm"] == pytest.approx(195.0)
+    assert body["grid_h_mm"] == pytest.approx(270.0)
+
+
+def test_a_landscape_page_can_be_too_short_for_its_grid(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The case the orientation presets make reachable: 3×3 is 270mm of
+    cards, which fits portrait A4's 297mm and runs off landscape A4's
+    210mm. Reported, not refused — the client turns it into a warning."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    portrait = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(cols=3, rows=3, page_width_mm=210.0, page_height_mm=297.0),
+    ).json()
+    landscape = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(cols=3, rows=3, page_width_mm=297.0, page_height_mm=210.0),
+    ).json()
+
+    assert portrait["grid_h_mm"] <= portrait["page_h_mm"]
+    assert landscape["grid_h_mm"] > landscape["page_h_mm"]
+    # Still a 200: the render is never blocked on this.
+    assert client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(cols=3, rows=3, page_width_mm=297.0, page_height_mm=210.0),
+    ).status_code == 200
+
+
+def test_the_preview_reports_back_page_rotation(client: TestClient, tmp_path: Path) -> None:
+    """Checking the flip edge is what the Back-of-page-1 preview is for, so
+    it has to show the 180° rotation the renderer applies — a preview that
+    skipped it would look correct in exactly the case that isn't."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    data, digest = _back_png_bytes()
+    client.post(f"/api/backs/{digest}", content=data)
+
+    def preview(**overrides) -> dict:
+        body = _pdf_layout_body(
+            cols=1, rows=1, back_printing=True, back_image_hash=digest, **overrides
+        )
+        return client.post("/api/pdf/preview/page", json=body).json()
+
+    landscape = {"page_width_mm": 297.0, "page_height_mm": 210.0}
+
+    # Turning about a vertical axis preserves up: no rotation.
+    assert preview(preview_back_page=True, flip_edge="long")["rotated"] is False
+    assert preview(preview_back_page=True, flip_edge="short", **landscape)["rotated"] is False
+    # Turning about a horizontal axis inverts it: rotate.
+    assert preview(preview_back_page=True, flip_edge="short")["rotated"] is True
+    assert preview(preview_back_page=True, flip_edge="long", **landscape)["rotated"] is True
+    # Front pages are never rotated, whatever the flip edge.
+    assert preview(flip_edge="short")["rotated"] is False

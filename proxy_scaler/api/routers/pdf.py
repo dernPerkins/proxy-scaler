@@ -37,6 +37,7 @@ from proxy_scaler.pdf_layout import (
     PageOrder,
     PrintSlot,
     ReverseFill,
+    back_pages_are_rotated,
     add_bleed,
     back_page_cells,
     build_pdf,
@@ -395,6 +396,13 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         bleed_mm=layout.bleed_mm,
         guide_width_pt=layout.guide_width_pt,
         guide_length_mm=layout.guide_length_mm,
+        # Identical for the front and back layouts — they differ only in
+        # their position offsets — so one value serves whichever side is
+        # being previewed.
+        grid_w_mm=layout.grid_w_mm,
+        grid_h_mm=layout.grid_h_mm,
+        rotated=show_back
+        and back_pages_are_rotated(prepared.layout, FlipEdge(body.flip_edge.value)),
         hide_card_guides=(
             body.hide_card_guides_back if show_back else body.hide_card_guides_front
         ),

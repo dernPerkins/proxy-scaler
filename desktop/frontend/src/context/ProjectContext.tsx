@@ -92,7 +92,7 @@ function getDefaultSettings(): ProjectSettings {
     back_printing: false,
     back_faces_as_reverse: true,
     reverse_fill: "back_image",
-    page_order: "interleaved",
+    page_order: "duplex",
     flip_edge: "long",
     back_offset_x_mm: 0,
     back_offset_y_mm: 0,

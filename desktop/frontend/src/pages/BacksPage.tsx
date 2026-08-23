@@ -405,13 +405,19 @@ export default function BacksPage() {
             "your backs, and a slot to add another". It is also why the
             empty state needs no separate copy — an empty library is just
             the grid with one tile in it. */}
+        {/* No alignItems override: grid items stretch to their row by
+            default, which is what makes the dropzone exactly as tall as
+            the tiles beside it. A BackTile is a card-shaped image box
+            plus two lines of label, so its height can't be guessed from
+            an aspect-ratio alone — letting the row decide is the only
+            thing that stays right when a label wraps. The dropzone's own
+            aspect-ratio still governs when it is the only tile there. */}
         <div
           style={{
             marginTop: 16,
             display: "grid",
             gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
             gap: 12,
-            alignItems: "start",
           }}
         >
           <button
@@ -422,7 +428,17 @@ export default function BacksPage() {
           >
             <UploadIcon />
             <span className="dropzone-title">
-              {addMutation.isPending ? "Adding…" : "Drag and drop or click here"}
+              {addMutation.isPending ? (
+                "Adding…"
+              ) : (
+                <>
+                  Drag and drop
+                  <br />
+                  or
+                  <br />
+                  click here
+                </>
+              )}
             </span>
             <span className="dropzone-hint">
               PNG, JPEG or WebP
@@ -430,6 +446,24 @@ export default function BacksPage() {
               up to {MAX_UPLOAD_MB}MB
             </span>
           </button>
+
+          {/* Lives inside the grid so it can never be orphaned from the
+              button that clicks it again — it was moved out once, which
+              silently made the whole tile do nothing. */}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Reset first: picking the same file twice in a row fires
+              // no change event otherwise, which reads as the control
+              // being broken.
+              e.target.value = "";
+              if (file) addMutation.mutate(file);
+            }}
+          />
 
           {backs.map((back) => (
             <BackTile

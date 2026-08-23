@@ -77,15 +77,16 @@ class ReverseFill(str, Enum):
 
 
 class PageOrder(str, Enum):
-    """INTERLEAVED (front 1, back 1, front 2, back 2, ...) is what a duplex
-    printer driver expects. FRONTS_THEN_BACKS emits every Front Page first,
-    then every Back Page in matching order, for hand-feeding a stack back
-    through a single-sided printer. Mirroring applies to both: it is about
-    how paper physically turns over, not about what order the pages come
-    out in.
+    """DUPLEX (front 1, back 1, front 2, back 2, ...) is what a duplex
+    printer driver expects, and is named for the thing the user is
+    actually doing rather than for the interleaving that implements it.
+    FRONTS_THEN_BACKS emits every Front Page first, then every Back Page in
+    matching order, for hand-feeding a stack back through a single-sided
+    printer. Mirroring applies to both: it is about how paper physically
+    turns over, not about what order the pages come out in.
     """
 
-    INTERLEAVED = "interleaved"
+    DUPLEX = "duplex"
     FRONTS_THEN_BACKS = "fronts_then_backs"
 
 
@@ -778,6 +779,43 @@ def paginate(slots: list[PrintSlot], per_page: int) -> list[list[PrintSlot]]:
     return [slots[i : i + per_page] for i in range(0, len(slots), per_page)]
 
 
+def _mirrors_columns(layout: PageLayout, flip_edge: FlipEdge) -> bool:
+    """Does the sheet turn about a VERTICAL axis?
+
+    True means columns reverse and "up" is preserved; False means rows
+    reverse and up/down inverts. Every other back-page decision follows
+    from this one boolean, so it lives in one place rather than being
+    re-derived (and eventually re-derived differently) per caller.
+
+    "Long edge" names a physical edge of the paper, not a direction: a
+    portrait sheet's long edges are its sides, so flipping on them turns
+    the sheet about a vertical axis; a landscape sheet's long edges are
+    top and bottom, so the same setting turns it about a horizontal one.
+    """
+    return (flip_edge is FlipEdge.LONG) == (layout.orientation == "portrait")
+
+
+def back_pages_are_rotated(layout: PageLayout, flip_edge: FlipEdge) -> bool:
+    """Must Back Page images be drawn upside down?
+
+    Yes exactly when the sheet turns about a HORIZONTAL axis — a portrait
+    sheet flipped on its short edge, or a landscape sheet flipped on its
+    long one.
+
+    Why: turning a sheet about a horizontal axis inverts up/down, so the
+    front and back of any one card end up with opposite "up" directions in
+    the paper. Cut that card out and turn it over the way you actually
+    hold a card — about its own vertical axis, which preserves up — and a
+    back drawn the right way up on the sheet reads upside down in your
+    hand. Drawing it rotated 180° cancels the sheet's inversion.
+
+    Turning about a vertical axis preserves up, so nothing is rotated
+    there. That is the common case (portrait paper, long-edge duplex) and
+    is why this correction is easy to miss.
+    """
+    return not _mirrors_columns(layout, flip_edge)
+
+
 def mirror_page_index(index: int, *, layout: PageLayout, flip_edge: FlipEdge) -> int:
     """Where a front's slot index lands on the Back Page.
 
@@ -788,10 +826,12 @@ def mirror_page_index(index: int, *, layout: PageLayout, flip_edge: FlipEdge) ->
     give: four cards on a nine-slot page occupy mirrored cells and leave
     five empty. Mirroring over just the four filled cells is the classic
     duplex bug — it lines the backs up against the wrong fronts.
+
+    Position is only half of it: when rows are the mirrored axis the
+    images must also be drawn upside down. See back_pages_are_rotated.
     """
     row, col = divmod(index, layout.cols)
-    mirror_columns = (flip_edge is FlipEdge.LONG) == (layout.orientation == "portrait")
-    if mirror_columns:
+    if _mirrors_columns(layout, flip_edge):
         col = layout.cols - 1 - col
     else:
         row = layout.rows - 1 - row
@@ -897,8 +937,10 @@ def render_back_image(
     return add_bleed(trimmed, dpi=export_dpi, bleed_mm=bleed_mm)
 
 
-def _encode_card(face: FaceResult, *, export_dpi: int, bleed_mm: float) -> bytes:
-    """One card image, bled and JPEG-encoded, ready for placement."""
+def _bled_card(face: FaceResult, *, export_dpi: int, bleed_mm: float) -> Image.Image:
+    """One card image, corner-flattened, resized and bled, ready for
+    placement. Encoding is the caller's job — it also owns the optional
+    180° rotation, and rotating after encoding would mean a decode."""
     with Image.open(face.out_path) as raw:
         # Flatten the rounded-corner alpha to opaque BEFORE any resize —
         # resizing while corners are still transparent lets the resample
@@ -910,10 +952,7 @@ def _encode_card(face: FaceResult, *, export_dpi: int, bleed_mm: float) -> bytes
         img = flatten_corner_alpha(raw.convert("RGBA"))
     if export_dpi != face.dpi:
         img = _resize_to_dpi(img, export_dpi)
-    bled = add_bleed(img, dpi=export_dpi, bleed_mm=bleed_mm)
-    buf = io.BytesIO()
-    bled.save(buf, format="JPEG", quality=_JPEG_QUALITY)
-    return buf.getvalue()
+    return add_bleed(img, dpi=export_dpi, bleed_mm=bleed_mm)
 
 
 def build_pdf(
@@ -928,7 +967,7 @@ def build_pdf(
     back_image_includes_bleed: bool = False,
     reverse_fill: ReverseFill = ReverseFill.BACK_IMAGE,
     flip_edge: FlipEdge = FlipEdge.LONG,
-    page_order: PageOrder = PageOrder.INTERLEAVED,
+    page_order: PageOrder = PageOrder.DUPLEX,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> bytes:
     """Render pages of PrintSlots into a print-ready PDF, in memory.
@@ -941,7 +980,7 @@ def build_pdf(
     a 1200 DPI generated source can still be exported into an 800 DPI PDF
     for a smaller file.
 
-    With `back_printing` on, each Front Page is followed (INTERLEAVED) or
+    With `back_printing` on, each Front Page is followed (DUPLEX) or
     trailed (FRONTS_THEN_BACKS) by its Back Page: the same grid mirrored
     across the sheet's flip axis, each cell carrying either that card's
     Back Face or the Back Image. `back_layout` carries the Back Pages' own
@@ -973,34 +1012,50 @@ def build_pdf(
     pdf.set_auto_page_break(False)
     pdf.set_margins(0, 0, 0)
 
-    cache: dict[Path, bytes] = {}
+    cache: dict[tuple[Path, bool], bytes] = {}
     total_images = unique_image_count(
         pages, back_printing=back_printing, back_image_path=back_image_path
     )
 
-    def encoded(source: Path, face: FaceResult | None) -> bytes:
+    def encoded(source: Path, face: FaceResult | None, *, rotate: bool = False) -> bytes:
         """Cached bled JPEG bytes for one source image. `face` is None for
         the Back Image, which has no generated-image record to carry a
-        native DPI and takes the cover-fit path instead."""
-        cached = cache.get(source)
+        native DPI and takes the cover-fit path instead.
+
+        `rotate` draws the image upside down, for Back Pages whose sheet
+        turns about a horizontal axis (see back_pages_are_rotated). It is
+        part of the cache key, not just the render: the same file can
+        legitimately be needed both ways in one document, and keying on
+        the path alone would serve whichever orientation happened to be
+        encoded first.
+        """
+        key = (source, rotate)
+        cached = cache.get(key)
         if cached is not None:
             return cached
         if face is not None:
-            data = _encode_card(face, export_dpi=export_dpi, bleed_mm=layout.bleed_mm)
+            image = _bled_card(face, export_dpi=export_dpi, bleed_mm=layout.bleed_mm)
         else:
-            bled = render_back_image(
+            image = render_back_image(
                 source,
                 export_dpi=export_dpi,
                 bleed_mm=layout.bleed_mm,
                 includes_bleed=back_image_includes_bleed,
             )
-            buf = io.BytesIO()
-            bled.save(buf, format="JPEG", quality=_JPEG_QUALITY)
-            data = buf.getvalue()
-        cache[source] = data
+        if rotate:
+            image = image.transpose(Image.Transpose.ROTATE_180)
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+        data = buf.getvalue()
+        cache[key] = data
         if on_progress is not None:
             on_progress(len(cache), total_images)
         return data
+
+    # Whether Back Page images are drawn upside down. Derived from the
+    # front layout: it is a property of how the sheet turns over, and the
+    # back layout differs only by its position offsets.
+    rotate_backs = back_pages_are_rotated(layout, flip_edge)
 
     def draw_page(cells: list[PrintSlot | None], *, is_back: bool) -> None:
         page_layout = back_layout if is_back else layout
@@ -1032,7 +1087,7 @@ def build_pdf(
             # to avoid entirely by just re-wrapping the cached immutable
             # bytes.
             pdf.image(
-                io.BytesIO(encoded(source, face)),
+                io.BytesIO(encoded(source, face, rotate=is_back and rotate_backs)),
                 x=x,
                 y=y,
                 w=page_layout.bled_card_w_mm,

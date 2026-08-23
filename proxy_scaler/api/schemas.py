@@ -205,7 +205,7 @@ class ReverseFillIn(str, Enum):
 
 
 class PageOrderIn(str, Enum):
-    INTERLEAVED = "interleaved"
+    DUPLEX = "duplex"
     FRONTS_THEN_BACKS = "fronts_then_backs"
 
 
@@ -276,7 +276,7 @@ class PdfLayoutIn(BaseModel):
     # backs. The Back Page is still emitted either way, or the sheet
     # falls out of register.
     reverse_fill: ReverseFillIn = ReverseFillIn.BACK_IMAGE
-    page_order: PageOrderIn = PageOrderIn.INTERLEAVED
+    page_order: PageOrderIn = PageOrderIn.DUPLEX
     flip_edge: FlipEdgeIn = FlipEdgeIn.LONG
     # Back Pages get their own position offset: duplex registration drifts,
     # and a single shared offset cannot express "the backs land 0.4mm left
@@ -372,6 +372,18 @@ class PdfPagePreviewOut(BaseModel):
     bleed_mm: float
     guide_width_pt: float
     guide_length_mm: float
+    # Total size of the card grid. Reported so the client can warn when it
+    # exceeds the page — resolve_page_layout deliberately does not raise
+    # on that (a custom offset may push past an edge on purpose), and asks
+    # callers to check instead. Defaulted so an older server still
+    # validates against a newer client.
+    grid_w_mm: float = 0
+    grid_h_mm: float = 0
+    # This page's images are drawn upside down. True only for a Back Page
+    # whose sheet turns about a horizontal axis (portrait + short edge, or
+    # landscape + long edge) — see pdf_layout.back_pages_are_rotated. The
+    # preview exists to catch a wrong flip edge, so it has to show this.
+    rotated: bool = False
     # Resolved for the page kind actually being previewed, so the frontend
     # draws what that page will really carry rather than re-deriving which
     # of the four flags applies.

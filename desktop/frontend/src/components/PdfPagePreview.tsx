@@ -202,7 +202,17 @@ export default function PdfPagePreview({ preview }: { preview: PdfPagePreviewDat
               <img
                 src={slot.thumbnail_data_url}
                 alt={slot.card_name}
-                style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  display: "block",
+                  // Matches what build_pdf does to this page's images. A
+                  // preview that skipped it would show the one thing the
+                  // preview exists to let you check — the flip edge —
+                  // looking correct when it isn't.
+                  transform: preview.rotated ? "rotate(180deg)" : undefined,
+                }}
               />
             )}
           </div>

@@ -33,10 +33,54 @@ import type {
 // sub-second poll keeps the bar responsive without hammering the server.
 const POLL_INTERVAL_MS = 400;
 
-const PAGE_PRESETS: Record<string, { width: number; height: number }> = {
-  A4: { width: 210, height: 297 },
-  Letter: { width: 215.9, height: 279.4 },
+// Orientation lives in the preset name rather than in a control of its
+// own. It is only ever "which of these two numbers is bigger", and the
+// two numbers are already editable below — a separate toggle would be a
+// second control writing the same pair of fields. Both orientations are
+// offered because paper grain makes a sheet noticeably more rigid one way
+// than the other, and which way depends on the stock.
+//
+// A preset carries its grid too: picking a paper is really "set me up for
+// this paper", and the grid that fits a portrait sheet does not fit the
+// landscape one. 3×3 needs 195×270mm (fits both portrait presets, with
+// Letter the tightest at 9.4mm of vertical slack); 4×2 needs 260×180mm
+// and is the most cards that fit either landscape sheet. Both stay
+// editable afterwards, and the overflow warning below covers whatever the
+// user changes them to.
+const PAGE_PRESETS: Record<
+  string,
+  { width: number; height: number; cols: number; rows: number }
+> = {
+  "A4 (Portrait)": { width: 210, height: 297, cols: 3, rows: 3 },
+  "A4 (Landscape)": { width: 297, height: 210, cols: 4, rows: 2 },
+  "Letter (Portrait)": { width: 215.9, height: 279.4, cols: 3, rows: 3 },
+  "Letter (Landscape)": { width: 279.4, height: 215.9, cols: 4, rows: 2 },
 };
+
+// Shown when the width/height inputs hold something no preset matches.
+// Not selectable — it describes the current state rather than being a
+// thing you can choose.
+const CUSTOM_PAGE_SIZE = "Custom";
+
+/** Which preset the current dimensions correspond to, or CUSTOM_PAGE_SIZE.
+ *
+ *  The select used to be uncontrolled with a hardcoded default, so it read
+ *  "A4" whatever the project actually held. Harmless with two presets and
+ *  actively wrong now that the label claims an orientation: a box reading
+ *  "A4 (Portrait)" above a landscape page is worse than no label at all.
+ *
+ *  Matched on the page size only, never the grid: a preset also sets
+ *  cols/rows, but changing those afterwards is normal and shouldn't make
+ *  the paper you picked read as "Custom".
+ *
+ *  Compared with a tolerance because these round-trip through the number
+ *  inputs and a float stored as 279.40000000000003 is still Letter. */
+function matchPagePreset(width: number, height: number): string {
+  const match = Object.entries(PAGE_PRESETS).find(
+    ([, size]) => Math.abs(size.width - width) < 0.05 && Math.abs(size.height - height) < 0.05,
+  );
+  return match ? match[0] : CUSTOM_PAGE_SIZE;
+}
 
 type LayoutSettings = Omit<PdfLayoutRequest, "project_tag" | "entries" | "project_name">;
 
@@ -202,6 +246,16 @@ export default function PdfPage() {
   // (the server pairs before paginating), so the arithmetic is unchanged —
   // only the sentence explaining it below has to follow the mode.
   const cardsPerPage = layout.cols * layout.rows;
+  // resolve_page_layout deliberately does not refuse a grid larger than
+  // its page (a custom offset may push past an edge on purpose) and asks
+  // callers to check instead — this is that check. Reachable most easily
+  // by picking a landscape preset while keeping a tall grid: 3×3 is 270mm
+  // of cards, which fits portrait A4 and runs off landscape A4.
+  const preview = pagePreviewQuery.data;
+  const gridOverflows =
+    preview != null &&
+    (preview.grid_w_mm > preview.page_w_mm || preview.grid_h_mm > preview.page_h_mm);
+
   const dfcSlotHint =
     layout.back_printing && layout.back_faces_as_reverse
       ? "a double-faced card uses 1 slot, with its transform side on the back"
@@ -217,7 +271,16 @@ export default function PdfPage() {
   function applyPreset(name: string) {
     const preset = PAGE_PRESETS[name];
     if (preset) {
-      setSettings((s) => ({ ...s, page_width_mm: preset.width, page_height_mm: preset.height }));
+      setSettings((s) => ({
+        ...s,
+        page_width_mm: preset.width,
+        page_height_mm: preset.height,
+        // The grid comes with the paper — a portrait grid does not fit a
+        // landscape sheet, so carrying the old one over would leave every
+        // orientation change tripping the overflow warning.
+        cols: preset.cols,
+        rows: preset.rows,
+      }));
     }
   }
 
@@ -360,12 +423,23 @@ export default function PdfPage() {
             <div className="field-group">
               <label className="field">
                 <span>Page size</span>
-                <select onChange={(e) => applyPreset(e.target.value)} defaultValue="A4">
+                <select
+                  value={matchPagePreset(layout.page_width_mm, layout.page_height_mm)}
+                  onChange={(e) => applyPreset(e.target.value)}
+                >
                   {Object.keys(PAGE_PRESETS).map((name) => (
                     <option key={name} value={name}>
                       {name}
                     </option>
                   ))}
+                  {/* Only rendered while it applies, so it never looks
+                      like a size you could pick. */}
+                  {matchPagePreset(layout.page_width_mm, layout.page_height_mm) ===
+                    CUSTOM_PAGE_SIZE && (
+                    <option value={CUSTOM_PAGE_SIZE} disabled>
+                      {CUSTOM_PAGE_SIZE}
+                    </option>
+                  )}
                 </select>
               </label>
 
@@ -646,7 +720,7 @@ export default function PdfPage() {
                       value={layout.page_order}
                       onChange={(e) => updateLayout("page_order", e.target.value as PageOrder)}
                     >
-                      <option value="interleaved">Interleaved (front, back, front…)</option>
+                      <option value="duplex">Duplex (front, back, front…)</option>
                       <option value="fronts_then_backs">All fronts, then all backs</option>
                     </select>
                   </label>
@@ -813,7 +887,22 @@ export default function PdfPage() {
                   : String(pagePreviewQuery.error)}
               </p>
             ) : pagePreviewQuery.data && pagePreviewQuery.data.slots.length > 0 ? (
-              <PdfPagePreview preview={pagePreviewQuery.data} />
+              <>
+                {/* A warning, never a block — see gridOverflows above. */}
+                {gridOverflows && preview && (
+                  <p className="error-text" style={{ marginBottom: 8 }}>
+                    <strong>
+                      Your {layout.cols}×{layout.rows} grid is{" "}
+                      {preview.grid_w_mm.toFixed(0)}×{preview.grid_h_mm.toFixed(0)}mm,
+                      larger than the {preview.page_w_mm.toFixed(0)}×
+                      {preview.page_h_mm.toFixed(0)}mm page.
+                    </strong>{" "}
+                    Cards will run off the edge — use fewer rows or columns, or the
+                    other orientation.
+                  </p>
+                )}
+                <PdfPagePreview preview={pagePreviewQuery.data} />
+              </>
             ) : null}
           </div>
         )}

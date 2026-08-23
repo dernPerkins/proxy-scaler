@@ -150,7 +150,7 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // mode for printing a deck purely so its double-faced cards get their
     // own backs.
     ("reverse_fill", "TEXT NOT NULL DEFAULT 'back_image'"),
-    ("page_order", "TEXT NOT NULL DEFAULT 'interleaved'"),
+    ("page_order", "TEXT NOT NULL DEFAULT 'duplex'"),
     ("flip_edge", "TEXT NOT NULL DEFAULT 'long'"),
     // Independent of the front offsets, not added to them: the two are
     // separate calibrations of two physical passes through the printer.
@@ -230,6 +230,27 @@ fn migrate_guide_flags(conn: &Connection) -> Result<(), String> {
     write_app_setting(conn, MIGRATED_KEY, "1")
 }
 
+/// Rename the page-order value `interleaved` to `duplex`, exactly once.
+///
+/// Only ever a concern for a database written by a pre-release build:
+/// the mode shipped under the wrong name — "interleaved" describes how
+/// the pages are arranged, where the user is choosing whether they are
+/// duplex printing — and the column default changed with it. Rows added
+/// before the rename keep the old string, which no longer deserializes
+/// into PageOrder on the server.
+fn migrate_page_order_naming(conn: &Connection) -> Result<(), String> {
+    const MIGRATED_KEY: &str = "page_order_duplex_renamed";
+    if read_app_setting(conn, MIGRATED_KEY)?.is_some() {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE projects SET page_order = 'duplex' WHERE page_order = 'interleaved'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    write_app_setting(conn, MIGRATED_KEY, "1")
+}
+
 pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let dir = app
         .path()
@@ -241,6 +262,7 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)?;
     migrate_guide_flags(&conn)?;
+    migrate_page_order_naming(&conn)?;
     Ok(conn)
 }
 
@@ -443,7 +465,7 @@ fn default_reverse_fill() -> String {
 }
 
 fn default_page_order() -> String {
-    "interleaved".to_string()
+    "duplex".to_string()
 }
 
 fn default_flip_edge() -> String {
