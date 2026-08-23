@@ -13,6 +13,7 @@ import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
 import BacksPage from "./pages/BacksPage";
+import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
 import TasksPage from "./pages/TasksPage";
 import { isTauri } from "./tauri";
@@ -96,6 +97,7 @@ export default function App() {
           <NavLink to="/decklist">Decklist</NavLink>
           <NavLink to="/backs">Backs</NavLink>
           <NavLink to="/pdf">PDF</NavLink>
+          <NavLink to="/export">Export</NavLink>
           <NavLink to="/tasks">Tasks</NavLink>
           <AppVersion />
         </nav>
@@ -104,6 +106,7 @@ export default function App() {
           <Route path="/decklist" element={<DecklistPage />} />
           <Route path="/backs" element={<BacksPage />} />
           <Route path="/pdf" element={<PdfPage />} />
+          <Route path="/export" element={<ExportPage />} />
           <Route path="/tasks" element={<TasksPage />} />
         </Routes>
       </div>

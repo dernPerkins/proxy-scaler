@@ -148,6 +148,20 @@ export function useServerVersion(): string | null {
 // merely a release behind rather than actually too old.
 export const BACK_PRINTING_MIN_SERVER_VERSION = "0.2.0";
 
+// --- The ZIP-export version floor ------------------------------------------
+//
+// /api/export/* endpoints don't exist on older servers. Unlike the
+// back-printing floor above this failure mode is loud (a 404, not a
+// silently wrong file), so the gate is UX polish: a clear "server too
+// old" message instead of a bare "Not Found" from a button that looks
+// like it should work.
+//
+// Names the first release that ships ZIP export — the same 0.2.0 as back
+// printing, since both land in that still-unreleased version. Like the
+// constant above, packaging/set-version.py must never rewrite it — it is
+// one specific historical release forever.
+export const EXPORT_ZIP_MIN_SERVER_VERSION = "0.2.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -179,6 +193,14 @@ export function compareVersions(a: string, b: string): number | null {
 export function serverSupportsBackPrinting(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, BACK_PRINTING_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server have the /api/export endpoints? Same
+ *  null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsZipExport(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, EXPORT_ZIP_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

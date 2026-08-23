@@ -393,6 +393,50 @@ class PdfPagePreviewOut(BaseModel):
     slots: list[PdfPageSlotOut]
 
 
+class ExportFormatIn(str, Enum):
+    # "default": every unique matched face once in FRONT/, plus the
+    # project's Selected Back (if any) as the only BACK/ entry.
+    # "tcgplaytest": the vendor's paired layout — one FRONT/BACK file pair
+    # per physical copy, matched by natural filename order, counts equal.
+    DEFAULT = "default"
+    TCGPLAYTEST = "tcgplaytest"
+
+
+class ExportZipIn(BaseModel):
+    # Same scoping/quantity story as PdfLayoutIn: project_tag picks the
+    # gallery, entries carry the quantities, project_name is cosmetic
+    # (deck folder + Content-Disposition filename).
+    project_tag: str
+    entries: list[DeckEntryIn]
+    project_name: str = ""
+    # Same selector semantics as PdfLayoutIn: preferred_dpi is a hard
+    # filter (a face without that DPI is excluded and reported, never
+    # substituted); preferred_model wins among the eligible variants.
+    preferred_dpi: int | None = None
+    preferred_model: str | None = None
+    format: ExportFormatIn = ExportFormatIn.DEFAULT
+    # Content hash of the project's Selected Back (see PdfLayoutIn's
+    # back_image_hash) — bytes are synced separately via POST /api/backs.
+    back_image_hash: str | None = None
+
+
+class ExportZipPreviewOut(BaseModel):
+    # FRONT/ file count of the default format: unique faces, quantities
+    # NOT expanded.
+    fronts: int
+    # FRONT/ (== BACK/) file count of the tcgplaytest format: one pair per
+    # physical copy, quantities expanded.
+    paired_fronts: int
+    # Same meanings as PdfPreviewOut.missing / missing_at_dpi.
+    missing: list[str]
+    missing_at_dpi: list[str]
+    # tcgplaytest slots whose BACK/ entry would be the Selected Back
+    # rather than the card's own Back Face. Zero for an all-double-faced
+    # deck — but the tcgplaytest export still requires a Selected Back
+    # only when this is non-zero.
+    reverses_needing_back_image: int
+
+
 class ClearGeneratedIn(BaseModel):
     output_dir: str
     cache_dir: str

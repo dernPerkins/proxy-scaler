@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
-import { projectApi, type CardRow } from "../api/project";
+import { projectApi } from "../api/project";
 import NumberInput from "../components/NumberInput";
 import PdfPagePreview from "../components/PdfPagePreview";
 import { DPI_OPTIONS } from "../constants";
@@ -14,6 +14,7 @@ import {
   useServerVersion,
 } from "../config";
 import { useProject } from "../context/ProjectContext";
+import { cardToEntry } from "../deckEntries";
 import {
   DownloadCanceled,
   runDownload,
@@ -22,7 +23,6 @@ import {
 } from "../download";
 import { pdfFilename } from "../pdfFilename";
 import type {
-  DeckEntryIn,
   FlipEdge,
   PageOrder,
   PdfLayoutRequest,
@@ -83,23 +83,6 @@ function matchPagePreset(width: number, height: number): string {
 }
 
 type LayoutSettings = Omit<PdfLayoutRequest, "project_tag" | "entries" | "project_name">;
-
-function cardToEntry(card: CardRow): DeckEntryIn {
-  return {
-    quantity: card.quantity ?? 1,
-    name: card.name,
-    set_code: card.set_code,
-    collector_number: card.collector_number,
-    raw_line: card.original_import_line,
-    // Same fields DecklistPage's cardToEntry sends: language is part of a
-    // printing's identity in the gallery match (pdf_layout.match_quantities
-    // compares entry.lang against the image's), so omitting it here made a
-    // generated non-English card report as "no generated image yet" — the
-    // entry read as EN and never matched its own JA/DE/... images.
-    scryfall_id: card.scryfall_id,
-    lang: card.lang,
-  };
-}
 
 export default function PdfPage() {
   const { projectId, projectTag, projectName, cards, settings, setSettings } = useProject();

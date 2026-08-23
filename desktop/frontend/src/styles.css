@@ -381,6 +381,26 @@ button:disabled {
   text-align: center;
 }
 
+/* The Export tab's two download buttons, deliberately larger than the
+   base button: they are the whole point of the page, and the vendor one
+   has to leave the TCGPlaytest wordmark room to be recognizable. */
+.export-btn {
+  padding: 10px 20px;
+  font-size: 16px;
+}
+/* The vendor button carries the wordmark inside the label, so it needs
+   to be a flex row and cap the image to the text line — the asset
+   itself is a full-size logo. */
+.export-vendor-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+.export-vendor-btn img {
+  height: 22px;
+  display: block;
+}
+
 /* ---------- app shell ---------- */
 
 .app {

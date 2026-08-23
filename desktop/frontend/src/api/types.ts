@@ -401,6 +401,43 @@ export interface PdfPagePreview {
   slots: PdfPageSlot[];
 }
 
+// --- ZIP export ------------------------------------------------------------
+
+/** Mirrors ExportFormatIn. "default": every unique matched face once in
+ *  FRONT/, plus the Selected Back (if any) as the only BACK/ entry.
+ *  "tcgplaytest": the vendor's paired layout — one FRONT/BACK file pair
+ *  per physical copy, matched by natural filename order, counts equal. */
+export type ExportZipFormat = "default" | "tcgplaytest";
+
+/** Mirrors ExportZipIn. Same scoping/quantity/selector story as
+ *  PdfLayoutRequest: preferred_dpi is a hard filter, preferred_model
+ *  wins among the eligible variants. */
+export interface ExportZipRequest {
+  project_tag: string;
+  entries: DeckEntryIn[];
+  project_name: string;
+  preferred_dpi: number | null;
+  preferred_model: string | null;
+  format: ExportZipFormat;
+  back_image_hash: string | null;
+}
+
+/** Mirrors ExportZipPreviewOut. */
+export interface ExportZipPreview {
+  /** Default-format FRONT/ file count: unique faces, quantities NOT
+   *  expanded. */
+  fronts: number;
+  /** TCGPlaytest FRONT/ (== BACK/) file count: one pair per physical
+   *  copy, quantities expanded. */
+  paired_fronts: number;
+  // Same meanings as PdfPreview.missing / missing_at_dpi.
+  missing: string[];
+  missing_at_dpi: string[];
+  /** TCGPlaytest backs that would be the Selected Back rather than the
+   *  card's own Back Face. */
+  reverses_needing_back_image: number;
+}
+
 // --- The Back Library ------------------------------------------------------
 
 /** One uploaded Back Image. Mirrors back_images::BackImage (Rust). The

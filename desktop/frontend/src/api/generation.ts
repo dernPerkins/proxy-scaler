@@ -11,6 +11,8 @@ import type {
   CardVariantsResult,
   DeckEntryIn,
   Device,
+  ExportZipPreview,
+  ExportZipRequest,
   GalleryItem,
   GalleryStatusResult,
   GenerateRequest,
@@ -193,6 +195,19 @@ export const generationApi = {
   cancelPdfJob: (jobId: string) =>
     request<void>(`/api/pdf/jobs/${jobId}/cancel`, { method: "POST" }),
   pdfJobResultUrl: (jobId: string) => `${getApiBaseUrl()}/api/pdf/jobs/${jobId}/result`,
+
+  // --- ZIP export ---
+  // Unlike the PDF, no job/polling: zipping is disk-speed file copying,
+  // so the export POST streams the archive straight back.
+  exportZipPreview: (body: ExportZipRequest) =>
+    request<ExportZipPreview>("/api/export/zip/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // URL rather than a fetch, same reason as pdfUrl: the archive is
+  // exactly the kind of large payload that must not transit the webview —
+  // Rust POSTs the body and streams the response to disk.
+  exportZipUrl: () => `${getApiBaseUrl()}/api/export/zip`,
 
   clearGeneratedData: (outputDir: string, cacheDir: string, projectTag?: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { CardRow } from "../api/project";
-import type { DeckEntryIn, GalleryItem, ModelOption, Task } from "../api/types";
+import type { GalleryItem, ModelOption, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import CompareDialog from "../components/CompareDialog";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -17,6 +17,7 @@ import { useServerReadiness } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
 import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
 import { useProject } from "../context/ProjectContext";
+import { cardToEntry } from "../deckEntries";
 import { runDownload, useDownloadStatus } from "../download";
 import {
   cardIdentity,
@@ -79,21 +80,6 @@ function UpdateCheckToggle() {
       Check for updates at launch
     </label>
   );
-}
-
-function cardToEntry(card: CardRow): DeckEntryIn {
-  return {
-    quantity: card.quantity ?? 1,
-    name: card.name,
-    set_code: card.set_code,
-    collector_number: card.collector_number,
-    raw_line: card.original_import_line,
-    // The pinned printing + language preference make server-side
-    // resolution exact (a non-English printing is unreachable via
-    // set/collector alone — every language shares them).
-    scryfall_id: card.scryfall_id,
-    lang: card.lang,
-  };
 }
 
 // A CardRow has no scryfall_id (the client never calls Scryfall — see
