@@ -59,8 +59,19 @@ def main(
 ) -> None:
     fd = db.acquire_worker_lock(lock_path)
     if fd is None:
-        print("Another worker is already running; exiting.")
-        return
+        # A previous worker (e.g. orphaned by a force-quit mid-task) can
+        # outlive its supervisor and keep the lock for minutes. Exiting here
+        # would make the supervisor tear down the healthy API server too, so
+        # wait instead — the OS releases the flock the moment that process
+        # dies, and until then the API stays up with tasks simply queued.
+        print(
+            "Another worker is still running (likely shutting down); "
+            "waiting for it to exit…"
+        )
+        while fd is None:
+            time.sleep(POLL_INTERVAL_S)
+            fd = db.acquire_worker_lock(lock_path)
+        print("Previous worker exited; taking over.")
     _wait_while_held(db_path=db_path)
     # Holding the lock proves no other worker is mid-task, so any
     # 'running' row is an orphan from a dead worker — re-queue them.

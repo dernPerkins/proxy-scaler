@@ -323,7 +323,10 @@ def running_supervisor(tmp_path: Path):
         log_file.close()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ps-based check is Linux/Unix-only")
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="fixture needs procps `ps --cols` and /proc-based child checks (Linux-only)",
+)
 def test_supervisor_spawns_and_cleanly_stops_both_children(running_supervisor) -> None:
     """The core regression this phase is about: today's detached worker
     survives its parent; the supervisor's children must not."""
@@ -331,7 +334,10 @@ def test_supervisor_spawns_and_cleanly_stops_both_children(running_supervisor) -
     running_supervisor.assert_children_gone()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ps-based check is Linux/Unix-only")
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="fixture needs procps `ps --cols` and /proc-based child checks (Linux-only)",
+)
 def test_supervisor_stops_on_stdin_close(running_supervisor) -> None:
     """Tauri's sidecar API documents CommandChild::kill() as a hard kill,
     not a graceful signal — closing the sidecar's stdin pipe is the
