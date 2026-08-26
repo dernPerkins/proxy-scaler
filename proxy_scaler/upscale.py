@@ -330,6 +330,42 @@ def ensure_weights(
     return path
 
 
+# One-slot cache of the loaded (device-resident, dtype-converted) model
+# descriptor, shared across the per-task Upscaler instances. Decks are
+# homogeneous, so one slot gets a ~99% hit rate and eliminates the
+# per-card disk read + PCIe transfer (~0.6s/task measured). Only the
+# worker's main thread loads/runs models in-process (the finisher and
+# prefetch threads never touch them), so no locking; the API process has
+# its own interpreter and thus its own cache.
+_MODEL_CACHE: dict[tuple, "ImageModelDescriptor"] = {}
+
+
+def _cache_key(model_id: UpscaleModel, scale: int, weights_dir: Path) -> tuple:
+    return (model_id, scale, str(Path(weights_dir).resolve()))
+
+
+def clear_model_cache() -> None:
+    """Drop the cached descriptor and release its VRAM. The reference must
+    go before empty_cache() — the allocator only frees unreferenced blocks."""
+    devices = []
+    for descriptor in _MODEL_CACHE.values():
+        try:
+            devices.append(next(descriptor.model.parameters()).device)
+        except Exception:  # noqa: BLE001 — best-effort release
+            pass
+    _MODEL_CACHE.clear()
+    for device in devices:
+        _clear_device_cache(device)
+
+
+def _cache_put(key: tuple, descriptor: "ImageModelDescriptor") -> None:
+    if key not in _MODEL_CACHE:
+        # One slot: switching models evicts the previous descriptor and
+        # frees its VRAM before the new one settles in.
+        clear_model_cache()
+    _MODEL_CACHE[key] = descriptor
+
+
 class Upscaler:
     """Lazy-loaded Spandrel upscaler for a chosen model + scale."""
 
@@ -372,15 +408,61 @@ class Upscaler:
     def _ensure_model(self) -> ImageModelDescriptor:
         if self._descriptor is not None:
             return self._descriptor
-        with self._phase("model_load"):
-            return self._load_model()
+        key = _cache_key(self.model_id, self.scale, self.weights_dir)
+        descriptor = _MODEL_CACHE.get(key)
+        if descriptor is None:
+            # The model_load timing phase wraps only a real load — a cache
+            # hit records no phase, so NULL model_load_s in the timing DB
+            # is the hit signal (same convention as download_s).
+            with self._phase("model_load"):
+                descriptor = self._load_model()
+            _cache_put(key, descriptor)
+        import torch
+
+        # Per-instance state is derived from the descriptor's own weights,
+        # hit or miss: a shared descriptor that _relocate_to_cpu() moved to
+        # CPU/fp32 in a previous task is then described truthfully instead
+        # of through stale cached metadata.
+        param = next(descriptor.model.parameters())
+        self._device = param.device
+        self._dtype = (
+            torch.bfloat16 if param.dtype == torch.bfloat16 else torch.float32
+        )
+        self._descriptor = descriptor
+        self._maybe_upgrade_tile()
+        # The one line a user report needs: which capability gates fired.
+        print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
+        return descriptor
+
+    def _maybe_upgrade_tile(self) -> None:
+        """Per task (mem_get_info is cheap): a heavy model's auto tile may
+        grow to 768 when running bf16 with enough free VRAM."""
+        import torch
+
+        if self._device is None or self._device.type != "cuda":
+            return
+        if not (self.tile_auto and self.tile > 0):
+            return
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info()
+            # mem_get_info counts this process's allocator arenas as "used",
+            # but reserved-yet-unallocated blocks are reusable for our own
+            # tiles — without adding them back, the first task's warm
+            # allocator (no more per-image empty_cache) would push every
+            # later task below the gate and silently downgrade to 384.
+            free_bytes += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+        except Exception:  # noqa: BLE001
+            free_bytes = None
+        new_tile = _choose_auto_tile(free_bytes, self._dtype, self.tile)
+        if new_tile != self.tile:
+            self.tile = new_tile
+            self._tile_upgraded = True
 
     def _load_model(self) -> ImageModelDescriptor:
         import torch
         from spandrel import ImageModelDescriptor, ModelLoader
 
         device = resolve_device()
-        self._device = device
         weights = ensure_weights(self.model_id, self.scale, self.weights_dir)
         print(f"Loading {self.model_id.value} x{self.scale} on {device} ({weights.name})...")
         if device.type != "cpu":
@@ -395,38 +477,23 @@ class Upscaler:
         descriptor = ModelLoader().load_from_file(str(weights))
         if not isinstance(descriptor, ImageModelDescriptor):
             raise TypeError(f"Unexpected model type for {weights}")
-        self._dtype = resolve_dtype(descriptor, device)
+        dtype = resolve_dtype(descriptor, device)
         try:
             descriptor = descriptor.to(device).eval()
-            if self._dtype == torch.bfloat16:
+            if dtype == torch.bfloat16:
                 try:
                     descriptor = descriptor.to(torch.bfloat16)
                 except Exception:  # noqa: BLE001 — any bf16 hiccup means fp32
-                    self._dtype = torch.float32
+                    pass  # weights stay fp32; _ensure_model derives that
         except Exception as exc:
             if device.type != "cpu" and _is_oom_error(exc):
                 print(
                     f"OOM loading model on {device}; clearing cache and falling back to CPU…"
                 )
                 _clear_device_cache(device)
-                device = torch.device("cpu")
-                self._device = device
-                self._dtype = torch.float32
-                descriptor = descriptor.to(device).eval()
+                descriptor = descriptor.to(torch.device("cpu")).eval()
             else:
                 raise
-        if device.type == "cuda" and self.tile_auto and self.tile > 0:
-            try:
-                free_bytes, _ = torch.cuda.mem_get_info()
-            except Exception:  # noqa: BLE001
-                free_bytes = None
-            new_tile = _choose_auto_tile(free_bytes, self._dtype, self.tile)
-            if new_tile != self.tile:
-                self.tile = new_tile
-                self._tile_upgraded = True
-        # The one line a user report needs: which capability gates fired.
-        print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
-        self._descriptor = descriptor
         return descriptor
 
     def _relocate_to_cpu(self) -> ImageModelDescriptor:
@@ -534,11 +601,15 @@ class Upscaler:
                     dtype=_dtype_label(self._dtype),
                 )
             finally:
+                # Deliberately NO empty_cache() here: clearing per image
+                # forced the CUDA allocator to re-grow its arenas on every
+                # task. The allocator reuses the freed blocks for the next
+                # card; explicit clears remain only on the OOM paths and on
+                # model-cache eviction.
                 try:
                     del tensor
                 except NameError:
                     pass
-                _clear_device_cache(self._device)
 
     def _tiled_inference(
         self,

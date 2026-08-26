@@ -417,3 +417,110 @@ def test_relocate_to_cpu_resets_dtype() -> None:
     with patch("proxy_scaler.upscale._clear_device_cache"):
         up._relocate_to_cpu()
     assert up._dtype == torch.float32
+
+
+# --- one-slot model cache (see #1: cache the loaded model across tasks) ------
+
+
+class _TinyDescriptor:
+    """Stands in for a spandrel descriptor: just enough for the cache's
+    device/dtype derivation (a .model with one real parameter)."""
+
+    def __init__(self, device="cpu", dtype=torch.float32):
+        self.model = torch.nn.Linear(1, 1).to(device=device, dtype=dtype)
+
+
+def _fresh_upscaler(tmp_path, **kw) -> Upscaler:
+    return Upscaler(
+        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0, **kw
+    )
+
+
+def test_model_cache_hit_skips_reload(tmp_path, monkeypatch) -> None:
+    from proxy_scaler import upscale as upscale_module
+
+    monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {})
+    loads = {"n": 0}
+    shared = _TinyDescriptor()
+
+    def fake_load(self):
+        loads["n"] += 1
+        return shared
+
+    monkeypatch.setattr(Upscaler, "_load_model", fake_load)
+
+    first = _fresh_upscaler(tmp_path)
+    assert first._ensure_model() is shared
+    second = _fresh_upscaler(tmp_path)
+    assert second._ensure_model() is shared
+
+    assert loads["n"] == 1  # second instance hit the cache
+    assert second._device == torch.device("cpu")
+    assert second._dtype == torch.float32
+
+
+def test_model_cache_one_slot_evicts_other_model(tmp_path, monkeypatch) -> None:
+    from proxy_scaler import upscale as upscale_module
+
+    monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {})
+    loads = {"n": 0}
+
+    def fake_load(self):
+        loads["n"] += 1
+        return _TinyDescriptor()
+
+    monkeypatch.setattr(Upscaler, "_load_model", fake_load)
+    cleared = []
+    monkeypatch.setattr(upscale_module, "_clear_device_cache", cleared.append)
+
+    _fresh_upscaler(tmp_path)._ensure_model()
+    other = Upscaler(
+        model=UpscaleModel.REALESRGAN_ANIME_FAST, scale=4, weights_dir=tmp_path, tile=0
+    )
+    other._ensure_model()
+
+    assert loads["n"] == 2
+    assert len(upscale_module._MODEL_CACHE) == 1  # one slot, old model evicted
+    assert cleared  # eviction released the old descriptor's device cache
+    # Switching back re-loads (the point of one slot: bounded VRAM).
+    _fresh_upscaler(tmp_path)._ensure_model()
+    assert loads["n"] == 3
+
+
+def test_cache_hit_derives_state_from_relocated_descriptor(
+    tmp_path, monkeypatch
+) -> None:
+    """After _relocate_to_cpu() moved the shared descriptor to CPU/fp32, a
+    later task's cache hit must describe it truthfully — not through stale
+    metadata claiming it still lives on the GPU in bf16."""
+    from proxy_scaler import upscale as upscale_module
+    from proxy_scaler.upscale import _cache_key
+
+    relocated = _TinyDescriptor(device="cpu", dtype=torch.float32)
+    key = _cache_key(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
+    monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {key: relocated})
+
+    up = _fresh_upscaler(tmp_path)
+    assert up._ensure_model() is relocated
+    assert up._device.type == "cpu"
+    assert up._dtype == torch.float32
+
+
+def test_upscale_no_longer_clears_cache_per_image(tmp_path) -> None:
+    up = _fresh_upscaler(tmp_path)
+    up._descriptor = MagicMock()
+    up._device = torch.device("cpu")
+
+    def fake_inference(descriptor, tensor):
+        _, _, h, w = tensor.shape
+        return torch.zeros(1, 3, h * 4, w * 4)
+
+    src = Image.new("RGB", (16, 16), color=(10, 20, 30))
+    with (
+        patch.object(up, "_ensure_model", return_value=up._descriptor),
+        patch.object(up, "_run_inference", side_effect=fake_inference),
+        patch("proxy_scaler.upscale._clear_device_cache") as clear_mock,
+    ):
+        up.upscale(src)
+
+    clear_mock.assert_not_called()  # happy path leaves the allocator warm
