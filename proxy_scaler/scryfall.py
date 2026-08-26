@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -390,13 +391,35 @@ def card_printed_name(card: dict[str, Any]) -> str | None:
     return None
 
 
+_download_session: requests.Session | None = None
+_download_session_lock = threading.Lock()
+
+
+def _shared_download_session() -> requests.Session:
+    """Lazy module-wide session for image downloads: keep-alive to the
+    image CDN saves a TCP+TLS handshake per card. Headers are set once at
+    construction and never mutated afterwards, so the worker's main and
+    prefetch threads can issue concurrent get()s safely (requests'
+    per-session connection pool handles that)."""
+    global _download_session
+    with _download_session_lock:
+        if _download_session is None:
+            sess = requests.Session()
+            sess.headers.update({"User-Agent": USER_AGENT})
+            _download_session = sess
+        return _download_session
+
+
 def download_png(url: str, session: requests.Session | None = None) -> bytes:
-    sess = session or requests.Session()
-    # .update(), not .setdefault(): requests.Session() already pre-populates
-    # headers with its own default User-Agent (python-requests/X.Y.Z), which
-    # setdefault() would never override — and Scryfall's CDN rejects that
-    # default UA with a 400.
-    sess.headers.update({"User-Agent": USER_AGENT})
+    if session is None:
+        sess = _shared_download_session()
+    else:
+        sess = session
+        # .update(), not .setdefault(): requests.Session() already
+        # pre-populates headers with its own default User-Agent
+        # (python-requests/X.Y.Z), which setdefault() would never override —
+        # and Scryfall's CDN rejects that default UA with a 400.
+        sess.headers.update({"User-Agent": USER_AGENT})
     resp = sess.get(url, timeout=60)
     if not resp.ok:
         raise ScryfallError(

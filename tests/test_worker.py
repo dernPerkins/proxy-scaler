@@ -159,3 +159,176 @@ def test_wait_while_held_blocks_until_released(tmp_path) -> None:
         _wait_while_held(db_path=db_path, poll_interval=0.02)
     finally:
         releaser.cancel()
+
+
+# --- deferred finish / prefetch (see #4: overlap I/O with GPU work) ----------
+
+
+def _patch_upscale_fakes(monkeypatch) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+    )
+
+    class FakeUpscaler:
+        def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
+            from proxy_scaler.upscale import UpscaleModel
+
+            self.model_id = UpscaleModel(model) if isinstance(model, str) else model
+            self.scale = scale
+
+        def upscale(self, image):
+            from proxy_scaler.upscale import UpscaleResult
+
+            return UpscaleResult(image=Image.new("RGB", (32, 32)), device="cpu")
+
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", FakeUpscaler)
+    return png_bytes
+
+
+def test_start_one_leaves_task_running_until_finish_marks_done(
+    tmp_path, monkeypatch
+) -> None:
+    from proxy_scaler import db as db_module
+    from proxy_scaler.worker import _start_one
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    tid = _enqueue(db_path, project_tag="tag-defer")
+    task = claim_next_task(db_path=db_path)
+    _patch_upscale_fakes(monkeypatch)
+
+    finish = _start_one(task, db_path=db_path)
+
+    # Inference done, but nothing finalized yet.
+    assert get_task(tid, db_path=db_path).status == "running"
+    assert db_module.list_gallery_items("tag-defer", db_path=db_path) == []
+
+    finish()
+
+    done = get_task(tid, db_path=db_path)
+    assert done.status == "done"
+    [item] = db_module.list_gallery_items("tag-defer", db_path=db_path)
+    assert Path(item["out_path"]).is_file()
+
+
+def test_start_one_inference_failure_fails_immediately(tmp_path) -> None:
+    from proxy_scaler.worker import _start_one
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    tid = _enqueue(db_path, png_url="")  # download_png can't handle it
+    task = claim_next_task(db_path=db_path)
+
+    finish = _start_one(task, db_path=db_path)
+
+    failed = get_task(tid, db_path=db_path)
+    assert failed.status == "failed"
+    assert failed.error
+    finish()  # returned callable is a harmless no-op
+    assert get_task(tid, db_path=db_path).status == "failed"
+
+
+def test_finish_failure_marks_task_failed(tmp_path, monkeypatch) -> None:
+    from proxy_scaler.worker import _start_one
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    tid = _enqueue(db_path)
+    task = claim_next_task(db_path=db_path)
+    _patch_upscale_fakes(monkeypatch)
+
+    def boom(**_kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("proxy_scaler.pipeline._write_dpi_variant", boom)
+
+    finish = _start_one(task, db_path=db_path)
+    assert get_task(tid, db_path=db_path).status == "running"
+
+    finish()
+
+    failed = get_task(tid, db_path=db_path)
+    assert failed.status == "failed"
+    assert "disk full" in failed.error
+
+
+def test_prefetcher_warms_next_pending_original(tmp_path, monkeypatch) -> None:
+    from proxy_scaler.upscale import original_cache_path
+    from proxy_scaler.worker import _OriginalPrefetcher
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    _enqueue(db_path)  # will be claimed
+    _enqueue(db_path, scryfall_id="bolt-id", face_name="Lightning Bolt")
+    claimed = claim_next_task(db_path=db_path)
+    _patch_upscale_fakes(monkeypatch)
+
+    prefetcher = _OriginalPrefetcher(db_path=db_path)
+    prefetcher.kick(current_face=(claimed.scryfall_id, claimed.face_index))
+    prefetcher._thread.join(timeout=10)
+
+    warmed = original_cache_path(tmp_path / "cache", "bolt-id", None)
+    assert warmed.is_file()
+    # The next task is still unclaimed — prefetch never claims.
+    assert get_task(claimed.id + 1, db_path=db_path).status == "pending"
+
+
+def test_prefetcher_skips_and_swallows(tmp_path, monkeypatch) -> None:
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.upscale import original_cache_path
+    from proxy_scaler.worker import _OriginalPrefetcher
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    calls = {"n": 0}
+
+    def counting_download(url, session=None):
+        calls["n"] += 1
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", counting_download)
+    prefetcher = _OriginalPrefetcher(db_path=db_path)
+
+    # Same face as current -> skipped without a download.
+    _enqueue(db_path)
+    prefetcher.kick(current_face=("sol-id", None))
+    prefetcher._thread.join(timeout=10)
+    assert calls["n"] == 0
+
+    # ORIGINAL_MODEL next -> skipped (that path overwrites unconditionally).
+    claim_next_task(db_path=db_path)
+    _enqueue(db_path, scryfall_id="dl-id", dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    prefetcher.kick(current_face=("other", None))
+    prefetcher._thread.join(timeout=10)
+    assert calls["n"] == 0
+
+    # Download failure is swallowed; nothing cached, no exception escapes.
+    claim_next_task(db_path=db_path)
+    _enqueue(db_path, scryfall_id="boom-id")
+    prefetcher.kick(current_face=("other", None))
+    prefetcher._thread.join(timeout=10)
+    assert calls["n"] == 1
+    assert not original_cache_path(tmp_path / "cache", "boom-id", None).exists()
+
+
+def test_peek_next_pending_matches_claim_order_without_claiming(tmp_path) -> None:
+    from proxy_scaler.db import peek_next_pending
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    assert peek_next_pending(db_path=db_path) is None
+    ids = [
+        _enqueue(db_path),
+        _enqueue(db_path, scryfall_id="bolt-id"),
+        _enqueue(db_path, scryfall_id="third-id"),
+    ]
+    for expected_id in ids:
+        peeked = peek_next_pending(db_path=db_path)
+        assert peeked.id == expected_id
+        assert peeked.status == "pending"  # peeking never claims
+        claimed = claim_next_task(db_path=db_path)
+        assert claimed.id == expected_id
+    assert peek_next_pending(db_path=db_path) is None

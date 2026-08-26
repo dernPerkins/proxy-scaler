@@ -238,3 +238,32 @@ def test_expected_face_count_agrees_with_expand_faces() -> None:
     # Unlike expand_faces, a card with no usable image still answers 1 —
     # this is coverage math, not a fetch.
     assert expected_face_count({"id": "x", "name": "X"}) == 1
+
+
+def test_download_png_reuses_shared_session(monkeypatch) -> None:
+    """With no session passed, download_png uses one lazily-built
+    module-wide session (keep-alive across cards) instead of a fresh
+    Session (and TLS handshake) per call."""
+    from proxy_scaler import scryfall as sf
+
+    created = []
+
+    class _FakeResp:
+        ok = True
+        content = b"png-bytes"
+
+    class _FakeSession:
+        def __init__(self):
+            created.append(self)
+            self.headers = {}
+
+        def get(self, url, timeout=None):
+            return _FakeResp()
+
+    monkeypatch.setattr(sf.requests, "Session", _FakeSession)
+    monkeypatch.setattr(sf, "_download_session", None)
+
+    assert download_png("https://example.com/a.png") == b"png-bytes"
+    assert download_png("https://example.com/b.png") == b"png-bytes"
+    assert len(created) == 1  # one session for both calls
+    assert created[0].headers["User-Agent"] == USER_AGENT

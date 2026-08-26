@@ -26,6 +26,7 @@ from proxy_scaler.scryfall import ScryfallClient
 from proxy_scaler.upscale import (
     DEFAULT_TILE_SIZE,
     UpscaleModel,
+    cache_path,
     original_cache_path,
     original_thumb_path,
 )
@@ -496,3 +497,98 @@ def test_write_dpi_variant_preserves_transparent_corners(tmp_path: Path) -> None
         # is the deepest part of the cutout.
         for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
             assert alpha.getpixel((x, y)) == 0, f"corner ({x},{y}) was flattened to opaque"
+
+
+# --- deferred finish seam (see #4: overlap I/O with GPU work) ----------------
+
+
+def test_process_task_defer_finish_writes_nothing_until_finish(
+    tmp_path, monkeypatch
+) -> None:
+    from proxy_scaler.pipeline import PendingTask, expected_face_result
+    from proxy_scaler.upscale import cache_device_path
+
+    task = _task(tmp_path)
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
+
+    pending = process_task(task, defer_finish=True)
+    assert isinstance(pending, PendingTask)
+
+    expected = expected_face_result(task)
+    cached = cache_path(
+        Path(task.cache_dir), task.scryfall_id, task.face_index,
+        expected.native_scale, task.model,
+    )
+    # Inference is done, but no output artifact exists yet.
+    assert not expected.out_path.exists()
+    assert not cached.exists()
+    assert not cache_device_path(cached).exists()
+
+    result = pending.finish()
+
+    assert result.out_path.is_file()
+    assert cached.is_file()
+    assert cache_device_path(cached).is_file()
+    assert result == expected_face_result(task)  # incl. device from sidecar
+
+
+def test_process_task_defer_finish_download_task_already_finished(
+    tmp_path, monkeypatch
+) -> None:
+    from proxy_scaler.pipeline import PendingTask
+
+    task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+
+    pending = process_task(task, defer_finish=True)
+    assert isinstance(pending, PendingTask)
+    # No GPU phase to hide behind: the file exists before finish().
+    expected = original_cache_path(Path(task.cache_dir), task.scryfall_id, task.face_index)
+    assert expected.is_file()
+    result = pending.finish()
+    assert result.out_path == expected
+
+
+def test_save_cache_png_writes_sidecar_only_after_png(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from proxy_scaler import upscale as upscale_module
+    from proxy_scaler.upscale import cache_device_path, save_cache_png
+
+    def boom(image, path, *, compress_level=6):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(upscale_module, "atomic_save_png", boom)
+    target = tmp_path / "cached.png"
+    with pytest.raises(OSError):
+        save_cache_png(Image.new("RGB", (4, 4)), target, "gpu")
+    assert not target.exists()
+    assert not cache_device_path(target).exists()  # never describes a missing PNG
+
+
+def test_prefetch_original_warms_cache_and_is_idempotent(tmp_path, monkeypatch) -> None:
+    from proxy_scaler.pipeline import prefetch_original
+    from proxy_scaler.upscale import original_thumb_path
+
+    task = _task(tmp_path)
+    calls = {"n": 0}
+
+    def counting_download(url, session=None):
+        calls["n"] += 1
+        return _fake_png_bytes()
+
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", counting_download)
+
+    path = prefetch_original(task)
+    assert path is not None and path.is_file()
+    assert original_thumb_path(path).is_file()
+    assert calls["n"] == 1
+
+    again = prefetch_original(task)
+    assert again == path
+    assert calls["n"] == 1  # cached -> no second download

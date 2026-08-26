@@ -576,6 +576,54 @@ class Upscaler:
         return output / weights.clamp_min(1.0)
 
 
+def _tmp_sibling(path: Path) -> Path:
+    """Unique-per-writer temp name next to `path`. pid+tid keeps two
+    concurrent writers (worker main thread, prefetch thread, finisher
+    thread — or a killed process's leftovers) from ever sharing a tmp
+    file, and the suffix never matches the exists()/glob checks that look
+    for exact final names, so a crash leaves only inert debris."""
+    import os
+    import threading
+
+    return path.with_name(f"{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write-then-rename so `path` only ever holds complete content."""
+    import os
+
+    tmp = _tmp_sibling(path)
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def atomic_save_png(image: Image.Image, path: Path, *, compress_level: int = 6) -> None:
+    """PNG save via tmp+rename; compress_level 6 is PIL's own default."""
+    import os
+
+    tmp = _tmp_sibling(path)
+    try:
+        image.save(tmp, format="PNG", compress_level=compress_level)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def save_cache_png(image: Image.Image, path: Path, device: str, *, compress_level: int = 3) -> None:
+    """Atomic upscale-cache write. The device sidecar is written strictly
+    AFTER the PNG lands — a sidecar must never describe a missing or
+    partial PNG. compress_level 3: this is an internal cache file the
+    worker only ever writes (tasks run force=True), so encode speed beats
+    the ~10-15% size cost."""
+    atomic_save_png(image, path, compress_level=compress_level)
+    write_cache_device(path, device)
+
+
 def cache_path(
     cache_dir: Path,
     scryfall_id: str,
@@ -641,11 +689,18 @@ def load_or_upscale(
     face_index: int | None,
     force: bool = False,
     timings: object | None = None,
+    defer_cache_write: bool = False,
 ) -> UpscaleResult:
     """Return upscaled image (+ device), using disk cache when present.
 
     `timings` is a duck-typed timing_db.TimingCollector (or None); a cache
-    hit records nothing."""
+    hit records nothing.
+
+    `defer_cache_write=True` skips the cache PNG + sidecar write entirely —
+    the caller owns it (the worker's deferred-finish tail reconstructs the
+    path via cache_path() and writes via save_cache_png() off the GPU's
+    critical path). On a cache hit there is nothing to write, so the flag
+    is a no-op there."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_path(
         cache_dir,
@@ -670,7 +725,8 @@ def load_or_upscale(
     if timings is not None:
         timings.set_src_dims(*src.size)
     result = upscaler.upscale(src)
+    if defer_cache_write:
+        return result
     with timings.phase("encode") if timings is not None else contextlib.nullcontext():
-        result.image.save(path, format="PNG")
-    write_cache_device(path, result.device)
+        save_cache_png(result.image, path, result.device)
     return result

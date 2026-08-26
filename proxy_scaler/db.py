@@ -327,6 +327,11 @@ def _raw_connect(path: Path) -> sqlite3.Connection:
     # default rollback-journal mode serializes writers too coarsely for two
     # independent processes polling/writing on their own schedules.
     conn.execute("PRAGMA journal_mode = WAL")
+    # WAL still raises "database is locked" immediately on writer-vs-writer
+    # collisions; with the worker's finisher thread there are now three
+    # concurrent writers (API process, worker main thread, finisher), so
+    # give SQLite a real retry window instead.
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -895,6 +900,21 @@ def claim_next_task(db_path: Path | str | None = None) -> TaskRow | None:
         ).fetchone()
         conn.commit()
     return TaskRow.from_row(updated)
+
+
+def peek_next_pending(db_path: Path | str | None = None) -> TaskRow | None:
+    """The task claim_next_task() would hand out next, WITHOUT claiming it.
+
+    Used by the worker's prefetcher to warm the next task's original while
+    the GPU works on the current one. Must mirror claim_next_task()'s
+    ORDER BY exactly — a prefetch of the wrong row is merely wasted, but
+    the whole point is predicting the next claim."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM generation_tasks WHERE status = 'pending' "
+            "ORDER BY created_at ASC, id ASC LIMIT 1"
+        ).fetchone()
+    return TaskRow.from_row(row) if row is not None else None
 
 
 def mark_task_done(task_id: int, db_path: Path | str | None = None) -> None:

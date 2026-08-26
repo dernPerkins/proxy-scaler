@@ -37,6 +37,8 @@ from .scryfall import (
 from .upscale import (
     UpscaleModel,
     Upscaler,
+    atomic_save_png,
+    atomic_write_bytes,
     cache_path,
     effective_tile_size,
     load_or_upscale,
@@ -44,6 +46,7 @@ from .upscale import (
     original_thumb_path,
     parse_model,
     read_cache_device,
+    save_cache_png,
 )
 
 ProgressCallback = Callable[[str], None]
@@ -253,7 +256,9 @@ def _save_original(
     path = original_cache_path(cache_dir, scryfall_id, face_index)
     path.parent.mkdir(parents=True, exist_ok=True)
     if overwrite or not path.exists():
-        path.write_bytes(png_bytes)
+        # Atomic: the prefetch thread and the main thread can race on the
+        # same face; both write complete bytes and the last rename wins.
+        atomic_write_bytes(path, png_bytes)
     return path
 
 
@@ -293,7 +298,9 @@ def _generate_original_thumbnail(original_path: Path, thumb_path: Path) -> None:
         bg.save(buf, format="JPEG", quality=quality)
         data = buf.getvalue()
         if len(data) <= _THUMB_TARGET_BYTES or quality == _THUMB_QUALITY_STEPS[-1]:
-            thumb_path.write_bytes(data)
+            # Atomic: the worker's prefetch thread can regenerate the same
+            # thumbnail the main thread is generating.
+            atomic_write_bytes(thumb_path, data)
             return
 
 
@@ -357,7 +364,7 @@ def _write_dpi_variant(
     # a visible replicated-pixel smear into every corner of the saved file
     # -- irreversible, and wrong for anyone downloading the PNG directly.
     sized = _resize_to_dpi(raw, dpi)
-    sized.save(out_path, format="PNG")
+    atomic_save_png(sized, out_path)
     return FaceResult(
         out_path=out_path,
         original_path=original_path,
@@ -431,7 +438,8 @@ def _regenerate_face_from_card(
     known_original_path: Path | None = None,
     on_progress: ProgressCallback | None = None,
     timings: object | None = None,
-) -> list[FaceResult]:
+    defer_finish: bool = False,
+) -> list[FaceResult] | Callable[[], list[FaceResult]]:
     """Shared core of regenerate_face_multi()/process_task(): given an
     already-resolved CardFaceImage (no Scryfall call needed here — the
     caller already has scryfall_id/png_url/etc.), reuse a cached original
@@ -444,9 +452,15 @@ def _regenerate_face_from_card(
     already has a FaceResult with its own recorded original_path), is
     checked first; the canonical cache_dir-derived location is always
     checked as a fallback (the only option process_task has, since a task
-    row has no prior FaceResult to carry a known path)."""
+    row has no prior FaceResult to carry a known path).
+
+    `defer_finish=True` (worker only, via process_task) returns after the
+    GPU work with a zero-arg closure that performs the remaining disk
+    writes — upscale-cache PNGs + sidecars, then the final DPI variants —
+    and returns the results. Call it exactly once, from any one thread;
+    after the handoff only that thread may touch the in-memory images."""
     if not dpi_targets:
-        return []
+        return (lambda: []) if defer_finish else []
 
     def log(msg: str) -> None:
         if on_progress:
@@ -482,43 +496,65 @@ def _regenerate_face_from_card(
     )
     ensure_original_thumbnail(original_path)  # best-effort; fails soft internally
 
+    targets = sorted(set(dpi_targets))
+    scale_for = {d: native_scale_for_dpi(d, model_id) for d in targets}
     raw_by_scale: dict[int, Image.Image] = {}
     device_by_scale: dict[int, str] = {}
-    results: list[FaceResult] = []
-    for target_dpi in sorted(set(dpi_targets)):
-        native = native_scale_for_dpi(target_dpi, model_id)
-        if native not in raw_by_scale:
-            upscaled = load_or_upscale(
-                png_bytes=png_bytes,
-                upscaler=upscalers[native],
-                cache_dir=cache_dir,
-                scryfall_id=face.scryfall_id,
-                face_index=face.face_index,
-                force=True,
-                timings=timings,
-            )
-            raw_by_scale[native] = upscaled.image
-            device_by_scale[native] = upscaled.device
-            if timings is not None:
-                timings.set_device(upscaled.device)
-                timings.set_dtype(getattr(upscaled, "dtype", None))
-                timings.set_effective_tile(getattr(upscalers[native], "tile", None))
+    for native in sorted(set(scale_for.values())):
+        upscaled = load_or_upscale(
+            png_bytes=png_bytes,
+            upscaler=upscalers[native],
+            cache_dir=cache_dir,
+            scryfall_id=face.scryfall_id,
+            face_index=face.face_index,
+            force=True,
+            timings=timings,
+            defer_cache_write=True,
+        )
+        raw_by_scale[native] = upscaled.image
+        device_by_scale[native] = upscaled.device
+        if timings is not None:
+            timings.set_device(upscaled.device)
+            timings.set_dtype(getattr(upscaled, "dtype", None))
+            timings.set_effective_tile(getattr(upscalers[native], "tile", None))
 
-        with _phase(timings, "encode"):
-            result = _write_dpi_variant(
-                face=face,
-                raw=raw_by_scale[native],
-                original_path=original_path,
-                output_dir=output_dir,
-                model_id=model_id,
-                dpi=target_dpi,
-                native_scale=native,
-                device=device_by_scale[native],
-            )
-        log(f"  regenerated {result.out_path} ({result.out_path.stat().st_size} bytes)")
-        results.append(result)
+    def finish() -> list[FaceResult]:
+        # Cache PNGs first (mirrors the old interleaved order per scale),
+        # then the user-facing DPI variants. All writes are atomic.
+        for native in sorted(raw_by_scale):
+            with _phase(timings, "encode"):
+                save_cache_png(
+                    raw_by_scale[native],
+                    cache_path(
+                        cache_dir,
+                        face.scryfall_id,
+                        face.face_index,
+                        native,
+                        model_id,
+                    ),
+                    device_by_scale[native],
+                )
+        results: list[FaceResult] = []
+        for target_dpi in targets:
+            native = scale_for[target_dpi]
+            with _phase(timings, "encode"):
+                result = _write_dpi_variant(
+                    face=face,
+                    raw=raw_by_scale[native],
+                    original_path=original_path,
+                    output_dir=output_dir,
+                    model_id=model_id,
+                    dpi=target_dpi,
+                    native_scale=native,
+                    device=device_by_scale[native],
+                )
+            log(f"  regenerated {result.out_path} ({result.out_path.stat().st_size} bytes)")
+            results.append(result)
+        return results
 
-    return results
+    if defer_finish:
+        return finish
+    return finish()
 
 
 def regenerate_face_multi(
@@ -611,21 +647,46 @@ def process_download_task(
     )
 
 
+@dataclass
+class PendingTask:
+    """Deferred tail of process_task(defer_finish=True): inference is done
+    (the GPU is free) but the task's output files may not exist yet.
+    finish() performs the remaining disk writes (upscale-cache PNG +
+    sidecar, final DPI variant) and returns the FaceResult. Call it exactly
+    once, from any one thread; the caller must not mark the task done or
+    upsert its gallery row until finish() returns — the API 404s on a
+    gallery row whose file is missing."""
+
+    _finish: Callable[[], FaceResult]
+
+    def finish(self) -> FaceResult:
+        return self._finish()
+
+
 def process_task(
     task: TaskRow,
     *,
     on_progress: ProgressCallback | None = None,
     timings: object | None = None,
-) -> FaceResult:
+    defer_finish: bool = False,
+) -> FaceResult | PendingTask:
     """Process one generation_tasks row (see db.py) into a FaceResult —
     the unit of work the background worker (worker.py) performs. Shares
     its core with regenerate_face_multi(), just fed from a task row's
     already-resolved fields (set at enqueue time, no Scryfall call needed
     here) instead of an existing FaceResult, and always exactly one target
-    DPI (one task = one face+dpi+model unit of work)."""
+    DPI (one task = one face+dpi+model unit of work).
+
+    `defer_finish=True` (worker only) returns a PendingTask once the GPU
+    work is done, so the caller can run the encode/finalize tail on
+    another thread while the next task's inference starts."""
     if task.model == ORIGINAL_MODEL:
         # Must branch before parse_model — the sentinel isn't an UpscaleModel.
-        return process_download_task(task, on_progress=on_progress, timings=timings)
+        # Download tasks have no GPU phase to hide behind, so they run
+        # fully synchronously either way; the deferred shape just keeps the
+        # worker's code path uniform.
+        result = process_download_task(task, on_progress=on_progress, timings=timings)
+        return PendingTask(lambda: result) if defer_finish else result
     model_id = parse_model(task.model)
     face = CardFaceImage(
         scryfall_id=task.scryfall_id,
@@ -638,7 +699,7 @@ def process_task(
         total_faces=task.total_faces,
         lang=task.lang,
     )
-    results = _regenerate_face_from_card(
+    tail = _regenerate_face_from_card(
         face,
         dpi_targets=[task.dpi],
         output_dir=Path(task.output_dir),
@@ -648,8 +709,29 @@ def process_task(
         tile_size=task.tile_size,
         on_progress=on_progress,
         timings=timings,
+        defer_finish=defer_finish,
     )
-    return results[0]
+    if defer_finish:
+        return PendingTask(lambda: tail()[0])
+    return tail[0]
+
+
+def prefetch_original(task: TaskRow) -> Path | None:
+    """Best-effort warm of the originals cache for a not-yet-claimed task,
+    called from the worker's prefetch thread while the GPU is busy with
+    the current task. Idempotent and race-safe: skips when already cached,
+    and _save_original is an atomic write-if-missing, so a concurrent
+    download of the same face by the main thread is harmless (both write
+    complete bytes; last rename wins)."""
+    path = original_cache_path(Path(task.cache_dir), task.scryfall_id, task.face_index)
+    if path.is_file():
+        return path
+    png_bytes = download_png(task.png_url)
+    original_path = _save_original(
+        png_bytes, Path(task.cache_dir), task.scryfall_id, task.face_index
+    )
+    ensure_original_thumbnail(original_path)
+    return original_path
 
 
 def expected_face_result(task: TaskRow) -> FaceResult:

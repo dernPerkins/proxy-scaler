@@ -9,10 +9,15 @@ set (make worker-dev sets it) or an explicit path is passed. Production
 runs — the supervisor and the packaged desktop app — never set the var,
 so no collector is created and no file appears.
 
-Phases never overlap: each task runs download → model_load → inference →
-encode strictly in sequence, so summing the phase columns never
-double-counts. total_s can exceed the phase sum — the residual is tensor
-prep, alpha reattach, thumbnails, and DB bookkeeping.
+Phases within one task never overlap each other (download → model_load →
+inference → encode, in sequence), so summing a row's phase columns never
+double-counts. Across tasks they do overlap: under the worker's
+deferred-finish mode a task's encode phase runs on the finisher thread
+while the NEXT task's download/inference proceeds, and total_s includes
+any wait for the finisher to be scheduled — so total_s is per-task wall
+clock, not queue throughput. Expect download_s ≈ 0 on prefetched tasks.
+total_s can exceed the phase sum — the residual is tensor prep, alpha
+reattach, thumbnails, and DB bookkeeping.
 
 Summarize collected rows with: python -m proxy_scaler.timing_db --stats
 """
