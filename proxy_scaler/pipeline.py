@@ -502,6 +502,7 @@ def _regenerate_face_from_card(
             if timings is not None:
                 timings.set_device(upscaled.device)
                 timings.set_dtype(getattr(upscaled, "dtype", None))
+                timings.set_effective_tile(getattr(upscalers[native], "tile", None))
 
         with _phase(timings, "encode"):
             result = _write_dpi_variant(

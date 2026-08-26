@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS task_timings (
   face_name    TEXT,
   device       TEXT,
   dtype        TEXT,
+  effective_tile INTEGER,
   status       TEXT NOT NULL,
   src_width    INTEGER,
   src_height   INTEGER,
@@ -85,6 +86,7 @@ class TimingCollector:
         self.phases: dict[str, float] = {}
         self.device: str | None = None
         self.dtype: str | None = None
+        self.effective_tile: int | None = None
         self.src_width: int | None = None
         self.src_height: int | None = None
         self._started = time.monotonic()
@@ -104,6 +106,10 @@ class TimingCollector:
     def set_dtype(self, dtype: str | None) -> None:
         if dtype:
             self.dtype = dtype
+
+    def set_effective_tile(self, tile: int | None) -> None:
+        if tile is not None:
+            self.effective_tile = tile
 
     def set_src_dims(self, width: int, height: int) -> None:
         self.src_width = width
@@ -139,20 +145,24 @@ def record_task(
         conn = sqlite3.connect(path)
         try:
             conn.execute(_SCHEMA)
-            try:
-                # Files created before the dtype column existed get it added
-                # in place — this is a disposable dev DB, but keeping the
-                # already-collected rows makes before/after comparison free.
-                conn.execute("ALTER TABLE task_timings ADD COLUMN dtype TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already there (the CREATE above or a prior run)
+            # Files created before these columns existed get them added in
+            # place — this is a disposable dev DB, but keeping the
+            # already-collected rows makes before/after comparison free.
+            for migration in (
+                "ALTER TABLE task_timings ADD COLUMN dtype TEXT",
+                "ALTER TABLE task_timings ADD COLUMN effective_tile INTEGER",
+            ):
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError:
+                    pass  # column already there (the CREATE above or a prior run)
             conn.execute(
                 """
                 INSERT INTO task_timings (
                   task_id, model, dpi, tile_size, face_name, device, dtype,
-                  status, src_width, src_height,
+                  effective_tile, status, src_width, src_height,
                   download_s, model_load_s, inference_s, encode_s, total_s
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -162,6 +172,7 @@ def record_task(
                     task.face_name,
                     collector.device,
                     collector.dtype,
+                    collector.effective_tile,
                     status,
                     collector.src_width,
                     collector.src_height,
@@ -203,12 +214,15 @@ def compute_stats(db_path: Path | str) -> dict:
             continue
         # Rows written before the dtype column existed read as fp32 — that
         # was the only dtype back then, so old/new rows group correctly.
-        dtype = (row["dtype"] if "dtype" in row.keys() else None) or "fp32"
-        key = (row["model"], row["device"] or "?", dtype)
+        # effective_tile similarly reads as "?" for pre-column rows.
+        cols = row.keys()
+        dtype = (row["dtype"] if "dtype" in cols else None) or "fp32"
+        tile = row["effective_tile"] if "effective_tile" in cols else None
+        key = (row["model"], row["device"] or "?", dtype, str(tile if tile is not None else "?"))
         grouped.setdefault(key, []).append(row)
 
     groups = []
-    for (model, device, dtype), members in sorted(grouped.items()):
+    for (model, device, dtype, tile), members in sorted(grouped.items()):
         stats: dict[str, dict] = {}
         for col in columns:
             values = [r[col] for r in members if r[col] is not None]
@@ -229,6 +243,7 @@ def compute_stats(db_path: Path | str) -> dict:
                 "model": model,
                 "device": device,
                 "dtype": dtype,
+                "tile": tile,
                 "count": len(members),
                 "stats": stats,
             }
@@ -242,8 +257,8 @@ def format_stats(result: dict) -> str:
         lines.append("No completed tasks recorded.")
     for group in result["groups"]:
         lines.append(
-            f"{group['model']} on {group['device']} ({group['dtype']}) "
-            f"— {group['count']} task(s)"
+            f"{group['model']} on {group['device']} ({group['dtype']}, "
+            f"tile {group['tile']}) — {group['count']} task(s)"
         )
         lines.append(f"  {'phase':<12} {'n':>4} {'mean':>8} {'median':>8} {'p90':>8}")
         for col, s in group["stats"].items():
