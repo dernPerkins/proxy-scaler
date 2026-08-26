@@ -216,12 +216,90 @@ def device_backend(device: torch.device | str | None) -> str:
     return name or "unknown"
 
 
+def _bf16_supported(device: torch.device | None) -> bool:
+    """Whether this device can run bf16 inference at a real speedup.
+
+    cuda: is_bf16_supported() — Ampere+/RDNA2+ (ROCm's HIP backend mirrors
+    the cuda namespace, so AMD-on-Linux answers through the same call).
+    mps: probed with a tiny op — torch's MPS bf16 support depends on the
+    chip (M1 lacks it) and torch version, so asking beats version-matrixing.
+    cpu / privateuseone (DirectML): no — bf16 there is emulated or absent.
+    """
+    if device is None:
+        return False
+    import torch
+
+    if device.type == "cuda":
+        try:
+            return bool(torch.cuda.is_bf16_supported())
+        except Exception:  # noqa: BLE001
+            return False
+    if device.type == "mps":
+        try:
+            x = torch.zeros(2, device=device, dtype=torch.bfloat16)
+            (x + 1).sum().item()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
+def resolve_dtype(descriptor: ImageModelDescriptor, device: torch.device) -> torch.dtype:
+    """bf16 when both the model and the device support it, else fp32.
+
+    Model-agnostic on purpose: the gate is spandrel's per-descriptor
+    supports_bfloat16 flag, never the model's identity, so any model added
+    to _WEIGHTS inherits the fast path automatically. fp16 is deliberately
+    not attempted — spandrel blocks it for the DAT models (numerically
+    unsafe), and benchmarks showed fp16 autocast gains nothing anyway (the
+    DAT models are memory-bound; bf16's halved activation traffic is the
+    lever, measured ~1.65x at 58dB PSNR vs fp32).
+    """
+    import torch
+
+    if getattr(descriptor, "supports_bfloat16", False) and _bf16_supported(device):
+        return torch.bfloat16
+    return torch.float32
+
+
+def _dtype_label(dtype: "torch.dtype | None") -> str:
+    import torch
+
+    return "bf16" if dtype == torch.bfloat16 else "fp32"
+
+
+# A tile-768 bf16 pass on a card-sized image peaks at ~6.3 GiB allocated
+# (weights included, measured on a 3080 Ti); requiring 8 GiB free keeps
+# real headroom and correctly excludes 8 GB cards.
+_TILE768_MIN_FREE = 8 * 1024**3
+_AUTO_TILE_UPGRADE = 768
+
+
+def _choose_auto_tile(
+    free_bytes: int | None, dtype: "torch.dtype", base_tile: int
+) -> int:
+    """Pick the auto tile size given free VRAM. Only ever upgrades an
+    auto-tiled heavy model (base_tile > 0) running bf16 — fp32 at 768
+    OOMs even on 12 GB cards, and untiled light models stay untiled."""
+    import torch
+
+    if (
+        base_tile > 0
+        and dtype == torch.bfloat16
+        and free_bytes is not None
+        and free_bytes >= _TILE768_MIN_FREE
+    ):
+        return _AUTO_TILE_UPGRADE
+    return base_tile
+
+
 @dataclass(frozen=True)
 class UpscaleResult:
-    """Upscaled image plus where inference ran."""
+    """Upscaled image plus where/how inference ran."""
 
     image: Image.Image
     device: str  # "gpu" | "cpu"
+    dtype: str = "fp32"  # "bf16" | "fp32"
 
 
 def ensure_weights(
@@ -263,6 +341,7 @@ class Upscaler:
         tile: int = 0,
         tile_pad: int = 32,
         timings: object | None = None,
+        tile_auto: bool = False,
     ) -> None:
         self.model_id = parse_model(model)
         if scale not in self.model_id.supported_scales:
@@ -274,11 +353,16 @@ class Upscaler:
         self.weights_dir = Path(weights_dir)
         self.tile = tile
         self.tile_pad = tile_pad
+        # tile_auto marks `tile` as the auto default rather than a user
+        # choice — only then may _load_model upgrade it from free VRAM.
+        self.tile_auto = tile_auto
         # Duck-typed timing_db.TimingCollector (kept untyped so this module
         # never imports timing_db, which imports db, which imports us).
         self._timings = timings
         self._descriptor: ImageModelDescriptor | None = None
         self._device: torch.device | None = None
+        self._dtype: torch.dtype | None = None
+        self._tile_upgraded = False
 
     def _phase(self, name: str):
         if self._timings is not None:
@@ -311,8 +395,14 @@ class Upscaler:
         descriptor = ModelLoader().load_from_file(str(weights))
         if not isinstance(descriptor, ImageModelDescriptor):
             raise TypeError(f"Unexpected model type for {weights}")
+        self._dtype = resolve_dtype(descriptor, device)
         try:
             descriptor = descriptor.to(device).eval()
+            if self._dtype == torch.bfloat16:
+                try:
+                    descriptor = descriptor.to(torch.bfloat16)
+                except Exception:  # noqa: BLE001 — any bf16 hiccup means fp32
+                    self._dtype = torch.float32
         except Exception as exc:
             if device.type != "cpu" and _is_oom_error(exc):
                 print(
@@ -321,9 +411,21 @@ class Upscaler:
                 _clear_device_cache(device)
                 device = torch.device("cpu")
                 self._device = device
+                self._dtype = torch.float32
                 descriptor = descriptor.to(device).eval()
             else:
                 raise
+        if device.type == "cuda" and self.tile_auto and self.tile > 0:
+            try:
+                free_bytes, _ = torch.cuda.mem_get_info()
+            except Exception:  # noqa: BLE001
+                free_bytes = None
+            new_tile = _choose_auto_tile(free_bytes, self._dtype, self.tile)
+            if new_tile != self.tile:
+                self.tile = new_tile
+                self._tile_upgraded = True
+        # The one line a user report needs: which capability gates fired.
+        print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
         self._descriptor = descriptor
         return descriptor
 
@@ -336,7 +438,9 @@ class Upscaler:
         _clear_device_cache(old)
         print(f"Falling back to CPU upscale (was {old})…")
         self._device = torch.device("cpu")
-        self._descriptor = self._descriptor.to(self._device).eval()
+        # bf16 on CPU is emulated/slow — fall all the way back to fp32.
+        self._dtype = torch.float32
+        self._descriptor = self._descriptor.to(self._device).to(torch.float32).eval()
         return self._descriptor
 
     def _run_inference(
@@ -367,33 +471,58 @@ class Upscaler:
             # instead of letting it get silently discarded.
             alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
             rgb = image.convert("RGB")
-            tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
+            dtype = self._dtype or torch.float32
+            tensor = to_tensor(rgb).unsqueeze(0).to(self._device, dtype)
 
             try:
-                # The inference phase deliberately spans the OOM→CPU retry,
-                # so inference_s is the true wall-clock cost including the
-                # fallback (model relocation, tensor rebuild, CPU re-run).
+                # The inference phase deliberately spans the OOM retries,
+                # so inference_s is the true wall-clock cost including any
+                # fallback (tile downgrade or model relocation + re-run).
                 with self._phase("inference"):
                     try:
                         out_gpu = self._run_inference(descriptor, tensor)
                     except Exception as exc:
                         if self._device.type == "cpu" or not _is_oom_error(exc):
                             raise
-                        print(
-                            f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
-                        )
-                        _clear_device_cache(self._device)
-                        if self._device.type == "cuda":
+                        if self._tile_upgraded:
+                            # The VRAM-probed larger tile turned out not to
+                            # fit after all (something else grabbed VRAM) —
+                            # drop back to the base tile on the SAME device
+                            # before resorting to the catastrophic CPU path.
+                            base = effective_tile_size(self.model_id, 0)
+                            print(
+                                f"Upscale OOM on {self._device} at tile "
+                                f"{self.tile}; retrying at tile {base}…"
+                            )
+                            self.tile = base
+                            self._tile_upgraded = False
+                            _clear_device_cache(self._device)
                             try:
-                                torch.cuda.synchronize(self._device)
-                            except Exception:  # noqa: BLE001
-                                pass
-                        del tensor
-                        descriptor = self._relocate_to_cpu()
-                        tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
-                        out_gpu = self._run_inference(descriptor, tensor)
+                                out_gpu = self._run_inference(descriptor, tensor)
+                            except Exception as exc2:
+                                if not _is_oom_error(exc2):
+                                    raise
+                                exc = exc2
+                            else:
+                                exc = None
+                        if exc is not None:
+                            print(
+                                f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
+                            )
+                            _clear_device_cache(self._device)
+                            if self._device.type == "cuda":
+                                try:
+                                    torch.cuda.synchronize(self._device)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            del tensor
+                            descriptor = self._relocate_to_cpu()
+                            tensor = to_tensor(rgb).unsqueeze(0).to(
+                                self._device, self._dtype or torch.float32
+                            )
+                            out_gpu = self._run_inference(descriptor, tensor)
 
-                out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).cpu()
+                out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).float().cpu()
                 del out_gpu
                 out_image = to_pil_image(out_cpu)
                 if alpha is not None:
@@ -402,6 +531,7 @@ class Upscaler:
                 return UpscaleResult(
                     image=out_image,
                     device=device_kind(self._device),
+                    dtype=_dtype_label(self._dtype),
                 )
             finally:
                 try:

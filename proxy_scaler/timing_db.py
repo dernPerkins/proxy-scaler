@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS task_timings (
   tile_size    INTEGER,
   face_name    TEXT,
   device       TEXT,
+  dtype        TEXT,
   status       TEXT NOT NULL,
   src_width    INTEGER,
   src_height   INTEGER,
@@ -83,6 +84,7 @@ class TimingCollector:
     def __init__(self) -> None:
         self.phases: dict[str, float] = {}
         self.device: str | None = None
+        self.dtype: str | None = None
         self.src_width: int | None = None
         self.src_height: int | None = None
         self._started = time.monotonic()
@@ -98,6 +100,10 @@ class TimingCollector:
     def set_device(self, device: str | None) -> None:
         if device:
             self.device = device
+
+    def set_dtype(self, dtype: str | None) -> None:
+        if dtype:
+            self.dtype = dtype
 
     def set_src_dims(self, width: int, height: int) -> None:
         self.src_width = width
@@ -133,13 +139,20 @@ def record_task(
         conn = sqlite3.connect(path)
         try:
             conn.execute(_SCHEMA)
+            try:
+                # Files created before the dtype column existed get it added
+                # in place — this is a disposable dev DB, but keeping the
+                # already-collected rows makes before/after comparison free.
+                conn.execute("ALTER TABLE task_timings ADD COLUMN dtype TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already there (the CREATE above or a prior run)
             conn.execute(
                 """
                 INSERT INTO task_timings (
-                  task_id, model, dpi, tile_size, face_name, device, status,
-                  src_width, src_height,
+                  task_id, model, dpi, tile_size, face_name, device, dtype,
+                  status, src_width, src_height,
                   download_s, model_load_s, inference_s, encode_s, total_s
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -148,6 +161,7 @@ def record_task(
                     task.tile_size,
                     task.face_name,
                     collector.device,
+                    collector.dtype,
                     status,
                     collector.src_width,
                     collector.src_height,
@@ -183,15 +197,18 @@ def compute_stats(db_path: Path | str) -> dict:
     failed = sum(1 for r in rows if r["status"] != "done")
     columns = [f"{name}_s" for name in PHASES] + ["total_s"]
 
-    grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
     for row in rows:
         if row["status"] != "done":
             continue
-        key = (row["model"], row["device"] or "?")
+        # Rows written before the dtype column existed read as fp32 — that
+        # was the only dtype back then, so old/new rows group correctly.
+        dtype = (row["dtype"] if "dtype" in row.keys() else None) or "fp32"
+        key = (row["model"], row["device"] or "?", dtype)
         grouped.setdefault(key, []).append(row)
 
     groups = []
-    for (model, device), members in sorted(grouped.items()):
+    for (model, device, dtype), members in sorted(grouped.items()):
         stats: dict[str, dict] = {}
         for col in columns:
             values = [r[col] for r in members if r[col] is not None]
@@ -208,7 +225,13 @@ def compute_stats(db_path: Path | str) -> dict:
                 ),
             }
         groups.append(
-            {"model": model, "device": device, "count": len(members), "stats": stats}
+            {
+                "model": model,
+                "device": device,
+                "dtype": dtype,
+                "count": len(members),
+                "stats": stats,
+            }
         )
     return {"groups": groups, "failed": failed}
 
@@ -219,7 +242,8 @@ def format_stats(result: dict) -> str:
         lines.append("No completed tasks recorded.")
     for group in result["groups"]:
         lines.append(
-            f"{group['model']} on {group['device']} — {group['count']} task(s)"
+            f"{group['model']} on {group['device']} ({group['dtype']}) "
+            f"— {group['count']} task(s)"
         )
         lines.append(f"  {'phase':<12} {'n':>4} {'mean':>8} {'median':>8} {'p90':>8}")
         for col, s in group["stats"].items():

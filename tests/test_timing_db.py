@@ -172,8 +172,10 @@ def test_compute_stats_groups_by_model_device(tmp_path) -> None:
         c = TimingCollector()
         c.phases = {"inference": inference, "encode": 1.0}
         c.set_device("gpu")
+        c.set_dtype("bf16")
         record_task(c, task, "done", db_path=timing_path)
-    # Different device -> separate group; NULL inference must be skipped.
+    # Different device -> separate group; NULL inference must be skipped;
+    # no dtype set -> groups under the fp32 default.
     c = TimingCollector()
     c.phases = {"encode": 3.0}
     c.set_device("cpu")
@@ -183,13 +185,13 @@ def test_compute_stats_groups_by_model_device(tmp_path) -> None:
 
     result = compute_stats(timing_path)
     assert result["failed"] == 1
-    by_key = {(g["model"], g["device"]): g for g in result["groups"]}
-    gpu = by_key[("ultrasharp_v2", "gpu")]
+    by_key = {(g["model"], g["device"], g["dtype"]): g for g in result["groups"]}
+    gpu = by_key[("ultrasharp_v2", "gpu", "bf16")]
     assert gpu["count"] == 3
     assert gpu["stats"]["inference_s"]["count"] == 3
     assert gpu["stats"]["inference_s"]["mean"] == pytest.approx(4.0)
     assert gpu["stats"]["inference_s"]["median"] == pytest.approx(4.0)
-    cpu = by_key[("ultrasharp_v2", "cpu")]
+    cpu = by_key[("ultrasharp_v2", "cpu", "fp32")]
     assert cpu["count"] == 1
     assert "inference_s" not in cpu["stats"]
     assert cpu["stats"]["encode_s"]["mean"] == pytest.approx(3.0)
@@ -250,3 +252,53 @@ def test_process_one_uses_env_var_path(tmp_path, monkeypatch) -> None:
 
     [row] = _timing_rows(timing_path)
     assert row["status"] == "done"
+
+
+def test_record_task_migrates_pre_dtype_schema(tmp_path) -> None:
+    """A timing DB created before the dtype column existed gets the column
+    added in place on the next write, keeping its old rows."""
+    db_path, task = _claimed_task(tmp_path)
+    timing_path = tmp_path / "timing.db"
+
+    old_schema = """
+    CREATE TABLE task_timings (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id      INTEGER,
+      model        TEXT NOT NULL,
+      dpi          INTEGER,
+      tile_size    INTEGER,
+      face_name    TEXT,
+      device       TEXT,
+      status       TEXT NOT NULL,
+      src_width    INTEGER,
+      src_height   INTEGER,
+      download_s   REAL,
+      model_load_s REAL,
+      inference_s  REAL,
+      encode_s     REAL,
+      total_s      REAL NOT NULL,
+      recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """
+    conn = sqlite3.connect(timing_path)
+    conn.execute(old_schema)
+    conn.execute(
+        "INSERT INTO task_timings (task_id, model, device, status, total_s)"
+        " VALUES (1, 'ultrasharp_v2', 'gpu', 'done', 10.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    c = TimingCollector()
+    c.phases = {"inference": 5.0}
+    c.set_device("gpu")
+    c.set_dtype("bf16")
+    record_task(c, task, "done", db_path=timing_path)
+
+    rows = _timing_rows(timing_path)
+    assert len(rows) == 2
+    assert rows[0]["dtype"] is None  # legacy row survives, reads as fp32 in stats
+    assert rows[1]["dtype"] == "bf16"
+    groups = {(g["dtype"]): g for g in compute_stats(timing_path)["groups"]}
+    assert groups["fp32"]["count"] == 1
+    assert groups["bf16"]["count"] == 1

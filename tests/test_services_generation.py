@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from proxy_scaler import db
+from proxy_scaler import carddb, db
 from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.scryfall import ScryfallClient, ScryfallError
 from proxy_scaler.services import generation
@@ -24,6 +24,20 @@ SOL_RING_CARD = {
     "image_status": "highres_scan",
     "image_uris": {"png": "https://example.com/sol.png"},
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_default_card_corpus(tmp_path: Path, monkeypatch) -> None:
+    """Point the default card-corpus location at a nonexistent tmp file.
+
+    CardResolver answers from the local corpus first and only falls
+    through to the (mocked) ScryfallClient on a miss — so a dev machine
+    with a real bulk-imported data/scryfall_cards.db would resolve
+    "Sol Ring" locally to a real printing, bypassing every
+    resolve_many mock and the SOL_RING_CARD fixture ids these tests
+    key on. Tests that want a corpus seed their own and pass
+    card_db_path explicitly, which wins over this default."""
+    monkeypatch.setattr(carddb, "DEFAULT_CARD_DB_PATH", tmp_path / "no-corpus.db")
 
 
 @pytest.fixture

@@ -413,6 +413,7 @@ def _upscalers_for_targets(
             weights_dir=weights_dir,
             tile=tile,
             timings=timings,
+            tile_auto=tile_size == 0,
         )
         for scale in sorted(needed)
     }
@@ -500,6 +501,7 @@ def _regenerate_face_from_card(
             device_by_scale[native] = upscaled.device
             if timings is not None:
                 timings.set_device(upscaled.device)
+                timings.set_dtype(getattr(upscaled, "dtype", None))
 
         with _phase(timings, "encode"):
             result = _write_dpi_variant(
