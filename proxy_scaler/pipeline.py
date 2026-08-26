@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import re
 import shutil
@@ -377,11 +378,22 @@ def _write_dpi_variant(
     )
 
 
+def _phase(timings: object | None, name: str):
+    """Enter a phase on a duck-typed timing_db.TimingCollector, or no-op.
+
+    Kept duck-typed so this module never imports timing_db (which imports
+    db, which imports upscale — a cycle otherwise)."""
+    if timings is not None:
+        return timings.phase(name)
+    return contextlib.nullcontext()
+
+
 def _upscalers_for_targets(
     model_id: UpscaleModel,
     dpi_targets: list[int],
     weights_dir: Path,
     tile_size: int = 0,
+    timings: object | None = None,
 ) -> dict[int, Upscaler]:
     """Build unique Upscaler instances keyed by native scale.
 
@@ -395,7 +407,13 @@ def _upscalers_for_targets(
     needed = {native_scale_for_dpi(d, model_id) for d in dpi_targets}
     tile = effective_tile_size(model_id, tile_size)
     return {
-        scale: Upscaler(model=model_id, scale=scale, weights_dir=weights_dir, tile=tile)
+        scale: Upscaler(
+            model=model_id,
+            scale=scale,
+            weights_dir=weights_dir,
+            tile=tile,
+            timings=timings,
+        )
         for scale in sorted(needed)
     }
 
@@ -411,6 +429,7 @@ def _regenerate_face_from_card(
     tile_size: int = 0,
     known_original_path: Path | None = None,
     on_progress: ProgressCallback | None = None,
+    timings: object | None = None,
 ) -> list[FaceResult]:
     """Shared core of regenerate_face_multi()/process_task(): given an
     already-resolved CardFaceImage (no Scryfall call needed here — the
@@ -432,7 +451,9 @@ def _regenerate_face_from_card(
         if on_progress:
             on_progress(msg)
 
-    upscalers = _upscalers_for_targets(model_id, dpi_targets, Path(weights_dir), tile_size)
+    upscalers = _upscalers_for_targets(
+        model_id, dpi_targets, Path(weights_dir), tile_size, timings=timings
+    )
 
     canonical_original = original_cache_path(cache_dir, face.scryfall_id, face.face_index)
     cached_original = next(
@@ -452,7 +473,8 @@ def _regenerate_face_from_card(
         )
     else:
         log(f"Downloading {face.png_url}")
-        png_bytes = download_png(face.png_url)
+        with _phase(timings, "download"):
+            png_bytes = download_png(face.png_url)
 
     original_path = _save_original(
         png_bytes, cache_dir, face.scryfall_id, face.face_index
@@ -472,20 +494,24 @@ def _regenerate_face_from_card(
                 scryfall_id=face.scryfall_id,
                 face_index=face.face_index,
                 force=True,
+                timings=timings,
             )
             raw_by_scale[native] = upscaled.image
             device_by_scale[native] = upscaled.device
+            if timings is not None:
+                timings.set_device(upscaled.device)
 
-        result = _write_dpi_variant(
-            face=face,
-            raw=raw_by_scale[native],
-            original_path=original_path,
-            output_dir=output_dir,
-            model_id=model_id,
-            dpi=target_dpi,
-            native_scale=native,
-            device=device_by_scale[native],
-        )
+        with _phase(timings, "encode"):
+            result = _write_dpi_variant(
+                face=face,
+                raw=raw_by_scale[native],
+                original_path=original_path,
+                output_dir=output_dir,
+                model_id=model_id,
+                dpi=target_dpi,
+                native_scale=native,
+                device=device_by_scale[native],
+            )
         log(f"  regenerated {result.out_path} ({result.out_path.stat().st_size} bytes)")
         results.append(result)
 
@@ -533,7 +559,10 @@ def regenerate_face_multi(
 
 
 def process_download_task(
-    task: TaskRow, *, on_progress: ProgressCallback | None = None
+    task: TaskRow,
+    *,
+    on_progress: ProgressCallback | None = None,
+    timings: object | None = None,
 ) -> FaceResult:
     """Process one download task (model == ORIGINAL_MODEL): fetch the
     Scryfall original and cache it, no upscaling. Always overwrites the
@@ -545,19 +574,21 @@ def process_download_task(
     gallery row's out_path and original_path coincide."""
     if on_progress:
         on_progress(f"Downloading original for {task.face_name}…")
-    png_bytes = download_png(task.png_url)
-    original_path = _save_original(
-        png_bytes,
-        Path(task.cache_dir),
-        task.scryfall_id,
-        task.face_index,
-        overwrite=True,
-    )
-    # The thumbnail is derived from the original, so a re-fetch must
-    # invalidate it — delete before the ensure call regenerates it.
-    thumb = original_thumb_path(original_path)
-    thumb.unlink(missing_ok=True)
-    ensure_original_thumbnail(original_path)
+    with _phase(timings, "download"):
+        png_bytes = download_png(task.png_url)
+    with _phase(timings, "encode"):
+        original_path = _save_original(
+            png_bytes,
+            Path(task.cache_dir),
+            task.scryfall_id,
+            task.face_index,
+            overwrite=True,
+        )
+        # The thumbnail is derived from the original, so a re-fetch must
+        # invalidate it — delete before the ensure call regenerates it.
+        thumb = original_thumb_path(original_path)
+        thumb.unlink(missing_ok=True)
+        ensure_original_thumbnail(original_path)
     return FaceResult(
         out_path=original_path,
         original_path=original_path,
@@ -578,7 +609,10 @@ def process_download_task(
 
 
 def process_task(
-    task: TaskRow, *, on_progress: ProgressCallback | None = None
+    task: TaskRow,
+    *,
+    on_progress: ProgressCallback | None = None,
+    timings: object | None = None,
 ) -> FaceResult:
     """Process one generation_tasks row (see db.py) into a FaceResult —
     the unit of work the background worker (worker.py) performs. Shares
@@ -588,7 +622,7 @@ def process_task(
     DPI (one task = one face+dpi+model unit of work)."""
     if task.model == ORIGINAL_MODEL:
         # Must branch before parse_model — the sentinel isn't an UpscaleModel.
-        return process_download_task(task, on_progress=on_progress)
+        return process_download_task(task, on_progress=on_progress, timings=timings)
     model_id = parse_model(task.model)
     face = CardFaceImage(
         scryfall_id=task.scryfall_id,
@@ -610,6 +644,7 @@ def process_task(
         model_id=model_id,
         tile_size=task.tile_size,
         on_progress=on_progress,
+        timings=timings,
     )
     return results[0]
 

@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import db, pipeline
+from . import db, pipeline, timing_db
 
 POLL_INTERVAL_S = 2.0
 HOLD_POLL_INTERVAL_S = 0.5
@@ -41,15 +41,31 @@ def _wait_while_held(
     print("Worker released.")
 
 
-def _process_one(task: db.TaskRow, *, db_path: Path | str | None = None) -> None:
+def _process_one(
+    task: db.TaskRow,
+    *,
+    db_path: Path | str | None = None,
+    timing_db_path: Path | str | None = None,
+) -> None:
+    # Timing instrumentation is dev-only: without an explicit path or
+    # PROXY_SCALER_TIMING_DB_PATH in the environment (make worker-dev sets
+    # it) no collector exists and this function behaves exactly as before.
+    timing_path = timing_db.resolve_timing_db_path(timing_db_path)
+    timings = timing_db.TimingCollector() if timing_path is not None else None
     try:
-        result = pipeline.process_task(task, on_progress=print)
+        result = pipeline.process_task(task, on_progress=print, timings=timings)
         db.upsert_gallery_item_for_task(task, result, db_path=db_path)
         db.mark_task_done(task.id, db_path=db_path)
         print(f"Task {task.id} done: {result.out_path}")
+        if timings is not None:
+            timing_db.record_task(timings, task, "done", db_path=timing_path)
+            print(f"  {timings.summary_line()}")
     except Exception as exc:  # noqa: BLE001 — one bad task must not kill the worker
         db.mark_task_failed(task.id, str(exc), db_path=db_path)
         print(f"Task {task.id} failed: {exc}", file=sys.stderr)
+        if timings is not None:
+            timing_db.record_task(timings, task, "failed", db_path=timing_path)
+            print(f"  {timings.summary_line()}")
 
 
 def main(

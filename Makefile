@@ -787,8 +787,12 @@ init-db:
 api-dev: init-db
 	$(VENV_BIN)/uvicorn$(EXE) proxy_scaler.api:app --reload --reload-dir proxy_scaler --host $(HOST) --port $(PORT)
 
+# PROXY_SCALER_TIMING_DB_PATH turns on the dev-only per-phase timing
+# instrumentation (see proxy_scaler/timing_db.py). Only set here — the
+# supervisor / packaged app never sets it, so production stays untouched.
+# Summarize with: .venv/bin/python -m proxy_scaler.timing_db --stats
 worker-dev: init-db
-	$(PYTHON) -m proxy_scaler.worker
+	PROXY_SCALER_TIMING_DB_PATH=data/timing_debug.db $(PYTHON) -m proxy_scaler.worker
 
 frontend-install:
 	cd desktop/frontend && npm install

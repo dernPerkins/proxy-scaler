@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 from dataclasses import dataclass
 from enum import Enum
@@ -261,6 +262,7 @@ class Upscaler:
         weights_dir: Path | str = "weights",
         tile: int = 0,
         tile_pad: int = 32,
+        timings: object | None = None,
     ) -> None:
         self.model_id = parse_model(model)
         if scale not in self.model_id.supported_scales:
@@ -272,13 +274,24 @@ class Upscaler:
         self.weights_dir = Path(weights_dir)
         self.tile = tile
         self.tile_pad = tile_pad
+        # Duck-typed timing_db.TimingCollector (kept untyped so this module
+        # never imports timing_db, which imports db, which imports us).
+        self._timings = timings
         self._descriptor: ImageModelDescriptor | None = None
         self._device: torch.device | None = None
+
+    def _phase(self, name: str):
+        if self._timings is not None:
+            return self._timings.phase(name)
+        return contextlib.nullcontext()
 
     def _ensure_model(self) -> ImageModelDescriptor:
         if self._descriptor is not None:
             return self._descriptor
+        with self._phase("model_load"):
+            return self._load_model()
 
+    def _load_model(self) -> ImageModelDescriptor:
         import torch
         from spandrel import ImageModelDescriptor, ModelLoader
 
@@ -357,24 +370,28 @@ class Upscaler:
             tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
 
             try:
-                try:
-                    out_gpu = self._run_inference(descriptor, tensor)
-                except Exception as exc:
-                    if self._device.type == "cpu" or not _is_oom_error(exc):
-                        raise
-                    print(
-                        f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
-                    )
-                    _clear_device_cache(self._device)
-                    if self._device.type == "cuda":
-                        try:
-                            torch.cuda.synchronize(self._device)
-                        except Exception:  # noqa: BLE001
-                            pass
-                    del tensor
-                    descriptor = self._relocate_to_cpu()
-                    tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
-                    out_gpu = self._run_inference(descriptor, tensor)
+                # The inference phase deliberately spans the OOM→CPU retry,
+                # so inference_s is the true wall-clock cost including the
+                # fallback (model relocation, tensor rebuild, CPU re-run).
+                with self._phase("inference"):
+                    try:
+                        out_gpu = self._run_inference(descriptor, tensor)
+                    except Exception as exc:
+                        if self._device.type == "cpu" or not _is_oom_error(exc):
+                            raise
+                        print(
+                            f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
+                        )
+                        _clear_device_cache(self._device)
+                        if self._device.type == "cuda":
+                            try:
+                                torch.cuda.synchronize(self._device)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        del tensor
+                        descriptor = self._relocate_to_cpu()
+                        tensor = to_tensor(rgb).unsqueeze(0).to(self._device)
+                        out_gpu = self._run_inference(descriptor, tensor)
 
                 out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).cpu()
                 del out_gpu
@@ -493,8 +510,12 @@ def load_or_upscale(
     scryfall_id: str,
     face_index: int | None,
     force: bool = False,
+    timings: object | None = None,
 ) -> UpscaleResult:
-    """Return upscaled image (+ device), using disk cache when present."""
+    """Return upscaled image (+ device), using disk cache when present.
+
+    `timings` is a duck-typed timing_db.TimingCollector (or None); a cache
+    hit records nothing."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_path(
         cache_dir,
@@ -516,7 +537,10 @@ def load_or_upscale(
         )
 
     src = Image.open(io.BytesIO(png_bytes))
+    if timings is not None:
+        timings.set_src_dims(*src.size)
     result = upscaler.upscale(src)
-    result.image.save(path, format="PNG")
+    with timings.phase("encode") if timings is not None else contextlib.nullcontext():
+        result.image.save(path, format="PNG")
     write_cache_device(path, result.device)
     return result
