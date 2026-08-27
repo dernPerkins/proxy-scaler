@@ -906,6 +906,12 @@ button:disabled {
   color: var(--text-muted);
   margin-bottom: 5px;
 }
+/* "· queued" / "· regenerating…" suffix on a variant whose replacement is
+   in the worker queue — the old image stays visible underneath. */
+.thumb-regen-note {
+  color: var(--accent);
+  font-style: italic;
+}
 .thumb img {
   width: 100%;
   display: block;

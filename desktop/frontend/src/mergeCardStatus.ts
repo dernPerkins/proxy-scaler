@@ -170,11 +170,16 @@ function pairKey(dpi: number, model: string): string {
 }
 
 // One (dpi, model, status, error) entry per (dpi, model) pair this face
-// has ever had a done variant or a task for. A done GalleryItem always
-// wins over any task history for the same pair — task records for a pair
-// that's since succeeded are just history, not current state. Otherwise
-// the newest task for that pair (faceTasks is expected created_at DESC,
-// same as the Python original) determines the status.
+// has ever had a done variant or a task for. A done GalleryItem wins over
+// FINISHED task history for the same pair — records for a pair that's
+// since succeeded are just history, not current state. But an ACTIVE
+// (pending/running) task wins over a done item: that's a regeneration in
+// flight, and the deck list must show it as queued, not silently "done"
+// (the Tasks tab shouldn't be the only place a Regen is visible). The
+// done item's id is kept either way so the existing image stays rendered
+// while its replacement generates. Otherwise the newest task for the pair
+// (faceTasks is expected created_at DESC, same as the Python original)
+// determines the status.
 export function statusForPairs(faceItems: GalleryItem[], faceTasks: Task[]): VariantStatus[] {
   const donePairs = new Map<string, GalleryItem>();
   for (const item of faceItems) donePairs.set(pairKey(item.dpi, item.model), item);
@@ -189,11 +194,20 @@ export function statusForPairs(faceItems: GalleryItem[], faceTasks: Task[]): Var
   const rows: VariantStatus[] = [];
   for (const key of allKeys) {
     const done = donePairs.get(key);
-    if (done) {
+    const task = taskPairs.get(key);
+    const activeTask = task && (task.status === "pending" || task.status === "running") ? task : null;
+    if (activeTask) {
+      rows.push({
+        dpi: activeTask.dpi,
+        model: activeTask.model,
+        status: activeTask.status,
+        error: activeTask.error,
+        galleryItemId: done?.id ?? null,
+      });
+    } else if (done) {
       rows.push({ dpi: done.dpi, model: done.model, status: "done", error: null, galleryItemId: done.id });
     } else {
-      const task = taskPairs.get(key)!;
-      rows.push({ dpi: task.dpi, model: task.model, status: task.status, error: task.error, galleryItemId: null });
+      rows.push({ dpi: task!.dpi, model: task!.model, status: task!.status, error: task!.error, galleryItemId: null });
     }
   }
   rows.sort((a, b) => a.dpi - b.dpi || a.model.localeCompare(b.model));

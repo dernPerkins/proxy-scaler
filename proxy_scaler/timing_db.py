@@ -78,6 +78,13 @@ def resolve_timing_db_path(db_path: Path | str | None = None) -> Path | None:
     return Path(env) if env else None
 
 
+def _fmt_seconds(value: float) -> str:
+    """One decimal normally; two below 0.1s so a fast-but-real phase (the
+    compact model infers in ~0.03s) prints 0.03s instead of a misleading
+    0.0s — an ABSENT phase, not a small one, is the didn't-run signal."""
+    return f"{value:.2f}s" if value < 0.095 else f"{value:.1f}s"
+
+
 class TimingCollector:
     """Accumulates per-phase wall-clock seconds for one worker task.
 
@@ -125,11 +132,11 @@ class TimingCollector:
 
     def summary_line(self) -> str:
         parts = [
-            f"{name.replace('_', '-')} {self.phases[name]:.1f}s"
+            f"{name.replace('_', '-')} {_fmt_seconds(self.phases[name])}"
             for name in PHASES
             if name in self.phases
         ]
-        parts.append(f"total {self.total():.1f}s")
+        parts.append(f"total {_fmt_seconds(self.total())}")
         return "timings: " + " · ".join(parts)
 
 
@@ -269,8 +276,8 @@ def format_stats(result: dict) -> str:
         for col, s in group["stats"].items():
             label = col.removesuffix("_s").replace("_", "-")
             lines.append(
-                f"  {label:<12} {s['count']:>4} {s['mean']:>7.1f}s"
-                f" {s['median']:>7.1f}s {s['p90']:>7.1f}s"
+                f"  {label:<12} {s['count']:>4} {s['mean']:>7.2f}s"
+                f" {s['median']:>7.2f}s {s['p90']:>7.2f}s"
             )
         lines.append("")
     if result["failed"]:

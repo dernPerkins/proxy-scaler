@@ -914,7 +914,9 @@ function CardRowView(props: {
   const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
-  const hasImages = faces.some((f) => f.variants.some((v) => v.status === "done"));
+  // Includes variants mid-regeneration (old image still present) so the
+  // Show/Hide toggle doesn't vanish while a Regen is in flight.
+  const hasImages = faces.some((f) => f.variants.some((v) => v.galleryItemId != null));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   // Global single-flight lock (see download.ts::runDownload) -- disables
@@ -1005,9 +1007,13 @@ function CardRowView(props: {
 
       {expanded &&
         faces.map((face, i) => {
+          // Anything with a gallery item renders — including a variant
+          // whose regeneration is currently queued/running (statusForPairs
+          // keeps the old item's id then), so the existing image stays
+          // visible instead of vanishing mid-regen.
           const doneVariants = face.variants.filter(
             (v): v is VariantStatus & { galleryItemId: number } =>
-              v.status === "done" && v.galleryItemId != null,
+              v.galleryItemId != null,
           );
           // The original (pre-upscale) source image is shared across
           // every DPI/model variant of this face — keyed server-side by
@@ -1061,6 +1067,12 @@ function CardRowView(props: {
                 <div key={`${v.dpi}-${v.model}`} className="thumb">
                   <div className="thumb-label" title={`${v.dpi} DPI · ${v.model}`}>
                     {v.dpi} DPI · {modelDisplayName(v.model)}
+                    {v.status !== "done" && (
+                      <span className="thumb-regen-note">
+                        {" "}
+                        · {v.status === "running" ? "regenerating…" : "queued"}
+                      </span>
+                    )}
                   </div>
                   <img
                     src={generationApi.imageUrl(v.galleryItemId, "full")}
@@ -1095,7 +1107,12 @@ function CardRowView(props: {
                     <button
                       className="btn-sm"
                       onClick={() => onRegenerate(v.galleryItemId)}
-                      disabled={disabled}
+                      disabled={disabled || v.status !== "done"}
+                      title={
+                        v.status !== "done"
+                          ? "A regeneration for this variant is already queued"
+                          : undefined
+                      }
                     >
                       Regen
                     </button>
