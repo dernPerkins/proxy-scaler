@@ -13,6 +13,10 @@ from pydantic import BaseModel
 class ModelOptionOut(BaseModel):
     value: str
     label: str
+    # Relative-speed wording ("Best quality — slowest" / "Balanced" /
+    # "Fastest") — served with the model so every dropdown labels the
+    # trade-off consistently instead of each screen inventing its own.
+    speed: str
 
 
 class VersionOut(BaseModel):

@@ -8,6 +8,9 @@
 export interface ModelOption {
   value: string;
   label: string;
+  // Relative-speed wording from the server ("Best quality — slowest" /
+  // "Balanced" / "Fastest"), appended to dropdown labels.
+  speed: string;
 }
 
 // Mirrors DeviceOut — whether the connected server has a real GPU (CUDA

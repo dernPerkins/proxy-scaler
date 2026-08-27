@@ -667,12 +667,18 @@ def test_process_download_task_invalidates_x4_cache(tmp_path, monkeypatch) -> No
     )
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    stale = cache_path(cache_dir, "sol-id", None, 4, UpscaleModel.ULTRASHARP_V2)
-    stale.write_bytes(b"old art x4")
-    cache_device_path(stale).write_text("gpu\n")
+    # Two models seeded — pins that the invalidation iterates the whole
+    # enum, not a hardcoded model list.
+    stale_paths = []
+    for model in (UpscaleModel.ULTRASHARP_V2, UpscaleModel.ULTRASHARP_V2_LITE):
+        stale = cache_path(cache_dir, "sol-id", None, 4, model)
+        stale.write_bytes(b"old art x4")
+        cache_device_path(stale).write_text("gpu\n")
+        stale_paths.append(stale)
 
     task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
     process_download_task(task)
 
-    assert not stale.exists()
-    assert not cache_device_path(stale).exists()
+    for stale in stale_paths:
+        assert not stale.exists()
+        assert not cache_device_path(stale).exists()

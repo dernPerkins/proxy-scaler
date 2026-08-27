@@ -23,6 +23,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   realesrgan_anime_fast: "REAF",
   illustrationjanai: "IJ",
   ultrasharp_v2: "USV2",
+  ultrasharp_v2_lite: "USV2 Lite",
   [ORIGINAL_MODEL]: "Original",
 };
 

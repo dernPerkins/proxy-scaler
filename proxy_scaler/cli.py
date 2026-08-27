@@ -38,8 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=model_choices,
         default=UpscaleModel.ULTRASHARP_V2.value,
         help=(
-            "Upscale model: ultrasharp_v2 (default, general-purpose), "
-            "illustrationjanai, or realesrgan_anime_fast."
+            "Upscale model: ultrasharp_v2 (default, best quality), "
+            "ultrasharp_v2_lite (balanced), illustrationjanai, or "
+            "realesrgan_anime_fast (fastest)."
         ),
     )
     p.add_argument(

@@ -261,6 +261,7 @@ def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
     assert len(models) == len(list(UpscaleModel))
     for m in models:
         assert m["label"]
+        assert m["speed"]
 
 
 def test_device_reports_gpu_when_cuda_available(client: TestClient) -> None:

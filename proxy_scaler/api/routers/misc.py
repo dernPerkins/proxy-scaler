@@ -56,7 +56,10 @@ def list_models() -> list[ModelOptionOut]:
     `[m.value for m in UpscaleModel]`). This endpoint is the fix: the
     enum is the only source of truth, structurally, not just by
     convention."""
-    return [ModelOptionOut(value=m.value, label=m.label) for m in UpscaleModel]
+    return [
+        ModelOptionOut(value=m.value, label=m.label, speed=m.speed)
+        for m in UpscaleModel
+    ]
 
 
 @router.get("/device", response_model=DeviceOut)

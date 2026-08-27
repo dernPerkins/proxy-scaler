@@ -17,6 +17,8 @@ def test_effective_tile_size_light_model_stays_off_by_default():
     # Not manually set (0) — lighter models are left untouched (no
     # regression risk for models that already work fine).
     assert _effective_tile_size(UpscaleModel.REALESRGAN_ANIME_FAST, 0) == 0
+    # RealPLKSR is a small CNN — untiled like the compact model, not heavy.
+    assert _effective_tile_size(UpscaleModel.ULTRASHARP_V2_LITE, 0) == 0
 
 
 def test_effective_tile_size_explicit_override_always_wins():

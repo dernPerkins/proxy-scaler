@@ -169,7 +169,7 @@ export default function ExportPage() {
               <option value="">Any (highest DPI available)</option>
               {(modelsQuery.data ?? []).map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.label}
+                  {m.label} — {m.speed}
                 </option>
               ))}
             </select>

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { CardRow } from "../api/project";
-import type { GalleryItem, ModelOption, Task } from "../api/types";
+import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import CompareDialog from "../components/CompareDialog";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -27,22 +27,6 @@ import {
   statusForPairs,
   type VariantStatus,
 } from "../mergeCardStatus";
-
-// Purely presentational device hints appended to the "Upscale model"
-// dropdown labels — the API's own flat list (proxy_scaler/upscale.py's
-// UpscaleModel enum order) is unchanged, and so is whatever
-// settings.model already holds.
-const MODEL_LABEL_SUFFIXES: Record<string, string> = {
-  ultrasharp_v2: " (best on GPU)",
-  realesrgan_anime_fast: " (best on CPU)",
-};
-
-function annotateModelOptions(models: ModelOption[]): ModelOption[] {
-  return models.map((m) => ({
-    value: m.value,
-    label: m.label + (MODEL_LABEL_SUFFIXES[m.value] ?? ""),
-  }));
-}
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -532,9 +516,9 @@ export default function DecklistPage() {
               onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
               disabled={modelsQuery.isLoading || modelsQuery.isError}
             >
-              {annotateModelOptions(modelsQuery.data ?? []).map((m) => (
+              {(modelsQuery.data ?? []).map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.label}
+                  {m.label} — {m.speed}
                 </option>
               ))}
             </select>

@@ -1,4 +1,4 @@
-"""Multi-model upscaling (Anime Fast, UltraSharpV2, IllustrationJaNai) via Spandrel."""
+"""Multi-model upscaling via Spandrel (see UpscaleModel for the roster)."""
 
 from __future__ import annotations
 
@@ -30,6 +30,10 @@ class UpscaleModel(str, Enum):
     REALESRGAN_ANIME_FAST = "realesrgan_anime_fast"
     ILLUSTRATIONJANAI = "illustrationjanai"
     ULTRASHARP_V2 = "ultrasharp_v2"
+    # NOTE for future members: db.py's filename-slug regex sorts enum
+    # values longest-first, which is the only thing making a value that
+    # prefixes another (like this one vs ultrasharp_v2) safe.
+    ULTRASHARP_V2_LITE = "ultrasharp_v2_lite"
 
     @property
     def label(self) -> str:
@@ -43,6 +47,21 @@ class UpscaleModel(str, Enum):
             UpscaleModel.ULTRASHARP_V2: (
                 "UltraSharpV2 (general-purpose, strong on illustration/artwork)"
             ),
+            UpscaleModel.ULTRASHARP_V2_LITE: (
+                "UltraSharpV2 Lite (general-purpose, faster sibling of UltraSharpV2)"
+            ),
+        }[self]
+
+    @property
+    def speed(self) -> str:
+        """Relative-speed wording for model menus — the honest trade-off a
+        user is making, in their terms. Same all-members-dict style as
+        label so a forgotten member fails loudly, not silently."""
+        return {
+            UpscaleModel.REALESRGAN_ANIME_FAST: "Fastest",
+            UpscaleModel.ILLUSTRATIONJANAI: "Best for illustrations — slowest",
+            UpscaleModel.ULTRASHARP_V2: "Best quality — slowest",
+            UpscaleModel.ULTRASHARP_V2_LITE: "Balanced",
         }[self]
 
     @property
@@ -101,6 +120,15 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
     (UpscaleModel.ULTRASHARP_V2, 4): _WeightSpec(
         "4x-UltraSharpV2.safetensors",
         "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors",
+    ),
+    # The author's own companion release to UltraSharpV2, from the same
+    # repo under the same CC-BY-NC-SA-4.0 license. RealPLKSR architecture:
+    # a small CNN (~30MB weights vs 140MB) that sits between the compact
+    # video model and the DAT2 transformers on both speed and quality —
+    # light enough to run untiled (not in HEAVY_MODELS).
+    (UpscaleModel.ULTRASHARP_V2_LITE, 4): _WeightSpec(
+        "4x-UltraSharpV2_Lite.safetensors",
+        "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2_Lite.safetensors",
     ),
 }
 

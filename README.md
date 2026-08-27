@@ -229,13 +229,14 @@ Skips blank lines, `#` comments, and headers like `Deck` / `Sideboard`.
 
 ## Upscale models
 
-| Model | Notes |
-|-------|--------|
-| `ultrasharp_v2` (default) | General-purpose DAT model, strong on illustration/artwork; best on GPU (CC-BY-NC-SA-4.0) |
-| `illustrationjanai` | Trained on digital art/illustrations rather than photos; best on GPU (CC-BY-NC-SA-4.0) |
-| `realesrgan_anime_fast` | Compact/lightweight Real-ESRGAN variant tuned for anime; fast enough for CPU-only machines |
+| Model | Speed | Notes |
+|-------|-------|--------|
+| `ultrasharp_v2` (default) | Best quality — slowest | General-purpose DAT model, strong on illustration/artwork; best on GPU (CC-BY-NC-SA-4.0) |
+| `ultrasharp_v2_lite` | Balanced | The author's own RealPLKSR companion to UltraSharpV2 — most of the quality at a fraction of the cost (CC-BY-NC-SA-4.0) |
+| `illustrationjanai` | Best for illustrations — slowest | Trained on digital art/illustrations rather than photos; best on GPU (CC-BY-NC-SA-4.0) |
+| `realesrgan_anime_fast` | Fastest | Compact/lightweight Real-ESRGAN variant tuned for anime; fast enough for CPU-only machines |
 
-All three are trained on illustrated rather than photographic material — and all are x4-native.
+All of them are trained on illustrated rather than photographic material — and all are x4-native.
 
 ## Target DPI
 
