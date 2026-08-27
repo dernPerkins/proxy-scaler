@@ -300,6 +300,9 @@ class UpscaleResult:
     image: Image.Image
     device: str  # "gpu" | "cpu"
     dtype: str = "fp32"  # "bf16" | "fp32"
+    # True when the image came from the x4 cache PNG instead of a fresh
+    # model pass — the caller then knows there is nothing to write back.
+    from_cache: bool = False
 
 
 def ensure_weights(
@@ -688,9 +691,10 @@ def atomic_save_png(image: Image.Image, path: Path, *, compress_level: int = 6) 
 def save_cache_png(image: Image.Image, path: Path, device: str, *, compress_level: int = 3) -> None:
     """Atomic upscale-cache write. The device sidecar is written strictly
     AFTER the PNG lands — a sidecar must never describe a missing or
-    partial PNG. compress_level 3: this is an internal cache file the
-    worker only ever writes (tasks run force=True), so encode speed beats
-    the ~10-15% size cost."""
+    partial PNG. compress_level 3: this is an internal cache file, so
+    encode speed beats the ~10-15% size cost — and now that non-forced
+    sibling DPI tasks read it back (see task.force / pipeline.process_task),
+    the lighter compression also makes those cache-hit decodes cheaper."""
     atomic_save_png(image, path, compress_level=compress_level)
     write_cache_device(path, device)
 
@@ -790,6 +794,7 @@ def load_or_upscale(
         return UpscaleResult(
             image=cached_image,
             device=read_cache_device(path),
+            from_cache=True,
         )
 
     src = Image.open(io.BytesIO(png_bytes))

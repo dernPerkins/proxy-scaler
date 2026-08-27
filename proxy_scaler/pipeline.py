@@ -39,6 +39,7 @@ from .upscale import (
     Upscaler,
     atomic_save_png,
     atomic_write_bytes,
+    cache_device_path,
     cache_path,
     effective_tile_size,
     load_or_upscale,
@@ -439,6 +440,7 @@ def _regenerate_face_from_card(
     on_progress: ProgressCallback | None = None,
     timings: object | None = None,
     defer_finish: bool = False,
+    force: bool = True,
 ) -> list[FaceResult] | Callable[[], list[FaceResult]]:
     """Shared core of regenerate_face_multi()/process_task(): given an
     already-resolved CardFaceImage (no Scryfall call needed here — the
@@ -500,6 +502,7 @@ def _regenerate_face_from_card(
     scale_for = {d: native_scale_for_dpi(d, model_id) for d in targets}
     raw_by_scale: dict[int, Image.Image] = {}
     device_by_scale: dict[int, str] = {}
+    hit_by_scale: dict[int, bool] = {}
     for native in sorted(set(scale_for.values())):
         upscaled = load_or_upscale(
             png_bytes=png_bytes,
@@ -507,12 +510,13 @@ def _regenerate_face_from_card(
             cache_dir=cache_dir,
             scryfall_id=face.scryfall_id,
             face_index=face.face_index,
-            force=True,
+            force=force,
             timings=timings,
             defer_cache_write=True,
         )
         raw_by_scale[native] = upscaled.image
         device_by_scale[native] = upscaled.device
+        hit_by_scale[native] = getattr(upscaled, "from_cache", False)
         if timings is not None:
             timings.set_device(upscaled.device)
             timings.set_dtype(getattr(upscaled, "dtype", None))
@@ -520,8 +524,12 @@ def _regenerate_face_from_card(
 
     def finish() -> list[FaceResult]:
         # Cache PNGs first (mirrors the old interleaved order per scale),
-        # then the user-facing DPI variants. All writes are atomic.
+        # then the user-facing DPI variants. All writes are atomic. A scale
+        # served FROM the cache skips the write-back — the file it would
+        # write is the file it just read.
         for native in sorted(raw_by_scale):
+            if hit_by_scale.get(native):
+                continue
             with _phase(timings, "encode"):
                 save_cache_png(
                     raw_by_scale[native],
@@ -628,6 +636,23 @@ def process_download_task(
         thumb = original_thumb_path(original_path)
         thumb.unlink(missing_ok=True)
         ensure_original_thumbnail(original_path)
+        # The x4 upscale cache is likewise derived from the original, and
+        # first-generation tasks (force=False) trust it — so a re-fetch
+        # must invalidate every model/scale variant for this face, or a
+        # later generation would upscale the OLD art. Enumerating the enum
+        # beats globbing: filenames are deterministic and this can never
+        # touch another face's files.
+        for cached_model in UpscaleModel:
+            for scale in cached_model.supported_scales:
+                stale = cache_path(
+                    Path(task.cache_dir),
+                    task.scryfall_id,
+                    task.face_index,
+                    scale,
+                    cached_model,
+                )
+                stale.unlink(missing_ok=True)
+                cache_device_path(stale).unlink(missing_ok=True)
     return FaceResult(
         out_path=original_path,
         original_path=original_path,
@@ -675,7 +700,9 @@ def process_task(
     its core with regenerate_face_multi(), just fed from a task row's
     already-resolved fields (set at enqueue time, no Scryfall call needed
     here) instead of an existing FaceResult, and always exactly one target
-    DPI (one task = one face+dpi+model unit of work).
+    DPI (one task = one face+dpi+model unit of work). Sibling DPI tasks of
+    one face still share a single model pass, though: non-forced tasks
+    reuse the x4 cache PNG the first sibling wrote (task.force below).
 
     `defer_finish=True` (worker only) returns a PendingTask once the GPU
     work is done, so the caller can run the encode/finalize tail on
@@ -710,6 +737,10 @@ def process_task(
         on_progress=on_progress,
         timings=timings,
         defer_finish=defer_finish,
+        # First-generation tasks (force=False) reuse the x4 cache — a
+        # sibling DPI task of the same face then costs a PNG decode, not a
+        # model pass. The Regenerate button enqueues force=True.
+        force=getattr(task, "force", True),
     )
     if defer_finish:
         return PendingTask(lambda: tail()[0])

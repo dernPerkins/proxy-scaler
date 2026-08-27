@@ -592,3 +592,87 @@ def test_prefetch_original_warms_cache_and_is_idempotent(tmp_path, monkeypatch) 
     again = prefetch_original(task)
     assert again == path
     assert calls["n"] == 1  # cached -> no second download
+
+
+# --- sibling-DPI cache reuse (see #3: stop re-running inference per DPI) -----
+
+
+class _CountingUpscaler(_FakeUpscaler):
+    calls = 0
+
+    def upscale(self, image):
+        type(self).calls += 1
+        return super().upscale(image)
+
+
+def test_process_task_siblings_share_one_model_pass(tmp_path, monkeypatch) -> None:
+    """Two non-forced tasks for the same face at different DPIs: the second
+    hits the x4 cache PNG the first wrote — zero model passes — and still
+    writes its own DPI output."""
+    _CountingUpscaler.calls = 0
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _CountingUpscaler)
+
+    first = process_task(_task(tmp_path, dpi=600, force=False))
+    assert _CountingUpscaler.calls == 1
+    assert first.out_path.is_file()
+
+    second = process_task(_task(tmp_path, id=2, dpi=800, force=False))
+    assert _CountingUpscaler.calls == 1  # cache hit — no second pass
+    assert second.out_path.is_file()
+    assert second.out_path != first.out_path
+    assert second.device == "gpu"  # provenance carried by the .device sidecar
+
+
+def test_process_task_force_bypasses_cache(tmp_path, monkeypatch) -> None:
+    _CountingUpscaler.calls = 0
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _CountingUpscaler)
+
+    process_task(_task(tmp_path, dpi=600, force=False))
+    process_task(_task(tmp_path, id=2, dpi=600, force=True))
+    assert _CountingUpscaler.calls == 2  # regeneration re-ran the model
+
+
+def test_finish_skips_cache_rewrite_on_hit(tmp_path, monkeypatch) -> None:
+    """A cache-hit task must not re-encode the x4 cache PNG it just read."""
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
+    process_task(_task(tmp_path, dpi=600, force=False))  # warms the cache
+
+    writes = {"n": 0}
+
+    def counting_save(image, path, device, **kw):
+        writes["n"] += 1
+
+    monkeypatch.setattr("proxy_scaler.pipeline.save_cache_png", counting_save)
+    process_task(_task(tmp_path, id=2, dpi=800, force=False))
+    assert writes["n"] == 0
+
+
+def test_process_download_task_invalidates_x4_cache(tmp_path, monkeypatch) -> None:
+    """Re-Fetch replaces the original, so every derived x4 cache PNG (and
+    its .device sidecar) must go — otherwise a later non-forced generation
+    would upscale the OLD art from cache."""
+    from proxy_scaler.upscale import cache_device_path
+
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+    )
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    stale = cache_path(cache_dir, "sol-id", None, 4, UpscaleModel.ULTRASHARP_V2)
+    stale.write_bytes(b"old art x4")
+    cache_device_path(stale).write_text("gpu\n")
+
+    task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    process_download_task(task)
+
+    assert not stale.exists()
+    assert not cache_device_path(stale).exists()

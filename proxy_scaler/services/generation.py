@@ -37,12 +37,18 @@ def enqueue_face(
     project_tag: str | None,
     total_faces: int | None = None,
     lang: str = "en",
+    force: bool = False,
     db_path: Path | str | None = None,
 ) -> list[int]:
     """Queue one task per requested DPI for an already-resolved face (no
     Scryfall call needed — caller already has scryfall_id/png_url/etc, from
     either a fresh batch resolve or an existing gallery FaceResult).
-    Returns the new task ids."""
+    Returns the new task ids.
+
+    force=False (first generation, the default) lets the worker reuse the
+    x4 upscale cache — sibling DPI tasks of one face then share a single
+    model pass. force=True is the user-initiated Regenerate path: bypass
+    the cache and re-run inference."""
     return [
         db.enqueue_task(
             project_tag,
@@ -62,6 +68,7 @@ def enqueue_face(
             weights_dir=str(weights_dir),
             total_faces=total_faces,
             lang=lang,
+            force=force,
             db_path=db_path,
         )
         for dpi in dpi_targets

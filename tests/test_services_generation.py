@@ -688,3 +688,35 @@ def test_enqueue_download_entries_backfills_registry_for_on_disk_original(
     assert item["model"] == ORIGINAL_MODEL
     assert item["dpi"] == ORIGINAL_DPI
     assert item["out_path"] == str(original)
+
+
+def test_enqueue_face_force_lands_on_rows(db_path: Path, tmp_path: Path) -> None:
+    generation.enqueue_face(
+        scryfall_id="sol-id", face_index=None, face_label=None,
+        face_name="Sol Ring", card_name="Sol Ring", set_code="c21",
+        collector_number="263", png_url="https://example.com/sol.png",
+        dpi_targets=[600, 800], model="ultrasharp_v2", tile_size=0,
+        output_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights", project_tag=None,
+        force=True, db_path=db_path,
+    )
+    assert all(t.force for t in db.list_tasks(db_path=db_path))
+
+
+def test_enqueue_decklist_entries_tasks_are_not_forced(
+    db_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """First generation must reuse the x4 cache (sibling DPI sharing);
+    only the Regenerate button enqueues force=True."""
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(SOL_RING_CARD, [])]
+    )
+    generation.enqueue_decklist_entries(
+        [_entry()], model="ultrasharp_v2", dpi_targets=[600, 800, 1200],
+        skip_existing=False, tile_size=0,
+        output_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights", project_tag=None, db_path=db_path,
+    )
+    tasks = db.list_tasks(db_path=db_path)
+    assert len(tasks) == 3
+    assert not any(t.force for t in tasks)

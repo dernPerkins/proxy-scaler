@@ -165,6 +165,9 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         project_tag=body.project_tag,
         total_faces=item["total_faces"],
         lang=item["lang"],
+        # Regenerate is the explicit "make it fresh" action: bypass the x4
+        # upscale cache and re-run inference (first-generation tasks reuse it).
+        force=True,
         db_path=db_path,
     )
     return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])
@@ -179,8 +182,11 @@ def refetch_original(gallery_item_id: int, body: RefetchOriginalIn) -> GenerateO
     always enqueues the (ORIGINAL_DPI, ORIGINAL_MODEL) download variant,
     and works from any of the face's gallery rows since they all carry
     the face identity + png_url. Existing upscaled outputs are left
-    alone — their next Regen reads the refreshed original automatically
-    (upscale tasks always run force=True from the cached original)."""
+    alone — their next generation reads the refreshed original
+    automatically: the download task invalidates the face's x4 upscale
+    cache (see pipeline.process_download_task), so even a non-forced
+    first-generation task re-upscales from the new art, and Regen tasks
+    bypass the cache outright (force=True)."""
     db_path = get_db_path()
     item = _find_item(gallery_item_id)
     active = generation_service.active_task_keys(body.project_tag, db_path=db_path)

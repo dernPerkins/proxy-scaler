@@ -1553,3 +1553,54 @@ def test_scan_gallery_matches_files_to_entries_by_language(tmp_path: Path) -> No
     assert [g["lang"] for g in ja_only] == ["ja"]
     both = scan_gallery_from_output(out, [en_entry, ja_entry])
     assert sorted(g["lang"] for g in both) == ["en", "ja"]
+
+
+def test_migration_007_adds_force_defaulting_to_zero(tmp_path: Path) -> None:
+    """A version-6 database gains generation_tasks.force at DEFAULT 0 —
+    honest for every pre-existing row: they all ran under the old
+    always-force semantics and are already finished (or re-run identically)."""
+    path = tmp_path / "v6.db"
+    conn = sqlite3.connect(str(path))
+    try:
+        # The v6 tasks shape: v7 minus the force column (same as v5 here —
+        # migration 006 only touched the gallery tables).
+        conn.executescript(_V5_TASKS_DDL)
+        conn.execute(
+            """
+            INSERT INTO generation_tasks (
+                project_tag, scryfall_id, face_name, card_name, set_code,
+                collector_number, png_url, dpi, model, output_dir, cache_dir,
+                weights_dir, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "tag-a", "sol-id", "Sol Ring", "Sol Ring", "c21", "263",
+                "https://example.com/sol.png", 800, "ultrasharp_v2", "/tmp/out",
+                "/tmp/cache", "/tmp/weights", "2024-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    finally:
+        conn.close()
+
+    init_db(path)
+
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+        row = conn.execute("SELECT * FROM generation_tasks").fetchone()
+        assert row["force"] == 0
+    finally:
+        conn.close()
+
+
+def test_enqueue_task_force_round_trips_through_claim(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    _enqueue_sol_ring(db_path, force=True)
+    task = claim_next_task(db_path=db_path)
+    assert task.force is True
+    _enqueue_sol_ring(db_path, dpi=600)
+    assert claim_next_task(db_path=db_path).force is False

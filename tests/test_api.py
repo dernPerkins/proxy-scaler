@@ -1829,3 +1829,48 @@ def test_the_preview_reports_back_page_rotation(client: TestClient, tmp_path: Pa
     assert preview(preview_back_page=True, flip_edge="long", **landscape)["rotated"] is True
     # Front pages are never rotated, whatever the flip edge.
     assert preview(flip_edge="short")["rotated"] is False
+
+
+def test_regenerate_gallery_item_enqueues_forced_task(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Regenerate is the explicit "make it fresh" path: its task must carry
+    force=True (bypass the x4 upscale cache), unlike first-generation
+    tasks which reuse the cache to share one model pass across DPIs."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post(
+        f"/api/gallery/{item['id']}/regenerate",
+        json={
+            "project_tag": "tag-a",
+            "output_dir": str(tmp_path),
+            "cache_dir": str(tmp_path),
+            "weights_dir": str(tmp_path),
+        },
+    )
+    assert resp.status_code == 200
+    [task_id] = resp.json()["task_ids"]
+    task = db.get_task(task_id, db_path=db_path)
+    assert task.force is True
+
+
+def test_generate_enqueues_unforced_tasks(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    resp = client.post(
+        "/api/generate",
+        json={
+            "entries": [_sol_ring_entry()],
+            "model": "ultrasharp_v2",
+            "dpi_targets": [600, 800],
+            "skip_existing": False,
+            "tile_size": 0,
+            "output_dir": str(tmp_path / "out"),
+            "cache_dir": str(tmp_path / "cache"),
+            "weights_dir": str(tmp_path / "weights"),
+            "project_tag": "tag-a",
+        },
+    )
+    assert resp.status_code == 200
+    for task_id in resp.json()["task_ids"]:
+        assert db.get_task(task_id, db_path=db_path).force is False

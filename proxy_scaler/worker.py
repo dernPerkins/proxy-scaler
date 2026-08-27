@@ -188,6 +188,7 @@ def main(
     print("Worker started, polling for tasks…")
     prefetcher = _OriginalPrefetcher(db_path=db_path)
     finish_thread: threading.Thread | None = None
+    prev_sibling_key: tuple[str, int | None, str] | None = None
     try:
         while True:
             task = db.claim_next_task(db_path=db_path)
@@ -205,7 +206,21 @@ def main(
             )
             # While this task is on the GPU, warm the NEXT task's original…
             prefetcher.kick(current_face=(task.scryfall_id, task.face_index))
-            # …and the PREVIOUS task's finish thread is still encoding.
+            # …and the PREVIOUS task's finish thread is still encoding —
+            # UNLESS this task is a sibling DPI of that previous task: a
+            # non-forced sibling reads the x4 cache PNG the finisher is
+            # still writing, so wait for it to land and turn the sibling's
+            # model pass into a cache hit. Only sibling pairs serialize
+            # here, and they're exactly the pairs whose inference the
+            # cache hit eliminates — a large net win.
+            if finish_thread is not None and prev_sibling_key == (
+                task.scryfall_id,
+                task.face_index,
+                task.model,
+            ):
+                finish_thread.join()
+                finish_thread = None
+            prev_sibling_key = (task.scryfall_id, task.face_index, task.model)
             finish = _start_one(task, db_path=db_path)
             if finish_thread is not None:
                 # Backpressure: at most one outstanding finish (each holds a

@@ -165,7 +165,11 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     -- Scryfall language code of the printing being generated. Part of the
     -- output filename for non-English printings (pipeline.output_filename)
     -- so two languages of one set/collector never collide on disk.
-    lang TEXT NOT NULL DEFAULT 'en'
+    lang TEXT NOT NULL DEFAULT 'en',
+    -- 1 = user-initiated regeneration: bypass the x4 upscale cache and
+    -- re-run inference. 0 (first generation) reuses the cache, which is
+    -- what lets sibling DPI tasks of one face share a single model pass.
+    force INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status
@@ -283,6 +287,9 @@ class TaskRow:
     completed_at: str | None
     total_faces: int | None
     lang: str = "en"
+    # User-initiated regeneration: bypass the x4 upscale cache. False for
+    # first-generation tasks so sibling DPI tasks share one model pass.
+    force: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> TaskRow:
@@ -310,6 +317,7 @@ class TaskRow:
             completed_at=row["completed_at"],
             total_faces=row["total_faces"],
             lang=row["lang"] if "lang" in row.keys() else "en",
+            force=bool(row["force"]) if "force" in row.keys() else False,
         )
 
 
@@ -571,6 +579,32 @@ def _migration_005_add_lang(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migration_007_add_task_force(conn: sqlite3.Connection) -> None:
+    """Add generation_tasks.force — 1 marks a user-initiated regeneration
+    that must bypass the x4 upscale cache and re-run inference; 0 (every
+    pre-existing row, honestly: they all ran force=True semantics and are
+    already finished or will re-run identically) lets first-generation
+    sibling DPI tasks of one face reuse the cached x4 pass instead of
+    re-running the model per DPI. Guarded/no-op the same way as 005."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "generation_tasks" not in tables:
+        return
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(generation_tasks)").fetchall()
+    }
+    if "force" not in cols:
+        conn.execute(
+            "ALTER TABLE generation_tasks "
+            "ADD COLUMN force INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def _migration_006_split_gallery_registry(conn: sqlite3.Connection) -> None:
     """Split project_gallery_items into the global generated_images
     registry plus the project_gallery_memberships relation (see _SCHEMA).
@@ -726,8 +760,15 @@ _MIGRATIONS: list[Migration] = [
         "making the database the authoritative record of which images exist",
         _migration_006_split_gallery_registry,
     ),
+    Migration(
+        7,
+        "add force to generation_tasks — distinguishes user-initiated "
+        "regeneration (bypass the x4 upscale cache) from first generation "
+        "(reuse it, so sibling DPI tasks share one model pass)",
+        _migration_007_add_task_force,
+    ),
 ]
-SCHEMA_VERSION = 6  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 7  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -816,10 +857,12 @@ def enqueue_task(
     tile_size: int = 0,
     total_faces: int | None = None,
     lang: str = "en",
+    force: bool = False,
     db_path: Path | str | None = None,
 ) -> int:
     """Add one (face, dpi, model) unit of generation work to the queue,
-    picked up by the background worker (see worker.py)."""
+    picked up by the background worker (see worker.py). force=True marks a
+    user-initiated regeneration that must bypass the x4 upscale cache."""
     now = _utc_now()
     with connect(db_path) as conn:
         cur = conn.execute(
@@ -828,8 +871,8 @@ def enqueue_task(
                 project_tag, status, scryfall_id, face_index, face_label,
                 face_name, card_name, set_code, collector_number, png_url,
                 dpi, model, tile_size, output_dir, cache_dir, weights_dir,
-                created_at, total_faces, lang
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, total_faces, lang, force
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
@@ -850,6 +893,7 @@ def enqueue_task(
                 now,
                 total_faces,
                 lang,
+                int(force),
             ),
         )
         conn.commit()
