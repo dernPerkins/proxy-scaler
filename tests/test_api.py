@@ -596,7 +596,7 @@ def test_retry_all_only_matches_project_model_and_dpi(client: TestClient, tmp_pa
 def test_worker_status_not_running(client: TestClient) -> None:
     resp = client.get("/api/worker/status")
     assert resp.status_code == 200
-    assert resp.json() == {"running": False, "held": False}
+    assert resp.json() == {"running": False, "held": False, "cpu_fallback": None}
 
 
 def test_worker_status_reports_hold_and_release_clears_it(client: TestClient) -> None:
@@ -1875,3 +1875,29 @@ def test_generate_enqueues_unforced_tasks(client: TestClient, tmp_path: Path) ->
     assert resp.status_code == 200
     for task_id in resp.json()["task_ids"]:
         assert db.get_task(task_id, db_path=db_path).force is False
+
+
+def test_worker_status_carries_and_ack_clears_cpu_fallback(client: TestClient) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    assert client.get("/api/worker/status").json()["cpu_fallback"] is None
+
+    db.set_cpu_fallback('{"task_id": 3, "face_name": "Sol Ring"}', db_path=db_path)
+    assert (
+        client.get("/api/worker/status").json()["cpu_fallback"]
+        == '{"task_id": 3, "face_name": "Sol Ring"}'
+    )
+
+    resp = client.post("/api/worker/cpu-fallback/ack")
+    assert resp.status_code == 200
+    assert resp.json() == {"cleared": True}
+    assert client.get("/api/worker/status").json()["cpu_fallback"] is None
+
+    # Idempotent — a repeat ack reports there was nothing pending.
+    assert client.post("/api/worker/cpu-fallback/ack").json() == {"cleared": False}
+
+
+def test_gallery_list_reports_device(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-dev")
+    [item] = client.get("/api/gallery?project_tag=tag-dev").json()
+    assert item["device"] in ("gpu", "cpu", "unknown")

@@ -402,6 +402,7 @@ def _upscalers_for_targets(
     weights_dir: Path,
     tile_size: int = 0,
     timings: object | None = None,
+    on_cpu_fallback: object | None = None,
 ) -> dict[int, Upscaler]:
     """Build unique Upscaler instances keyed by native scale.
 
@@ -422,6 +423,7 @@ def _upscalers_for_targets(
             tile=tile,
             timings=timings,
             tile_auto=tile_size == 0,
+            on_cpu_fallback=on_cpu_fallback,
         )
         for scale in sorted(needed)
     }
@@ -441,6 +443,7 @@ def _regenerate_face_from_card(
     timings: object | None = None,
     defer_finish: bool = False,
     force: bool = True,
+    on_cpu_fallback: object | None = None,
 ) -> list[FaceResult] | Callable[[], list[FaceResult]]:
     """Shared core of regenerate_face_multi()/process_task(): given an
     already-resolved CardFaceImage (no Scryfall call needed here — the
@@ -469,7 +472,12 @@ def _regenerate_face_from_card(
             on_progress(msg)
 
     upscalers = _upscalers_for_targets(
-        model_id, dpi_targets, Path(weights_dir), tile_size, timings=timings
+        model_id,
+        dpi_targets,
+        Path(weights_dir),
+        tile_size,
+        timings=timings,
+        on_cpu_fallback=on_cpu_fallback,
     )
 
     canonical_original = original_cache_path(cache_dir, face.scryfall_id, face.face_index)
@@ -694,6 +702,7 @@ def process_task(
     on_progress: ProgressCallback | None = None,
     timings: object | None = None,
     defer_finish: bool = False,
+    on_cpu_fallback: object | None = None,
 ) -> FaceResult | PendingTask:
     """Process one generation_tasks row (see db.py) into a FaceResult —
     the unit of work the background worker (worker.py) performs. Shares
@@ -737,6 +746,7 @@ def process_task(
         on_progress=on_progress,
         timings=timings,
         defer_finish=defer_finish,
+        on_cpu_fallback=on_cpu_fallback,
         # First-generation tasks (force=False) reuse the x4 cache — a
         # sibling DPI task of the same face then costs a PNG decode, not a
         # model pass. The Regenerate button enqueues force=True.

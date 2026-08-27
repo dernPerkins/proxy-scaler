@@ -1604,3 +1604,18 @@ def test_enqueue_task_force_round_trips_through_claim(tmp_path: Path) -> None:
     assert task.force is True
     _enqueue_sol_ring(db_path, dpi=600)
     assert claim_next_task(db_path=db_path).force is False
+
+
+def test_cpu_fallback_round_trip(db_path: Path) -> None:
+    from proxy_scaler.db import clear_cpu_fallback, get_cpu_fallback, set_cpu_fallback
+
+    assert get_cpu_fallback(db_path=db_path) is None
+    set_cpu_fallback('{"task_id": 7}', db_path=db_path)
+    assert get_cpu_fallback(db_path=db_path) == '{"task_id": 7}'
+    # A later fallback overwrites the note (upsert).
+    set_cpu_fallback('{"task_id": 8}', db_path=db_path)
+    assert get_cpu_fallback(db_path=db_path) == '{"task_id": 8}'
+    assert clear_cpu_fallback(db_path=db_path) is True
+    assert get_cpu_fallback(db_path=db_path) is None
+    # Idempotent — a repeat ack reports there was nothing pending.
+    assert clear_cpu_fallback(db_path=db_path) is False

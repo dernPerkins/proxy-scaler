@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -13,7 +13,7 @@ import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import { DEFAULT_GEN_PATHS, DPI_OPTIONS, ORIGINAL_MODEL, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
-import { useServerReadiness } from "../config";
+import { getProbedDevice, subscribeProbedDevice, useServerReadiness } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
 import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
 import { useProject } from "../context/ProjectContext";
@@ -898,6 +898,12 @@ function CardRowView(props: {
   const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
+  // The "· CPU" marker on variants only makes sense when this machine's
+  // server actually has a GPU — on a CPU-only box, CPU output is the
+  // expected result, not a fault. null (probe not answered yet) must
+  // never warn either (see config.ts's probedDevice contract).
+  const probedDevice = useSyncExternalStore(subscribeProbedDevice, getProbedDevice);
+  const warnCpuVariants = probedDevice?.kind === "gpu";
   // Includes variants mid-regeneration (old image still present) so the
   // Show/Hide toggle doesn't vanish while a Regen is in flight.
   const hasImages = faces.some((f) => f.variants.some((v) => v.galleryItemId != null));
@@ -1055,6 +1061,15 @@ function CardRowView(props: {
                       <span className="thumb-regen-note">
                         {" "}
                         · {v.status === "running" ? "regenerating…" : "queued"}
+                      </span>
+                    )}
+                    {warnCpuVariants && v.device === "cpu" && (
+                      <span
+                        className="thumb-cpu-note"
+                        title="Generated on the CPU — the GPU ran out of memory during this generation. Regen to retry on the GPU."
+                      >
+                        {" "}
+                        · CPU
                       </span>
                     )}
                   </div>

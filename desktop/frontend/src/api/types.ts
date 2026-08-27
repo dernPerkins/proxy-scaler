@@ -181,6 +181,11 @@ export interface WorkerStatus {
   // --hold-worker; ResumeTasksPrompt releases it). Optional because older
   // or remote servers don't send it — undefined reads as not held.
   held?: boolean;
+  // Non-null when an unacknowledged GPU→CPU OOM fallback is pending: a
+  // JSON note ({at, task_id, face_name, model}) written by the worker the
+  // moment it happened. CpuFallbackPrompt shows the dialog and clears it
+  // via ackCpuFallback(). Optional for older servers.
+  cpu_fallback?: string | null;
 }
 
 export interface GalleryItem {
@@ -196,6 +201,9 @@ export interface GalleryItem {
   model: string;
   image_filename: string;
   lang?: string;
+  // Where inference ran: "gpu" | "cpu" | "unknown". Optional for older
+  // servers; used to mark CPU-fallback output on GPU machines.
+  device?: string;
 }
 
 // --- Card corpus (routers/cards.py) ---------------------------------------

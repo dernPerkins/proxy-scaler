@@ -7,6 +7,7 @@ import DownloadProgressModal from "./components/DownloadProgressModal";
 import ProjectBar from "./components/ProjectBar";
 import QuitPrompt from "./components/QuitPrompt";
 import ResumeTasksPrompt from "./components/ResumeTasksPrompt";
+import CpuFallbackPrompt from "./components/CpuFallbackPrompt";
 import ServerBootModal from "./components/ServerBootModal";
 import ServerStatusToast from "./components/ServerStatusToast";
 import VersionMismatchToast from "./components/VersionMismatchToast";
@@ -82,6 +83,10 @@ export default function App() {
             worker until answered, the remote flavor informs about tasks
             already processing. Renders nothing unless leftovers exist. */}
         <ResumeTasksPrompt />
+        {/* Raised the moment the worker's GPU OOMs into the CPU fallback —
+            offers to cancel the pending queue before a whole deck grinds
+            through on CPU. Renders nothing unless a fallback is pending. */}
+        <CpuFallbackPrompt />
         {/* The launch-time card-database offer — renders nothing unless
             the connected server has no imported corpus, and waits its
             turn behind the update and resume-tasks dialogs. */}

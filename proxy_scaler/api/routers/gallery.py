@@ -56,6 +56,7 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
             model=i["model"],
             image_filename=i["image_filename"],
             lang=i["lang"],
+            device=i["device"] or "unknown",
         )
         for i in items
     ]

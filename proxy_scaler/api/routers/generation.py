@@ -155,7 +155,16 @@ def worker_status() -> WorkerStatusOut:
     return WorkerStatusOut(
         running=db.is_worker_running(lock_path=get_lock_path()),
         held=db.get_worker_hold(db_path=get_db_path()),
+        cpu_fallback=db.get_cpu_fallback(db_path=get_db_path()),
     )
+
+
+@router.post("/worker/cpu-fallback/ack")
+def ack_cpu_fallback() -> dict:
+    """Acknowledge the pending GPU→CPU fallback notification (the client's
+    dialog calls this whichever button is chosen). Idempotent — cleared
+    reads False when there was nothing pending."""
+    return {"cleared": db.clear_cpu_fallback(db_path=get_db_path())}
 
 
 @router.post("/worker/release")

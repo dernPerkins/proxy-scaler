@@ -216,6 +216,12 @@ class WorkerStatusOut(BaseModel):
     # held worker does hold its lock. Defaulted so older clients that
     # don't know the field parse fine.
     held: bool = False
+    # Non-null when an unacknowledged GPU→CPU OOM fallback is pending: a
+    # small JSON note ({at, task_id, face_name, model}) written by the
+    # worker the moment the fallback fired. The client shows a "cancel
+    # pending tasks?" dialog and clears it via POST
+    # /api/worker/cpu-fallback/ack. Defaulted for older clients.
+    cpu_fallback: str | None = None
 
 
 class GalleryItemOut(BaseModel):
@@ -231,6 +237,11 @@ class GalleryItemOut(BaseModel):
     model: str
     image_filename: str
     lang: str = "en"
+    # Where inference ran for this image: "gpu" | "cpu" | "unknown"
+    # ("unknown" is real — pre-provenance rows and disk-scan recovery).
+    # Lets the client mark CPU-fallback output on machines that have a
+    # working GPU.
+    device: str = "unknown"
 
 
 class ReverseFillIn(str, Enum):

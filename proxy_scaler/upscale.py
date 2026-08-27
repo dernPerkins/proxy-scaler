@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -296,29 +297,48 @@ def _dtype_label(dtype: "torch.dtype | None") -> str:
     return "bf16" if dtype == torch.bfloat16 else "fp32"
 
 
-# A tile-768 bf16 pass on a card-sized image peaks at ~6.3 GiB allocated
-# (weights included, measured on a 3080 Ti); requiring 8 GiB free keeps
-# real headroom and correctly excludes 8 GB cards.
+# VRAM thresholds for the auto-tile ladder, from peaks measured on a
+# 3080 Ti with a card-sized DAT2 pass (weights included) × ~1.4 headroom:
+#   tile 768 bf16 peaks ~6.3 GiB → 8 GiB (also correctly excludes 8GB cards)
+#   tile 384 peaks 1.63 GiB bf16 / 3.24 GiB fp32 → 2.5 / 4.5 GiB
 _TILE768_MIN_FREE = 8 * 1024**3
-_AUTO_TILE_UPGRADE = 768
+_TILE384_MIN_FREE_BF16 = int(2.5 * 1024**3)
+_TILE384_MIN_FREE_FP32 = int(4.5 * 1024**3)
+# The auto ladder, largest first. 256 is the floor: below its needs
+# (~1-2 GiB) the DAT models are hopeless on that GPU anyway, and the OOM
+# ladder's terminal CPU relocation still exists as the last resort.
+_AUTO_TILE_LADDER = (768, 384, 256)
 
 
 def _choose_auto_tile(
     free_bytes: int | None, dtype: "torch.dtype", base_tile: int
 ) -> int:
-    """Pick the auto tile size given free VRAM. Only ever upgrades an
-    auto-tiled heavy model (base_tile > 0) running bf16 — fp32 at 768
-    OOMs even on 12 GB cards, and untiled light models stay untiled."""
+    """Pick the auto tile size for a heavy model (base_tile > 0) from free
+    VRAM — a three-rung ladder: 768 (bf16 with plenty free), the 384 base,
+    or a 256 step-down for small GPUs so they stay on the GPU instead of
+    OOMing straight into the catastrophic CPU fallback. Unknown free VRAM
+    gets the benefit of the doubt (base). Untiled light models (base 0)
+    and manual tile settings are never touched (callers gate on tile_auto)."""
     import torch
 
+    if base_tile <= 0:
+        return base_tile
     if (
-        base_tile > 0
-        and dtype == torch.bfloat16
+        dtype == torch.bfloat16
         and free_bytes is not None
         and free_bytes >= _TILE768_MIN_FREE
     ):
-        return _AUTO_TILE_UPGRADE
-    return base_tile
+        return 768
+    if free_bytes is None:
+        return base_tile
+    floor = (
+        _TILE384_MIN_FREE_BF16
+        if dtype == torch.bfloat16
+        else _TILE384_MIN_FREE_FP32
+    )
+    if free_bytes >= floor:
+        return base_tile
+    return 256
 
 
 @dataclass(frozen=True)
@@ -409,6 +429,7 @@ class Upscaler:
         tile_pad: int = 32,
         timings: object | None = None,
         tile_auto: bool = False,
+        on_cpu_fallback: object | None = None,
     ) -> None:
         self.model_id = parse_model(model)
         if scale not in self.model_id.supported_scales:
@@ -426,10 +447,14 @@ class Upscaler:
         # Duck-typed timing_db.TimingCollector (kept untyped so this module
         # never imports timing_db, which imports db, which imports us).
         self._timings = timings
+        # Zero-arg callable fired the moment a GPU→CPU OOM fallback
+        # happens (model load or inference), so the worker can flag it for
+        # the client immediately — not after the first slow CPU task
+        # finishes. Duck-typed for the same import-cycle reason as timings.
+        self._on_cpu_fallback = on_cpu_fallback
         self._descriptor: ImageModelDescriptor | None = None
         self._device: torch.device | None = None
         self._dtype: torch.dtype | None = None
-        self._tile_upgraded = False
 
     def _phase(self, name: str):
         if self._timings is not None:
@@ -460,14 +485,16 @@ class Upscaler:
             torch.bfloat16 if param.dtype == torch.bfloat16 else torch.float32
         )
         self._descriptor = descriptor
-        self._maybe_upgrade_tile()
+        self._apply_auto_tile()
         # The one line a user report needs: which capability gates fired.
         print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
         return descriptor
 
-    def _maybe_upgrade_tile(self) -> None:
-        """Per task (mem_get_info is cheap): a heavy model's auto tile may
-        grow to 768 when running bf16 with enough free VRAM."""
+    def _apply_auto_tile(self) -> None:
+        """Per task (mem_get_info is cheap): pick this task's auto tile
+        from the ladder — a heavy model's 384 may grow to 768 (bf16, lots
+        of free VRAM) or shrink to 256 (small GPU) so it stays on the GPU
+        instead of OOMing straight into the catastrophic CPU fallback."""
         import torch
 
         if self._device is None or self._device.type != "cuda":
@@ -480,14 +507,19 @@ class Upscaler:
             # but reserved-yet-unallocated blocks are reusable for our own
             # tiles — without adding them back, the first task's warm
             # allocator (no more per-image empty_cache) would push every
-            # later task below the gate and silently downgrade to 384.
+            # later task below the gate and silently downgrade.
             free_bytes += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
         except Exception:  # noqa: BLE001
             free_bytes = None
         new_tile = _choose_auto_tile(free_bytes, self._dtype, self.tile)
-        if new_tile != self.tile:
-            self.tile = new_tile
-            self._tile_upgraded = True
+        if new_tile < self.tile:
+            # Worth a line of its own: a step-down means this GPU is tight
+            # on VRAM, which is the leading suspect in "why is it slow/on
+            # CPU" reports.
+            print(
+                f"  low free VRAM: stepping tile down from {self.tile} to {new_tile}"
+            )
+        self.tile = new_tile
 
     def _load_model(self) -> ImageModelDescriptor:
         import torch
@@ -521,11 +553,22 @@ class Upscaler:
                 print(
                     f"OOM loading model on {device}; clearing cache and falling back to CPU…"
                 )
+                self._notify_cpu_fallback()
                 _clear_device_cache(device)
                 descriptor = descriptor.to(torch.device("cpu")).eval()
             else:
                 raise
         return descriptor
+
+    def _notify_cpu_fallback(self) -> None:
+        """Fire the caller's fallback hook, if any — best-effort, a broken
+        hook must never break the generation it's reporting on."""
+        if self._on_cpu_fallback is None:
+            return
+        try:
+            self._on_cpu_fallback()  # type: ignore[operator]
+        except Exception as exc:  # noqa: BLE001
+            print(f"warning: cpu-fallback hook failed: {exc}", file=sys.stderr)
 
     def _relocate_to_cpu(self) -> ImageModelDescriptor:
         """Move loaded weights to CPU after a GPU OOM (stays on CPU afterward)."""
@@ -535,6 +578,7 @@ class Upscaler:
         old = self._device
         _clear_device_cache(old)
         print(f"Falling back to CPU upscale (was {old})…")
+        self._notify_cpu_fallback()
         self._device = torch.device("cpu")
         # bf16 on CPU is emulated/slow — fall all the way back to fp32.
         self._dtype = torch.float32
@@ -582,27 +626,31 @@ class Upscaler:
                     except Exception as exc:
                         if self._device.type == "cpu" or not _is_oom_error(exc):
                             raise
-                        if self._tile_upgraded:
-                            # The VRAM-probed larger tile turned out not to
-                            # fit after all (something else grabbed VRAM) —
-                            # drop back to the base tile on the SAME device
-                            # before resorting to the catastrophic CPU path.
-                            base = effective_tile_size(self.model_id, 0)
-                            print(
-                                f"Upscale OOM on {self._device} at tile "
-                                f"{self.tile}; retrying at tile {base}…"
-                            )
-                            self.tile = base
-                            self._tile_upgraded = False
-                            _clear_device_cache(self._device)
-                            try:
-                                out_gpu = self._run_inference(descriptor, tensor)
-                            except Exception as exc2:
-                                if not _is_oom_error(exc2):
-                                    raise
-                                exc = exc2
-                            else:
-                                exc = None
+                        if self.tile_auto and self.tile > 0:
+                            # The VRAM-probed tile turned out not to fit
+                            # after all (something else grabbed VRAM) —
+                            # step down through the remaining auto rungs on
+                            # the SAME device before resorting to the
+                            # catastrophic CPU path. Manual tile settings
+                            # are never second-guessed.
+                            for rung in _AUTO_TILE_LADDER:
+                                if rung >= self.tile:
+                                    continue
+                                print(
+                                    f"Upscale OOM on {self._device} at tile "
+                                    f"{self.tile}; retrying at tile {rung}…"
+                                )
+                                self.tile = rung
+                                _clear_device_cache(self._device)
+                                try:
+                                    out_gpu = self._run_inference(descriptor, tensor)
+                                except Exception as exc2:
+                                    if not _is_oom_error(exc2):
+                                        raise
+                                    exc = exc2
+                                else:
+                                    exc = None
+                                    break
                         if exc is not None:
                             print(
                                 f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"

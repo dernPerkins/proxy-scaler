@@ -159,6 +159,10 @@ export const generationApi = {
   // Idempotent; released:false just means there was no hold to clear.
   releaseWorker: () =>
     request<{ released: boolean }>("/api/worker/release", { method: "POST" }),
+  // Acknowledges the pending GPU→CPU fallback notification (called by
+  // CpuFallbackPrompt whichever button is chosen). Idempotent.
+  ackCpuFallback: () =>
+    request<{ cleared: boolean }>("/api/worker/cpu-fallback/ack", { method: "POST" }),
 
   listGallery: (projectTag: string) =>
     request<GalleryItem[]>(`/api/gallery?${new URLSearchParams({ project_tag: projectTag })}`),

@@ -163,6 +163,10 @@ export interface VariantStatus {
   status: TaskStatus;
   error: string | null;
   galleryItemId: number | null;
+  // Where the existing image's inference ran ("gpu" | "cpu" | "unknown");
+  // null when no image exists yet. Lets the deck list mark CPU-fallback
+  // output on machines that have a working GPU.
+  device: string | null;
 }
 
 function pairKey(dpi: number, model: string): string {
@@ -203,11 +207,26 @@ export function statusForPairs(faceItems: GalleryItem[], faceTasks: Task[]): Var
         status: activeTask.status,
         error: activeTask.error,
         galleryItemId: done?.id ?? null,
+        device: done?.device ?? null,
       });
     } else if (done) {
-      rows.push({ dpi: done.dpi, model: done.model, status: "done", error: null, galleryItemId: done.id });
+      rows.push({
+        dpi: done.dpi,
+        model: done.model,
+        status: "done",
+        error: null,
+        galleryItemId: done.id,
+        device: done.device ?? "unknown",
+      });
     } else {
-      rows.push({ dpi: task!.dpi, model: task!.model, status: task!.status, error: task!.error, galleryItemId: null });
+      rows.push({
+        dpi: task!.dpi,
+        model: task!.model,
+        status: task!.status,
+        error: task!.error,
+        galleryItemId: null,
+        device: null,
+      });
     }
   }
   rows.sort((a, b) => a.dpi - b.dpi || a.model.localeCompare(b.model));

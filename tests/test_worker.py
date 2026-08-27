@@ -332,3 +332,40 @@ def test_peek_next_pending_matches_claim_order_without_claiming(tmp_path) -> Non
         claimed = claim_next_task(db_path=db_path)
         assert claimed.id == expected_id
     assert peek_next_pending(db_path=db_path) is None
+
+
+def test_start_one_wires_cpu_fallback_flag(tmp_path, monkeypatch) -> None:
+    """The on_cpu_fallback closure handed to process_task must set the
+    worker_control flag with a parseable note the moment it's invoked."""
+    import json
+
+    from proxy_scaler import db as db_module
+    from proxy_scaler import pipeline
+    from proxy_scaler.worker import _start_one
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    tid = _enqueue(db_path)
+    task = claim_next_task(db_path=db_path)
+
+    class _DonePending:
+        def finish(self):
+            raise AssertionError("not needed")
+
+    def fake_process_task(t, *, on_progress=None, timings=None, defer_finish=False,
+                          on_cpu_fallback=None):
+        assert on_cpu_fallback is not None
+        on_cpu_fallback()  # simulate the OOM fallback firing mid-inference
+        return _DonePending()
+
+    monkeypatch.setattr(pipeline, "process_task", fake_process_task)
+
+    _start_one(task, db_path=db_path)
+
+    note = db_module.get_cpu_fallback(db_path=db_path)
+    assert note is not None
+    parsed = json.loads(note)
+    assert parsed["task_id"] == tid
+    assert parsed["face_name"] == "Sol Ring"
+    assert parsed["model"] == "ultrasharp_v2"
+    assert parsed["at"]

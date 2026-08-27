@@ -12,6 +12,7 @@ regardless of how many times something tries to (re-)spawn it.
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -73,9 +74,30 @@ def _start_one(
             timing_db.record_task(timings, task, status, db_path=timing_path)
             print(f"  {timings.summary_line()}")
 
+    def on_cpu_fallback() -> None:
+        # Fired by the Upscaler the moment a GPU→CPU OOM fallback happens —
+        # flags it for the client immediately (the desktop app polls
+        # /api/worker/status and raises a "cancel pending tasks?" dialog)
+        # instead of letting a slow CPU run pile up unnoticed.
+        db.set_cpu_fallback(
+            json.dumps(
+                {
+                    "at": db._utc_now(),
+                    "task_id": task.id,
+                    "face_name": task.face_name,
+                    "model": task.model,
+                }
+            ),
+            db_path=db_path,
+        )
+
     try:
         pending = pipeline.process_task(
-            task, on_progress=print, timings=timings, defer_finish=True
+            task,
+            on_progress=print,
+            timings=timings,
+            defer_finish=True,
+            on_cpu_fallback=on_cpu_fallback,
         )
     except Exception as exc:  # noqa: BLE001 — one bad task must not kill the worker
         db.mark_task_failed(task.id, str(exc), db_path=db_path)
@@ -185,6 +207,11 @@ def main(
     requeued = db.reset_orphaned_running_tasks(db_path=db_path)
     if requeued:
         print(f"Re-queued {requeued} task(s) orphaned by a previous worker.")
+    # A fresh worker retries the GPU, so a stale CPU-fallback flag from a
+    # previous run describes a condition that no longer holds (mirrors the
+    # supervisor clearing stale holds); if the fallback recurs it re-fires
+    # within the first task.
+    db.clear_cpu_fallback(db_path=db_path)
     print("Worker started, polling for tasks…")
     prefetcher = _OriginalPrefetcher(db_path=db_path)
     finish_thread: threading.Thread | None = None

@@ -1831,6 +1831,49 @@ def release_worker_hold(db_path: Path | str | None = None) -> bool:
         return cur.rowcount > 0
 
 
+# Set by the worker the moment a GPU→CPU OOM fallback fires (see
+# worker._start_one's on_cpu_fallback closure); read by the client via
+# GET /api/worker/status and cleared when the user acknowledges the
+# fallback dialog (POST /api/worker/cpu-fallback/ack) or when a fresh
+# worker starts (a restart retries the GPU, so a stale flag describes a
+# condition that no longer holds). The value is a small JSON note saying
+# what was being generated when it happened.
+_CPU_FALLBACK_KEY = "cpu_fallback"
+
+
+def set_cpu_fallback(note: str, db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO worker_control (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_CPU_FALLBACK_KEY, note),
+        )
+        conn.commit()
+
+
+def get_cpu_fallback(db_path: Path | str | None = None) -> str | None:
+    """The pending fallback note, or None when no unacknowledged fallback
+    exists. Absent row and empty value both read as None."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM worker_control WHERE key = ?",
+            (_CPU_FALLBACK_KEY,),
+        ).fetchone()
+    return row["value"] if row is not None and row["value"] else None
+
+
+def clear_cpu_fallback(db_path: Path | str | None = None) -> bool:
+    """Acknowledge the fallback. Returns whether one was actually pending
+    (False makes a repeat ack an idempotent no-op)."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE worker_control SET value = '' WHERE key = ? AND value != ''",
+            (_CPU_FALLBACK_KEY,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def parse_output_filename(name: str) -> dict[str, Any] | None:
     """Parse a proxy-scaler output PNG basename into metadata fields."""
     match = _OUTPUT_SUFFIX_RE.match(name)

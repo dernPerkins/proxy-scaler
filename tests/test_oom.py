@@ -283,24 +283,30 @@ def test_resolve_dtype_needs_model_and_device_support() -> None:
 
 
 def test_choose_auto_tile() -> None:
-    lots, little = 10 * 1024**3, 2 * 1024**3
+    lots, mid, little = 10 * 1024**3, 3 * 1024**3, 2 * 1024**3
     # Upgrade requires: auto-tiled heavy model (base>0), bf16, enough free.
     assert _choose_auto_tile(lots, torch.bfloat16, DEFAULT_TILE_SIZE) == 768
-    assert _choose_auto_tile(little, torch.bfloat16, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
     assert _choose_auto_tile(lots, torch.float32, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
+    # Mid free VRAM: enough for 384 in bf16, not in fp32 (larger activations).
+    assert _choose_auto_tile(mid, torch.bfloat16, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
+    assert _choose_auto_tile(mid, torch.float32, DEFAULT_TILE_SIZE) == 256
+    # Small GPU: step down to 256 instead of OOMing into the CPU fallback.
+    assert _choose_auto_tile(little, torch.bfloat16, DEFAULT_TILE_SIZE) == 256
+    assert _choose_auto_tile(little, torch.float32, DEFAULT_TILE_SIZE) == 256
     assert _choose_auto_tile(lots, torch.bfloat16, 0) == 0  # untiled light model
+    # Unknown free VRAM: benefit of the doubt (base), never a blind change.
     assert _choose_auto_tile(None, torch.bfloat16, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
+    assert _choose_auto_tile(None, torch.float32, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
 
 
 def test_upscale_oom_retries_smaller_tile_before_cpu(tmp_path) -> None:
-    """An auto-upgraded tile that OOMs drops back to the base tile on the
-    SAME device first; CPU relocation only happens if that also OOMs."""
+    """An auto-chosen tile that OOMs drops down the ladder on the SAME
+    device first; CPU relocation only happens if every rung OOMs."""
     up = Upscaler(
         model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
         tile=768, tile_auto=True,
     )
     up._descriptor = MagicMock()
-    up._tile_upgraded = True
 
     class _CudaDev:
         type = "cuda"
@@ -335,17 +341,15 @@ def test_upscale_oom_retries_smaller_tile_before_cpu(tmp_path) -> None:
     relocate_mock.assert_not_called()  # stayed on the GPU
     assert attempts["n"] == 2
     assert up.tile == DEFAULT_TILE_SIZE
-    assert not up._tile_upgraded
     assert result.image.size == (64, 64)
 
 
-def test_upscale_oom_ladder_falls_to_cpu_on_second_oom(tmp_path) -> None:
+def test_upscale_oom_ladder_falls_to_cpu_after_every_rung(tmp_path) -> None:
     up = Upscaler(
         model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
         tile=768, tile_auto=True,
     )
     up._descriptor = MagicMock()
-    up._tile_upgraded = True
 
     class _CudaDev:
         type = "cuda"
@@ -355,9 +359,9 @@ def test_upscale_oom_ladder_falls_to_cpu_on_second_oom(tmp_path) -> None:
 
     attempts = {"n": 0}
 
-    def oom_twice(descriptor, tensor):
+    def oom_thrice(descriptor, tensor):
         attempts["n"] += 1
-        if attempts["n"] <= 2:
+        if attempts["n"] <= 3:
             raise torch.cuda.OutOfMemoryError("CUDA out of memory")
         _, _, h, w = tensor.shape
         return torch.zeros(1, 3, h * 4, w * 4)
@@ -373,7 +377,7 @@ def test_upscale_oom_ladder_falls_to_cpu_on_second_oom(tmp_path) -> None:
     src = Image.new("RGB", (16, 16), color=(1, 2, 3))
     with (
         patch.object(up, "_ensure_model", return_value=up._descriptor),
-        patch.object(up, "_run_inference", side_effect=oom_twice),
+        patch.object(up, "_run_inference", side_effect=oom_thrice),
         patch.object(up, "_relocate_to_cpu", side_effect=relocate),
         patch("proxy_scaler.upscale._clear_device_cache"),
         patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
@@ -381,7 +385,100 @@ def test_upscale_oom_ladder_falls_to_cpu_on_second_oom(tmp_path) -> None:
         up._device = _CudaDev()  # type: ignore[assignment]
         result = up.upscale(src)
 
-    assert attempts["n"] == 3  # 768 OOM, 384 OOM, CPU success
+    assert attempts["n"] == 4  # 768 OOM, 384 OOM, 256 OOM, CPU success
+    assert result.device == "cpu"
+
+
+def test_upscale_oom_fresh_384_steps_down_to_256_before_cpu(tmp_path) -> None:
+    """The gap this ladder closes: a small GPU whose auto-384 OOMs used to
+    fall STRAIGHT to CPU. Now it retries at 256 on the same device."""
+    up = Upscaler(
+        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
+        tile=DEFAULT_TILE_SIZE, tile_auto=True,
+    )
+    up._descriptor = MagicMock()
+
+    class _CudaDev:
+        type = "cuda"
+
+        def __str__(self) -> str:
+            return "cuda"
+
+    attempts = {"n": 0}
+
+    def oom_once(descriptor, tensor):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        _, _, h, w = tensor.shape
+        return torch.zeros(1, 3, h * 4, w * 4)
+
+    batch = torch.zeros(1, 3, 16, 16)
+    fake_rgb = MagicMock()
+    fake_rgb.unsqueeze.return_value.to.return_value = batch
+
+    src = Image.new("RGB", (16, 16), color=(1, 2, 3))
+    with (
+        patch.object(up, "_ensure_model", return_value=up._descriptor),
+        patch.object(up, "_run_inference", side_effect=oom_once),
+        patch.object(up, "_relocate_to_cpu") as relocate_mock,
+        patch("proxy_scaler.upscale._clear_device_cache"),
+        patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
+    ):
+        up._device = _CudaDev()  # type: ignore[assignment]
+        result = up.upscale(src)
+
+    relocate_mock.assert_not_called()
+    assert attempts["n"] == 2
+    assert up.tile == 256
+    assert result.image.size == (64, 64)
+
+
+def test_upscale_oom_manual_tile_goes_straight_to_cpu(tmp_path) -> None:
+    """An explicit user tile setting is never second-guessed: OOM at a
+    manual tile skips the ladder and relocates to CPU as before."""
+    up = Upscaler(
+        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
+        tile=512, tile_auto=False,
+    )
+    up._descriptor = MagicMock()
+
+    class _CudaDev:
+        type = "cuda"
+
+        def __str__(self) -> str:
+            return "cuda"
+
+    attempts = {"n": 0}
+
+    def oom_once(descriptor, tensor):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        _, _, h, w = tensor.shape
+        return torch.zeros(1, 3, h * 4, w * 4)
+
+    def relocate():
+        up._device = torch.device("cpu")
+        return up._descriptor
+
+    batch = torch.zeros(1, 3, 16, 16)
+    fake_rgb = MagicMock()
+    fake_rgb.unsqueeze.return_value.to.return_value = batch
+
+    src = Image.new("RGB", (16, 16), color=(1, 2, 3))
+    with (
+        patch.object(up, "_ensure_model", return_value=up._descriptor),
+        patch.object(up, "_run_inference", side_effect=oom_once),
+        patch.object(up, "_relocate_to_cpu", side_effect=relocate),
+        patch("proxy_scaler.upscale._clear_device_cache"),
+        patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
+    ):
+        up._device = _CudaDev()  # type: ignore[assignment]
+        result = up.upscale(src)
+
+    assert attempts["n"] == 2  # manual 512 OOM, CPU success — no rungs
+    assert up.tile == 512
     assert result.device == "cpu"
 
 
@@ -524,3 +621,83 @@ def test_upscale_no_longer_clears_cache_per_image(tmp_path) -> None:
         up.upscale(src)
 
     clear_mock.assert_not_called()  # happy path leaves the allocator warm
+
+
+# --- CPU-fallback notification hook ------------------------------------------
+
+
+def test_relocate_to_cpu_fires_fallback_hook() -> None:
+    fired = {"n": 0}
+    up = Upscaler(
+        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir="w", tile=0,
+        on_cpu_fallback=lambda: fired.__setitem__("n", fired["n"] + 1),
+    )
+    up._descriptor = MagicMock()
+    up._descriptor.to.return_value.to.return_value.eval.return_value = up._descriptor
+    up._device = torch.device("cpu")
+    with patch("proxy_scaler.upscale._clear_device_cache"):
+        up._relocate_to_cpu()
+    assert fired["n"] == 1
+
+
+def test_load_model_oom_fallback_fires_hook(tmp_path, monkeypatch) -> None:
+    """The model-load OOM branch (previously untested) also notifies."""
+    from proxy_scaler import upscale as upscale_module
+
+    fired = {"n": 0}
+    up = Upscaler(
+        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0,
+        on_cpu_fallback=lambda: fired.__setitem__("n", fired["n"] + 1),
+    )
+
+    weights = tmp_path / "w.safetensors"
+    weights.write_bytes(b"x")
+    monkeypatch.setattr(upscale_module, "ensure_weights", lambda *a, **k: weights)
+    monkeypatch.setattr(upscale_module, "resolve_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(upscale_module, "resolve_dtype", lambda d, dev: torch.float32)
+    monkeypatch.setattr(upscale_module, "_clear_device_cache", lambda d: None)
+
+    class _FakeDescriptor:
+        def to(self, target):
+            if getattr(target, "type", None) == "cuda":
+                raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+            return self
+
+        def eval(self):
+            return self
+
+    fake = _FakeDescriptor()
+
+    class _FakeLoader:
+        def load_from_file(self, path):
+            return fake
+
+    import spandrel
+
+    monkeypatch.setattr(spandrel, "ModelLoader", _FakeLoader)
+    monkeypatch.setattr(
+        spandrel, "ImageModelDescriptor", _FakeDescriptor, raising=False
+    )
+    monkeypatch.setattr(
+        upscale_module, "ImageModelDescriptor", _FakeDescriptor, raising=False
+    )
+
+    result = up._load_model()
+    assert result is fake
+    assert fired["n"] == 1
+
+
+def test_fallback_hook_errors_never_break_relocation() -> None:
+    def boom():
+        raise RuntimeError("hook exploded")
+
+    up = Upscaler(
+        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir="w", tile=0,
+        on_cpu_fallback=boom,
+    )
+    up._descriptor = MagicMock()
+    up._descriptor.to.return_value.to.return_value.eval.return_value = up._descriptor
+    up._device = torch.device("cpu")
+    with patch("proxy_scaler.upscale._clear_device_cache"):
+        up._relocate_to_cpu()  # must not raise
+    assert up._dtype == torch.float32
