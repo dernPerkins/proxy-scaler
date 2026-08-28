@@ -421,11 +421,28 @@ sidecar: _sidecar-freeze
 	# versioned .dylib/.so symlinks for torch's shared libraries.
 	# Hardlinks cost no I/O; the -RL fallback covers filesystems that
 	# refuse them (some FUSE/network mounts), dereferencing as it copies.
+	# The debug copies are skipped on Windows — and must be: there,
+	# tauri.windows.conf.json declares bundle.resources, so tauri-build
+	# itself copies target/release/proxy-scaler-serve into the dev exe dir
+	# (target/debug) on every build. A Makefile-staged debug tree isn't
+	# just redundant then: cp -al makes its files hardlinks of the release
+	# tree's, so tauri-build's copy is a file copied onto itself — which
+	# Windows refuses with a sharing violation (os error 32), failing the
+	# whole dev build. macOS/Linux declare no bundle.resources (see
+	# main.rs's top comment), so they still need the debug staging for
+	# cargo tauri dev.
+ifeq ($(IS_WINDOWS),1)
+	$(call stage_sidecar,$(SIDECAR_RELEASE_DIR))
+	$(call stage_sidecar,$(SERVER_APP_RELEASE_DIR))
+	@echo "sidecar placed for the client and the server app (release only;"
+	@echo "tauri-build populates the debug dirs itself on Windows)"
+else
 	$(call stage_sidecar,$(SIDECAR_DEBUG_DIR))
 	$(call stage_sidecar,$(SIDECAR_RELEASE_DIR))
 	$(call stage_sidecar,$(SERVER_APP_DEBUG_DIR))
 	$(call stage_sidecar,$(SERVER_APP_RELEASE_DIR))
 	@echo "sidecar placed for the client and the server app (debug + release)"
+endif
 
 # Release-only variant: skips the two debug-dir copies entirely (pure
 # cargo-tauri-dev convenience that 'release's downstream targets never
