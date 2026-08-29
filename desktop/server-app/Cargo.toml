@@ -1,6 +1,6 @@
 [package]
 name = "proxy-scaler-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "Runs the proxy-scaler generation server so other machines can connect to it"
 edition = "2021"
 
