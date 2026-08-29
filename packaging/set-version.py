@@ -47,6 +47,12 @@ FILES: list[tuple[str, str]] = [
 
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
+# Deliberately NOT in FILES: patchNotes.ts names historical releases
+# forever and must never be rewritten. check() instead requires it to
+# carry an entry for the release being cut, so a release can't ship
+# without its own Patch Notes (see docs/releasing.md).
+PATCH_NOTES = "desktop/frontend/src/patchNotes.ts"
+
 
 def read_version(path: Path, pattern: str) -> str:
     match = re.search(pattern, path.read_text(), flags=re.MULTILINE)
@@ -57,14 +63,21 @@ def read_version(path: Path, pattern: str) -> str:
 
 def check() -> None:
     versions = {rel: read_version(ROOT / rel, pat) for rel, pat in FILES}
-    if len(set(versions.values())) == 1:
-        print(f"version OK: {next(iter(versions.values()))} everywhere")
-        return
-    print("error: version drift detected:", file=sys.stderr)
-    for rel, ver in versions.items():
-        print(f"  {ver:12} {rel}", file=sys.stderr)
-    print("fix with: make set-version VERSION=x.y.z", file=sys.stderr)
-    sys.exit(1)
+    if len(set(versions.values())) != 1:
+        print("error: version drift detected:", file=sys.stderr)
+        for rel, ver in versions.items():
+            print(f"  {ver:12} {rel}", file=sys.stderr)
+        print("fix with: make set-version VERSION=x.y.z", file=sys.stderr)
+        sys.exit(1)
+    version = next(iter(versions.values()))
+    if f'version: "{version}"' not in (ROOT / PATCH_NOTES).read_text():
+        print(
+            f"error: {PATCH_NOTES} has no entry for {version} —\n"
+            f"write this release's Patch Notes before releasing it",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"version OK: {version} everywhere (patch notes present)")
 
 
 def set_version(new: str) -> None:

@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
+import PatchNotesPrompt from "./components/PatchNotesPrompt";
 import UpdatePrompt from "./components/UpdatePrompt";
 import ConnectGate from "./ConnectGate";
 import { ConnectionProvider } from "./connection";
@@ -29,6 +30,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             Rust), so it needs no connection, router, or query client —
             the wrong-base-URL hazard the gate exists for can't touch it. */}
         <UpdatePrompt />
+        {/* Same reasoning as UpdatePrompt: the notes auto-open on LAUNCH,
+            over the picker, and touch only Tauri commands. Mounted after
+            it on purpose — portals stack in mount order, and the update
+            offer outranks notes that installing it would make stale. */}
+        <PatchNotesPrompt />
         <ConnectGate>
           <BrowserRouter>
             <App />

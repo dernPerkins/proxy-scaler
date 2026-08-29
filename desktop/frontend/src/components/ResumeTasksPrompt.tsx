@@ -6,6 +6,8 @@ import ModalOverlay from "./ModalOverlay";
 import { isTauri } from "../tauri";
 import {
   getBootUpdateCheckSettled,
+  getPatchNotesPromptOpen,
+  getPatchNotesSettled,
   getUpdatePromptOpen,
   setResumeTasksPromptOpen,
   setResumeTasksSettled,
@@ -65,6 +67,8 @@ export default function ResumeTasksPrompt() {
     subscribeUpdateStore,
     getUpdatePromptOpen,
   );
+  const patchNotesSettled = useSyncExternalStore(subscribeUpdateStore, getPatchNotesSettled);
+  const patchNotesOpen = useSyncExternalStore(subscribeUpdateStore, getPatchNotesPromptOpen);
 
   // Once per connection, not once per mount: a local↔remote switch (or a
   // switch between remote hosts) passes through a non-"connected" status
@@ -138,7 +142,14 @@ export default function ResumeTasksPrompt() {
     };
   }, [status.kind, queryClient]);
 
-  if (leftover === null || !bootUpdateSettled || updatePromptOpen) return null;
+  if (
+    leftover === null ||
+    !bootUpdateSettled ||
+    updatePromptOpen ||
+    !patchNotesSettled ||
+    patchNotesOpen
+  )
+    return null;
 
   async function finish(action: () => Promise<unknown>) {
     setWorking(true);

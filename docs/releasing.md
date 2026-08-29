@@ -53,6 +53,15 @@ release is how you ship installers that claim one version while the app
 reports another — and it breaks the update check, which compares these
 numbers.
 
+**Write the release's Patch Notes** in
+`desktop/frontend/src/patchNotes.ts` — add an entry (newest first) whose
+`version` matches the release. The app auto-shows that entry once per
+user after they update, and `check-version` also fails without it, so a
+release can't ship silent. This is separate from the manifest's `NOTES=`
+one-liner below, which is shown in the *update offer* before installing.
+Never let set-version.py rewrite this file: entries name historical
+releases forever.
+
 **The update manifest (`dist/latest.json`)** is what installed apps poll
 on boot (`GET https://dl.proxy-scaler.com/latest.json` — see
 `desktop/src-tauri/src/update.rs`) to offer the user an update. It

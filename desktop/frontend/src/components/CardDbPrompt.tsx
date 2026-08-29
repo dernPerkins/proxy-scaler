@@ -22,6 +22,8 @@ import ModalOverlay from "./ModalOverlay";
 import { isTauri } from "../tauri";
 import {
   getBootUpdateCheckSettled,
+  getPatchNotesPromptOpen,
+  getPatchNotesSettled,
   getResumeTasksPromptOpen,
   getResumeTasksSettled,
   getUpdatePromptOpen,
@@ -51,6 +53,8 @@ export default function CardDbPrompt() {
     getBootUpdateCheckSettled,
   );
   const updatePromptOpen = useSyncExternalStore(subscribeUpdateStore, getUpdatePromptOpen);
+  const patchNotesSettled = useSyncExternalStore(subscribeUpdateStore, getPatchNotesSettled);
+  const patchNotesOpen = useSyncExternalStore(subscribeUpdateStore, getPatchNotesPromptOpen);
   const resumeSettled = useSyncExternalStore(subscribeUpdateStore, getResumeTasksSettled);
   const resumePromptOpen = useSyncExternalStore(
     subscribeUpdateStore,
@@ -60,7 +64,12 @@ export default function CardDbPrompt() {
   const serverUnavailable =
     connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
   const bootChainClear =
-    bootUpdateSettled && !updatePromptOpen && resumeSettled && !resumePromptOpen;
+    bootUpdateSettled &&
+    !updatePromptOpen &&
+    patchNotesSettled &&
+    !patchNotesOpen &&
+    resumeSettled &&
+    !resumePromptOpen;
 
   const dismissedQuery = useQuery({
     queryKey: ["card-db-prompt-dismissed"],

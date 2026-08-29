@@ -400,6 +400,22 @@ button:disabled {
   height: 22px;
   display: block;
 }
+/* A button plus the note explaining why it's disabled. The note is
+   absolutely positioned below its button so it reads as belonging to
+   that button without disturbing the row's centering — the buttons stay
+   in line with each other whether or not the note is showing. */
+.export-btn-stack {
+  position: relative;
+}
+.export-btn-note {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin: 6px 0 0;
+  width: max-content;
+  max-width: 280px;
+  font-style: italic;
+}
 
 /* ---------- app shell ---------- */
 
@@ -611,6 +627,21 @@ button:disabled {
   padding-right: 4px;
   font-size: 12px;
   color: var(--text-muted);
+}
+/* The version label doubles as the Patch Notes re-opener, but must keep
+   reading as the same muted readout it always was — a plain-text button,
+   not a button-shaped one, that only announces itself on hover. */
+.tabs-version-btn {
+  border: none;
+  background: none;
+  box-shadow: none;
+  padding: 2px 4px;
+  font-size: inherit;
+  color: inherit;
+}
+.tabs-version-btn:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 /* ---------- status badges ---------- */
@@ -1096,6 +1127,85 @@ tbody tr:last-child td {
 }
 .modal-sm {
   width: min(90vw, 420px);
+}
+/* The missing scroll rule for long modal content: .modal is a capped
+   (90vh) flex column with overflow hidden, so a body that takes flex: 1
+   and scrolls itself keeps the head and actions pinned. min-height: 0
+   because flex children refuse to shrink below content height without
+   it. */
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* Patch Notes (PatchNotesPrompt.tsx): master-detail. Fixed height rather
+   than fit-content so switching between short and long releases doesn't
+   resize the dialog under the cursor. */
+.patch-notes-modal {
+  height: min(70vh, 460px);
+}
+.patch-notes-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 14px;
+}
+/* The version list: scrollable on its own, one bare version number per
+   button, newest first. */
+.patch-notes-list {
+  width: 128px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 6px 0 0;
+  list-style: none;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+.patch-notes-list button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  margin-bottom: 2px;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.patch-notes-list button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.patch-notes-list button.selected {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.patch-notes-current {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.patch-notes-detail ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.patch-notes-detail li {
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+.patch-notes-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.patch-notes-date {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 .modal-actions {
   display: flex;

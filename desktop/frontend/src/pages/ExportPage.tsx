@@ -351,40 +351,43 @@ export default function ExportPage() {
           >
             {downloading ? "Exporting…" : "Export ZIP"}
           </button>
-          <button
-            className="export-btn export-vendor-btn"
-            onClick={() => handleExport("tcgplaytest")}
-            disabled={exportBlocked || tcgNeedsBack || tcgWaitingOnSync}
-            title={
-              blockedTitle ??
-              (tcgNeedsBack
-                ? "Requires a selected back image — pick one on the Backs tab"
-                : tcgWaitingOnSync
-                  ? "Syncing your back image to the server…"
-                  : undefined)
-            }
-          >
-            {downloading ? "Exporting…" : "Export"}
-            <img src={tcgplaytestLogo} alt="TCGPlaytest" />
-            {downloading ? "" : "ZIP"}
-          </button>
+          {/* Button plus its disabled-reason note. The tooltip alone
+              isn't discoverable — nothing invites hovering a disabled
+              button — and a note under the whole row read as a
+              page-level aside and got missed, so the reason hangs
+              directly off the button it's about (absolutely positioned,
+              so the buttons themselves stay in line). */}
+          <div className="export-btn-stack">
+            <button
+              className="export-btn export-vendor-btn"
+              onClick={() => handleExport("tcgplaytest")}
+              disabled={exportBlocked || tcgNeedsBack || tcgWaitingOnSync}
+              title={
+                blockedTitle ??
+                (tcgNeedsBack
+                  ? "Requires a selected back image — pick one on the Backs tab"
+                  : tcgWaitingOnSync
+                    ? "Syncing your back image to the server…"
+                    : undefined)
+              }
+            >
+              {downloading ? "Exporting…" : "Export"}
+              <img src={tcgplaytestLogo} alt="TCGPlaytest" />
+              {downloading ? "" : "ZIP"}
+            </button>
+            {!exportBlocked && tcgNeedsBack && (
+              <p className="hint export-btn-note">
+                Select a card back on the Backs tab to enable this export.
+              </p>
+            )}
+            {!exportBlocked && tcgWaitingOnSync && (
+              <p className="hint export-btn-note">
+                Syncing your back image to the server — unlocks in a moment.
+              </p>
+            )}
+          </div>
           {downloadError && <span className="error-text">{downloadError}</span>}
         </div>
-        {/* The tooltip alone isn't discoverable on a disabled button —
-            nothing invites hovering it — so the reason is also spelled
-            out where it can't be missed. */}
-        {!exportBlocked && tcgNeedsBack && (
-          <p className="hint" style={{ marginTop: 8, fontStyle: "italic" }}>
-            The TCGPlaytest export pairs every front with a back, so it needs a back
-            image — select one on the Backs tab to enable it.
-          </p>
-        )}
-        {!exportBlocked && tcgWaitingOnSync && (
-          <p className="hint" style={{ marginTop: 8, fontStyle: "italic" }}>
-            Syncing your back image to the server — the TCGPlaytest export unlocks in a
-            moment.
-          </p>
-        )}
       </main>
     </div>
   );

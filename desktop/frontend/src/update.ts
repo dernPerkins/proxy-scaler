@@ -72,6 +72,18 @@ export async function getAppVersion(): Promise<string> {
   return invokeCommand<string>("get_app_version");
 }
 
+/** Which release's patch notes were already auto-shown — same
+ *  one-version-wide shape as the update skip above: any close of the
+ *  Patch Notes dialog writes the current version, and the next release
+ *  supersedes it by not matching. Absent means "never seen any". */
+export async function getPatchNotesSeenVersion(): Promise<string | null> {
+  return invokeCommand<string | null>("get_patch_notes_seen_version");
+}
+
+export async function setPatchNotesSeenVersion(version: string): Promise<void> {
+  await invokeCommand<void>("set_patch_notes_seen_version", { version });
+}
+
 /** Whether the boot-time check runs at all (default true). The check is
  *  an unauthenticated request to the release host on every launch — the
  *  Decklist settings sidebar offers the off switch for machines that
@@ -137,15 +149,32 @@ export function getPromptRequestSeq(): number {
   return promptRequestSeq;
 }
 
+// Same counter-not-boolean shape for the Patch Notes dialog: the tab
+// bar's version number (App.tsx) re-opens it from the other component
+// tree. Unconditional, unlike requestUpdatePrompt — the bundled notes
+// always exist, there's nothing to wait for.
+let patchNotesRequestSeq = 0;
+
+export function requestPatchNotesPrompt(): void {
+  patchNotesRequestSeq += 1;
+  notifyUpdateStore();
+}
+
+export function getPatchNotesRequestSeq(): number {
+  return patchNotesRequestSeq;
+}
+
 // --- Boot-dialog sequencing --------------------------------------------------
 //
-// Two dialogs can want the screen at launch: UpdatePrompt (boot update
-// check, mounted above ConnectGate) and ResumeTasksPrompt (leftover tasks
-// on the connected server, mounted in App). They must never stack; the
-// update comes first. These two flags are what ResumeTasksPrompt waits
-// on — deferring it is free, because a held local worker stays held
-// (nothing processes) until it acts, and a remote worker's tasks were
-// already running anyway. UpdatePrompt publishes both.
+// Several dialogs can want the screen at launch — the chain runs
+// update -> patch notes -> resume-tasks -> card-db, each waiting on the
+// flags of everything before it, so they never stack. UpdatePrompt and
+// PatchNotesPrompt are mounted above ConnectGate (Tauri-commands only,
+// no connection needed); ResumeTasksPrompt (leftover tasks on the
+// connected server, mounted in App) waits on both — deferring it is
+// free, because a held local worker stays held (nothing processes)
+// until it acts, and a remote worker's tasks were already running
+// anyway. Each link publishes a settled/open pair like the two below.
 
 // True once the boot check has finished — an update was offered, there
 // was none, the check failed (offline), or the version was skipped. In a
@@ -176,11 +205,36 @@ export function getUpdatePromptOpen(): boolean {
   return updatePromptOpen;
 }
 
-// Third link in the boot-dialog chain (update → resume-tasks → card-db
-// offer): ResumeTasksPrompt publishes these the same way UpdatePrompt
-// publishes its pair above, and CardDbPrompt waits on all four so launch
-// dialogs never stack. "Settled" means ResumeTasksPrompt has decided —
-// either it had nothing to show, or its prompt was answered.
+// Second link: PatchNotesPrompt publishes these the same way. "Settled"
+// means it has decided — nothing new to show, or the dialog was closed.
+// Settled immediately outside Tauri (no version to compare against).
+let patchNotesSettled = false;
+let patchNotesPromptOpen = false;
+
+export function setPatchNotesSettled(): void {
+  if (patchNotesSettled) return;
+  patchNotesSettled = true;
+  notifyUpdateStore();
+}
+
+export function getPatchNotesSettled(): boolean {
+  return patchNotesSettled;
+}
+
+export function setPatchNotesPromptOpen(open: boolean): void {
+  if (patchNotesPromptOpen === open) return;
+  patchNotesPromptOpen = open;
+  notifyUpdateStore();
+}
+
+export function getPatchNotesPromptOpen(): boolean {
+  return patchNotesPromptOpen;
+}
+
+// Third link: ResumeTasksPrompt publishes these the same way, and
+// CardDbPrompt waits on all six flags so launch dialogs never stack.
+// "Settled" means ResumeTasksPrompt has decided — either it had nothing
+// to show, or its prompt was answered.
 let resumeTasksSettled = false;
 let resumeTasksPromptOpen = false;
 

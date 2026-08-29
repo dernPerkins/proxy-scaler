@@ -1652,6 +1652,29 @@ pub fn set_update_skipped_version(app: AppHandle, version: String) -> Result<(),
     write_app_setting(&conn, UPDATE_SKIPPED_VERSION_KEY, &version)
 }
 
+// --- The Patch Notes dialog's "already seen" version -----------------------
+//
+// Which release's patch notes the user has already had auto-shown
+// (PatchNotesPrompt.tsx). Same one-version-wide shape as the update skip
+// above: the next release supersedes the stored version by simply not
+// matching it, so the notes reappear exactly once per release with no
+// expiry logic. Absent means "never seen any" — a fresh install shows
+// the current release's notes.
+
+const PATCH_NOTES_SEEN_VERSION_KEY: &str = "patch_notes_seen_version";
+
+#[tauri::command]
+pub fn get_patch_notes_seen_version(app: AppHandle) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    read_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY)
+}
+
+#[tauri::command]
+pub fn set_patch_notes_seen_version(app: AppHandle, version: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY, &version)
+}
+
 // Whether the boot-time update check runs at all (UpdatePrompt.tsx reads
 // this before calling check_for_update). Default ON — but the check is an
 // unauthenticated request to the release host on every launch, which some
@@ -2291,6 +2314,26 @@ mod tests {
         assert!(!read_card_db_prompt_dismissed(&conn).expect("default: keep asking"));
         write_card_db_prompt_dismissed(&conn, true).expect("dismiss");
         assert!(read_card_db_prompt_dismissed(&conn).expect("read"));
+    }
+
+    #[test]
+    fn patch_notes_seen_version_setting_roundtrips() {
+        let conn = test_conn();
+        assert_eq!(
+            read_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY).expect("default: never seen"),
+            None
+        );
+        write_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY, "0.2.1").expect("mark seen");
+        assert_eq!(
+            read_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY).expect("read").as_deref(),
+            Some("0.2.1")
+        );
+        // A later release overwrites, not appends — the upsert contract.
+        write_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY, "0.3.0").expect("supersede");
+        assert_eq!(
+            read_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY).expect("read").as_deref(),
+            Some("0.3.0")
+        );
     }
 
     #[test]

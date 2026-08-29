@@ -18,7 +18,12 @@ import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
 import TasksPage from "./pages/TasksPage";
 import { isTauri } from "./tauri";
-import { getAppVersion, requestUpdatePrompt, useAvailableUpdate } from "./update";
+import {
+  getAppVersion,
+  requestPatchNotesPrompt,
+  requestUpdatePrompt,
+  useAvailableUpdate,
+} from "./update";
 
 // The app's own version, shown at the far end of the tab bar — the one
 // always-visible, out-of-the-way spot — so "what version am I on?" never
@@ -32,6 +37,11 @@ import { getAppVersion, requestUpdatePrompt, useAvailableUpdate } from "./update
 // the skip suppresses the automatic boot modal, not the affordance.
 // Clicking re-opens the same UpdatePrompt flow (update.ts's store carries
 // the signal across the two component trees).
+//
+// The version label itself is a button too: it reopens the Patch Notes
+// dialog over the same cross-tree bridge (PatchNotesPrompt mounts above
+// the gate in main.tsx). Styled to stay "present but ignorable" — see
+// .tabs-version-btn.
 function AppVersion() {
   const [version, setVersion] = useState<string | null>(null);
   const update = useAvailableUpdate();
@@ -49,7 +59,13 @@ function AppVersion() {
           Update to v{update.latest}
         </button>
       )}
-      v{version}
+      <button
+        className="tabs-version-btn"
+        title="Patch notes"
+        onClick={requestPatchNotesPrompt}
+      >
+        v{version}
+      </button>
     </span>
   );
 }
