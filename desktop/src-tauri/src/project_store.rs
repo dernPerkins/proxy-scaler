@@ -231,7 +231,7 @@ fn migrate_guide_flags(conn: &Connection) -> Result<(), String> {
     write_app_setting(conn, MIGRATED_KEY, "1")
 }
 
-/// Rename the page-order value `interleaved` to `duplex`, exactly once.
+/// Rename the page-order value `interleaved` to `duplex`, on every open.
 ///
 /// Only ever a concern for a database written by a pre-release build:
 /// the mode shipped under the wrong name — "interleaved" describes how
@@ -239,17 +239,21 @@ fn migrate_guide_flags(conn: &Connection) -> Result<(), String> {
 /// duplex printing — and the column default changed with it. Rows added
 /// before the rename keep the old string, which no longer deserializes
 /// into PageOrder on the server.
+///
+/// Not once-guarded: SQLite bakes a column's DEFAULT into the table
+/// definition when the column is added, so a database whose page_order
+/// column was added by a pre-rename build keeps DEFAULT 'interleaved'
+/// forever, and any INSERT that omits page_order revives the old string
+/// long after a one-shot migration has come and gone. insert_project now
+/// sets the value explicitly, but this sweep stays unconditional to catch
+/// rows such a database already grew between the one-shot fix and now.
 fn migrate_page_order_naming(conn: &Connection) -> Result<(), String> {
-    const MIGRATED_KEY: &str = "page_order_duplex_renamed";
-    if read_app_setting(conn, MIGRATED_KEY)?.is_some() {
-        return Ok(());
-    }
     conn.execute(
         "UPDATE projects SET page_order = 'duplex' WHERE page_order = 'interleaved'",
         [],
     )
     .map_err(|e| e.to_string())?;
-    write_app_setting(conn, MIGRATED_KEY, "1")
+    Ok(())
 }
 
 pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
@@ -845,10 +849,14 @@ fn insert_project(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
         )
         .optional()?
         .and_then(|v| v.parse::<i64>().ok());
+    // page_order is set explicitly rather than left to the column default:
+    // a database whose page_order column was added by a pre-rename build
+    // has DEFAULT 'interleaved' baked into its table definition, which the
+    // server no longer accepts. See migrate_page_order_naming().
     conn.execute(
         "INSERT INTO projects (tag, name, import_decklist_text, back_image_id,
-                               created_at, updated_at)
-         VALUES (lower(hex(randomblob(16))), ?1, '', ?2, ?3, ?3)",
+                               page_order, created_at, updated_at)
+         VALUES (lower(hex(randomblob(16))), ?1, '', ?2, 'duplex', ?3, ?3)",
         params![name, default_back, now],
     )?;
     Ok(conn.last_insert_rowid())
