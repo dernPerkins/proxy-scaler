@@ -427,6 +427,47 @@ def test_add_bleed_dimensions_and_replicate() -> None:
     assert result.getpixel((result.size[0] - 1, bleed_px + 5)) == (255, 255, 0)  # right
 
 
+def test_add_bleed_scrubs_phantom_dark_bottom_row() -> None:
+    """Regression guard for the black-bottom-bleed bug on light cards:
+    some recent Scryfall renders (SLZ, MB2) bake a single near-black row
+    into the bottom edge of an otherwise bone-white card. The bleed must
+    be sourced from past that row, while the card face itself keeps it —
+    the tool ships Scryfall's pixels untampered inside the trim line."""
+    w, h = 400, 560
+    light = (243, 239, 227)
+    img = Image.new("RGBA", (w, h), (*light, 255))
+    for x in range(w):
+        img.putpixel((x, h - 1), (19, 12, 12, 255))
+
+    dpi = 300
+    bleed_px = round(dpi / MM_PER_IN * BLEED_MM)
+    bled = add_bleed(img, dpi=dpi)
+
+    def lum(p):
+        return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
+
+    # Bottom bleed band and both bottom corners come out light.
+    assert lum(bled.getpixel((bled.size[0] // 2, bled.size[1] - 1))) > 150
+    assert lum(bled.getpixel((2, bled.size[1] - 2))) > 150
+    assert lum(bled.getpixel((bled.size[0] - 2, bled.size[1] - 2))) > 150
+    # The artifact row inside the card face is preserved verbatim.
+    assert bled.getpixel((bleed_px + w // 2, bleed_px + h - 1)) == (19, 12, 12)
+
+
+def test_add_bleed_keeps_genuine_black_bottom_strip() -> None:
+    """A real black bottom region — the modern collector-info bar, ~6mm
+    deep — must keep stretching black into the bleed: the inset probe
+    strip is just as dark, so the scrub signature never fires."""
+    w, h = 400, 560
+    img = Image.new("RGBA", (w, h), (243, 239, 227, 255))
+    for y in range(h - 80, h):  # far deeper than the probe inset
+        for x in range(w):
+            img.putpixel((x, y), (10, 10, 10, 255))
+
+    bled = add_bleed(img, dpi=300)
+    assert bled.getpixel((bled.size[0] // 2, bled.size[1] - 1)) == (10, 10, 10)
+
+
 # --- Quantity matching -----------------------------------------------------
 
 

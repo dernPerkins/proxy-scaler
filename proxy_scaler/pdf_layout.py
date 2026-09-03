@@ -445,12 +445,60 @@ def flatten_corner_alpha(
     return img
 
 
+# How far past an edge to sample the replacement bleed source when the true
+# edge strip carries the phantom-dark-row artifact (see _bleed_edge_index).
+# 0.25mm clears the artifact at any DPI — a 1px row in the ~300dpi Scryfall
+# original smears to roughly the upscale factor in pixels, and 0.25mm is
+# ~3px per 300dpi — while staying far inside a genuine black bottom strip
+# (the modern collector-info bar is ~6mm deep).
+_EDGE_SCRUB_PROBE_MM = 0.25
+
+
+def _median_lum(strip: Image.Image) -> int:
+    data = sorted(strip.convert("L").getdata())
+    return data[len(data) // 2]
+
+
+def _bleed_edge_index(
+    rgb: Image.Image, *, horizontal: bool, edge_index: int, inset_index: int
+) -> int:
+    """Pick which 1px row/column add_bleed() stretches for one edge.
+
+    Some recent Scryfall renders (the SLZ and MB2 sets, at least) ship with
+    a single near-black row baked into the bottom edge of an otherwise
+    light card — a processing artifact on Scryfall's side, not part of the
+    card. Clamp-to-edge replication magnifies that row ~50x into a solid
+    black bleed band, which is invisible on black-bordered cards but ruins
+    light-bordered ones.
+
+    Same signature test as _is_halo, applied to whole-strip medians: the
+    edge strip must be near-black AND markedly darker than a strip a probe
+    width further in. A genuine black edge (modern collector-info bars,
+    black borders) fails the second test — its interior is just as dark —
+    and pre-2006 white-border scans have clean edges and fail the first,
+    so both keep exact edge replication. Only the bleed source moves; the
+    card face keeps the artifact row Scryfall shipped (it sits on the trim
+    line, where the cut swallows it).
+    """
+    w, h = rgb.size
+
+    def strip(i: int) -> Image.Image:
+        return rgb.crop((0, i, w, i + 1)) if horizontal else rgb.crop((i, 0, i + 1, h))
+
+    edge = _median_lum(strip(edge_index))
+    if edge < 60 and _median_lum(strip(inset_index)) - edge > 60:
+        return inset_index
+    return edge_index
+
+
 def add_bleed(image: Image.Image, *, dpi: int, bleed_mm: float = BLEED_MM) -> Image.Image:
     """Corner-flatten, then edge-extend a bleed border on all sides.
 
     Returns an opaque RGB image (alpha dropped — safe once corners are
     flattened to opaque). Uses NEAREST resampling to stretch true 1px source
     edge strips — exact clamp-to-edge replication regardless of filter.
+    Each edge's source strip is vetted by _bleed_edge_index first, so a
+    phantom dark row on an otherwise light edge never becomes the bleed.
     """
     rgb = flatten_corner_alpha(image).convert("RGB")
     w, h = rgb.size
@@ -459,20 +507,40 @@ def add_bleed(image: Image.Image, *, dpi: int, bleed_mm: float = BLEED_MM) -> Im
     canvas = Image.new("RGB", (w + 2 * bleed_px, h + 2 * bleed_px))
     canvas.paste(rgb, (bleed_px, bleed_px))
 
+    probe = max(3, round(dpi / MM_PER_IN * _EDGE_SCRUB_PROBE_MM))
+    probe_y = min(probe, (h - 1) // 2)
+    probe_x = min(probe, (w - 1) // 2)
+    top_y = _bleed_edge_index(rgb, horizontal=True, edge_index=0, inset_index=probe_y)
+    bottom_y = _bleed_edge_index(
+        rgb, horizontal=True, edge_index=h - 1, inset_index=h - 1 - probe_y
+    )
+    left_x = _bleed_edge_index(rgb, horizontal=False, edge_index=0, inset_index=probe_x)
+    right_x = _bleed_edge_index(
+        rgb, horizontal=False, edge_index=w - 1, inset_index=w - 1 - probe_x
+    )
+
     R = Image.Resampling.NEAREST
-    top = rgb.crop((0, 0, w, 1)).resize((w, bleed_px), R)
-    bottom = rgb.crop((0, h - 1, w, h)).resize((w, bleed_px), R)
-    left = rgb.crop((0, 0, 1, h)).resize((bleed_px, h), R)
-    right = rgb.crop((w - 1, 0, w, h)).resize((bleed_px, h), R)
+    top = rgb.crop((0, top_y, w, top_y + 1)).resize((w, bleed_px), R)
+    bottom = rgb.crop((0, bottom_y, w, bottom_y + 1)).resize((w, bleed_px), R)
+    left = rgb.crop((left_x, 0, left_x + 1, h)).resize((bleed_px, h), R)
+    right = rgb.crop((right_x, 0, right_x + 1, h)).resize((bleed_px, h), R)
     canvas.paste(top, (bleed_px, 0))
     canvas.paste(bottom, (bleed_px, bleed_px + h))
     canvas.paste(left, (0, bleed_px))
     canvas.paste(right, (bleed_px + w, bleed_px))
 
-    tl = rgb.crop((0, 0, 1, 1)).resize((bleed_px, bleed_px), R)
-    tr = rgb.crop((w - 1, 0, w, 1)).resize((bleed_px, bleed_px), R)
-    bl = rgb.crop((0, h - 1, 1, h)).resize((bleed_px, bleed_px), R)
-    br = rgb.crop((w - 1, h - 1, w, h)).resize((bleed_px, bleed_px), R)
+    # Corner fills take the same vetted indices, so a scrubbed bottom edge
+    # can't leak its artifact row back in through the corner pixels.
+    tl = rgb.crop((left_x, top_y, left_x + 1, top_y + 1)).resize((bleed_px, bleed_px), R)
+    tr = rgb.crop((right_x, top_y, right_x + 1, top_y + 1)).resize(
+        (bleed_px, bleed_px), R
+    )
+    bl = rgb.crop((left_x, bottom_y, left_x + 1, bottom_y + 1)).resize(
+        (bleed_px, bleed_px), R
+    )
+    br = rgb.crop((right_x, bottom_y, right_x + 1, bottom_y + 1)).resize(
+        (bleed_px, bleed_px), R
+    )
     canvas.paste(tl, (0, 0))
     canvas.paste(tr, (bleed_px + w, 0))
     canvas.paste(bl, (0, bleed_px + h))

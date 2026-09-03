@@ -1,0 +1,35 @@
+# Bleed edge-scrub samples — every category _bleed_edge_index() has to get
+# right, using the exact prints whose edge pixels were measured (2026-09).
+# Print a sheet of these and check the bleed bands around each card.
+
+# Phantom 1px near-black bottom row baked into an otherwise bone-white
+# Scryfall render (the bug this list exists for) — bleed must come out
+# light on all four sides. Scryfall labels these border:black, but the
+# actual pixels are bone white with a 1px dark row on the bottom only.
+1 Chromatic Orrery (slz) 97
+1 Chrome Mox (slz) 98
+1 Snow-Covered Wastes (mb2) 121
+
+# Genuine black bottom strip (~6mm modern collector-info bar) on
+# white-bordered prints — bottom bleed must STAY black, sides/top white.
+1 Krang, Utrom Warlord (tmt) 300
+1 Selfless Safewright (ecl) 401
+1 Secluded Starforge (eoe) 392
+1 Progenitus (fdn) 441
+1 Overlord of the Hauntwoods (dsk) 405
+1 Tibalt, the Fiend-Blooded (sld) 537
+
+# Clean vintage white borders (pre-2006 scans, no artifact, no black bar)
+# — all four bleed bands white, scrub must not fire.
+1 Serra Angel (9ed) 43
+1 Wrath of God (8ed) 58
+1 Blood Moon (chr) 46
+1 Lightning Bolt (3ed) 162
+1 Serra Angel (4ed) 50
+1 Grizzly Bears (s99) 129
+1 Swamp (brb) 136
+1 Lu Bu, Master-at-Arms (pptk) 115b
+
+# Ordinary modern black border (control) — black bleed all around,
+# scrub is a no-op because the interior probe is just as dark.
+1 Company Commander (40k) 113
