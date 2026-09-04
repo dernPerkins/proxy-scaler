@@ -28,7 +28,15 @@ SCRYFALL_LANGUAGES = (
 
 @dataclass(frozen=True)
 class CardFaceImage:
-    """One printable face with a PNG URL."""
+    """One printable face with a source image.
+
+    Normally a Scryfall printing, identified by scryfall_id and fetched
+    from png_url. A Custom Image (a card front the user uploaded — see
+    proxy_scaler/customs.py) is the other case: custom_hash is set instead
+    of scryfall_id, there is no URL to fetch, and set_code/collector_number
+    are empty because it has no printing. Everything downstream of
+    resolution treats the two the same, keyed on `identity_key`.
+    """
 
     scryfall_id: str
     card_name: str
@@ -54,6 +62,21 @@ class CardFaceImage:
     # reflects "printable faces", not a layout assumption). None only for a
     # CardFaceImage built somewhere other than expand_faces().
     total_faces: int | None = None
+    # sha256 of a user-uploaded card front. Set exactly when this face is a
+    # Custom Image, in which case scryfall_id/png_url are "" — the pipeline
+    # branches on is_custom, never on a falsy png_url.
+    custom_hash: str | None = None
+
+    @property
+    def is_custom(self) -> bool:
+        return self.custom_hash is not None
+
+    @property
+    def identity_key(self) -> str:
+        """The string this face is identified by — see customs.identity_key."""
+        from proxy_scaler.customs import identity_key
+
+        return identity_key(self.scryfall_id or None, self.custom_hash)
 
     @property
     def is_dfc_face(self) -> bool:

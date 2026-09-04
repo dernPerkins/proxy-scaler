@@ -412,8 +412,10 @@ pub async fn sync_back_image(
 }
 
 /// Minimal base64 for the thumbnail data URL. Hand-rolled rather than
-/// pulling a crate in for one call site whose input is a few kilobytes.
-fn base64_encode(bytes: &[u8]) -> String {
+/// pulling a crate in for a couple of call sites whose input is a few
+/// kilobytes. Shared with custom_images.rs, which needs the identical
+/// thing for its own library thumbnails.
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

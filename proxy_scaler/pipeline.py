@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from .decklist import DeckEntry
 from .postprocess import clean_original_png
 from .dpi import (
+    CUSTOM_SOURCE_MODEL,
     DEFAULT_DPI,
     ORIGINAL_DPI,
     ORIGINAL_MODEL,
@@ -72,6 +73,7 @@ def output_filename(
     *,
     lang: str | None = None,
     scryfall_id: str | None = None,
+    custom_hash: str | None = None,
 ) -> str:
     """Name-SET-COLLECTOR[-lang][-face]-model-dpi[-scryfall_id].png. The
     lang segment is lowercase and only written for non-English printings —
@@ -83,7 +85,20 @@ def output_filename(
     name alone — no card-corpus lookup needed; files named before it
     existed are never renamed, so consumers probe both shapes (see
     db._OUTPUT_SUFFIX_RE and the skip-existing check in
-    services/generation.py)."""
+    services/generation.py).
+
+    A Custom Image takes a different shape entirely — Name-custom-<sha256>
+    [-model-dpi].png — because it has no printing to name. Borrowing
+    set/collector for it (say 'CUSTOM'/'000') would be worse than useless:
+    pdf_layout.match_quantities matches on exactly that pair, so every
+    custom card in a project would collide into one print unit."""
+    if custom_hash:
+        base = f"{_safe_filename_part(face_name)}-custom-{custom_hash.lower()}"
+        if model is not None:
+            base = f"{base}-{parse_model(model).value}"
+        if dpi is not None:
+            base = f"{base}-{dpi}dpi"
+        return f"{base}.png"
     base = (
         f"{_safe_filename_part(face_name)}-"
         f"{set_code.upper()}-"
@@ -108,7 +123,10 @@ class FaceResult:
 
     out_path: Path
     original_path: Path
-    scryfall_id: str
+    # Exactly one of scryfall_id / custom_hash identifies the face (db
+    # migration 008). For a Custom Image the set_code/collector_number/
+    # png_url trio is empty — it has no printing and no upstream URL.
+    scryfall_id: str | None
     face_index: int | None
     face_name: str
     card_name: str
@@ -132,6 +150,30 @@ class FaceResult:
     # None for gallery rows predating db migration 003 — pdf_layout.
     # match_quantities treats that the same as "unknown, don't verify".
     total_faces: int | None = None
+    # sha256 of a user-uploaded card front (proxy_scaler/customs.py).
+    custom_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        # "" and None both mean "no Scryfall id" to every reader here, but
+        # the database tells them apart: an empty string is NOT NULL, so a
+        # custom face carrying one trips the one-identity-per-row CHECK
+        # (db migration 008) — and it trips it at the point the registry
+        # row is written, which is *after* the entire upscale has run.
+        # Normalising once here beats trusting every construction site to
+        # remember, given how late and expensive the failure is.
+        if not self.scryfall_id:
+            self.scryfall_id = None
+
+    @property
+    def is_custom(self) -> bool:
+        return self.custom_hash is not None
+
+    @property
+    def identity_key(self) -> str:
+        """The string this face is identified by — see customs.identity_key."""
+        from proxy_scaler.customs import identity_key
+
+        return identity_key(self.scryfall_id, self.custom_hash)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -169,6 +211,7 @@ class FaceResult:
             created_at=data.get("created_at"),
             total_faces=data.get("total_faces"),
             lang=data.get("lang") or "en",
+            custom_hash=data.get("custom_hash"),
         )
 
 
@@ -181,8 +224,16 @@ def face_group_key(item: FaceResult) -> str:
     a disk-recovered variant of the exact same card into two separate
     groups — and, via pdf_layout.py's match_quantities(), into two
     duplicate physical print slots for the same card.
+
+    A Custom Image is checked first and keyed on its content hash. It has
+    no set_code/collector_number at all, so it would otherwise fall to the
+    scryfall_id branch, find None there, and every custom card in the
+    project would share the "unknown" key — collapsing them into a single
+    face group and printing one image in place of all of them.
     """
-    if item.set_code and item.collector_number:
+    if item.custom_hash:
+        identity = f"custom:{item.custom_hash}"
+    elif item.set_code and item.collector_number:
         # Language is part of the printing identity (Italian and English
         # rows of one set/collector are different cards); absent lang
         # normalizes to "en" so pre-language rows keep matching.
@@ -250,12 +301,15 @@ def clear_generated_data(
 def _save_original(
     png_bytes: bytes,
     cache_dir: Path,
-    scryfall_id: str,
+    scryfall_id: str | None,
     face_index: int | None,
     *,
     overwrite: bool = False,
+    custom_hash: str | None = None,
 ) -> Path:
-    path = original_cache_path(cache_dir, scryfall_id, face_index)
+    path = original_cache_path(
+        cache_dir, scryfall_id, face_index, custom_hash=custom_hash
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     if overwrite or not path.exists():
         # Atomic: the prefetch thread and the main thread can race on the
@@ -288,6 +342,44 @@ def _download_clean_png(
         if log is not None:
             log(msg)
     return cleaned.png_bytes
+
+
+def _read_custom_png(custom_hash: str, *, describe: str = "") -> bytes:
+    """The uploaded bytes for a Custom Image, from the server's synced
+    cache (proxy_scaler/customs.py).
+
+    Deliberately does NOT run clean_original_png. Those fixups target
+    specific defects in Scryfall's own PNG renders — a black bottom row,
+    black RGB hiding under transparent corners — and inferring them from
+    arbitrary user art would corrupt legitimate images that happen to have
+    a dark edge. The uploaded file is already normalised and cropped to
+    card aspect at the point it was stored, which is the only conditioning
+    a custom front gets.
+    """
+    from proxy_scaler import customs
+
+    path = customs.original_path(custom_hash)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Custom image {custom_hash[:12]}… is not on this server"
+            f"{f' ({describe})' if describe else ''}. The client uploads it "
+            "on demand; re-run the generate or export that needed it."
+        )
+    return path.read_bytes()
+
+
+def _load_source_png(
+    face: CardFaceImage,
+    *,
+    session=None,
+    describe: str = "",
+    log: Callable[[str], None] | None = None,
+) -> bytes:
+    """Source bytes for one face, whichever kind it is: a Scryfall download
+    or a Custom Image already synced to this server."""
+    if face.is_custom:
+        return _read_custom_png(face.custom_hash, describe=describe)
+    return _download_clean_png(face.png_url, session=session, describe=describe, log=log)
 
 
 _THUMB_MAX_DIM = 220  # px, longest side — does most of the size-reduction work
@@ -380,6 +472,7 @@ def _write_dpi_variant(
         dpi,
         lang=face.lang,
         scryfall_id=face.scryfall_id,
+        custom_hash=face.custom_hash,
     )
     out_path = output_dir / out_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -410,6 +503,7 @@ def _write_dpi_variant(
         native_scale=native_scale,
         device=device,
         lang=face.lang,
+        custom_hash=face.custom_hash,
     )
 
 
@@ -507,7 +601,9 @@ def _regenerate_face_from_card(
         on_cpu_fallback=on_cpu_fallback,
     )
 
-    canonical_original = original_cache_path(cache_dir, face.scryfall_id, face.face_index)
+    canonical_original = original_cache_path(
+        cache_dir, face.scryfall_id, face.face_index, custom_hash=face.custom_hash
+    )
     cached_original = next(
         (
             p
@@ -524,16 +620,24 @@ def _regenerate_face_from_card(
             f"from {cached_original.name}"
         )
     else:
-        log(f"Downloading {face.png_url}")
+        log(
+            f"Reading uploaded image {face.custom_hash[:12]}…"
+            if face.is_custom
+            else f"Downloading {face.png_url}"
+        )
         with _phase(timings, "download"):
-            png_bytes = _download_clean_png(
-                face.png_url,
+            png_bytes = _load_source_png(
+                face,
                 describe=f"{face.card_name} ({face.scryfall_id})",
                 log=log,
             )
 
     original_path = _save_original(
-        png_bytes, cache_dir, face.scryfall_id, face.face_index
+        png_bytes,
+        cache_dir,
+        face.scryfall_id,
+        face.face_index,
+        custom_hash=face.custom_hash,
     )
     ensure_original_thumbnail(original_path)  # best-effort; fails soft internally
 
@@ -549,6 +653,7 @@ def _regenerate_face_from_card(
             cache_dir=cache_dir,
             scryfall_id=face.scryfall_id,
             face_index=face.face_index,
+            custom_hash=face.custom_hash,
             force=force,
             timings=timings,
             defer_cache_write=True,
@@ -578,6 +683,7 @@ def _regenerate_face_from_card(
                         face.face_index,
                         native,
                         model_id,
+                        custom_hash=face.custom_hash,
                     ),
                     device_by_scale[native],
                 )
@@ -621,7 +727,7 @@ def regenerate_face_multi(
     model_id = parse_model(model) if model is not None else parse_model(item.model)
     output_dir = output_dir or item.out_path.parent
     face = CardFaceImage(
-        scryfall_id=item.scryfall_id,
+        scryfall_id=item.scryfall_id or "",
         card_name=item.card_name,
         face_name=item.face_name,
         set_code=item.set_code,
@@ -630,6 +736,7 @@ def regenerate_face_multi(
         face_index=item.face_index,
         total_faces=item.total_faces,
         lang=item.lang,
+        custom_hash=item.custom_hash,
     )
     return _regenerate_face_from_card(
         face,
@@ -715,6 +822,67 @@ def process_download_task(
     )
 
 
+def process_custom_source_task(
+    task: TaskRow,
+    *,
+    on_progress: ProgressCallback | None = None,
+    timings: object | None = None,
+) -> FaceResult:
+    """Process one custom-source task (model == CUSTOM_SOURCE_MODEL):
+    register the user's uploaded image as printable, no upscaling.
+
+    The counterpart of process_download_task for Custom Images, and the
+    same shape — out_path is the cached original itself, so the registry
+    row's out_path and original_path coincide. It differs in having no
+    network step (the client already synced the bytes) and in NOT
+    invalidating the x4 upscale cache: a download can replace a face's
+    source art, but a Custom Image's bytes are its identity, so anything
+    cached under this hash was derived from exactly these bytes and stays
+    valid.
+
+    The recorded dpi is the image's true resolution at card size, not a
+    fixed sentinel like ORIGINAL_DPI — a custom upload is whatever the user
+    had, and the PDF tab ranks it against upscaled variants on that number.
+    It is taken from the task row rather than recomputed here: enqueueing
+    already measured it to build this task's variant key (see
+    services/generation._custom_source_dpi), and measuring twice is how the
+    two would eventually disagree about which variant this row is.
+    """
+    if on_progress:
+        on_progress(f"Registering uploaded image for {task.face_name}…")
+    png_bytes = _read_custom_png(task.custom_hash, describe=task.face_name)
+    with _phase(timings, "encode"):
+        original_path = _save_original(
+            png_bytes,
+            Path(task.cache_dir),
+            None,
+            task.face_index,
+            overwrite=True,
+            custom_hash=task.custom_hash,
+        )
+        thumb = original_thumb_path(original_path)
+        thumb.unlink(missing_ok=True)
+        ensure_original_thumbnail(original_path)
+    return FaceResult(
+        out_path=original_path,
+        original_path=original_path,
+        scryfall_id=None,
+        custom_hash=task.custom_hash,
+        face_index=task.face_index,
+        face_name=task.face_name,
+        card_name=task.card_name,
+        set_code="",
+        collector_number="",
+        png_url="",
+        dpi=task.dpi,
+        model=CUSTOM_SOURCE_MODEL,
+        face_label=task.face_label,
+        native_scale=1,
+        total_faces=task.total_faces,
+        lang=task.lang,
+    )
+
+
 @dataclass
 class PendingTask:
     """Deferred tail of process_task(defer_finish=True): inference is done
@@ -758,17 +926,25 @@ def process_task(
         # worker's code path uniform.
         result = process_download_task(task, on_progress=on_progress, timings=timings)
         return PendingTask(lambda: result) if defer_finish else result
+    if task.model == CUSTOM_SOURCE_MODEL:
+        # Same reasoning as ORIGINAL_MODEL above: a sentinel, not an
+        # UpscaleModel, and no GPU phase worth deferring.
+        result = process_custom_source_task(
+            task, on_progress=on_progress, timings=timings
+        )
+        return PendingTask(lambda: result) if defer_finish else result
     model_id = parse_model(task.model)
     face = CardFaceImage(
-        scryfall_id=task.scryfall_id,
+        scryfall_id=task.scryfall_id or "",
         card_name=task.card_name,
         face_name=task.face_name,
-        set_code=task.set_code,
-        collector_number=task.collector_number,
-        png_url=task.png_url,
+        set_code=task.set_code or "",
+        collector_number=task.collector_number or "",
+        png_url=task.png_url or "",
         face_index=task.face_index,
         total_faces=task.total_faces,
         lang=task.lang,
+        custom_hash=task.custom_hash,
     )
     tail = _regenerate_face_from_card(
         face,
@@ -798,7 +974,13 @@ def prefetch_original(task: TaskRow) -> Path | None:
     the current task. Idempotent and race-safe: skips when already cached,
     and _save_original is an atomic write-if-missing, so a concurrent
     download of the same face by the main thread is harmless (both write
-    complete bytes; last rename wins)."""
+    complete bytes; last rename wins).
+
+    Returns None for a Custom Image: its bytes are already on this
+    server's disk (the client synced them before enqueueing), so there is
+    no network round-trip to hide behind the GPU and nothing to warm."""
+    if task.is_custom:
+        return None
     path = original_cache_path(Path(task.cache_dir), task.scryfall_id, task.face_index)
     if path.is_file():
         return path
@@ -826,19 +1008,28 @@ def expected_face_result(task: TaskRow) -> FaceResult:
     native = native_scale_for_dpi(task.dpi, model_id)
     out_path = Path(task.output_dir) / output_filename(
         task.face_name,
-        task.set_code,
-        task.collector_number,
+        task.set_code or "",
+        task.collector_number or "",
         task.face_label,
         model_id,
         task.dpi,
         lang=task.lang,
         scryfall_id=task.scryfall_id,
+        custom_hash=task.custom_hash,
     )
     original_path = original_cache_path(
-        Path(task.cache_dir), task.scryfall_id, task.face_index
+        Path(task.cache_dir),
+        task.scryfall_id,
+        task.face_index,
+        custom_hash=task.custom_hash,
     )
     cached = cache_path(
-        Path(task.cache_dir), task.scryfall_id, task.face_index, native, model_id
+        Path(task.cache_dir),
+        task.scryfall_id,
+        task.face_index,
+        native,
+        model_id,
+        custom_hash=task.custom_hash,
     )
     return FaceResult(
         out_path=out_path,
@@ -847,9 +1038,9 @@ def expected_face_result(task: TaskRow) -> FaceResult:
         face_index=task.face_index,
         face_name=task.face_name,
         card_name=task.card_name,
-        set_code=task.set_code,
-        collector_number=task.collector_number,
-        png_url=task.png_url,
+        set_code=task.set_code or "",
+        collector_number=task.collector_number or "",
+        png_url=task.png_url or "",
         dpi=task.dpi,
         model=task.model,
         face_label=task.face_label,
@@ -857,6 +1048,7 @@ def expected_face_result(task: TaskRow) -> FaceResult:
         native_scale=native,
         device=read_cache_device(cached),
         lang=task.lang,
+        custom_hash=task.custom_hash,
     )
 
 

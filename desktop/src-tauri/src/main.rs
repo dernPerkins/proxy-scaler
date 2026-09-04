@@ -48,6 +48,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod back_images;
+mod custom_images;
 mod project_store;
 mod update;
 
@@ -875,7 +876,15 @@ fn main() {
             back_images::back_image_thumbnail,
             back_images::get_default_back_image_id,
             back_images::set_default_back_image_id,
-            back_images::sync_back_image
+            back_images::sync_back_image,
+            custom_images::list_custom_images,
+            custom_images::add_custom_image,
+            custom_images::set_custom_image_label,
+            custom_images::count_cards_using_custom_image,
+            custom_images::delete_custom_image,
+            custom_images::custom_image_thumbnail,
+            custom_images::sync_custom_image,
+            project_store::add_custom_cards
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

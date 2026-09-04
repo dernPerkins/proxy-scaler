@@ -52,6 +52,11 @@ class DeckEntryIn(BaseModel):
     # decklist.py). Defaulted so older clients keep working unchanged.
     scryfall_id: str | None = None
     lang: str | None = None
+    # Set instead of scryfall_id for a Custom Image — a card front the user
+    # uploaded, identified by the sha256 of its bytes. `name` is then the
+    # display name (normally the filename stem) and set_code/
+    # collector_number are absent. See proxy_scaler/customs.py.
+    custom_hash: str | None = None
 
 
 class ResolveIn(BaseModel):
@@ -193,13 +198,17 @@ class TaskOut(BaseModel):
     id: int
     project_tag: str | None
     status: str
-    scryfall_id: str
+    # Exactly one of these identifies the task's face (db migration 008).
+    # scryfall_id stays a plain string for older clients that don't know
+    # about custom_hash — "" rather than null keeps their parsing intact.
+    scryfall_id: str = ""
+    custom_hash: str | None = None
     face_index: int | None
     face_label: str | None
     face_name: str
     card_name: str
-    set_code: str
-    collector_number: str
+    set_code: str = ""
+    collector_number: str = ""
     dpi: int
     model: str
     error: str | None
@@ -226,13 +235,16 @@ class WorkerStatusOut(BaseModel):
 
 class GalleryItemOut(BaseModel):
     id: int
-    scryfall_id: str
+    # Exactly one of these identifies the image (db migration 008); see
+    # TaskOut above for why scryfall_id stays a "" -defaulted string.
+    scryfall_id: str = ""
+    custom_hash: str | None = None
     face_index: int | None
     face_label: str | None
     face_name: str
     card_name: str
-    set_code: str
-    collector_number: str
+    set_code: str = ""
+    collector_number: str = ""
     dpi: int
     model: str
     image_filename: str
@@ -641,4 +653,24 @@ class BackImageOut(BaseModel):
 
 
 class DeleteBackOut(BaseModel):
+    removed: int
+
+
+class CustomImageOut(BaseModel):
+    content_hash: str
+    # Whether this server holds the bytes. False means the client should
+    # sync before generating or exporting — the normal state on a server
+    # the user just switched to, and the reason uploads can be lazy.
+    present: bool
+    # Effective print DPI of the stored original at card size, or None
+    # when nothing is stored. Also what the `custom_source` registry row
+    # records as its dpi, so the PDF tab can rank it against upscales.
+    source_dpi: float | None = None
+    # Below what a decent printer resolves at card size. A warning the
+    # client shows, never a block — and unlike a Back Image, the user has
+    # a real remedy beyond finding a better file: upscale it.
+    low_resolution: bool = False
+
+
+class DeleteCustomOut(BaseModel):
     removed: int

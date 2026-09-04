@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from proxy_scaler.api.routers import (
     backs,
     cards,
+    customs,
     export,
     gallery,
     generation,
@@ -39,4 +40,5 @@ app.include_router(gallery.router)
 app.include_router(resolve.router)
 app.include_router(cards.router)
 app.include_router(backs.router)
+app.include_router(customs.router)
 app.include_router(export.router)

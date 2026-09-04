@@ -13,6 +13,7 @@ import ServerStatusToast from "./components/ServerStatusToast";
 import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
+import CustomsPage from "./pages/CustomsPage";
 import BacksPage from "./pages/BacksPage";
 import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
@@ -117,6 +118,7 @@ export default function App() {
             location matching needed. */}
         <nav className="tabs">
           <NavLink to="/decklist">Decklist</NavLink>
+          <NavLink to="/customs">Customs</NavLink>
           <NavLink to="/backs">Backs</NavLink>
           <NavLink to="/pdf">PDF</NavLink>
           <NavLink to="/export">Export</NavLink>
@@ -126,6 +128,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/decklist" replace />} />
           <Route path="/decklist" element={<DecklistPage />} />
+          <Route path="/customs" element={<CustomsPage />} />
           <Route path="/backs" element={<BacksPage />} />
           <Route path="/pdf" element={<PdfPage />} />
           <Route path="/export" element={<ExportPage />} />

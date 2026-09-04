@@ -16,6 +16,7 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry } from "../deckEntries";
+import { syncCustomImages } from "../syncCustoms";
 import {
   DownloadCanceled,
   runDownload,
@@ -291,6 +292,11 @@ export default function PdfPage() {
     setDownloadError(null);
     setDownloading(true);
     try {
+      // The server renders from files on its own disk, so any custom art
+      // it hasn't seen has to get there first — see syncCustoms.ts. Before
+      // the save prompt rather than inside the callback: an upload failure
+      // should stop the export, not strand a chosen save path.
+      await syncCustomImages(cards, serverVersion);
       await runDownload(pdfFilename(projectName), async () => {
         const body = {
           project_tag: projectTag,

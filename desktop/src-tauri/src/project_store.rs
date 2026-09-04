@@ -84,6 +84,21 @@ CREATE TABLE IF NOT EXISTS app_settings (
 -- with a small JPEG thumbnail beside each; only their metadata is a row.
 -- A multi-MB BLOB per back would bloat the one database every project load
 -- reads, to store something no query ever looks inside.
+-- The Custom Image library: user-supplied card *fronts* (see
+-- custom_images.rs). App-global and content-addressed, exactly like
+-- back_images below; a project_cards row points at one by id.
+CREATE TABLE IF NOT EXISTS custom_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_hash TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    thumb_name TEXT NOT NULL,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS back_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content_hash TEXT NOT NULL UNIQUE,
@@ -171,6 +186,14 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("scryfall_id", "TEXT"),
     ("lang", "TEXT"),
     ("printed_name", "TEXT"),
+    // A pointer into custom_images when this card is a user-uploaded
+    // front rather than a Scryfall printing. Mutually exclusive with
+    // scryfall_id in practice, though not enforced here: like
+    // back_image_id above, ALTER TABLE ADD COLUMN can't attach a real
+    // foreign key in SQLite. Deleting a custom image deletes its cards
+    // outright (see custom_images::delete_custom_image_row) — a card with
+    // no art and no way to get any is not a card.
+    ("custom_image_id", "INTEGER"),
 ];
 
 fn add_missing_columns(
@@ -535,6 +558,17 @@ pub struct CardRow {
     pub scryfall_id: Option<String>,
     pub lang: Option<String>,
     pub printed_name: Option<String>,
+    /// Set instead of scryfall_id for a Custom Image card. The frontend
+    /// keys off this to render a "Custom" chip in place of the printing
+    /// picker, and — importantly — to skip the background re-resolve that
+    /// would otherwise see a NULL scryfall_id and try to look the card up
+    /// on Scryfall.
+    pub custom_image_id: Option<i64>,
+    /// The content hash of that image, joined in from the library. Carried
+    /// alongside the local id because it is the identity the *server* uses
+    /// (customs.identity_key / mergeCardStatus.cardIdentity), and deriving
+    /// it in the frontend would mean a second lookup on every render.
+    pub custom_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -592,7 +626,17 @@ fn stored_card_dedup_keys(
     name: &str,
     printed_name: Option<&str>,
     lang: Option<&str>,
+    custom_image_id: Option<i64>,
 ) -> Vec<String> {
+    // A custom card answers to exactly one key and none of the broader
+    // ones. The wider tiers exist because resolution *changes* a Scryfall
+    // row's shape over time; a custom card's identity is fixed at the
+    // moment its bytes were hashed and never widens. Crucially this also
+    // keeps a custom card named "Sol Ring" from contributing a `name:sol
+    // ring` key that would silently swallow a real Sol Ring import.
+    if let Some(id) = custom_image_id {
+        return vec![format!("custom:{id}")];
+    }
     let mut keys = Vec::new();
     let mut names = vec![name.to_lowercase()];
     if let Some(p) = printed_name.filter(|p| !p.is_empty()) {
@@ -650,9 +694,12 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectSummary> {
 fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, sort_order, original_import_line, quantity, name, set_code, collector_number,
-                    scryfall_id, lang, printed_name
-             FROM project_cards WHERE project_id = ?1 ORDER BY sort_order ASC",
+            "SELECT c.id, c.sort_order, c.original_import_line, c.quantity, c.name,
+                    c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
+                    c.custom_image_id, ci.content_hash
+             FROM project_cards c
+             LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
+             WHERE c.project_id = ?1 ORDER BY c.sort_order ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -668,6 +715,8 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 scryfall_id: row.get(7)?,
                 lang: row.get(8)?,
                 printed_name: row.get(9)?,
+                custom_image_id: row.get(10)?,
+                custom_hash: row.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1188,7 +1237,8 @@ fn import_decklist_into(
     {
         let mut stmt = tx
             .prepare(
-                "SELECT sort_order, name, set_code, collector_number, printed_name, lang
+                "SELECT sort_order, name, set_code, collector_number, printed_name, lang,
+                        custom_image_id
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -1200,11 +1250,20 @@ fn import_decklist_into(
                 let collector_number: Option<String> = row.get(3)?;
                 let printed_name: Option<String> = row.get(4)?;
                 let lang: Option<String> = row.get(5)?;
-                Ok((sort_order, name, set_code, collector_number, printed_name, lang))
+                let custom_image_id: Option<i64> = row.get(6)?;
+                Ok((
+                    sort_order,
+                    name,
+                    set_code,
+                    collector_number,
+                    printed_name,
+                    lang,
+                    custom_image_id,
+                ))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number, printed_name, lang) =
+            let (sort_order, name, set_code, collector_number, printed_name, lang, custom_image_id) =
                 row.map_err(|e| e.to_string())?;
             seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
@@ -1212,6 +1271,7 @@ fn import_decklist_into(
                 &name,
                 printed_name.as_deref(),
                 lang.as_deref(),
+                custom_image_id,
             ));
             next_sort_order = next_sort_order.max(sort_order + 1);
         }
@@ -1305,7 +1365,8 @@ fn import_resolved_cards_into(
     {
         let mut stmt = tx
             .prepare(
-                "SELECT sort_order, name, set_code, collector_number, printed_name, lang
+                "SELECT sort_order, name, set_code, collector_number, printed_name, lang,
+                        custom_image_id
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -1317,11 +1378,20 @@ fn import_resolved_cards_into(
                 let collector_number: Option<String> = row.get(3)?;
                 let printed_name: Option<String> = row.get(4)?;
                 let lang: Option<String> = row.get(5)?;
-                Ok((sort_order, name, set_code, collector_number, printed_name, lang))
+                let custom_image_id: Option<i64> = row.get(6)?;
+                Ok((
+                    sort_order,
+                    name,
+                    set_code,
+                    collector_number,
+                    printed_name,
+                    lang,
+                    custom_image_id,
+                ))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number, printed_name, lang) =
+            let (sort_order, name, set_code, collector_number, printed_name, lang, custom_image_id) =
                 row.map_err(|e| e.to_string())?;
             seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
@@ -1329,6 +1399,7 @@ fn import_resolved_cards_into(
                 &name,
                 printed_name.as_deref(),
                 lang.as_deref(),
+                custom_image_id,
             ));
             next_sort_order = next_sort_order.max(sort_order + 1);
         }
@@ -1363,6 +1434,100 @@ fn import_resolved_cards_into(
     tx.commit().map_err(|e| e.to_string())?;
 
     cards_for_project(conn, project_id)
+}
+
+/// Add one project card per Custom Image, appended after whatever is
+/// already in the project.
+///
+/// Deliberately NOT resolve-gated, unlike every other way a card enters a
+/// project: there is nothing to resolve. That makes this the one import
+/// path that works with no generation server reachable at all, which is
+/// the point — dropping images onto a project should not require a server
+/// that is only needed later, to upscale or export.
+///
+/// Re-adding an image already in this project is a no-op rather than a
+/// second row (the library is content-addressed, so dropping the same file
+/// twice is the same image); the user raises the count with the quantity
+/// stepper instead.
+fn add_custom_cards_into(
+    conn: &mut Connection,
+    project_id: i64,
+    custom_image_ids: &[i64],
+) -> Result<Vec<CardRow>, String> {
+    let now = now_timestamp();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+        params![now, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut existing: HashSet<i64> = HashSet::new();
+    let mut next_sort_order: i64 = 0;
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT sort_order, custom_image_id FROM project_cards WHERE project_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (sort_order, custom_image_id) = row.map_err(|e| e.to_string())?;
+            if let Some(id) = custom_image_id {
+                existing.insert(id);
+            }
+            next_sort_order = next_sort_order.max(sort_order + 1);
+        }
+    }
+
+    for id in custom_image_ids {
+        if !existing.insert(*id) {
+            continue;
+        }
+        // The label is the filename stem (custom_images::label_from_filename)
+        // and becomes the card name. Read from the library rather than
+        // passed in, so a rename in the Customs tab is what a newly added
+        // card picks up.
+        let label: Option<String> = tx
+            .query_row(
+                "SELECT label FROM custom_images WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(label) = label else {
+            // Silently skipped rather than failing the batch: the only way
+            // to get here is a delete racing this add, and dropping one
+            // image from a multi-file drop beats rejecting all of them.
+            continue;
+        };
+        tx.execute(
+            "INSERT INTO project_cards
+             (project_id, sort_order, original_import_line, quantity, name, custom_image_id)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            params![project_id, next_sort_order, label, label, id],
+        )
+        .map_err(|e| e.to_string())?;
+        next_sort_order += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    cards_for_project(conn, project_id)
+}
+
+#[tauri::command]
+pub fn add_custom_cards(
+    app: AppHandle,
+    project_id: i64,
+    custom_image_ids: Vec<i64>,
+) -> Result<Vec<CardRow>, String> {
+    let mut conn = open_db(&app)?;
+    add_custom_cards_into(&mut conn, project_id, &custom_image_ids)
 }
 
 #[tauri::command]
@@ -1845,6 +2010,101 @@ mod tests {
 
     fn summary(conn: &Connection, id: i64) -> ProjectSummary {
         summary_for_id(conn, id).expect("summary")
+    }
+
+    // ---- Custom Image cards -------------------------------------
+
+    fn add_custom_image_row(conn: &Connection, hash: &str, label: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO custom_images
+                (content_hash, label, original_filename, file_name, thumb_name,
+                 width, height, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 745, 1040, ?6)",
+            params![
+                hash,
+                label,
+                format!("{label}.png"),
+                format!("{hash}.png"),
+                format!("{hash}_thumb.jpg"),
+                now_timestamp(),
+            ],
+        )
+        .expect("insert custom image");
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn add_custom_cards_names_each_card_after_its_image() {
+        let mut conn = test_conn();
+        let project_id = get_or_create_unnamed_project_id(&conn).expect("project");
+        let a = add_custom_image_row(&conn, &"a".repeat(64), "My Alter");
+        let b = add_custom_image_row(&conn, &"b".repeat(64), "Goblin Token");
+
+        let cards = add_custom_cards_into(&mut conn, project_id, &[a, b]).expect("add");
+
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].name, "My Alter");
+        assert_eq!(cards[0].custom_image_id, Some(a));
+        assert_eq!(cards[0].quantity, Some(1));
+        // No printing, and no Scryfall id — which is exactly what the
+        // frontend keys off to skip the background re-resolve.
+        assert_eq!(cards[0].scryfall_id, None);
+        assert_eq!(cards[0].set_code, None);
+        assert_eq!(cards[1].name, "Goblin Token");
+    }
+
+    #[test]
+    fn adding_the_same_custom_image_twice_is_a_no_op() {
+        let mut conn = test_conn();
+        let project_id = get_or_create_unnamed_project_id(&conn).expect("project");
+        let a = add_custom_image_row(&conn, &"a".repeat(64), "My Alter");
+
+        add_custom_cards_into(&mut conn, project_id, &[a]).expect("first");
+        let cards = add_custom_cards_into(&mut conn, project_id, &[a, a]).expect("second");
+
+        // The library is content-addressed, so the same file dropped twice
+        // is one card; the quantity stepper is how you ask for more.
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].quantity, Some(1));
+    }
+
+    #[test]
+    fn custom_cards_append_after_existing_cards() {
+        let mut conn = test_conn();
+        let project_id = get_or_create_unnamed_project_id(&conn).expect("project");
+        import_decklist_into(&mut conn, project_id, "2 Sol Ring (c21) 263")
+            .expect("import");
+        let a = add_custom_image_row(&conn, &"a".repeat(64), "My Alter");
+
+        let cards = add_custom_cards_into(&mut conn, project_id, &[a]).expect("add");
+
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].name, "My Alter");
+        assert!(cards[1].sort_order > cards[0].sort_order);
+    }
+
+    #[test]
+    fn a_custom_card_does_not_block_importing_a_real_card_of_the_same_name() {
+        // The regression this guards: a custom card contributing its name
+        // to the import-dedup key set would make the identically-named
+        // Scryfall printing look like a duplicate and silently vanish.
+        let mut conn = test_conn();
+        let project_id = get_or_create_unnamed_project_id(&conn).expect("project");
+        let a = add_custom_image_row(&conn, &"a".repeat(64), "Sol Ring");
+        add_custom_cards_into(&mut conn, project_id, &[a]).expect("add custom");
+
+        let cards = import_decklist_into(&mut conn, project_id, "2 Sol Ring (c21) 263")
+            .expect("import");
+
+        assert_eq!(cards.len(), 2, "both the custom and the real card should exist");
+        assert!(cards.iter().any(|c| c.custom_image_id == Some(a)));
+        assert!(cards.iter().any(|c| c.set_code.as_deref() == Some("c21")));
+    }
+
+    #[test]
+    fn stored_dedup_keys_for_a_custom_card_are_only_its_own() {
+        let keys = stored_card_dedup_keys(None, None, "Sol Ring", None, None, Some(7));
+        assert_eq!(keys, vec!["custom:7".to_string()]);
     }
 
     #[test]

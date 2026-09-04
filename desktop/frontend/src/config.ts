@@ -173,6 +173,19 @@ export const EXPORT_ZIP_MIN_SERVER_VERSION = "0.2.0";
 // must never rewrite it.
 export const ORIGINALS_MIN_SERVER_VERSION = "0.2.0";
 
+// Custom Images need /api/customs (to sync the bytes) and a server whose
+// database can identify a task by content hash instead of a scryfall_id
+// (db migration 008). An older server has neither, and the failure is the
+// bad kind: POSTing the bytes 404s, and the generate request that follows
+// would be a decklist entry with a custom_hash the server silently drops
+// — leaving an entry with no printing, which resolves to nothing or, worse,
+// to whatever real card shares its filename. Gated rather than attempted.
+//
+// 0.2.1 because that is the version this feature lands in, the same rule
+// its neighbours above followed. packaging/set-version.py must never
+// rewrite it — a floor that tracks the current version is not a floor.
+export const CUSTOM_IMAGES_MIN_SERVER_VERSION = "0.2.1";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -221,6 +234,19 @@ export function serverSupportsZipExport(serverVersion: string | null): boolean {
 export function serverSupportsOriginals(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, ORIGINALS_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server have /api/customs and hash-identified
+ *  generation? Same null/unparseable semantics as
+ *  serverSupportsBackPrinting.
+ *
+ *  Note this gates *generating and exporting* custom cards, not adding
+ *  them: adding is purely local, and deliberately keeps working against
+ *  an old server (or none at all). */
+export function serverSupportsCustomImages(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, CUSTOM_IMAGES_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

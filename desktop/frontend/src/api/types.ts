@@ -44,6 +44,10 @@ export interface DeckEntryIn {
   // entries toward the project's preferred language.
   scryfall_id?: string | null;
   lang?: string | null;
+  // Set instead of scryfall_id for a Custom Image: the sha256 the server
+  // identifies the uploaded art by. `name` is then a display name and
+  // set_code/collector_number are absent. See proxy_scaler/customs.py.
+  custom_hash?: string | null;
 }
 
 export interface ResolvedFace {
@@ -159,7 +163,10 @@ export interface Task {
   id: number;
   project_tag: string | null;
   status: TaskStatus;
+  // Exactly one of these identifies the face. scryfall_id is "" for a
+  // Custom Image rather than absent, so the field's type is unchanged.
   scryfall_id: string;
+  custom_hash?: string | null;
   face_index: number | null;
   face_label: string | null;
   face_name: string;
@@ -190,7 +197,9 @@ export interface WorkerStatus {
 
 export interface GalleryItem {
   id: number;
+  // Exactly one of these identifies the image; see Task above.
   scryfall_id: string;
+  custom_hash?: string | null;
   face_index: number | null;
   face_label: string | null;
   face_name: string;
@@ -510,6 +519,30 @@ export interface BackImageServerStatus {
 }
 
 export interface BackSyncResult {
+  content_hash: string;
+  uploaded: boolean;
+}
+
+// --- The Custom Image library ----------------------------------------------
+
+/** One uploaded card front. Mirrors custom_images::CustomImage (Rust).
+ *  Same client-owned, app-global, content-addressed shape as BackImage —
+ *  the difference is that these become cards in a project. */
+export interface CustomImage {
+  id: number;
+  content_hash: string;
+  /** The card's name. Defaults to the filename stem; editable. */
+  label: string;
+  original_filename: string;
+  width: number;
+  height: number;
+  created_at: string;
+  /** Effective print DPI at card size. Warned about below ~300, never
+   *  blocked — and unlike a Back Image, upscaling is a real remedy. */
+  source_dpi: number;
+}
+
+export interface CustomSyncResult {
   content_hash: string;
   uploaded: boolean;
 }

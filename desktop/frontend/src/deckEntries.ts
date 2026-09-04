@@ -21,5 +21,9 @@ export function cardToEntry(card: CardRow): DeckEntryIn {
     raw_line: card.original_import_line,
     scryfall_id: card.scryfall_id,
     lang: card.lang,
+    // A Custom Image entry carries only its hash and a display name: the
+    // server matches it on the hash alone, never by name (a custom front
+    // called "Sol Ring" must not soak up a real Sol Ring line's quantity).
+    custom_hash: card.custom_hash,
   };
 }

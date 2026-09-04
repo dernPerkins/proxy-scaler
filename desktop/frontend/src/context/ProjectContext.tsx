@@ -134,6 +134,19 @@ interface ProjectContextValue {
    *  owns the parse + resolve halves. */
   importResolvedCards: (text: string, cards: ResolvedImportCard[]) => Promise<void>;
   importingResolvedCards: boolean;
+  /** Adds one card per Custom Image (user-uploaded art — see
+   *  custom_images.rs), appended after the existing cards. Creates the
+   *  Unnamed Project on first use like the imports above.
+   *
+   *  The one import path that is NOT resolve-gated, and so the only one
+   *  that works with no generation server reachable: a Custom Image has
+   *  nothing to resolve. */
+  addCustomCards: (customImageIds: number[]) => Promise<void>;
+  addingCustomCards: boolean;
+  /** Re-read this project's cards from the store. Needed after deleting a
+   *  Custom Image, which deletes the cards using it — a change made
+   *  outside any of the card mutations here. */
+  reloadCards: () => Promise<void>;
   removeCard: (cardId: number) => void;
   /** Sets a card's copy count. Values below 1 are clamped to 1 — removal
    *  is removeCard's job. */
@@ -506,6 +519,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: ({ text, newCards }) => {
       setDecklistTextState(text);
+      setCards(newCards);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const addCustomCardsMutation = useMutation({
+    mutationFn: async (customImageIds: number[]) => {
+      // Same born-here rule as the imports: with no project yet, adding
+      // the first card creates the Unnamed Project.
+      const id = await ensureProjectRow();
+      return projectApi.addCustomCards(id, customImageIds);
+    },
+    onSuccess: (newCards) => {
       setCards(newCards);
       setError(null);
     },
@@ -886,6 +913,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       await importResolvedCardsMutation.mutateAsync({ text, cards: resolvedCards });
     },
     importingResolvedCards: importResolvedCardsMutation.isPending,
+    addCustomCards: async (customImageIds) => {
+      await addCustomCardsMutation.mutateAsync(customImageIds);
+    },
+    addingCustomCards: addCustomCardsMutation.isPending,
+    reloadCards: async () => {
+      if (projectIdRef.current == null) return;
+      const project = await projectApi.getProject(projectIdRef.current);
+      setCards(project.cards);
+    },
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     setCardQuantity: (cardId: number, quantity: number) =>
       setCardQuantityMutation.mutate({ cardId, quantity }),

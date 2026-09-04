@@ -25,13 +25,14 @@ def _task_out(t: db.TaskRow) -> TaskOut:
         id=t.id,
         project_tag=t.project_tag,
         status=t.status,
-        scryfall_id=t.scryfall_id,
+        scryfall_id=t.scryfall_id or "",
+        custom_hash=t.custom_hash,
         face_index=t.face_index,
         face_label=t.face_label,
         face_name=t.face_name,
         card_name=t.card_name,
-        set_code=t.set_code,
-        collector_number=t.collector_number,
+        set_code=t.set_code or "",
+        collector_number=t.collector_number or "",
         dpi=t.dpi,
         model=t.model,
         error=t.error,
@@ -51,6 +52,7 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         raw_line=e.raw_line or e.name,
         scryfall_id=e.scryfall_id,
         lang=e.lang,
+        custom_hash=e.custom_hash,
     )
 
 

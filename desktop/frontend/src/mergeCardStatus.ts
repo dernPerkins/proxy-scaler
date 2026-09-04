@@ -29,7 +29,18 @@ export function cardIdentity(
   scryfallId: string | null | undefined,
   nameFallback?: string | null,
   lang?: string | null,
+  customHash?: string | null,
 ): string {
+  // Custom Images first, and never by any other tier. They have no
+  // set/collector and no scryfall_id, so they would otherwise all fall
+  // through to the name fallback — where two uploads sharing a filename
+  // would merge into one card showing each other's images, and one named
+  // after a real card would match that card's generated faces.
+  //
+  // Must stay byte-identical to the server's customs.identity_key() and
+  // to the expression the generated_images unique index is built over, or
+  // a generated image stops matching the card that asked for it.
+  if (customHash) return `custom:${customHash}`;
   // Both lowercased: collector numbers are usually digits, but not always
   // (e.g. "DDG-14") — the client parses these verbatim from whatever case
   // the user typed, while Scryfall's resolved value uses its own
@@ -50,6 +61,7 @@ export function cardIdentity(
 function faceGroupKey(item: GalleryItem): string {
   const identity = cardIdentity(
     item.set_code, item.collector_number, item.scryfall_id, item.card_name, item.lang,
+    item.custom_hash,
   );
   return `${identity}:${item.face_index}:${item.face_label}`;
 }
@@ -60,6 +72,7 @@ function faceGroupKey(item: GalleryItem): string {
 function faceKeyForTask(task: Task): string {
   const identity = cardIdentity(
     task.set_code, task.collector_number, task.scryfall_id, task.card_name, task.lang,
+    task.custom_hash,
   );
   return `${identity}:${task.face_index}:${task.face_label}`;
 }
@@ -113,6 +126,7 @@ export function groupByCard(
   for (const item of items) {
     const id = cardIdentity(
       item.set_code, item.collector_number, item.scryfall_id, item.card_name, item.lang,
+      item.custom_hash,
     );
     if (!galleryByCard.has(id)) galleryByCard.set(id, []);
     galleryByCard.get(id)!.push(item);
@@ -121,6 +135,7 @@ export function groupByCard(
   for (const task of tasks) {
     const id = cardIdentity(
       task.set_code, task.collector_number, task.scryfall_id, task.card_name, task.lang,
+      task.custom_hash,
     );
     if (!tasksByCard.has(id)) tasksByCard.set(id, []);
     tasksByCard.get(id)!.push(task);

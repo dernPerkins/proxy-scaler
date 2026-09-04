@@ -52,6 +52,15 @@ class DeckEntry:
     # card_lookup.CardResolver for how they steer resolution.
     scryfall_id: str | None = None
     lang: str | None = None
+    # Also never parsed from decklist text: set by the client for a Custom
+    # Image (a card front the user uploaded — see proxy_scaler/customs.py),
+    # identifying it by the sha256 of its bytes. When set, this entry has
+    # no printing at all and matches gallery images by hash alone.
+    custom_hash: str | None = None
+
+    @property
+    def is_custom(self) -> bool:
+        return self.custom_hash is not None
 
     @property
     def has_exact_printing(self) -> bool:

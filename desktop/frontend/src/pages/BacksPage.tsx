@@ -22,59 +22,16 @@ import type { BackImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
+import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
 
 // Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation — below this, a back is being asked to cover a
 // 63×88mm card with less detail than a decent printer resolves.
+// Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
+// source_dpi calculation — below this, a back is being asked to cover a
+// 63×88mm card with less detail than a decent printer resolves.
 const LOW_DPI = 300;
-const THUMB_MAX_PX = 220;
-const MAX_UPLOAD_MB = 50;
-
-/**
- * Decode a picked file, measure it, and render the small preview the Rust
- * side stores alongside it.
- *
- * Done here rather than in Rust deliberately: generating a 220px JPEG
- * natively would mean adding an image-decoding crate to a build that ships
- * in six platform variants, and the webview already has to decode the file
- * to show the user what they picked.
- */
-async function readPickedImage(file: File): Promise<{
-  bytes: number[];
-  thumbnail: number[];
-  width: number;
-  height: number;
-}> {
-  const buffer = await file.arrayBuffer();
-  let bitmap: ImageBitmap;
-  try {
-    bitmap = await createImageBitmap(new Blob([buffer], { type: file.type }));
-  } catch {
-    // A file that claims an image type but isn't one (or is a format this
-    // webview can't decode) — say so in the user's terms rather than
-    // letting a decoder exception through.
-    throw new Error(`${file.name} couldn't be read as an image.`);
-  }
-  const scale = Math.min(1, THUMB_MAX_PX / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Couldn't render a preview for that image.");
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, "image/jpeg", 0.85),
-  );
-  if (!blob) throw new Error("Couldn't render a preview for that image.");
-  const thumbBuffer = await blob.arrayBuffer();
-  return {
-    bytes: Array.from(new Uint8Array(buffer)),
-    thumbnail: Array.from(new Uint8Array(thumbBuffer)),
-    width: bitmap.width,
-    height: bitmap.height,
-  };
-}
 
 /* Inline rather than an asset or an icon package: it is one drawing used
    in one place, and `currentColor` lets it follow the dropzone's own
@@ -211,15 +168,8 @@ export default function BacksPage() {
 
   const addMutation = useMutation({
     mutationFn: async (file: File) => {
-      // The file picker filters by accept=""; a drop does not, so anything
-      // at all can land here. Without this check a dropped PDF reaches
-      // createImageBitmap and surfaces a raw DOMException.
-      if (file.type && !file.type.startsWith("image/")) {
-        throw new Error(`${file.name} isn't an image — use a PNG, JPEG or WebP.`);
-      }
-      if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-        throw new Error(`Back images are limited to ${MAX_UPLOAD_MB}MB.`);
-      }
+      // readPickedImage owns the type and size checks — a drop bypasses
+      // the picker's accept="", so anything at all can land here.
       const picked = await readPickedImage(file);
       return projectApi.addBackImage({
         ...picked,

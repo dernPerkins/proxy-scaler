@@ -135,10 +135,10 @@ def source_dpi(content_hash: str, *, root: Path | str = BACKS_DIR_NAME) -> float
     path = original_path(content_hash, root=root)
     if not path.is_file():
         return None
-    from proxy_scaler.dpi import CARD_HEIGHT_MM, MM_PER_IN
+    from proxy_scaler.dpi import dpi_at_card_size
 
     with Image.open(path) as img:
-        return max(img.size) / (CARD_HEIGHT_MM / MM_PER_IN)
+        return dpi_at_card_size(*img.size)
 
 
 def resolve_print_source(

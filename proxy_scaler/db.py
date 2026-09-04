@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from .customs import identity_key
+from .dpi import CUSTOM_SOURCE_MODEL
 from .decklist import DeckEntry
 from .scryfall import SCRYFALL_LANGUAGES
 from .upscale import UpscaleModel
@@ -111,6 +113,21 @@ _SCRYFALL_UUID = (
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
+# A Custom Image's output file — Name-custom-<sha256>[-model-dpi].png. A
+# separate pattern rather than another optional group on the Scryfall one:
+# it has no SET-COLLECTOR segment at all, so the two heads parse by
+# genuinely different rules and interleaving them would make both harder to
+# read. Tried first, since a card literally named "custom" is possible and
+# the hash makes this shape unambiguous.
+_CUSTOM_OUTPUT_RE = re.compile(
+    r"^(?P<stem>.+?)"
+    r"-custom-(?P<custom_hash>[0-9a-f]{64})"
+    rf"(?:-(?P<model>{_MODEL_SLUGS})"
+    r"-(?P<dpi>\d+)dpi)?"
+    r"\.png$",
+    re.IGNORECASE,
+)
+
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
     rf"(?:-(?P<lang>{_LANG_CODES}))?"
@@ -143,14 +160,21 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_tag TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
-    scryfall_id TEXT NOT NULL,
+    -- Exactly one of scryfall_id / custom_hash is set, enforced by the
+    -- CHECK below: a task either generates a Scryfall printing or a
+    -- Custom Image (a user-uploaded card front, keyed by the sha256 of
+    -- its bytes — see proxy_scaler/customs.py). set_code,
+    -- collector_number and png_url are all NULL for the custom case,
+    -- which is why none of them are NOT NULL any more.
+    scryfall_id TEXT,
+    custom_hash TEXT,
     face_index INTEGER,
     face_label TEXT,
     face_name TEXT NOT NULL,
     card_name TEXT NOT NULL,
-    set_code TEXT NOT NULL,
-    collector_number TEXT NOT NULL,
-    png_url TEXT NOT NULL,
+    set_code TEXT,
+    collector_number TEXT,
+    png_url TEXT,
     dpi INTEGER NOT NULL,
     model TEXT NOT NULL,
     tile_size INTEGER NOT NULL DEFAULT 0,
@@ -169,7 +193,8 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     -- 1 = user-initiated regeneration: bypass the x4 upscale cache and
     -- re-run inference. 0 (first generation) reuses the cache, which is
     -- what lets sibling DPI tasks of one face share a single model pass.
-    force INTEGER NOT NULL DEFAULT 0
+    force INTEGER NOT NULL DEFAULT 0,
+    CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status
@@ -180,16 +205,23 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_tag
 -- The global registry of generated images: one row per physically
 -- distinct output image, shared by every project. No project_tag —
 -- which projects show an image is project_gallery_memberships' job.
--- scryfall_id is always a real Scryfall UUID: files that can't be
--- resolved to one (output-dir rescans without a card corpus) are simply
--- not registered, rather than minting sentinel ids. This table is the
--- authoritative "does this image exist" answer — query paths (gallery
--- list, generation-status lookups, PDF layout) read it without touching
--- the filesystem; reconcile paths (prune/adopt) are what re-align it
--- with disk.
+-- Identity is a typed either/or: exactly one of scryfall_id /
+-- custom_hash is set on every row, enforced by the CHECK below.
+-- scryfall_id, when set, is always a real Scryfall UUID — files that
+-- can't be resolved to one (output-dir rescans without a card corpus)
+-- are simply not registered, rather than minting sentinel ids, which is
+-- what migration 006 cleaned up. custom_hash is the sha256 of a Custom
+-- Image the user uploaded (proxy_scaler/customs.py); migration 008 added
+-- it as the honest alternative to reintroducing fake UUIDs for art that
+-- genuinely has no Scryfall printing. This table is the authoritative
+-- "does this image exist" answer — query paths (gallery list,
+-- generation-status lookups, PDF layout) read it without touching the
+-- filesystem; reconcile paths (prune/adopt) are what re-align it with
+-- disk.
 CREATE TABLE IF NOT EXISTS generated_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scryfall_id TEXT NOT NULL,
+    scryfall_id TEXT,
+    custom_hash TEXT,
     face_index INTEGER,
     face_name TEXT,
     card_name TEXT,
@@ -203,7 +235,9 @@ CREATE TABLE IF NOT EXISTS generated_images (
     image_filename TEXT NOT NULL,
     out_path TEXT NOT NULL,
     original_path TEXT NOT NULL,
-    png_url TEXT NOT NULL,
+    -- NULL for a Custom Image: there is no upstream URL, the bytes were
+    -- uploaded by the client (see custom_hash above).
+    png_url TEXT,
     -- Set on every insert AND refreshed on re-generation (see
     -- upsert_gallery_item): "when was this image last produced", which is
     -- what the PDF tab's most-recent-wins variant pick means by recency.
@@ -214,16 +248,23 @@ CREATE TABLE IF NOT EXISTS generated_images (
     total_faces INTEGER,
     -- Scryfall language code of the printing (see generation_tasks.lang).
     -- 'en' for rows predating migration 005.
-    lang TEXT NOT NULL DEFAULT 'en'
+    lang TEXT NOT NULL DEFAULT 'en',
+    CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
 );
 
--- DB-level backstop for one-row-per-variant. COALESCE because
--- face_index is NULL for single-faced cards and SQLite treats NULLs as
--- distinct in UNIQUE indexes; the write path still probes with
--- `face_index IS ?` itself (see upsert_gallery_item) rather than
--- leaning on ON CONFLICT against an expression index.
+-- DB-level backstop for one-row-per-variant. Keyed on the identity
+-- *expression* rather than a column, since either half of the
+-- scryfall_id/custom_hash pair may be NULL. COALESCE throughout because
+-- SQLite treats every NULL as distinct in a UNIQUE index — true of
+-- face_index (NULL for single-faced cards) and, since migration 008, of
+-- scryfall_id too, so without the COALESCE the backstop would silently
+-- not apply to custom rows at all. The write path still probes for the
+-- existing row itself (see upsert_gallery_item) rather than leaning on
+-- ON CONFLICT against an expression index.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_variant
-    ON generated_images(scryfall_id, COALESCE(face_index, -1), model, dpi);
+    ON generated_images(
+        COALESCE(scryfall_id, 'custom:' || custom_hash),
+        COALESCE(face_index, -1), model, dpi);
 
 -- Which projects show which registry images in their gallery. Pure
 -- relation: all image metadata lives on generated_images. Cascade so
@@ -267,14 +308,17 @@ class TaskRow:
     id: int
     project_tag: str | None
     status: str  # "pending" | "running" | "done" | "failed" | "canceled"
-    scryfall_id: str
+    # Exactly one of scryfall_id / custom_hash is set (db migration 008).
+    # For a Custom Image the set_code, collector_number and png_url below
+    # are all None too — it has no printing and no upstream URL.
+    scryfall_id: str | None
     face_index: int | None
     face_label: str | None
     face_name: str
     card_name: str
-    set_code: str
-    collector_number: str
-    png_url: str
+    set_code: str | None
+    collector_number: str | None
+    png_url: str | None
     dpi: int
     model: str
     tile_size: int
@@ -290,6 +334,19 @@ class TaskRow:
     # User-initiated regeneration: bypass the x4 upscale cache. False for
     # first-generation tasks so sibling DPI tasks share one model pass.
     force: bool = False
+    # sha256 of a user-uploaded card front (proxy_scaler/customs.py). Set
+    # exactly when scryfall_id is not.
+    custom_hash: str | None = None
+
+    @property
+    def identity_key(self) -> str:
+        """The string this task's face is identified by — see
+        customs.identity_key."""
+        return identity_key(self.scryfall_id, self.custom_hash)
+
+    @property
+    def is_custom(self) -> bool:
+        return self.custom_hash is not None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> TaskRow:
@@ -318,6 +375,7 @@ class TaskRow:
             total_faces=row["total_faces"],
             lang=row["lang"] if "lang" in row.keys() else "en",
             force=bool(row["force"]) if "force" in row.keys() else False,
+            custom_hash=row["custom_hash"] if "custom_hash" in row.keys() else None,
         )
 
 
@@ -716,6 +774,215 @@ def _migration_006_split_gallery_registry(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE project_gallery_items")
 
 
+# Frozen copies of the post-008 table shapes. Repeated literally rather
+# than shared with _SCHEMA, exactly as migration 006 does: a migration has
+# to keep producing the shape it was written to produce even after _SCHEMA
+# moves on, or replaying history on an old database lands it somewhere
+# migration 009 never expected.
+_TASKS_DDL_008 = """
+    CREATE TABLE generation_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_tag TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        scryfall_id TEXT,
+        custom_hash TEXT,
+        face_index INTEGER,
+        face_label TEXT,
+        face_name TEXT NOT NULL,
+        card_name TEXT NOT NULL,
+        set_code TEXT,
+        collector_number TEXT,
+        png_url TEXT,
+        dpi INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        tile_size INTEGER NOT NULL DEFAULT 0,
+        output_dir TEXT NOT NULL,
+        cache_dir TEXT NOT NULL,
+        weights_dir TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        total_faces INTEGER,
+        lang TEXT NOT NULL DEFAULT 'en',
+        force INTEGER NOT NULL DEFAULT 0,
+        CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
+    )
+"""
+
+_IMAGES_DDL_008 = """
+    CREATE TABLE generated_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scryfall_id TEXT,
+        custom_hash TEXT,
+        face_index INTEGER,
+        face_name TEXT,
+        card_name TEXT,
+        set_code TEXT,
+        collector_number TEXT,
+        face_label TEXT,
+        model TEXT NOT NULL,
+        dpi INTEGER NOT NULL,
+        native_scale INTEGER NOT NULL DEFAULT 4,
+        device TEXT NOT NULL DEFAULT 'unknown',
+        image_filename TEXT NOT NULL,
+        out_path TEXT NOT NULL,
+        original_path TEXT NOT NULL,
+        png_url TEXT,
+        created_at TEXT,
+        total_faces INTEGER,
+        lang TEXT NOT NULL DEFAULT 'en',
+        CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
+    )
+"""
+
+
+_MEMBERSHIPS_DDL_008 = """
+    CREATE TABLE project_gallery_memberships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_tag TEXT NOT NULL,
+        image_id INTEGER NOT NULL
+            REFERENCES generated_images(id) ON DELETE CASCADE,
+        UNIQUE (project_tag, image_id)
+    )
+"""
+
+
+def _migration_008_custom_image_identity(conn: sqlite3.Connection) -> None:
+    """Let a task/registry row be identified by an uploaded image's content
+    hash instead of a Scryfall id, for Custom Images (user-supplied card
+    fronts — see proxy_scaler/customs.py).
+
+    This amends the contract migration 006 established. That one deleted
+    sentinel scryfall_ids ('scan:…') and the comment on _SCHEMA has said
+    "always a real Scryfall UUID" ever since, which is still true of the
+    column: the fix here is emphatically *not* to start minting fake UUIDs
+    again. Instead identity becomes a typed either/or — exactly one of
+    scryfall_id / custom_hash is set on every row, enforced by CHECK — so
+    the thing 006 was protecting against (rows nothing can ever match) is
+    prevented by the schema rather than by a convention.
+
+    A table rebuild, because scryfall_id and png_url are NOT NULL on both
+    tables and SQLite cannot drop NOT NULL in place. set_code and
+    collector_number go nullable on generation_tasks too (they are already
+    nullable on generated_images): a Custom Image has no set or collector
+    number, and '' would be one more sentinel to remember.
+
+    **project_gallery_memberships is rebuilt alongside generated_images,
+    and must be.** With foreign_keys=ON, ALTER TABLE RENAME rewrites
+    REFERENCES clauses in *other* tables to follow the new name — and
+    unlike the 3.25 rename changes, that behaviour is not switched off by
+    PRAGMA legacy_alter_table. So renaming generated_images out of the way
+    silently repoints memberships at generated_images_old, and the DROP at
+    the end then cascade-deletes every membership row: every project's
+    gallery, emptied, with the migration reporting success. Repointing
+    memberships at the new table before that DROP is what makes the
+    rebuild safe. Row ids are preserved through both copies so the
+    relation still lines up.
+
+    Defensive about which tables are actually present, like migration 006:
+    a database can reach this step with the gallery tables missing (a
+    fixture, or a user_version set past 006 on a partial file), and the
+    _SCHEMA re-application at the end of _migrate() then creates whatever
+    was skipped directly at the latest shape.
+    """
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+    if "generation_tasks" in tables:
+        _rebuild_tasks_008(conn)
+    if "generated_images" in tables:
+        _rebuild_images_008(conn, has_memberships="project_gallery_memberships" in tables)
+
+
+def _rebuild_tasks_008(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE generation_tasks RENAME TO generation_tasks_old")
+    conn.execute(_TASKS_DDL_008)
+    conn.execute(
+        """
+        INSERT INTO generation_tasks (
+            id, project_tag, status, scryfall_id, custom_hash, face_index,
+            face_label, face_name, card_name, set_code, collector_number,
+            png_url, dpi, model, tile_size, output_dir, cache_dir,
+            weights_dir, error, created_at, started_at, completed_at,
+            total_faces, lang, force)
+        SELECT
+            id, project_tag, status, scryfall_id, NULL, face_index,
+            face_label, face_name, card_name, set_code, collector_number,
+            png_url, dpi, model, tile_size, output_dir, cache_dir,
+            weights_dir, error, created_at, started_at, completed_at,
+            total_faces, lang, force
+        FROM generation_tasks_old
+        """
+    )
+    conn.execute("DROP TABLE generation_tasks_old")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_status "
+        "ON generation_tasks(status, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_project_tag "
+        "ON generation_tasks(project_tag)"
+    )
+
+
+def _rebuild_images_008(conn: sqlite3.Connection, *, has_memberships: bool) -> None:
+    conn.execute("ALTER TABLE generated_images RENAME TO generated_images_old")
+    conn.execute(_IMAGES_DDL_008)
+    conn.execute(
+        """
+        INSERT INTO generated_images (
+            id, scryfall_id, custom_hash, face_index, face_name, card_name,
+            set_code, collector_number, face_label, model, dpi,
+            native_scale, device, image_filename, out_path, original_path,
+            png_url, created_at, total_faces, lang)
+        SELECT
+            id, scryfall_id, NULL, face_index, face_name, card_name,
+            set_code, collector_number, face_label, model, dpi,
+            native_scale, device, image_filename, out_path, original_path,
+            png_url, created_at, total_faces, lang
+        FROM generated_images_old
+        """
+    )
+    # Repoint memberships at the new table before generated_images_old is
+    # dropped — see the docstring. The rows are copied by id, so which
+    # image each project shows is unchanged.
+    if has_memberships:
+        conn.execute(
+            "ALTER TABLE project_gallery_memberships "
+            "RENAME TO project_gallery_memberships_old"
+        )
+        conn.execute(_MEMBERSHIPS_DDL_008)
+        conn.execute(
+            """
+            INSERT INTO project_gallery_memberships (id, project_tag, image_id)
+            SELECT id, project_tag, image_id
+            FROM project_gallery_memberships_old
+            """
+        )
+        conn.execute("DROP TABLE project_gallery_memberships_old")
+    conn.execute("DROP TABLE generated_images_old")
+    if has_memberships:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memberships_project_tag "
+            "ON project_gallery_memberships(project_tag)"
+        )
+    # Rebuilt over the identity *expression*, not the raw column: with
+    # scryfall_id now nullable, SQLite's treat-every-NULL-as-distinct
+    # rule would quietly remove the one-row-per-variant backstop for
+    # exactly the new custom rows the column was made nullable for.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_variant "
+        "ON generated_images("
+        "COALESCE(scryfall_id, 'custom:' || custom_hash), "
+        "COALESCE(face_index, -1), model, dpi)"
+    )
+
+
 # Ordered oldest-to-newest. _migrate() below walks this list and applies
 # whichever steps are newer than a database's current PRAGMA user_version,
 # one at a time in order — so a database several versions behind replays
@@ -767,8 +1034,15 @@ _MIGRATIONS: list[Migration] = [
         "(reuse it, so sibling DPI tasks share one model pass)",
         _migration_007_add_task_force,
     ),
+    Migration(
+        8,
+        "rebuild generation_tasks/generated_images so a row can be "
+        "identified by a Custom Image's content hash instead of a "
+        "scryfall_id — exactly one of the two, enforced by CHECK",
+        _migration_008_custom_image_identity,
+    ),
 ]
-SCHEMA_VERSION = 7  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 8  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -841,14 +1115,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def enqueue_task(
     project_tag: str | None,
     *,
-    scryfall_id: str,
+    scryfall_id: str | None = None,
+    custom_hash: str | None = None,
     face_index: int | None,
     face_label: str | None,
     face_name: str,
     card_name: str,
-    set_code: str,
-    collector_number: str,
-    png_url: str,
+    set_code: str | None = None,
+    collector_number: str | None = None,
+    png_url: str | None = None,
     dpi: int,
     model: str,
     output_dir: str,
@@ -862,21 +1137,28 @@ def enqueue_task(
 ) -> int:
     """Add one (face, dpi, model) unit of generation work to the queue,
     picked up by the background worker (see worker.py). force=True marks a
-    user-initiated regeneration that must bypass the x4 upscale cache."""
+    user-initiated regeneration that must bypass the x4 upscale cache.
+
+    Pass exactly one of scryfall_id (a Scryfall printing) or custom_hash (a
+    user-uploaded card front); the database CHECK rejects both or neither.
+    The set_code/collector_number/png_url trio only applies to the former.
+    """
+    identity_key(scryfall_id, custom_hash)  # raises before touching the DB
     now = _utc_now()
     with connect(db_path) as conn:
         cur = conn.execute(
             """
             INSERT INTO generation_tasks (
-                project_tag, status, scryfall_id, face_index, face_label,
-                face_name, card_name, set_code, collector_number, png_url,
-                dpi, model, tile_size, output_dir, cache_dir, weights_dir,
-                created_at, total_faces, lang, force
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                project_tag, status, scryfall_id, custom_hash, face_index,
+                face_label, face_name, card_name, set_code, collector_number,
+                png_url, dpi, model, tile_size, output_dir, cache_dir,
+                weights_dir, created_at, total_faces, lang, force
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
                 scryfall_id,
+                custom_hash,
                 face_index,
                 face_label,
                 face_name,
@@ -1126,6 +1408,8 @@ def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
         "out_path": g["out_path"],
         "original_path": g["original_path"],
         "scryfall_id": g["scryfall_id"],
+        # Set exactly when scryfall_id is not — a user-uploaded card front.
+        "custom_hash": g["custom_hash"],
         "face_index": g["face_index"],
         "face_name": g["face_name"] or "",
         "card_name": g["card_name"] or "",
@@ -1471,7 +1755,7 @@ def get_gallery_item(
 
 
 def find_generated_image(
-    scryfall_id: str,
+    identity: str,
     face_index: int | None,
     model: str,
     dpi: int,
@@ -1480,12 +1764,20 @@ def find_generated_image(
     """One registry row by its variant key, or None. The registry-first
     half of the skip-existing check (services/generation.py): the database
     is the authority on what exists, so a known image needs no filename
-    reconstruction — just a liveness stat of the recorded out_path."""
+    reconstruction — just a liveness stat of the recorded out_path.
+
+    `identity` is a customs.identity_key() string — a Scryfall UUID or
+    'custom:<sha256>'. The WHERE clause rebuilds the same expression
+    idx_generated_images_variant is built over, so this stays an index
+    lookup rather than a scan, and cannot disagree with the uniqueness
+    backstop about which rows are the same variant.
+    """
     with connect(db_path) as conn:
         row = conn.execute(
-            "SELECT * FROM generated_images WHERE scryfall_id = ? "
+            "SELECT * FROM generated_images "
+            "WHERE COALESCE(scryfall_id, 'custom:' || custom_hash) = ? "
             "AND face_index IS ? AND model = ? AND dpi = ?",
-            (scryfall_id, face_index, model, dpi),
+            (identity, face_index, model, dpi),
         ).fetchone()
     return _gallery_row_to_dict(row) if row is not None else None
 
@@ -1639,11 +1931,12 @@ def upsert_gallery_item(
 
     Writes the registry row (insert, or refresh in place when the variant
     already exists) and then this project's membership. A no-op if
-    project_tag is falsy — and if the result carries no scryfall_id,
-    which real callers never produce (worker tasks and skip-existing both
-    start from fully resolved faces): the registry's contract is that
-    scryfall_id is always real."""
-    if not project_tag or not result.scryfall_id:
+    project_tag is falsy — and if the result carries neither a scryfall_id
+    nor a custom_hash, which real callers never produce (worker tasks and
+    skip-existing both start from fully resolved faces): the registry's
+    contract is that a row is identified by one or the other, never by a
+    sentinel standing in for a missing id."""
+    if not project_tag or not (result.scryfall_id or result.custom_hash):
         return
     with connect(db_path) as conn:
         # Not a plain `ON CONFLICT` upsert: the UNIQUE index includes
@@ -1653,10 +1946,11 @@ def upsert_gallery_item(
         # against an expression index are their own can of worms). `IS ?`
         # (unlike `= ?`) matches NULL-to-NULL correctly.
         existing = conn.execute(
-            "SELECT id FROM generated_images WHERE scryfall_id = ? "
+            "SELECT id FROM generated_images "
+            "WHERE COALESCE(scryfall_id, 'custom:' || custom_hash) = ? "
             "AND face_index IS ? AND model = ? AND dpi = ?",
             (
-                result.scryfall_id,
+                result.identity_key,
                 result.face_index,
                 result.model,
                 result.dpi,
@@ -1698,14 +1992,15 @@ def upsert_gallery_item(
             cur = conn.execute(
                 """
                 INSERT INTO generated_images (
-                    scryfall_id, face_index, face_name, card_name,
+                    scryfall_id, custom_hash, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
                     device, image_filename, out_path, original_path, png_url,
                     created_at, total_faces, lang
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.scryfall_id,
+                    result.custom_hash,
                     result.face_index,
                     result.face_name,
                     result.card_name,
@@ -1876,6 +2171,27 @@ def clear_cpu_fallback(db_path: Path | str | None = None) -> bool:
 
 def parse_output_filename(name: str) -> dict[str, Any] | None:
     """Parse a proxy-scaler output PNG basename into metadata fields."""
+    custom = _CUSTOM_OUTPUT_RE.match(name)
+    if custom:
+        model = custom.group("model")
+        dpi = custom.group("dpi")
+        return {
+            "image_filename": name,
+            # A Custom Image has no printing. Empty rather than a
+            # placeholder: pdf_layout.match_quantities matches on
+            # (set_code, collector_number), and any non-empty stand-in
+            # would make every custom card match every other one.
+            "set_code": "",
+            "collector_number": "",
+            "face_label": None,
+            "face_index": None,
+            "model": model.lower() if model else CUSTOM_SOURCE_MODEL,
+            "dpi": int(dpi) if dpi else 0,
+            "stem": custom.group("stem"),
+            "lang": "en",
+            "scryfall_id": "",
+            "custom_hash": custom.group("custom_hash").lower(),
+        }
     match = _OUTPUT_SUFFIX_RE.match(name)
     if not match:
         return None
@@ -1908,6 +2224,7 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
         # "" for legacy filenames that predate the embedded id — those
         # need the card corpus to resolve to a real scryfall_id.
         "scryfall_id": scryfall_id.lower() if scryfall_id else "",
+        "custom_hash": None,
     }
 
 

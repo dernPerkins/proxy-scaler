@@ -6,6 +6,8 @@ import { invokeCommand } from "../tauri";
 import type {
   BackImage,
   BackSyncResult,
+  CustomImage,
+  CustomSyncResult,
   FlipEdge,
   PageOrder,
   ReverseFill,
@@ -87,6 +89,19 @@ export interface CardRow {
   // Localized name as printed on a non-English printing; null for English.
   // Display-only — `name` (English/oracle) stays the matching identity.
   printed_name: string | null;
+  // Set instead of scryfall_id when this card is a Custom Image — art the
+  // user uploaded, which has no Scryfall printing. `custom_image_id` is
+  // the local library row; `custom_hash` is the sha256 the *generation
+  // server* identifies it by, joined in so the identity string can be
+  // built without a second lookup. Both null for a normal card.
+  //
+  // The frontend keys off these for three things: rendering a "Custom"
+  // chip instead of the printing picker, skipping the background
+  // re-resolve (which would otherwise see a null scryfall_id and try to
+  // look the card up on Scryfall), and syncing the bytes to the server
+  // before a generate or an export.
+  custom_image_id: number | null;
+  custom_hash: string | null;
 }
 
 // A parsed-but-unresolved decklist line, as returned by the Rust parser
@@ -297,5 +312,52 @@ export const projectApi = {
    *  switching servers self-heals through exactly this path. */
   syncBackImage: (id: number, serverBaseUrl: string) =>
     invokeCommand<BackSyncResult>("sync_back_image", { id, serverBaseUrl }),
+
+  // --- The Custom Image library ----------------------------------------
+  //
+  // The Back Library's shape (app-global, client-owned, content-addressed,
+  // bytes never crossing this boundary) applied to card *fronts*. The
+  // difference is that these become cards: addCustomCards turns library
+  // entries into rows in a project's decklist.
+  listCustomImages: () => invokeCommand<CustomImage[]>("list_custom_images"),
+
+  /** Add a file to the library. Content-addressed: re-adding identical
+   *  bytes returns the existing entry rather than a duplicate, so the same
+   *  art dropped into two projects is one upload and one upscale. */
+  addCustomImage: (args: {
+    bytes: number[];
+    thumbnail: number[];
+    originalFilename: string;
+    width: number;
+    height: number;
+  }) => invokeCommand<CustomImage>("add_custom_image", { ...args }),
+
+  setCustomImageLabel: (id: number, label: string) =>
+    invokeCommand<void>("set_custom_image_label", { id, label }),
+
+  /** How many project cards use this image — the delete confirmation says
+   *  so out loud, because those cards are deleted with it. Unlike a Back
+   *  Image, which a project merely selects, a Custom Image IS the card. */
+  countCardsUsingCustomImage: (id: number) =>
+    invokeCommand<number>("count_cards_using_custom_image", { id }),
+
+  deleteCustomImage: (id: number) =>
+    invokeCommand<void>("delete_custom_image", { id }),
+
+  customImageThumbnail: (id: number) =>
+    invokeCommand<string | null>("custom_image_thumbnail", { id }),
+
+  /** Add one card per image to a project, appended at the end. Not
+   *  resolve-gated, unlike every other import path — there is nothing to
+   *  resolve, which is what lets this work with no server reachable. */
+  addCustomCards: (projectId: number, customImageIds: number[]) =>
+    invokeCommand<CardRow[]>("add_custom_cards", { projectId, customImageIds }),
+
+  /** Make sure a generation server holds this image's bytes. Cheap to call
+   *  unconditionally: Rust GETs first and only uploads on a miss. This is
+   *  the whole "don't upload until the server needs it" mechanism — call
+   *  it before generating and before exporting, never on add. */
+  syncCustomImage: (id: number, serverBaseUrl: string) =>
+    invokeCommand<CustomSyncResult>("sync_custom_image", { id, serverBaseUrl }),
 };
 

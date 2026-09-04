@@ -45,7 +45,8 @@ def list_gallery(project_tag: str) -> list[GalleryItemOut]:
     return [
         GalleryItemOut(
             id=i["id"],
-            scryfall_id=i["scryfall_id"],
+            scryfall_id=i["scryfall_id"] or "",
+            custom_hash=i["custom_hash"],
             face_index=i["face_index"],
             face_label=i["face_label"],
             face_name=i["face_name"],
@@ -89,6 +90,7 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
             raw_line=e.raw_line,
             scryfall_id=e.scryfall_id,
             lang=e.lang,
+            custom_hash=e.custom_hash,
         )
         for e in body.entries
     ]
@@ -150,6 +152,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
     item = _find_item(gallery_item_id)
     task_ids = generation_service.enqueue_face(
         scryfall_id=item["scryfall_id"],
+        custom_hash=item["custom_hash"],
         face_index=item["face_index"],
         face_label=item["face_label"],
         face_name=item["face_name"],
@@ -190,6 +193,15 @@ def refetch_original(gallery_item_id: int, body: RefetchOriginalIn) -> GenerateO
     bypass the cache outright (force=True)."""
     db_path = get_db_path()
     item = _find_item(gallery_item_id)
+    if item["custom_hash"]:
+        # There is no upstream to re-fetch from: a Custom Image's source is
+        # the file the user uploaded, and the way to replace it is to
+        # upload a different one (which, being different bytes, is a
+        # different Custom Image).
+        raise HTTPException(
+            status_code=400,
+            detail="Custom images have no Scryfall original to re-fetch.",
+        )
     active = generation_service.active_task_keys(body.project_tag, db_path=db_path)
     key = (item["scryfall_id"], item["face_index"], ORIGINAL_DPI, ORIGINAL_MODEL)
     if key in active:

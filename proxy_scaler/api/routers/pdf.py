@@ -78,6 +78,7 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         raw_line=e.raw_line or e.name,
         scryfall_id=e.scryfall_id,
         lang=e.lang,
+        custom_hash=e.custom_hash,
     )
 
 

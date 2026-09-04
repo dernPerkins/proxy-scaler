@@ -16,7 +16,14 @@ from fpdf import FPDF
 from PIL import Image
 
 from .decklist import DeckEntry
-from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN, ORIGINAL_MODEL, target_pixels
+from .dpi import (
+    CARD_HEIGHT_MM,
+    CARD_WIDTH_MM,
+    CUSTOM_SOURCE_MODEL,
+    MM_PER_IN,
+    ORIGINAL_MODEL,
+    target_pixels,
+)
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
 from .postprocess import DARK_EDGE_DELTA_MIN, DARK_EDGE_LUM_MAX
 
@@ -557,9 +564,11 @@ class PrintUnit:
     face_key: str
     quantity: int
     best: FaceResult  # chosen image variant for this face (see _pick_dpi_variant)
-    # Retained for callers that inspect it, but always False now that a face
-    # with no image at the requested DPI is excluded and reported instead of
-    # being silently printed at another resolution.
+    # True only for a Custom Image printed at a resolution other than the
+    # requested one. A Scryfall face with no image at the requested DPI is
+    # excluded and reported rather than silently printed at another
+    # resolution, so this is always False for those — see _pick_dpi_variant
+    # for why customs are the deliberate exception.
     dpi_fallback: bool = False
 
 
@@ -614,11 +623,25 @@ def _pick_dpi_variant(
     With `preferred_dpi` unset every variant is eligible, and the highest
     DPI wins (ties broken by recency) — "give me the best I have".
 
+    A Custom Image is the one exception, and deliberately so. The hard
+    filter exists to stop one *generated* card silently printing at a
+    different resolution from its neighbours — the user asked for 1200 DPI
+    and every Scryfall card can be regenerated at 1200 DPI, so a face
+    without one means "this never generated", which is worth surfacing as
+    an error. A custom front the user uploaded and chose not to upscale has
+    exactly one image in existence at whatever resolution their file
+    happened to be; excluding it doesn't reveal a problem, it just prints a
+    hole in the sheet where the card they explicitly supplied should be.
+    So for a custom face the preference degrades to "best available" and
+    the unit is flagged dpi_fallback instead of dropped.
+
     Returns (chosen, unavailable_at_preferred_dpi).
     """
     if preferred_dpi is not None:
         at_dpi = [item for item in face_items if item.dpi == preferred_dpi]
         if not at_dpi:
+            if face_items and face_items[0].is_custom:
+                return max(face_items, key=lambda x: (x.dpi, _recency_key(x))), True
             return None, True
         if preferred_model is not None:
             matching = [item for item in at_dpi if item.model == preferred_model]
@@ -687,9 +710,19 @@ def match_quantities(
 
     Returns (units, missing, missing_at_dpi).
     """
-    gallery = [
-        item for item in gallery if (item.model == ORIGINAL_MODEL) == use_originals
-    ]
+    def _eligible(item: FaceResult) -> bool:
+        if item.is_custom:
+            # Custom Images live outside the originals/upscales split.
+            # Their uploaded source (CUSTOM_SOURCE_MODEL) is always
+            # printable, because unlike a Scryfall card there is no
+            # download world to fall back to — it is the only image that
+            # exists until the user upscales it. Their upscales then behave
+            # like any other upscale and drop out when the user asks for
+            # sources only.
+            return item.model == CUSTOM_SOURCE_MODEL or not use_originals
+        return (item.model == ORIGINAL_MODEL) == use_originals
+
+    gallery = [item for item in gallery if _eligible(item)]
     units: list[PrintUnit] = []
     missing_at_dpi: list[str] = []
     matched_face_counts = [0] * len(entries)
@@ -707,7 +740,16 @@ def match_quantities(
 
         matched_qty = 0
         matched_indices: set[int] = set()
-        if set_code and collector:
+        if rep.is_custom:
+            # Matched on content hash alone, and never by name: two
+            # uploads can easily share a filename, and a custom front
+            # named "Sol Ring" must not soak up the quantity of a real
+            # Sol Ring line (or vice versa).
+            for i, entry in enumerate(entries):
+                if entry.custom_hash == rep.custom_hash:
+                    matched_qty += entry.quantity
+                    matched_indices.add(i)
+        elif set_code and collector:
             rep_lang = (rep.lang or "en").lower()
             for i, entry in enumerate(entries):
                 if (
@@ -721,9 +763,9 @@ def match_quantities(
                 ):
                     matched_qty += entry.quantity
                     matched_indices.add(i)
-        if not matched_indices and card_name:
+        if not matched_indices and card_name and not rep.is_custom:
             for i, entry in enumerate(entries):
-                if entry.has_exact_printing:
+                if entry.is_custom or entry.has_exact_printing:
                     # Already fully accounted for by the exact-match branch
                     # above (for its own face-group) — an entry pinned to
                     # one printing must not also count toward a

@@ -544,6 +544,41 @@ button:disabled {
   line-height: 1.35;
 }
 
+/* The Decklist tab's custom-art panel. Not a `.dropzone`: that one is a
+   card-shaped tile in a grid of card-shaped tiles, whereas this sits under
+   the decklist textarea and is a full-width strip. It shares only the
+   drag feedback, since the drop target is the whole page either way —
+   dropping slightly wide of the panel still works and still has to look
+   like it will. */
+.custom-drop {
+  border: 1px dashed var(--border-strong);
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.custom-drop.is-dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* A button that reads as a link, for an action offered mid-sentence. A
+   real <button> rather than an <a href="#">: it performs an action and
+   navigates nowhere, so it should be focusable and Enter/Space-activated
+   as a button, not announced as a link that goes nowhere. */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linklike:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* ---------- project bar ---------- */
 
 .project-bar {

@@ -13,11 +13,22 @@ import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import { DEFAULT_GEN_PATHS, DPI_OPTIONS, ORIGINAL_MODEL, modelDisplayName } from "../constants";
 import { useConnection } from "../connection";
-import { getProbedDevice, subscribeProbedDevice, useServerReadiness } from "../config";
+import {
+  getProbedDevice,
+  subscribeProbedDevice,
+  useServerReadiness,
+  useServerVersion,
+} from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
 import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry } from "../deckEntries";
+import { syncCustomImages } from "../syncCustoms";
+import {
+  ACCEPTED_IMAGE_TYPES,
+  MAX_UPLOAD_MB,
+  addImagesSequentially,
+} from "../imageUpload";
 import { runDownload, useDownloadStatus } from "../download";
 import {
   cardIdentity,
@@ -69,9 +80,12 @@ function UpdateCheckToggle() {
 // A CardRow has no scryfall_id (the client never calls Scryfall — see
 // ARCHITECTURE.md), so its identity falls back to its own name when
 // there's no exact set/collector, same as the gallery/task side's
-// fallback in mergeCardStatus.ts.
+// fallback in mergeCardStatus.ts. A Custom Image card is keyed on its
+// content hash instead, above every other tier.
 function localCardIdentity(card: CardRow): string {
-  return cardIdentity(card.set_code, card.collector_number, null, card.name, card.lang);
+  return cardIdentity(
+    card.set_code, card.collector_number, null, card.name, card.lang, card.custom_hash,
+  );
 }
 
 interface DisplayFace {
@@ -88,6 +102,7 @@ export default function DecklistPage() {
     setSettings,
     cards,
     importResolvedCards,
+    addCustomCards,
     removeCard,
     setCardQuantity,
     setCardPrinting,
@@ -104,6 +119,10 @@ export default function DecklistPage() {
   // slips through anyway.
   const serverUnavailable =
     connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
+  // Custom card images need /api/customs and hash-identified generation;
+  // syncCustomImages turns this into a real error rather than letting an
+  // older server silently drop the field. See config.ts.
+  const serverVersion = useServerVersion();
 
   // Always read this from the API, never hardcode — see
   // api/generation.ts's listModels comment for the regression this
@@ -279,7 +298,13 @@ export default function DecklistPage() {
   useEffect(() => {
     if (!projectTag || serverUnavailable) return;
     const unresolved = cards.filter(
-      (c) => !c.scryfall_id && !resolveAttempted.current.has(c.id),
+      // custom_image_id excluded deliberately: a Custom Image card has no
+      // scryfall_id and never will, so without this guard every one of
+      // them would look like a legacy unpinned row and get sent to
+      // /api/resolve on every project load — where at best it matches
+      // nothing, and at worst its filename matches a real card and this
+      // effect overwrites the user's own art with a Scryfall printing.
+      (c) => !c.scryfall_id && !c.custom_image_id && !resolveAttempted.current.has(c.id),
     );
     if (unresolved.length === 0) return;
     unresolved.forEach((c) => resolveAttempted.current.add(c.id));
@@ -314,9 +339,56 @@ export default function DecklistPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectTag, serverUnavailable, cards]);
 
+  // Custom Image drop/pick. A counter rather than a boolean because drag
+  // events fire for every child element entered — a plain flag flickers
+  // off the moment the pointer crosses a card row (see BacksPage, which
+  // learned this the same way).
+  const [dragDepth, setDragDepth] = useState(0);
+  const customFileInput = useRef<HTMLInputElement>(null);
+  const [customUploadError, setCustomUploadError] = useState<string | null>(null);
+  const [customProgress, setCustomProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
+
+  const addCustomImagesMutation = useMutation({
+    mutationFn: async (files: File[]) => {
+      setCustomProgress({ done: 0, total: files.length });
+      const result = await addImagesSequentially(
+        files,
+        (file, picked) =>
+          projectApi.addCustomImage({ ...picked, originalFilename: file.name }),
+        (done, total) => setCustomProgress({ done, total }),
+      );
+      // One store write for the whole drop rather than one per file: a
+      // 30-image drop should append 30 cards once, not re-render the list
+      // 30 times.
+      if (result.added.length) {
+        await addCustomCards(result.added.map((image) => image.id));
+      }
+      return result;
+    },
+    onSuccess: ({ errors }) => {
+      void queryClient.invalidateQueries({ queryKey: ["custom-images"] });
+      setCustomUploadError(errors.length ? errors.join(" ") : null);
+      setCustomProgress(null);
+    },
+    onError: (err: Error) => {
+      setCustomUploadError(err.message);
+      setCustomProgress(null);
+    },
+  });
+
+  function handleCustomFiles(list: FileList | null) {
+    const files = Array.from(list ?? []);
+    if (files.length) addCustomImagesMutation.mutate(files);
+  }
+
   const generateAllMutation = useMutation({
-    mutationFn: () =>
-      generationApi.generate({
+    mutationFn: async () => {
+      // Custom art has to be on the server before the tasks that will read
+      // it are queued — see syncCustoms.ts.
+      await syncCustomImages(cards, serverVersion);
+      return generationApi.generate({
         project_tag: projectTag as string,
         entries: cards.map(cardToEntry),
         model: settings.model,
@@ -326,7 +398,8 @@ export default function DecklistPage() {
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
-      }),
+      });
+    },
     onSuccess: (result) => {
       setStatus(
         result.queued
@@ -339,14 +412,19 @@ export default function DecklistPage() {
   });
 
   const downloadAllMutation = useMutation({
-    mutationFn: () =>
-      generationApi.downloadOriginals({
+    mutationFn: async () => {
+      // Custom cards have no Scryfall original to download; this is what
+      // registers their uploaded art as printable instead, so they still
+      // need syncing first.
+      await syncCustomImages(cards, serverVersion);
+      return generationApi.downloadOriginals({
         project_tag: projectTag as string,
         entries: cards.map(cardToEntry),
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
-      }),
+      });
+    },
     onSuccess: (result) => {
       setStatus(
         result.queued
@@ -359,8 +437,9 @@ export default function DecklistPage() {
   });
 
   const generateCardMutation = useMutation({
-    mutationFn: (card: CardRow) =>
-      generationApi.generate({
+    mutationFn: async (card: CardRow) => {
+      await syncCustomImages([card], serverVersion);
+      return generationApi.generate({
         project_tag: projectTag as string,
         entries: [cardToEntry(card)],
         model: settings.model,
@@ -370,7 +449,8 @@ export default function DecklistPage() {
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
-      }),
+      });
+    },
     onSuccess: invalidateStatus,
     onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
   });
@@ -631,7 +711,31 @@ export default function DecklistPage() {
         </div>
       </aside>
 
-      <main className="content">
+      {/* The whole content area is the drop target, not just the
+          dropzone tile — dropping an image anywhere over the decklist is
+          what people try first. Only works at all because the main window
+          sets dragDropEnabled: false (tauri.conf.json); Tauri v2 defaults
+          it to true, which makes the native layer swallow OS file drops
+          before the webview ever sees them, with no error to explain
+          why. */}
+      <main
+        className="content"
+        onDragEnter={(e) => {
+          e.preventDefault();
+          setDragDepth((d) => d + 1);
+        }}
+        onDragOver={(e) => {
+          // Without preventDefault the browser treats the drop as
+          // navigation and opens the image instead.
+          e.preventDefault();
+        }}
+        onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragDepth(0);
+          handleCustomFiles(e.dataTransfer.files);
+        }}
+      >
         <h2>Decklist</h2>
 
         {/* The import box is unconditional: with no project yet, importing
@@ -722,6 +826,56 @@ export default function DecklistPage() {
               ))}
             </ul>
           )}
+        </div>
+
+        {/* Adding your own art, beside the decklist box rather than on a
+            tab of its own, because the result is the same thing: cards in
+            this project.
+
+            Deliberately NOT disabled when the server is unreachable,
+            unlike the import button above. Importing a decklist has to
+            match each line against Scryfall before it can add anything; an
+            uploaded image has nothing to resolve, so this is the one way
+            into a project that works with no server at all. */}
+        <div
+          className={`import-box panel custom-drop${dragDepth > 0 ? " is-dragging" : ""}`}
+          style={{ marginTop: 10 }}
+        >
+          <p className="hint">
+            Or use your own art — drop image files anywhere on this page, or{" "}
+            <button
+              type="button"
+              className="linklike"
+              onClick={() => customFileInput.current?.click()}
+              disabled={addCustomImagesMutation.isPending}
+            >
+              choose files
+            </button>
+            . Each becomes a card named after its file. PNG, JPEG or WebP up to{" "}
+            {MAX_UPLOAD_MB}MB each.
+          </p>
+          <input
+            ref={customFileInput}
+            type="file"
+            multiple
+            accept={ACCEPTED_IMAGE_TYPES}
+            style={{ display: "none" }}
+            onChange={(e) => {
+              // Copy before resetting: picking the same file twice in a
+              // row fires no change event otherwise, which reads as the
+              // control being broken.
+              const files = e.target.files ? Array.from(e.target.files) : [];
+              e.target.value = "";
+              if (files.length) addCustomImagesMutation.mutate(files);
+            }}
+          />
+          {customProgress && addCustomImagesMutation.isPending && (
+            <p className="hint">
+              Adding {Math.min(customProgress.done + 1, customProgress.total)} of{" "}
+              {customProgress.total}…
+            </p>
+          )}
+          {customUploadError && <p className="error-text">{customUploadError}</p>}
         </div>
 
         <div className="decklist-head">
@@ -937,12 +1091,21 @@ function CardRowView(props: {
         >
           {card.printed_name ?? card.name}
         </span>
-        <PrintingPicker
-          card={card}
-          preferredLang={preferredLang}
-          disabled={disabled}
-          onPick={onPickPrinting}
-        />
+        {/* A Custom Image has no printings to choose between — it is one
+            uploaded file. The chip holds the picker's place so the row
+            still lines up with its neighbours. */}
+        {card.custom_image_id != null ? (
+          <span className="chip" title="Your own uploaded art — manage it on the Customs tab">
+            Custom
+          </span>
+        ) : (
+          <PrintingPicker
+            card={card}
+            preferredLang={preferredLang}
+            disabled={disabled}
+            onPick={onPickPrinting}
+          />
+        )}
         <span className="card-qty-stepper">
           <button
             className="btn-sm"
@@ -1042,14 +1205,21 @@ function CardRowView(props: {
                     >
                       {downloadStatus ? "Downloading…" : "Download"}
                     </button>
-                    <button
-                      className="btn-sm"
-                      onClick={() => onRefetch(originalSource.galleryItemId)}
-                      disabled={disabled}
-                      title="Re-download the original from Scryfall (overwrites the cached copy)"
-                    >
-                      Re-Fetch
-                    </button>
+                    {/* Nothing to re-fetch from for a Custom Image: its
+                        source is the file the user uploaded, and the way
+                        to replace it is to upload a different one. The
+                        server rejects the call outright; hiding the
+                        button is how the user finds that out first. */}
+                    {card.custom_image_id == null ? (
+                      <button
+                        className="btn-sm"
+                        onClick={() => onRefetch(originalSource.galleryItemId)}
+                        disabled={disabled}
+                        title="Re-download the original from Scryfall (overwrites the cached copy)"
+                      >
+                        Re-Fetch
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               )}

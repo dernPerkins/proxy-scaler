@@ -14,6 +14,7 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry } from "../deckEntries";
+import { syncCustomImages } from "../syncCustoms";
 import { DownloadCanceled, runDownload } from "../download";
 import { zipFilename } from "../zipFilename";
 import type { ExportZipFormat } from "../api/types";
@@ -107,6 +108,10 @@ export default function ExportPage() {
     setDownloadError(null);
     setDownloading(true);
     try {
+      // Same as the PDF tab: the archive is built from files on the
+      // server's disk, so custom art it hasn't seen has to be synced
+      // first (syncCustoms.ts).
+      await syncCustomImages(cards, serverVersion);
       // Static source, no prepare callback: zipping is disk-speed file
       // copying server-side, so unlike the PDF there is no render phase
       // to poll — Rust POSTs the body and streams the archive to disk.
