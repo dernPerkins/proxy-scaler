@@ -377,6 +377,54 @@ def test_process_download_task_overwrites_cached_original(tmp_path, monkeypatch)
     assert stale_thumb.read_bytes() != b"stale thumb"
 
 
+def test_process_download_task_saves_cleaned_bytes(tmp_path, monkeypatch) -> None:
+    """A defective download (phantom near-black bottom row on a light card,
+    black RGB under the transparent corners) must be cleaned at the
+    download boundary, so the saved original — which is also what the
+    upscaler and ZIP export consume — carries the fix."""
+    w, h, radius = 100, 140, 12
+    border = (243, 239, 227)
+    img = Image.new("RGBA", (w, h), (*border, 255))
+    px = img.load()
+    for cy, cx, sy, sx in ((0, 0, 1, 1), (0, w - 1, 1, -1), (h - 1, 0, -1, 1), (h - 1, w - 1, -1, -1)):
+        for dy in range(radius):
+            for dx in range(radius):
+                if (radius - dx) ** 2 + (radius - dy) ** 2 > radius * radius:
+                    px[cx + sx * dx, cy + sy * dy] = (0, 0, 0, 0)
+    for x in range(w):
+        if px[x, h - 1][3] == 255:
+            px[x, h - 1] = (19, 12, 12, 255)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    raw = buf.getvalue()
+
+    task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None: raw)
+
+    result = process_download_task(task)
+
+    saved = result.original_path.read_bytes()
+    assert saved != raw
+    out = Image.open(io.BytesIO(saved))
+    opx = out.load()
+    assert opx[w // 2, h - 1][:3] == border  # phantom row scrubbed
+    assert opx[0, 0] == (*border, 0)  # underlay recolored, alpha kept
+    assert out.getchannel("A").tobytes() == img.getchannel("A").tobytes()
+
+
+def test_process_download_task_clean_bytes_saved_verbatim(tmp_path, monkeypatch) -> None:
+    """Cleaning must be byte-invisible for a defect-free download — the
+    originals cache stays a faithful copy of what Scryfall served (and
+    use_originals ZIP export re-serves those exact bytes)."""
+    task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
+    fresh = _fake_png_bytes()
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None: fresh)
+
+    result = process_download_task(task)
+
+    assert result.original_path.read_bytes() == fresh
+
+
 def _write_fake_original(tmp_path: Path, *, size: tuple[int, int] = (600, 840)) -> Path:
     path = tmp_path / "originals" / "sol-id_single.png"
     path.parent.mkdir(parents=True, exist_ok=True)

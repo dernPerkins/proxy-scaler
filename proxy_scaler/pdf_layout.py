@@ -18,6 +18,7 @@ from PIL import Image
 from .decklist import DeckEntry
 from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, MM_PER_IN, ORIGINAL_MODEL, target_pixels
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
+from .postprocess import DARK_EDGE_DELTA_MIN, DARK_EDGE_LUM_MAX
 
 # fpdf2 embeds raw PIL images losslessly (FlateDecode/zlib), which compresses
 # photographic card art poorly (~1.5-3x) and produces huge files — a 9-card
@@ -339,7 +340,7 @@ def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -
         # and overwriting would be a no-op anyway), and genuine art
         # detail fails the first — it stays untouched.
         pl = _lum(p)
-        return pl < 60 and sample_lum - pl > 60
+        return pl < DARK_EDGE_LUM_MAX and sample_lum - pl > DARK_EDGE_DELTA_MIN
 
     # Column-top offsets must be measured before any fill mutates alpha —
     # the vertical scrub below needs to know where each column's
@@ -486,7 +487,10 @@ def _bleed_edge_index(
         return rgb.crop((0, i, w, i + 1)) if horizontal else rgb.crop((i, 0, i + 1, h))
 
     edge = _median_lum(strip(edge_index))
-    if edge < 60 and _median_lum(strip(inset_index)) - edge > 60:
+    if (
+        edge < DARK_EDGE_LUM_MAX
+        and _median_lum(strip(inset_index)) - edge > DARK_EDGE_DELTA_MIN
+    ):
         return inset_index
     return edge_index
 

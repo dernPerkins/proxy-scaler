@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .db import TaskRow
 
 from .decklist import DeckEntry
+from .postprocess import clean_original_png
 from .dpi import (
     DEFAULT_DPI,
     ORIGINAL_DPI,
@@ -263,6 +264,32 @@ def _save_original(
     return path
 
 
+def _download_clean_png(
+    url: str,
+    *,
+    session=None,
+    describe: str = "",
+    log: Callable[[str], None] | None = None,
+) -> bytes:
+    """download_png + postprocess.clean_original_png: the one boundary
+    where fresh Scryfall bytes enter the pipeline. Cleaning must live here
+    rather than in _save_original because _regenerate_face_from_card and
+    process_entries keep the returned bytes and feed them straight to
+    load_or_upscale — the saved original and the upscaler input have to be
+    the same cleaned bytes. Cache-hit reads never pass through, so
+    already-cached originals are left as-is ("new downloads only"; Re-Fetch
+    is the upgrade path). Calls the module-level download_png so test
+    monkeypatches still intercept."""
+    raw = download_png(url, session=session)
+    cleaned = clean_original_png(raw)
+    if cleaned.applied:
+        msg = f"cleanup[{','.join(cleaned.applied)}]: {describe or url}"
+        print(msg, flush=True)
+        if log is not None:
+            log(msg)
+    return cleaned.png_bytes
+
+
 _THUMB_MAX_DIM = 220  # px, longest side — does most of the size-reduction work
 _THUMB_TARGET_BYTES = 50_000
 _THUMB_QUALITY_STEPS = (85, 70, 55, 40)  # last is the floor, always accepted
@@ -499,7 +526,11 @@ def _regenerate_face_from_card(
     else:
         log(f"Downloading {face.png_url}")
         with _phase(timings, "download"):
-            png_bytes = download_png(face.png_url)
+            png_bytes = _download_clean_png(
+                face.png_url,
+                describe=f"{face.card_name} ({face.scryfall_id})",
+                log=log,
+            )
 
     original_path = _save_original(
         png_bytes, cache_dir, face.scryfall_id, face.face_index
@@ -630,7 +661,11 @@ def process_download_task(
     if on_progress:
         on_progress(f"Downloading original for {task.face_name}…")
     with _phase(timings, "download"):
-        png_bytes = download_png(task.png_url)
+        png_bytes = _download_clean_png(
+            task.png_url,
+            describe=f"{task.face_name} ({task.scryfall_id})",
+            log=on_progress,
+        )
     with _phase(timings, "encode"):
         original_path = _save_original(
             png_bytes,
@@ -767,7 +802,9 @@ def prefetch_original(task: TaskRow) -> Path | None:
     path = original_cache_path(Path(task.cache_dir), task.scryfall_id, task.face_index)
     if path.is_file():
         return path
-    png_bytes = download_png(task.png_url)
+    png_bytes = _download_clean_png(
+        task.png_url, describe=f"{task.face_name} ({task.scryfall_id})"
+    )
     original_path = _save_original(
         png_bytes, Path(task.cache_dir), task.scryfall_id, task.face_index
     )
@@ -975,8 +1012,11 @@ def process_entries(
                         )
                         if not orig.exists():
                             if png_bytes is None:
-                                png_bytes = download_png(
-                                    face.png_url, session=client._session
+                                png_bytes = _download_clean_png(
+                                    face.png_url,
+                                    session=client._session,
+                                    describe=f"{face.card_name} ({face.scryfall_id})",
+                                    log=log,
                                 )
                             orig = _save_original(
                                 png_bytes,
@@ -1017,8 +1057,11 @@ def process_entries(
                         continue
 
                     if png_bytes is None:
-                        png_bytes = download_png(
-                            face.png_url, session=client._session
+                        png_bytes = _download_clean_png(
+                            face.png_url,
+                            session=client._session,
+                            describe=f"{face.card_name} ({face.scryfall_id})",
+                            log=log,
                         )
                     if original_path is None:
                         original_path = _save_original(
