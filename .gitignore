@@ -6,6 +6,7 @@ minisign.pub
 test.key
 
 backs/
+customs/
 imgcache/
 output/
 output_smoke/
