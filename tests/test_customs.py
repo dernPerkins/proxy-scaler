@@ -664,6 +664,66 @@ def test_generate_never_upscales_a_custom(
     assert task.dpi == pytest.approx(600, abs=1)
 
 
+def test_prune_survives_done_custom_tasks(tmp_path: Path, db_path: Path) -> None:
+    """prune_stale_gallery_items rebuilds filenames for done tasks; custom
+    tasks have no set/collector, which used to crash it with
+    AttributeError on set_code.upper() — 500ing the whole adopt/reconcile
+    route (and with it the client's on-load self-heal) for any project
+    that ever finished a custom task."""
+    from proxy_scaler.upscale import original_cache_path
+
+    tag = "tag-p"
+    cache_dir = tmp_path / "cache"
+    # A done custom_source task whose cached original exists → kept.
+    source_tid = enqueue_task(
+        tag,
+        custom_hash=HASH_A,
+        face_index=None,
+        face_label=None,
+        face_name="My Alter",
+        card_name="My Alter",
+        set_code=None,
+        collector_number=None,
+        png_url=None,
+        dpi=346,
+        model=CUSTOM_SOURCE_MODEL,
+        tile_size=0,
+        output_dir=str(tmp_path / "out"),
+        cache_dir=str(cache_dir),
+        weights_dir=str(tmp_path / "weights"),
+        db_path=db_path,
+    )
+    original = original_cache_path(cache_dir, None, None, custom_hash=HASH_A)
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(b"png")
+    # A done custom upscale task whose output file is gone → pruned.
+    upscale_tid = enqueue_task(
+        tag,
+        custom_hash=HASH_B,
+        face_index=None,
+        face_label=None,
+        face_name="Other Alter",
+        card_name="Other Alter",
+        set_code=None,
+        collector_number=None,
+        png_url=None,
+        dpi=600,
+        model="ultrasharp_v2_lite",
+        tile_size=0,
+        output_dir=str(tmp_path / "out"),
+        cache_dir=str(cache_dir),
+        weights_dir=str(tmp_path / "weights"),
+        db_path=db_path,
+    )
+    for tid in (source_tid, upscale_tid):
+        db_module.mark_task_done(tid, db_path=db_path)
+
+    pruned = db_module.prune_stale_gallery_items(tag, db_path=db_path)
+    assert pruned == 1
+    assert db_module.get_task(source_tid, db_path=db_path) is not None
+    assert db_module.get_task(upscale_tid, db_path=db_path) is None
+
+
 def test_custom_entries_never_reach_the_card_resolver(
     tmp_path: Path, db_path: Path, monkeypatch
 ) -> None:

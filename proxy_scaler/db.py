@@ -1643,6 +1643,80 @@ def adopt_gallery_items(
     return adopted
 
 
+def backfill_source_variants(project_tag: str, db_path: Path | str | None = None) -> int:
+    """Register the source variant — the cached ~300 DPI original, or a
+    Custom Image's uploaded file — for every upscaled row this project's
+    gallery shows whose source file exists on disk but has no registry
+    row of its own.
+
+    The completion-time registration in upsert_gallery_item_for_task only
+    covers upscales finished after it existed; everything upscaled before
+    it (or by an older server) left its original as a bare cache file the
+    registry-first matching correctly — but confusingly — reports as
+    missing under "Use 300 DPI originals". Running here, on the same
+    adopt/reconcile call the client fires on every project load, heals
+    that history without a Download click. Each row already stores its
+    own original_path, so this needs no directory scan, no filename
+    parsing, and no card corpus — just one stat per upscaled face.
+
+    Returns the number of source rows created (memberships added to
+    already-registered sources count too, via upsert/add)."""
+    from proxy_scaler.dpi import CUSTOM_SOURCE_MODEL, ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.pipeline import FaceResult
+
+    created = 0
+    # One pass per distinct face: sibling DPI/model variants of a face all
+    # share one original, so dedupe before statting.
+    seen_faces: set[tuple[str, int | None]] = set()
+    for item in list_gallery_items(project_tag, db_path=db_path):
+        if item["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL):
+            continue
+        identity = identity_key(item["scryfall_id"], item["custom_hash"])
+        face_key = (identity, item["face_index"])
+        if face_key in seen_faces:
+            continue
+        seen_faces.add(face_key)
+
+        if item["custom_hash"]:
+            # An upscaled custom's source registers at its true measured
+            # DPI, same as the enqueue path (see services/generation.py).
+            from proxy_scaler import customs
+
+            measured = customs.source_dpi(item["custom_hash"])
+            if measured is None:
+                continue
+            variant_model, variant_dpi = CUSTOM_SOURCE_MODEL, round(measured)
+        else:
+            variant_model, variant_dpi = ORIGINAL_MODEL, ORIGINAL_DPI
+
+        original_path = Path(item["original_path"])
+        # Same guard as upsert_gallery_item_for_task: a row whose output IS
+        # its original is already a source-tier row in all but name —
+        # nothing separate to register.
+        if str(original_path) == str(item["out_path"]) or not original_path.is_file():
+            continue
+        known = find_generated_image(
+            identity, item["face_index"], variant_model, variant_dpi, db_path=db_path
+        )
+        if known is not None:
+            add_membership(project_tag, int(known["id"]), db_path=db_path)
+            continue
+        source = FaceResult.from_dict(
+            {
+                **item,
+                "out_path": str(original_path),
+                "model": variant_model,
+                "dpi": variant_dpi,
+                "native_scale": 1,
+                "device": "unknown",
+                "created_at": None,
+            }
+        )
+        upsert_gallery_item(project_tag, source, db_path=db_path)
+        created += 1
+    return created
+
+
 def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = None) -> int:
     """Delete the registry rows this project's gallery shows — and its
     "done" task records — whose output file no longer exists on disk, so
@@ -1663,7 +1737,7 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
     if not project_tag:
         return 0
     # Local import: pipeline imports this module at runtime.
-    from .dpi import ORIGINAL_MODEL
+    from .dpi import CUSTOM_SOURCE_MODEL, ORIGINAL_MODEL
     from .pipeline import output_filename
     from .upscale import original_cache_path
 
@@ -1690,18 +1764,22 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
 
         stale_tasks = []
         for t in conn.execute(
-            "SELECT id, scryfall_id, face_index, face_name, set_code, "
-            "collector_number, face_label, model, dpi, output_dir, cache_dir, "
-            "lang FROM generation_tasks "
+            "SELECT id, scryfall_id, custom_hash, face_index, face_name, "
+            "set_code, collector_number, face_label, model, dpi, output_dir, "
+            "cache_dir, lang FROM generation_tasks "
             "WHERE project_tag = ? AND status = 'done'",
             (project_tag,),
         ):
-            # Download tasks have no output file — their artifact is the
-            # cached original itself, at a deterministic path (and their
-            # sentinel model would crash output_filename's parse_model).
-            if t["model"] == ORIGINAL_MODEL:
+            # Download and custom-source tasks have no output file — their
+            # artifact is the cached original itself, at a deterministic
+            # path (and their sentinel models would crash output_filename's
+            # parse_model).
+            if t["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL):
                 original = original_cache_path(
-                    Path(t["cache_dir"]), t["scryfall_id"], t["face_index"]
+                    Path(t["cache_dir"]),
+                    t["scryfall_id"],
+                    t["face_index"],
+                    custom_hash=t["custom_hash"],
                 )
                 if not original.is_file():
                     stale_tasks.append(int(t["id"]))
@@ -1709,9 +1787,11 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
             # A done task's file may carry either filename format: tasks
             # completed since the registry embed their scryfall_id, older
             # ones don't — and legacy files are never renamed. Stale only
-            # when neither name exists.
+            # when neither name exists. Custom Images have only ever had
+            # one filename shape (and no set/collector to build the legacy
+            # one from), so they check a single name.
             out_dir = Path(t["output_dir"])
-            names = (
+            names = [
                 output_filename(
                     t["face_name"],
                     t["set_code"],
@@ -1721,17 +1801,21 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
                     t["dpi"],
                     lang=t["lang"],
                     scryfall_id=t["scryfall_id"],
+                    custom_hash=t["custom_hash"],
                 ),
-                output_filename(
-                    t["face_name"],
-                    t["set_code"],
-                    t["collector_number"],
-                    t["face_label"],
-                    t["model"],
-                    t["dpi"],
-                    lang=t["lang"],
-                ),
-            )
+            ]
+            if not t["custom_hash"]:
+                names.append(
+                    output_filename(
+                        t["face_name"],
+                        t["set_code"],
+                        t["collector_number"],
+                        t["face_label"],
+                        t["model"],
+                        t["dpi"],
+                        lang=t["lang"],
+                    )
+                )
             if not any((out_dir / name).is_file() for name in names):
                 stale_tasks.append(int(t["id"]))
         for tid in stale_tasks:

@@ -755,6 +755,57 @@ def test_upscale_completion_also_registers_the_original(
     assert len(list_gallery_items(tag, db_path=db_path)) == 2
 
 
+def test_backfill_registers_sources_for_historical_upscales(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Rows upscaled before completion-time registration existed have a
+    cached original on disk but no source row — the adopt-time backfill
+    (db.backfill_source_variants) is what heals them, so "Use 300 DPI
+    originals" works without a Download click."""
+    from proxy_scaler.db import backfill_source_variants, upsert_gallery_item
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    tag = "tag-p"
+    original = tmp_path / "sol-id_single.png"
+    original.write_bytes(b"png")
+    # Two sibling upscaled variants of one face, sharing that original —
+    # simulating pre-fix history (no original row was ever written).
+    for dpi in (600, 1200):
+        upsert_gallery_item(
+            tag,
+            _result(
+                out_path=tmp_path / f"sol-{dpi}.png",
+                original_path=original,
+                dpi=dpi,
+            ),
+            db_path=db_path,
+        )
+
+    created = backfill_source_variants(tag, db_path=db_path)
+    assert created == 1  # one face, despite two variants
+
+    items = list_gallery_items(tag, db_path=db_path)
+    [orig_row] = [i for i in items if i["model"] == ORIGINAL_MODEL]
+    assert orig_row["dpi"] == ORIGINAL_DPI
+    assert orig_row["out_path"] == str(original)
+
+    # Idempotent: a second reconcile creates nothing new.
+    assert backfill_source_variants(tag, db_path=db_path) == 0
+
+    # A face whose original is gone from disk is left alone.
+    original.unlink()
+    upsert_gallery_item(
+        tag,
+        _result(
+            scryfall_id="other-id",
+            out_path=tmp_path / "other.png",
+            original_path=tmp_path / "missing.png",
+        ),
+        db_path=db_path,
+    )
+    assert backfill_source_variants(tag, db_path=db_path) == 0
+
+
 def test_upsert_gallery_item_for_task_noop_without_project_tag(db_path: Path) -> None:
     tid = _enqueue_sol_ring(db_path, project_tag=None)
     task = get_task(tid, db_path=db_path)
