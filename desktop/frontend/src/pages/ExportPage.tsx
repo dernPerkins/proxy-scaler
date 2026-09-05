@@ -14,7 +14,8 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry } from "../deckEntries";
-import { syncCustomImages } from "../syncCustoms";
+import { registerCustomCards, waitForTasks } from "../syncCustoms";
+import { UploadCanceled } from "../uploadProgress";
 import { DownloadCanceled, runDownload } from "../download";
 import { zipFilename } from "../zipFilename";
 import type { ExportZipFormat } from "../api/types";
@@ -108,10 +109,13 @@ export default function ExportPage() {
     setDownloadError(null);
     setDownloading(true);
     try {
-      // Same as the PDF tab: the archive is built from files on the
-      // server's disk, so custom art it hasn't seen has to be synced
-      // first (syncCustoms.ts).
-      await syncCustomImages(cards, serverVersion);
+      // Same as the PDF tab: the archive is built from the server's
+      // registry, so custom art it hasn't seen has to be synced AND
+      // registered first — normally done at add time, re-run here to
+      // self-heal customs added while no server was reachable
+      // (registerCustomCards is idempotent; the wait covers the
+      // file-copy task a never-cached upload needs).
+      await waitForTasks(await registerCustomCards(cards, projectTag, serverVersion));
       // Static source, no prepare callback: zipping is disk-speed file
       // copying server-side, so unlike the PDF there is no render phase
       // to poll — Rust POSTs the body and streams the archive to disk.
@@ -121,7 +125,7 @@ export default function ExportPage() {
       });
     } catch (err) {
       // Cancelling is a normal outcome, not something to show as an error.
-      if (err instanceof DownloadCanceled) return;
+      if (err instanceof DownloadCanceled || err instanceof UploadCanceled) return;
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setDownloading(false);

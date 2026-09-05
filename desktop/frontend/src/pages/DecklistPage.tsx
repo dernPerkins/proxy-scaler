@@ -11,7 +11,13 @@ import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
-import { DEFAULT_GEN_PATHS, DPI_OPTIONS, ORIGINAL_MODEL, modelDisplayName } from "../constants";
+import {
+  CUSTOM_SOURCE_MODEL,
+  DEFAULT_GEN_PATHS,
+  DPI_OPTIONS,
+  ORIGINAL_MODEL,
+  modelDisplayName,
+} from "../constants";
 import { useConnection } from "../connection";
 import {
   getProbedDevice,
@@ -23,7 +29,8 @@ import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri
 import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry } from "../deckEntries";
-import { syncCustomImages } from "../syncCustoms";
+import { registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { UploadCanceled } from "../uploadProgress";
 import {
   ACCEPTED_IMAGE_TYPES,
   MAX_UPLOAD_MB,
@@ -363,7 +370,18 @@ export default function DecklistPage() {
       // 30-image drop should append 30 cards once, not re-render the list
       // 30 times.
       if (result.added.length) {
-        await addCustomCards(result.added.map((image) => image.id));
+        const added = await addCustomCards(result.added.map((image) => image.id));
+        // "Dropped it, it's ready to print": sync + register on the spot
+        // when a server is reachable, so the PDF tab never asks for a
+        // Download/Generate click first. Best-effort and off the critical
+        // path — the add itself already succeeded, and an offline add
+        // registers later (next add, Generate/Download, or the PDF/ZIP
+        // export paths, which all call the same idempotent helper).
+        if (!serverUnavailable) {
+          void registerCustomCards(added.cards, added.projectTag, serverVersion)
+            .then(() => invalidateStatus())
+            .catch(() => {});
+        }
       }
       return result;
     },
@@ -408,7 +426,11 @@ export default function DecklistPage() {
       );
       invalidateStatus();
     },
-    onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
+    onError: (err: Error) => {
+      // Cancelling the custom-image upload is a normal outcome, not a failure.
+      if (err instanceof UploadCanceled) return;
+      setStatus(`Generate failed: ${err.message}`);
+    },
   });
 
   const downloadAllMutation = useMutation({
@@ -433,7 +455,11 @@ export default function DecklistPage() {
       );
       invalidateStatus();
     },
-    onError: (err: Error) => setStatus(`Download failed: ${err.message}`),
+    onError: (err: Error) => {
+      // Cancelling the custom-image upload is a normal outcome, not a failure.
+      if (err instanceof UploadCanceled) return;
+      setStatus(`Download failed: ${err.message}`);
+    },
   });
 
   const generateCardMutation = useMutation({
@@ -452,7 +478,11 @@ export default function DecklistPage() {
       });
     },
     onSuccess: invalidateStatus,
-    onError: (err: Error) => setStatus(`Generate failed: ${err.message}`),
+    onError: (err: Error) => {
+      // Cancelling the custom-image upload is a normal outcome, not a failure.
+      if (err instanceof UploadCanceled) return;
+      setStatus(`Generate failed: ${err.message}`);
+    },
   });
 
   const regenerateMutation = useMutation({
@@ -1134,9 +1164,15 @@ function CardRowView(props: {
               {expanded ? "Hide" : "Show"}
             </button>
           )}
-          <button className="btn-sm" onClick={onGenerate} disabled={disabled}>
-            Generate
-          </button>
+          {/* Custom Images are never upscaled — the server routes any
+              generate straight to source registration, which the bulk
+              buttons already cover — so a per-row Generate would be a
+              button that upscales nothing. */}
+          {card.custom_image_id == null && (
+            <button className="btn-sm" onClick={onGenerate} disabled={disabled}>
+              Generate
+            </button>
+          )}
           <button className="btn-sm btn-danger" onClick={onRemove}>
             Remove
           </button>
@@ -1144,7 +1180,11 @@ function CardRowView(props: {
       </div>
 
       {faces.length === 0 ? (
-        <div className="empty-note">Not generated yet.</div>
+        <div className="empty-note">
+          {card.custom_image_id != null
+            ? "Not registered for printing yet — happens automatically once a generation server is reachable."
+            : "Not generated yet."}
+        </div>
       ) : (
         faces.map((face, i) => (
           <div key={i} className="variants">
@@ -1179,8 +1219,13 @@ function CardRowView(props: {
           // the per-variant thumbs below — its "full" image IS the
           // original, so a "300 DPI · Original" tile with Compare/Regen
           // would be nonsense.
-          const originalVariant = doneVariants.find((v) => v.model === ORIGINAL_MODEL);
-          const upscaleVariants = doneVariants.filter((v) => v.model !== ORIGINAL_MODEL);
+          // custom_source is a source-tier variant exactly like a
+          // download-only original — its "full" image IS the uploaded
+          // file, so a per-variant tile with Compare/Regen would compare
+          // it against itself.
+          const sourceModels = [ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL] as string[];
+          const originalVariant = doneVariants.find((v) => sourceModels.includes(v.model));
+          const upscaleVariants = doneVariants.filter((v) => !sourceModels.includes(v.model));
           const originalSource = originalVariant ?? upscaleVariants[0];
           return (
             <div key={i} className="thumbs">

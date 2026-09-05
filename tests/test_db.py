@@ -719,6 +719,42 @@ def test_upsert_gallery_item_for_task_writes_and_updates(db_path: Path) -> None:
     assert items2[0]["device"] == "cpu"
 
 
+def test_upscale_completion_also_registers_the_original(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Finishing an upscale registers the ~300 DPI original it necessarily
+    put on disk as its own download-variant row — that's what makes "Use
+    300 DPI originals" work for a card the user only ever upscaled,
+    instead of reporting an original missing that is sitting right there
+    in the cache."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    tag = "tag-p"
+    tid = _enqueue_sol_ring(db_path, project_tag=tag)
+    task = get_task(tid, db_path=db_path)
+
+    original = tmp_path / "sol-id_single.png"
+    original.write_bytes(b"png")
+    result = _result(original_path=original)
+    upsert_gallery_item_for_task(task, result, db_path=db_path)
+
+    items = list_gallery_items(tag, db_path=db_path)
+    assert {(i["model"], i["dpi"]) for i in items} == {
+        ("ultrasharp_v2", 800),
+        (ORIGINAL_MODEL, ORIGINAL_DPI),
+    }
+    [orig_row] = [i for i in items if i["model"] == ORIGINAL_MODEL]
+    assert orig_row["out_path"] == str(original)
+
+    # A download-only task's result IS the original (out_path ==
+    # original_path) — no second row for those.
+    down = _result(
+        out_path=original, original_path=original, model=ORIGINAL_MODEL, dpi=ORIGINAL_DPI
+    )
+    upsert_gallery_item_for_task(task, down, db_path=db_path)
+    assert len(list_gallery_items(tag, db_path=db_path)) == 2
+
+
 def test_upsert_gallery_item_for_task_noop_without_project_tag(db_path: Path) -> None:
     tid = _enqueue_sol_ring(db_path, project_tag=None)
     task = get_task(tid, db_path=db_path)

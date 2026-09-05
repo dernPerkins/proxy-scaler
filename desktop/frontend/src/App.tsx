@@ -4,6 +4,7 @@ import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
+import UploadProgressModal from "./components/UploadProgressModal";
 import ProjectBar from "./components/ProjectBar";
 import QuitPrompt from "./components/QuitPrompt";
 import ResumeTasksPrompt from "./components/ResumeTasksPrompt";
@@ -92,6 +93,7 @@ export default function App() {
         <ServerBootModal />
         <ConnectionLostDialog />
         <DownloadProgressModal />
+        <UploadProgressModal />
         {/* Mounted for its close-request listener, not for what it draws:
             it renders nothing until the window is actually closing. */}
         <QuitPrompt />

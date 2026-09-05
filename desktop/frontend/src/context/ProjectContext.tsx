@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
+import { setProjectSnapshot } from "../syncCustoms";
 import type {
   CardRow,
   LoadedProject,
@@ -140,8 +141,15 @@ interface ProjectContextValue {
    *
    *  The one import path that is NOT resolve-gated, and so the only one
    *  that works with no generation server reachable: a Custom Image has
-   *  nothing to resolve. */
-  addCustomCards: (customImageIds: number[]) => Promise<void>;
+   *  nothing to resolve.
+   *
+   *  Returns the refreshed card list and the project tag (read through a
+   *  ref, so it is correct even when this very call created the project)
+   *  — what a caller needs to hand straight to registerCustomCards()
+   *  without waiting a render for the context state to catch up. */
+  addCustomCards: (
+    customImageIds: number[],
+  ) => Promise<{ cards: CardRow[]; projectTag: string | null }>;
   addingCustomCards: boolean;
   /** Re-read this project's cards from the store. Needed after deleting a
    *  Custom Image, which deletes the cards using it — a change made
@@ -261,6 +269,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<ProjectSettings>(getDefaultSettings);
   const [decklistText, setDecklistTextState] = useState("");
   const [cards, setCards] = useState<CardRow[]>([]);
+
+  // Mirror the cards + tag into syncCustoms' module-level snapshot for
+  // connection.tsx::switchTo, which mounts above this provider and so
+  // cannot read the context — it needs the project's Custom Images to run
+  // the "does the target server have them?" check before committing a
+  // switch to remote.
+  useEffect(() => {
+    setProjectSnapshot({ cards, projectTag });
+  }, [cards, projectTag]);
   const [error, setError] = useState<string | null>(null);
   // Whether settings.model is still an unreviewed default, i.e. safe for
   // the GPU probe below to revise. Flipped by any deliberate model change
@@ -302,6 +319,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjectId(id);
   }
 
+  // Ref twin of the projectTag state, for async flows that need the tag
+  // in the same tick it was created — a drop onto a fresh session creates
+  // the Unnamed Project *inside* the add mutation, and the state variable
+  // a caller closed over is still null when the mutation resolves.
+  const projectTagRef = useRef<string | null>(null);
+  function adoptProjectTag(tag: string | null) {
+    projectTagRef.current = tag;
+    setProjectTag(tag);
+  }
+
   function applySettings(next: ProjectSettings) {
     settingsRef.current = next;
     setSettings(next);
@@ -325,7 +352,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // projectName is left alone — the row's name really is '', and the
     // bar's field holds whatever the user is in the middle of typing.
     adoptProjectId(unnamed.id);
-    setProjectTag(unnamed.tag);
+    adoptProjectTag(unnamed.tag);
     // The Unnamed Project is what the next launch should restore.
     await projectApi.setLastProjectId(unnamed.id);
     return unnamed.id;
@@ -409,7 +436,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   function applyLoaded(project: LoadedProject) {
     settleSettingsWriteBeforeTransition();
     adoptProjectId(project.id);
-    setProjectTag(project.tag);
+    adoptProjectTag(project.tag);
     setProjectName(project.name);
     applySettings(project.settings);
     // A saved project's stored model is an explicit choice, whatever it
@@ -500,7 +527,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         // one that was just deleted.
         discardPendingSettingsWrite();
         adoptProjectId(null);
-        setProjectTag(null);
+        adoptProjectTag(null);
         setProjectName("");
         setDecklistTextState("");
         setCards([]);
@@ -766,7 +793,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       discardOrphanedUnnamedRow();
     }
     adoptProjectId(null);
-    setProjectTag(null);
+    adoptProjectTag(null);
     setProjectName("");
     applySettings(getDefaultSettings());
     modelIsDefault.current = true;
@@ -914,7 +941,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     importingResolvedCards: importResolvedCardsMutation.isPending,
     addCustomCards: async (customImageIds) => {
-      await addCustomCardsMutation.mutateAsync(customImageIds);
+      const cards = await addCustomCardsMutation.mutateAsync(customImageIds);
+      // The ref, not the state: on a fresh session the mutation itself
+      // just created the Unnamed Project, and the state tag the caller
+      // closed over is still null.
+      return { cards, projectTag: projectTagRef.current };
     },
     addingCustomCards: addCustomCardsMutation.isPending,
     reloadCards: async () => {

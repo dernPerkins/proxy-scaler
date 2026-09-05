@@ -15,7 +15,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
 import type { CustomImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { useServerVersion } from "../config";
 import { useProject } from "../context/ProjectContext";
+import { registerCustomCards } from "../syncCustoms";
 import {
   ACCEPTED_IMAGE_TYPES,
   MAX_UPLOAD_MB,
@@ -105,6 +107,7 @@ function CustomTile({
 export default function CustomsPage() {
   const queryClient = useQueryClient();
   const { cards, addCustomCards, reloadCards } = useProject();
+  const serverVersion = useServerVersion();
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -257,7 +260,21 @@ export default function CustomsPage() {
             key={image.id}
             image={image}
             inProject={idsInProject.has(image.id)}
-            onAdd={() => void addCustomCards([image.id])}
+            onAdd={() =>
+              void addCustomCards([image.id]).then((added) =>
+                // "Added it, it's ready to print" — same best-effort
+                // sync + register as the Decklist dropzone. Quietly a
+                // no-op with no server reachable; the PDF/ZIP export
+                // paths re-run it then.
+                registerCustomCards(added.cards, added.projectTag, serverVersion)
+                  .then(() =>
+                    queryClient.invalidateQueries({
+                      queryKey: ["generation-status", added.projectTag],
+                    }),
+                  )
+                  .catch(() => {}),
+              )
+            }
             onDelete={async () => {
               const uses = await projectApi.countCardsUsingCustomImage(image.id);
               setPendingDelete({ image, uses });

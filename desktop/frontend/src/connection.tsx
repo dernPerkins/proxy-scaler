@@ -14,8 +14,16 @@ import {
   setServerReady,
   setServerStarting,
   setServerVersion,
+  serverSupportsCustomImages,
 } from "./config";
+import {
+  getProjectSnapshot,
+  hasCustomCards,
+  probeMissingCustoms,
+  registerCustomCards,
+} from "./syncCustoms";
 import { invokeStartLocalServer, invokeStopLocalServer, isTauri } from "./tauri";
+import { runCustomUploads, UploadCanceled } from "./uploadProgress";
 
 const REMOTE_TIMEOUT_MS = 8000;
 const HEALTH_PING_INTERVAL_MS = 30_000;
@@ -50,6 +58,24 @@ export type ConnectionStatus =
 // a genuine network failure (unreachable host, connection refused, DNS
 // failure), which is all this needs: "is anything there at all" before
 // committing the app to talking to it.
+/** The TARGET server's version, read directly (generationApi talks to the
+ *  CONNECTED server, which during a switch is still the old one). Null on
+ *  any failure — an older server 404s /api/version — and null is what the
+ *  version floors treat as "too old". */
+async function fetchTargetVersion(baseUrl: string, timeoutMs: number): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${baseUrl}/api/version`, { signal: controller.signal });
+    if (!resp.ok) return null;
+    return ((await resp.json()) as { version: string }).version;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function isReachable(url: string, timeoutMs: number): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -84,8 +110,14 @@ interface ConnectionValue {
   remoteHealthy: boolean;
   /** First connect, from the launch picker. Drives `status`. */
   connect: (target: ConnectionTarget) => Promise<void>;
-  /** Mid-session switch. Returns an error message, or null on success. */
-  switchTo: (target: ConnectionTarget) => Promise<string | null>;
+  /** Mid-session switch. Returns an error message, or null on success.
+   *  `confirmCustomsUpload` is asked before a switch to a remote server
+   *  missing some of this project's Custom Images — false aborts the
+   *  switch with the app left on its current server. */
+  switchTo: (
+    target: ConnectionTarget,
+    opts?: { confirmCustomsUpload?: (missingCount: number) => Promise<boolean> },
+  ) => Promise<string | null>;
   /**
    * Re-attempt a local sidecar start after one failed — ServerBootModal's
    * "Try again". Safe to call repeatedly: main.rs hard-kills the child and
@@ -334,14 +366,63 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setStatus({ kind: "connected" });
   }
 
-  async function switchTo(target: ConnectionTarget): Promise<string | null> {
+  async function switchTo(
+    target: ConnectionTarget,
+    opts?: {
+      /** Asked when the target server is missing some of this project's
+       *  Custom Images: resolve true to upload them and proceed, false to
+       *  abort the switch. Omitted = proceed (non-interactive callers). */
+      confirmCustomsUpload?: (missingCount: number) => Promise<boolean>;
+    },
+  ): Promise<string | null> {
     // Validate the destination *before* tearing anything down — an
     // unreachable host should leave the current connection untouched
     // rather than stranding the app with no server at all.
+    let targetVersion: string | null = null;
     if (target.mode === "remote") {
       const url = `http://${target.host}:${target.port}`;
       if (!(await isReachable(`${url}/api/health`, REMOTE_TIMEOUT_MS))) {
         return `Couldn't reach ${target.host}:${target.port} — check the address and that the server is running.`;
+      }
+
+      // Custom Images gate. A remote server that has never seen this
+      // project's uploads would silently defer them all to the next
+      // print, so the missing set is settled here, with consent, while
+      // the app is still safely on its current server: everything below
+      // — version floor, presence probes, the uploads themselves
+      // (sync_custom_image takes the target's base URL) — runs before
+      // any teardown, so refusal, cancel, or failure just returns a
+      // message with the current connection untouched.
+      const snapshot = getProjectSnapshot();
+      if (hasCustomCards(snapshot.cards)) {
+        targetVersion = await fetchTargetVersion(url, REMOTE_TIMEOUT_MS);
+        if (!serverSupportsCustomImages(targetVersion)) {
+          return (
+            "This project has custom card images, which need a newer generation " +
+            `server${targetVersion ? ` (it reports v${targetVersion})` : ""}. ` +
+            "Update the server, or remove the custom cards."
+          );
+        }
+        const missing = await probeMissingCustoms(snapshot.cards, url);
+        if (missing.length > 0) {
+          const accepted = await (opts?.confirmCustomsUpload?.(missing.length) ??
+            Promise.resolve(true));
+          if (!accepted) {
+            return (
+              "Switch canceled — staying on the current server. " +
+              `${missing.length} custom image(s) in this project would need to be ` +
+              "uploaded to that server first."
+            );
+          }
+          try {
+            await runCustomUploads(missing, url);
+          } catch (err) {
+            if (err instanceof UploadCanceled) {
+              return "Upload canceled — switch aborted; still connected to the current server.";
+            }
+            return err instanceof Error ? err.message : String(err);
+          }
+        }
       }
     }
 
@@ -374,6 +455,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     queryClient.invalidateQueries({ queryKey: ["pdf-preview"] });
     queryClient.invalidateQueries({ queryKey: ["models"] });
     queryClient.invalidateQueries({ queryKey: ["gen-paths"] });
+
+    // Bytes were uploaded above (or were already there), so registering
+    // them as printable on the new server is a sub-second, idempotent
+    // server-side step — fire-and-forget, same as the add-time call
+    // sites; the probe inside finds zero misses, so no dialog re-appears.
+    // The PDF/export self-heal paths re-run this anyway if it fails.
+    const snap = getProjectSnapshot();
+    if (target.mode === "remote" && hasCustomCards(snap.cards) && snap.projectTag != null) {
+      void registerCustomCards(snap.cards, snap.projectTag, targetVersion).catch(() => {});
+    }
     return null;
   }
 

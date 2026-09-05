@@ -13,6 +13,12 @@ export interface SwitchServerDialogProps {
   /** Previously-used remote servers — see connection.tsx::recentHosts. */
   recentHosts: RecentHost[];
   onRemoveHost: (entry: RecentHost) => void;
+  /** Non-null while the in-flight switch is paused on "the target server
+   *  is missing N of this project's custom images" (see
+   *  connection.tsx::switchTo). Swaps the dialog body for an upload-or-
+   *  cancel choice; onUploadDecision resumes the switch either way. */
+  uploadPrompt?: { count: number } | null;
+  onUploadDecision?: (accepted: boolean) => void;
 }
 
 // Follows CompareDialog's pattern (overlay closes on click, inner panel
@@ -33,6 +39,8 @@ export default function SwitchServerDialog({
   onConfirm,
   recentHosts,
   onRemoveHost,
+  uploadPrompt,
+  onUploadDecision,
 }: SwitchServerDialogProps) {
   // Deliberately starts blank rather than prefilled with the current host
   // (e.g. from a prior connect) — a prefilled field made clicking a recent
@@ -51,6 +59,28 @@ export default function SwitchServerDialog({
           </span>
         </div>
 
+        {/* Mid-switch pause: the target server is missing some of this
+            project's custom images, and switchTo is awaiting the answer.
+            Swaps the whole body — the host/port form is settled by now,
+            and re-showing it under a question invites edits the in-flight
+            switch would ignore. Both buttons stay enabled despite `busy`:
+            the switch is busy precisely because it's waiting on them. */}
+        {uploadPrompt ? (
+          <>
+            <p className="hint" style={{ marginBottom: 16 }}>
+              {uploadPrompt.count} custom image{uploadPrompt.count === 1 ? "" : "s"} in
+              this project {uploadPrompt.count === 1 ? "is" : "are"} not on that server
+              and must be uploaded before switching.
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => onUploadDecision?.(false)}>Cancel switch</button>
+              <button className="btn-primary" onClick={() => onUploadDecision?.(true)}>
+                Upload and switch
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
         {target === "remote" && (
           <>
             <div style={{ display: "flex", gap: 8, marginBottom: recentHosts.length > 0 ? 8 : 14 }}>
@@ -123,6 +153,8 @@ export default function SwitchServerDialog({
             {busy ? "Switching…" : "Switch"}
           </button>
         </div>
+          </>
+        )}
       </div>
     </ModalOverlay>
   );

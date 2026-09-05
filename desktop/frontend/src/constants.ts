@@ -15,6 +15,13 @@ export const EXPORT_DPI_OPTIONS = [300, 600, 800, 1200];
 export const ORIGINAL_MODEL = "original";
 export const ORIGINAL_DPI = 300;
 
+// Sentinel variant for a Custom Image's uploaded file registered as
+// printable at its measured native DPI — mirrors CUSTOM_SOURCE_MODEL in
+// proxy_scaler/dpi.py. Custom Images are never upscaled (the server
+// routes their Generate to source registration), so this is the only
+// variant a custom card normally has.
+export const CUSTOM_SOURCE_MODEL = "custom_source";
+
 // Acronyms for compact spots (deck-list status badges, thumbnail labels)
 // where the full model names wrap; raw enum values stay in API calls,
 // filenames, and the Tasks table. Unknown models fall back to their raw
@@ -25,6 +32,7 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   ultrasharp_v2: "USV2",
   ultrasharp_v2_lite: "USV2 Lite",
   [ORIGINAL_MODEL]: "Original",
+  [CUSTOM_SOURCE_MODEL]: "Source",
 };
 
 export function modelDisplayName(model: string): string {

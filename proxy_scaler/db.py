@@ -1916,6 +1916,37 @@ def upsert_gallery_item_for_task(
     if not task.project_tag:
         return
     upsert_gallery_item(task.project_tag, result, db_path=db_path)
+    # An upscale had to put the ~300 DPI original on disk to run at all, so
+    # register that as its own download-variant row while we're here. This
+    # is what lets "Use 300 DPI originals" (and the deck list's Original
+    # tile) work for a card the user only ever upscaled — before this, the
+    # file sat in the cache with no registry row, and registry-first
+    # matching correctly reported it missing, which read as a lie to anyone
+    # looking at the cache directory. Scryfall faces only: custom uploads
+    # register their source through the CUSTOM_SOURCE_MODEL path at enqueue
+    # time instead (see services/generation.py) and never take this branch.
+    from proxy_scaler.dpi import CUSTOM_SOURCE_MODEL, ORIGINAL_DPI, ORIGINAL_MODEL
+
+    if (
+        result.model not in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL)
+        and not result.custom_hash
+        and result.original_path != result.out_path
+        and result.original_path.is_file()
+    ):
+        from dataclasses import replace
+
+        upsert_gallery_item(
+            task.project_tag,
+            replace(
+                result,
+                out_path=result.original_path,
+                model=ORIGINAL_MODEL,
+                dpi=ORIGINAL_DPI,
+                native_scale=1,
+                created_at=None,
+            ),
+            db_path=db_path,
+        )
 
 
 def upsert_gallery_item(

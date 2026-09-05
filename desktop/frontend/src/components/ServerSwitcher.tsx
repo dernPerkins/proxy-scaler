@@ -12,6 +12,14 @@ export default function ServerSwitcher() {
   const [pending, setPending] = useState<"local" | "remote" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Non-null while switchTo is paused on "the target server is missing N
+  // of this project's custom images — upload them?" (see
+  // connection.tsx::switchTo). The resolve callback is the paused
+  // promise's other half; answering it resumes the switch either way.
+  const [uploadPrompt, setUploadPrompt] = useState<{
+    count: number;
+    resolve: (accepted: boolean) => void;
+  } | null>(null);
 
   // In a plain browser tab there's no sidecar to start or stop, so
   // switching to "local" would just fail at the invoke boundary.
@@ -35,6 +43,10 @@ export default function ServerSwitcher() {
 
     const message = await connection.switchTo(
       pending === "local" ? { mode: "local" } : { mode: "remote", host, port },
+      {
+        confirmCustomsUpload: (count) =>
+          new Promise<boolean>((resolve) => setUploadPrompt({ count, resolve })),
+      },
     );
 
     setBusy(false);
@@ -115,6 +127,11 @@ export default function ServerSwitcher() {
           onConfirm={handleConfirm}
           recentHosts={connection.recentHosts}
           onRemoveHost={connection.removeRecentHost}
+          uploadPrompt={uploadPrompt && { count: uploadPrompt.count }}
+          onUploadDecision={(accepted) => {
+            uploadPrompt?.resolve(accepted);
+            setUploadPrompt(null);
+          }}
         />
       )}
     </div>

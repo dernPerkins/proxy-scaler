@@ -210,8 +210,13 @@ def test_start_one_leaves_task_running_until_finish_marks_done(
 
     done = get_task(tid, db_path=db_path)
     assert done.status == "done"
-    [item] = db_module.list_gallery_items("tag-defer", db_path=db_path)
-    assert Path(item["out_path"]).is_file()
+    # Two rows land at finish: the upscaled variant, and the cached
+    # original registered alongside it (see upsert_gallery_item_for_task).
+    items = db_module.list_gallery_items("tag-defer", db_path=db_path)
+    models = sorted(i["model"] for i in items)
+    assert models == ["original", task.model]
+    for item in items:
+        assert Path(item["out_path"]).is_file()
 
 
 def test_start_one_inference_failure_fails_immediately(tmp_path) -> None:

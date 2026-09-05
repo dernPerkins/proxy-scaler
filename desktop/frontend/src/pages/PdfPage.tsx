@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
 import NumberInput from "../components/NumberInput";
@@ -16,7 +16,8 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry } from "../deckEntries";
-import { syncCustomImages } from "../syncCustoms";
+import { hasCustomCards, registerCustomCards, waitForTasks } from "../syncCustoms";
+import { UploadCanceled } from "../uploadProgress";
 import {
   DownloadCanceled,
   runDownload,
@@ -195,6 +196,30 @@ export default function PdfPage() {
     queryFn: () => generationApi.listModels(),
   });
 
+  // Self-heal on arrival: a custom card added while no server was
+  // reachable has no registry row yet, so the preview below would report
+  // it missing and send the user hunting for a button that shouldn't be
+  // needed. Register (idempotent, cheap when already done) and refresh
+  // the previews. Keyed on projectTag so it runs once per project visit,
+  // not per keystroke in the layout panel.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (projectTag == null || serverUnavailable || !hasCustomCards(cards)) return;
+    let cancelled = false;
+    registerCustomCards(cards, projectTag, serverVersion)
+      .then(waitForTasks)
+      .then(() => {
+        if (cancelled) return;
+        void queryClient.invalidateQueries({ queryKey: ["pdf-preview", projectTag] });
+        void queryClient.invalidateQueries({ queryKey: ["pdf-page-preview", projectTag] });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectTag, serverUnavailable]);
+
   const previewQuery = useQuery({
     queryKey: ["pdf-preview", projectTag, entries, layout],
     queryFn: () =>
@@ -292,11 +317,15 @@ export default function PdfPage() {
     setDownloadError(null);
     setDownloading(true);
     try {
-      // The server renders from files on its own disk, so any custom art
-      // it hasn't seen has to get there first — see syncCustoms.ts. Before
-      // the save prompt rather than inside the callback: an upload failure
-      // should stop the export, not strand a chosen save path.
-      await syncCustomImages(cards, serverVersion);
+      // The server renders from its registry, so any custom art it hasn't
+      // seen has to be synced AND registered first — normally already done
+      // at add time, but this self-heals customs added while no server was
+      // reachable (see registerCustomCards). The wait covers the file-copy
+      // task a never-cached upload needs; already-registered customs queue
+      // nothing and fall straight through. Before the save prompt rather
+      // than inside the callback: a failure here should stop the export,
+      // not strand a chosen save path.
+      await waitForTasks(await registerCustomCards(cards, projectTag, serverVersion));
       await runDownload(pdfFilename(projectName), async () => {
         const body = {
           project_tag: projectTag,
@@ -329,7 +358,7 @@ export default function PdfPage() {
       });
     } catch (err) {
       // Cancelling is a normal outcome, not something to show as an error.
-      if (err instanceof DownloadCanceled) return;
+      if (err instanceof DownloadCanceled || err instanceof UploadCanceled) return;
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setDownloading(false);
