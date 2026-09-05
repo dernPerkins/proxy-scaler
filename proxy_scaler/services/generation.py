@@ -191,16 +191,40 @@ def enqueue_decklist_entries(
     queue one task per (face, dpi) that's actually missing: not already
     satisfied on disk (when skip_existing) and not already pending/running
     for this project (always — regardless of skip_existing, duplicating
-    in-flight work is never wanted). Returns (queued_count, failed_count,
-    task_ids)."""
+    in-flight work is never wanted). Custom Image entries never upscale:
+    they are routed to enqueue_download_entries, which registers the
+    uploaded file at its native DPI instead (see below). Returns
+    (queued_count, failed_count, task_ids)."""
+    # Custom Images are never upscaled — the user prepared that file, often
+    # already at print resolution, and running a 4x model over it spends
+    # GPU time to (at best) reproduce it. Generate instead registers the
+    # upload at its measured native DPI, exactly what Download does, so a
+    # deck mixing both worlds comes out fully printable from either button.
+    # The pipeline still knows how to upscale a custom face (kept working
+    # and under test); this routing is the single gate, so re-enabling the
+    # feature later is deleting this block.
+    customs = [e for e in entries if getattr(e, "custom_hash", None)]
+    queued = 0
+    failed = 0
+    task_ids: list[int] = []
+    if customs:
+        queued, failed, task_ids = enqueue_download_entries(
+            customs,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+            weights_dir=weights_dir,
+            project_tag=project_tag,
+            on_note=on_note,
+            db_path=db_path,
+            card_db_path=card_db_path,
+        )
+        entries = [e for e in entries if not getattr(e, "custom_hash", None)]
+
     # Local-first: answered from the imported card corpus when possible,
     # live Scryfall only for the leftovers (see card_lookup.CardResolver).
     resolver = CardResolver(card_db_path=card_db_path)
     resolved = _resolve_pairs(entries, resolver)
     active = active_task_keys(project_tag, db_path=db_path)
-    queued = 0
-    failed = 0
-    task_ids: list[int] = []
     seen_keys: set[str] = set()
     # Diagnostic counters only (don't affect enqueueing) — surfaced as a
     # note when queued ends up at 0, so "nothing to do" is self-explanatory

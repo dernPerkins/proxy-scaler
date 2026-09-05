@@ -630,6 +630,40 @@ def test_enqueue_reports_a_custom_that_was_never_uploaded(
     assert any("has not been uploaded" in n for n in notes)
 
 
+def test_generate_never_upscales_a_custom(
+    tmp_path: Path, db_path: Path, monkeypatch
+) -> None:
+    """Generate routes Custom Images to source registration instead of the
+    upscale queue: the user prepared that file (often already at print
+    resolution), so a 4x model pass over it is pure GPU waste. The rule
+    lives in enqueue_decklist_entries — the one gate both the bulk button
+    and the per-row Generate go through."""
+    from proxy_scaler.services import generation as gen
+
+    monkeypatch.chdir(tmp_path)
+    content_hash, _ = customs.store_original(_png_bytes(1490, 2080))
+
+    queued, failed, task_ids = gen.enqueue_decklist_entries(
+        [DeckEntry(quantity=1, name="My Alter", custom_hash=content_hash)],
+        model="ultrasharp_v2",
+        dpi_targets=[600, 1200],
+        skip_existing=True,
+        tile_size=0,
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-a",
+        db_path=db_path,
+    )
+    assert (queued, failed) == (1, 0)
+    # One custom_source task at the upload's measured DPI — not one
+    # ultrasharp task per requested target.
+    assert len(task_ids) == 1
+    task = db_module.get_task(task_ids[0], db_path=db_path)
+    assert task.model == CUSTOM_SOURCE_MODEL
+    assert task.dpi == pytest.approx(600, abs=1)
+
+
 def test_custom_entries_never_reach_the_card_resolver(
     tmp_path: Path, db_path: Path, monkeypatch
 ) -> None:
