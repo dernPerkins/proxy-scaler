@@ -1,0 +1,900 @@
+╭─── Claude Code v2.1.238 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back Dean!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▛█                      │ ─────────────────────── │
+│                      ▝▜██████▀                     │ What's new              │
+│                        ▝▝ ▝▝                       │ Added a `keybindingFla… │
+│  Opus 5 · Claude Pro · deanperkins93@gmail.com's   │ Plugin marketplaces: `… │
+│  Organization                                      │ A catalog entry's `hea… │
+│          /development/source/proxy-scaler          │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ▎ [✻] [✻] [✻] · Share Claude Code and earn $10 in usage credits · /passes
+
+❯ I would like to add the ability to upload custom images for fronts of cards.  
+  1. users would like to either just one or in bulk, drag and drop or select    
+  image files as fronts for cards                                               
+  2. at the moment I'm gonna say the cards can come in unassigned to a real     
+  card, maybe later we can implement a search so users can assign a card but    
+  likely totally overkill                                                       
+  3. my expectation is that we'll basically make every uploaded image, a card   
+  in the project                                                                
+  4. probably treat filenames as the card name                                  
+  5. we should allow for upscaling                                              
+     one thing I'm not sure of is where the images should live, I think they    
+  should not be uploaded to the server unless they need upscaling. then I       
+  suppose it can effectively just sit as a reference until the user exports the 
+  PDF, at which point the server will need the image and it can grab it,        
+  either via direct access on the local server or uploaded from the client for  
+  remote.                                                                       
+
+● I'll start by exploring the codebase to understand the architecture.
+
+● 3 Explore agents finished (ctrl+o to expand)
+   ├ Explore card/project data model · 0 tool uses
+   │ ⎿  Done
+   ├ Explore upscaling and PDF export · 0 tool uses
+   │ ⎿  Done
+   └ Explore frontend card UI · 0 tool uses
+     ⎿  Done
+
+● Excellent — I have a detailed picture. Three constraints stand out that shape
+  the design:
+
+  1. generated_images.scryfall_id is documented as "always a real Scryfall UUID"
+     — migration 006 deliberately deleted synthetic ids. Upscaling a custom
+     image means breaking or extending that contract.
+  2. The Back Library is a working precedent for exactly half of this —
+     content-addressed sha256, client-owned bytes in <app_data>/backs/, mirrored
+     to the server via POST /api/backs/{hash} (raw body) on demand. README.md
+     even names your feature as future work: "The Backs tab already does the 
+     uploading half of this; what's left is pointing a card at an uploaded 
+     image."
+  3. dragDropEnabled: false is already set globally in tauri.conf.json, so
+     webview drops work on any page.
+
+  A few decisions materially change the shape of the work:
+
+● User answered Claude's questions:
+  ⎿  · How should the image bytes reach the server when it needs them (upscale, 
+     or PDF/ZIP export)? → Always upload over HTTP (Recommended)
+     · Should uploaded images form a reusable library, or belong only to the 
+     project they were added to? → Global library, per-project cards 
+     (Recommended)
+     · Uploaded images won't be exactly 63×88mm aspect. What should happen to 
+     one that isn't? → Cover-crop (Recommended)
+     · Where should the upload surface live? → Both
+
+● Good — cover-crop, always-upload, both surfaces, global library. Let me ground
+  the plan in the critical files.
+
+  Ran 8 shell commands (ctrl+o to expand)
+
+● I have what I need. Writing the plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● The plan is written. Summary of the shape:
+
+  The Back Library is the template — content-addressed sha256, client owns the
+  bytes, server keeps a cache filled by a GET-probe-then-POST sync.
+  custom_images.rs and customs.py are near-copies of back_images.rs and
+  backs.py. That gives you "upload only when needed" for free and one identical
+  code path for Local and Remote.
+
+  The part that isn't a copy is identity. Backs specifically refused upscaling
+  to avoid "a synthetic Scryfall identity, registry rows that no decklist can 
+  ever match". You want upscaling, so that has to be confronted: rows carry
+  either a scryfall_id or a custom_hash (never both, enforced by CHECK),
+  canonical string custom:<sha256>. That's a migration-008 table rebuild on
+  generation_tasks and generated_images, since both columns are NOT NULL and
+  SQLite can't relax that in place. Migration 006 already did this kind of
+  rebuild, so there's a pattern to follow — but it's the riskiest step in the
+  plan.
+
+  One trap worth flagging before you read further. preferred_dpi is a deliberate
+  hard filter in _pick_dpi_variant, and use_originals is deliberately
+  exclusive. Both rules are correct for Scryfall cards and both silently break
+  custom cards: a user with Preferred DPI 1200 who hasn't upscaled their custom
+  art would get a hole in the sheet rather than the image they explicitly
+  supplied. The plan resolves this with a third sentinel (model = 
+  "custom_source") plus two narrow, commented exemptions in pdf_layout.py.
+  That's the single design decision I'd want you to sanity-check, since it's
+  where a future reader is most likely to "clean up" the asymmetry and regress
+  it.
+
+  Smaller things the plan pins down: cover-cropping happens server-side at store
+  time (so upscale/PDF/ZIP all need no special case, and your uncropped
+  original survives on the client); postprocess.clean_original_png is explicitly
+  guarded off for custom images since its fixups are Scryfall-specific; custom
+  filenames omit -SET-COLLECTOR rather than faking them, because fake values
+  would collide across every custom card in match_quantities; and the dropzone
+  is deliberately not gated on server availability, unlike the resolve-gated
+  decklist import.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/i-would-like-to-resilient-lemur.md · /plan 
+     to edit
+     Custom card fronts — user-uploaded images as project cards
+
+     Context
+
+     Today every card in proxy-scaler is a Scryfall printing, enforced end to
+     end:
+     generated_images.scryfall_id is documented as "always a real Scryfall UUID"
+     (proxy_scaler/db.py:183), migration 006 deliberately deleted synthetic ids,
+     and import is resolve-gated so an unmatched line never becomes a card.
+     Users want
+     to print art Scryfall doesn't have — custom/alter art, playtest cards,
+     their own
+     images.
+
+     README.md's "Future Features" already frames this exactly right: "The Backs
+     tab
+     already does the uploading half of this; what's left is pointing a card at 
+     an
+     uploaded image." The Back Library (desktop/src-tauri/src/back_images.rs,
+     proxy_scaler/backs.py, ADR-0003) is a working, content-addressed,
+     client-owned-with-server-cache design. This feature is that pattern applied
+     to
+     card fronts — with the one thing backs deliberately refused: upscaling.
+
+     Outcome: drop one or many image files onto the Decklist tab (or add them
+     from a
+     new Customs tab); each becomes a card in the project named after its file;
+     it
+     upscales like any other card and prints in PDF/ZIP alongside Scryfall
+     cards.
+
+     Decisions taken (confirmed with user)
+
+     ┌───────────┬─────────────────────────────────────────────────────────────┐
+     │           │                                                             │
+     ├───────────┼─────────────────────────────────────────────────────────────┤
+     │ Aspect    │ Cover-crop to 63×88, reusing pdf_layout.fit_cover           │
+     │ fit       │                                                             │
+     ├───────────┼─────────────────────────────────────────────────────────────┤
+     │ Transport │ Always upload over HTTP, GET-probe first — one code path    │
+     │           │ for Local and Remote                                        │
+     ├───────────┼─────────────────────────────────────────────────────────────┤
+     │ UI        │ Both: dropzone on the Decklist tab and a Customs tab for    │
+     │           │ library management                                          │
+     ├───────────┼─────────────────────────────────────────────────────────────┤
+     │ Scope     │ Global content-addressed library; project cards reference a │
+     │           │  hash                                                       │
+     └───────────┴─────────────────────────────────────────────────────────────┘
+
+     ---
+
+     The one genuinely hard design point
+
+     Backs avoided upscaling to avoid "a synthetic Scryfall identity, registry 
+     rows
+     that no decklist can ever match" (proxy_scaler/backs.py:10-18). We're
+     taking
+     that on deliberately, so the identity has to be explicit rather than a fake
+     UUID.
+
+     A Custom Image's identity is its sha256 content hash. Server-side, rows
+     carry
+     either a scryfall_id or a custom_hash, never both, never neither. The
+     canonical string form is custom:<sha256>, used wherever an identity key is
+     built
+     (db, mergeCardStatus.cardIdentity, project_store.entry_dedup_key).
+
+     The preferred_dpi trap
+
+     _pick_dpi_variant (pdf_layout.py:599) makes preferred_dpi a hard filter —
+     a face without that DPI is dropped and reported in missing_at_dpi, never
+     substituted. That rule is right for Scryfall cards (it stops silent
+     resolution
+     mixing between generated variants of the same card). It is wrong for a
+     custom
+     card the user never upscaled: their supplied source is the only image that
+     exists,
+     so filtering it out prints a hole instead of the card they explicitly
+     provided.
+
+     Likewise use_originals is exclusive by design (match_quantities,
+     pdf_layout.py:690)
+     — registering un-upscaled customs under the ORIGINAL_MODEL sentinel would
+     force
+     users to tick "Use 300 DPI originals" to print them, which would then blank
+     every
+     upscaled Scryfall card on the sheet.
+
+     Resolution: un-upscaled customs register under a third sentinel,
+     model = "custom_source" (dpi = true print DPI computed from pixel dims at
+     63×88, the same measure back_images.rs::dpi_at_card_size already uses). Two
+     narrow rules in pdf_layout.py:
+
+     1. match_quantities' (item.model == ORIGINAL_MODEL) == use_originals filter
+        gains a third arm: custom_source rows are always eligible, either way.
+     2. _pick_dpi_variant: for a face-group whose items are custom,
+        preferred_dpi
+        degrades from hard filter to preference — fall back to highest-DPI
+        available
+        rather than returning (None, True).
+
+     Both need a comment explaining why the asymmetry exists, in the style of
+     the
+     surrounding code.
+
+     ---
+
+     Server (Python)
+
+     1. proxy_scaler/customs.py — new, modelled on backs.py
+
+     Near-mirror of the backs module: CUSTOMS_DIR_NAME = "customs" (a sibling of
+     output/ and imgcache/, so clear_generated_data and prune_registry_under_dir
+     can't touch it — same property-of-location reasoning as backs), _HASH_RE,
+     ACCEPTED_FORMATS, MAX_UPLOAD_BYTES = 50MB, validate_hash, store_original,
+     has_original, path_for, source_dpi, CustomImageError.
+
+     Two differences from backs:
+
+     - store_original cover-crops to 63×88 aspect on the way in, via
+       pdf_layout.fit_cover, then normalises to PNG. Doing it here means every
+       downstream consumer (upscaler, PDF, ZIP) sees a card-shaped image and
+       needs no
+       special case. The client keeps the uncropped original, so it's
+       recoverable.
+     - The hash keys the uploaded bytes; the stored file is the cropped PNG
+       (backs
+       already has this shape — the hash names the source, the file is
+       normalised).
+
+     2. proxy_scaler/api/routers/customs.py — new
+
+     Straight copy of routers/backs.py: GET /api/customs/{hash} (presence
+     probe),
+     POST /api/customs/{hash} (raw body — keep the raw-body form, the comment at
+     routers/backs.py:55 explains that a Form/File route needs python-multipart
+     whose absence stops the server booting), DELETE /api/customs/{hash}.
+     Register in
+     api/app.py.
+
+     3. db.py — migration 008
+
+     The riskiest step. scryfall_id and png_url are NOT NULL on both
+     generation_tasks and generated_images, and SQLite can't drop NOT NULL in
+     place — so this is a table rebuild. Migration 006
+     (_migration_006_split_gallery_registry) already does exactly this kind of
+     rebuild; follow its shape.
+
+     - Both tables: scryfall_id/png_url become nullable; add custom_hash TEXT;
+       add CHECK ((scryfall_id IS NULL) != (custom_hash IS NULL)).
+     - Rebuild idx_generated_images_variant over
+       COALESCE(scryfall_id, 'custom:' || custom_hash), COALESCE(face_index,-1),
+       model, dpi
+       — with scryfall_id nullable, SQLite's treat-NULLs-as-distinct rule would
+       otherwise silently remove the backstop for exactly the new rows.
+     - Bump SCHEMA_VERSION = 8 and the assert beside it.
+     - Update the _SCHEMA string (latest-shape, re-applied defensively) to
+       match, and
+       revise the scryfall_id is always a real Scryfall UUID comment at
+       db.py:183
+        — that contract is being amended, not accidentally broken, and the
+       comment
+       should say so.
+     - upsert_gallery_item's early return if not result.scryfall_id becomes
+       if not (result.scryfall_id or result.custom_hash); its SELECT ... WHERE 
+       scryfall_id = ? AND face_index IS ? probe needs the custom arm.
+     - find_generated_image / active_task_keys key on the identity string.
+
+     4. scryfall.py / pipeline.py
+
+     Smallest viable diff: give CardFaceImage an optional custom_hash: str | 
+     None
+     and make png_url optional there. _regenerate_face_from_card
+     (pipeline.py:459)
+     already branches on "cached original present vs. download" — replace the
+     _download_clean_png arm with a _load_source_png(face) that reads from
+     customs.path_for(hash) for custom faces. Everything after that
+     (_upscalers_for_targets, the x4 cache, _resize_to_dpi) is
+     resolution-agnostic
+     and needs no change.
+
+     - postprocess.clean_original_png must not run on custom images — it fixes
+       Scryfall-specific PNG defects (black bottom row, black RGB under
+       transparent
+       corners) and would be actively wrong on arbitrary art. Guard it in
+       _load_source_png.
+     - upscale.original_cache_path gains a custom form:
+       imgcache/originals/custom_<hash>.png.
+     - output_filename (pipeline.py:65) gains a custom branch —
+       <SafeName>-custom-<sha256>[-<model>-<dpi>dpi].png (no -SET-COLLECTOR;
+       faking
+       those would let match_quantities' (set, collector) matching collide
+       across
+       every custom card). Add a matching alternative branch to
+       db._OUTPUT_SUFFIX_RE
+       (db.py:116) so scan_gallery_from_output / POST /api/gallery/adopt can
+       recover custom rows from disk, and extend parse_output_filename.
+     - process_task: a model == "custom_source" branch alongside the existing
+       ORIGINAL_MODEL branch — copies the uploaded bytes into the originals
+       cache and
+       returns a FaceResult with out_path == original_path, mirroring
+       process_download_task (pipeline.py:647) minus the network fetch and minus
+       the
+       x4-cache invalidation (nothing upstream can have changed).
+     - FaceResult gains custom_hash and an identity_key property
+       (scryfall_id or f"custom:{custom_hash}").
+
+     5. services/generation.py + api/schemas.py
+
+     - DeckEntryIn gains custom_hash: str | None and custom_name: str | None;
+       GalleryItemOut and TaskOut gain custom_hash.
+     - enqueue_decklist_entries (services/generation.py:94): an entry carrying
+       custom_hash bypasses CardResolver entirely and builds a single-face
+       CardFaceImage(custom_hash=…, face_name=custom_name, total_faces=1, 
+       face_index=None). POST /api/generate then handles both worlds with no new
+       endpoint. Skip-existing works unchanged once find_generated_image is
+       identity-keyed.
+     - enqueue_download_entries gains the custom_source variant so a card the
+       user
+       doesn't upscale still gets a registry row and becomes printable.
+
+     ---
+
+     Client — Rust (desktop/src-tauri/src/)
+
+     custom_images.rs — new, near-copy of back_images.rs
+
+     Table custom_images(id, content_hash, label, original_filename, file_name, 
+     thumb_name, width, height, created_at); files at
+     <app_data>/customs/<hash>.<ext>
+     - <hash>_thumb.jpg. Commands: list_custom_images, add_custom_image (returns
+       the existing row for identical bytes), custom_image_thumbnail,
+       delete_custom_image, and sync_custom_image(id, server_base_url) — a
+       verbatim
+       adaptation of sync_back_image (back_images.rs:359): GET-probe present,
+       POST
+       raw bytes on miss. Keep hashing and upload in Rust for the reason the
+       module
+       comment gives — multi-MB bodies must not cross the IPC boundary.
+
+     project_store.rs
+
+     - PROJECT_CARDS_ADDED_COLUMNS (:169) gains custom_image_id INTEGER —
+       additive,
+       handled by the existing add_missing_columns machinery, no rebuild.
+     - New command add_custom_cards(project_id, ids: Vec<i64>): one transaction,
+       inserts rows with name = filename stem, quantity = 1,
+       scryfall_id/set_code/
+       collector_number NULL, appended at next_sort_order, deduped on
+       custom_image_id (dropping the same file twice is a no-op; the user bumps
+       quantity with the existing stepper).
+     - entry_dedup_key (:553) and stored_card_dedup_keys (:590) get a new top
+       tier custom:<id>, above the set/collector tiers.
+     - Guard the background re-resolve. DecklistPage.tsx:276-315 re-resolves
+       rows
+       with a NULL scryfall_id; every custom card looks like one. Skip rows with
+       custom_image_id set, or the app will hammer /api/resolve per custom card
+       and
+       may overwrite them.
+
+     ---
+
+     Client — TypeScript (desktop/frontend/src/)
+
+     - imageUpload.ts — new. Extract BacksPage.readPickedImage
+       (BacksPage.tsx:43)
+       into a shared, multi-file helper: image/* check, 50MB cap,
+       createImageBitmap
+       → 220px JPEG thumb via canvas, returns {bytes, thumbnail, width, height}.
+       Point
+       BacksPage at it too so there's exactly one validator.
+     - DecklistPage.tsx — dropzone + <input type="file" multiple 
+       accept="image/png,image/jpeg,image/webp">
+       beside the import box; whole <main> as drop target using the dragDepth
+       counter, not a boolean (BacksPage.tsx:194 explains why a flag flickers).
+       Works
+       because dragDropEnabled: false is already set globally in
+       tauri.conf.json.
+       Process files sequentially with an "n of m" line. Custom rows render with
+       a
+       "Custom" chip in place of PrintingPicker and no Re-Fetch button.
+       Do not gate the dropzone on serverUnavailable — unlike decklist import,
+       adding a custom card needs no resolution, so this works fully offline.
+       Worth a
+       comment; it's a real property, not an oversight.
+     - CustomsPage.tsx — new tab at /customs, tile grid mirroring BacksPage
+       (aspectRatio: "63 / 88", objectFit: cover, thumbnails via a Tauri
+       data-URL
+       command with staleTime: Infinity), with per-tile "Add to project" and
+       delete.
+       Route + nav entry in App.tsx.
+     - deckEntries.ts::cardToEntry emits {custom_hash, custom_name, quantity}
+       for
+       custom rows.
+     - mergeCardStatus.ts::cardIdentity (:27) gains a custom:<hash> tier
+       matching the server's identity_key — the two must agree or status badges
+       never
+       light up.
+     - Sync before server work. Call sync_custom_image for every custom card in
+       the run immediately before Generate upscaled images and before PDF/ZIP
+       export
+       (cheap GET when already present). This is what implements "upload only
+       when
+       needed" and what makes Remote mode work at all.
+     - api/types.ts mirrors the schema additions; api/project.ts wraps the new
+       invokes; CardRow gains custom_image_id.
+     - Version floor. A new client against an old server 404s on /api/customs/*.
+       Add a guard alongside the existing serverSupportsOriginals() precedent in
+       config.ts, and hide/disable the upload surfaces when the server is too
+       old.
+
+     ---
+
+     Verification
+
+     Toolchain: .venv/bin/python, ~/.cargo/bin/cargo, node v24 via nvm (the
+     default v16 breaks vite).
+
+     Tests (tests/, pytest):
+     - migration 008 round-trip: a v7 DB with real rows migrates, keeps every
+       row, and
+       the rebuilt unique index rejects a duplicate custom variant;
+     - customs.store_original — hash mismatch rejected, oversize rejected, a
+       non-63×88 input comes out cover-cropped to card aspect;
+     - output_filename → parse_output_filename round-trip for a custom name;
+     - match_quantities with a custom_source face under preferred_dpi=1200 and
+       use_originals=False — the custom card must still print (this is the rule
+       most
+       likely to regress);
+     - an end-to-end process_task on a custom face using ultrasharp_v2_lite
+       (light,
+       untiled, fastest).
+
+     .venv/bin/python -m pytest tests/ -q
+     ~/.cargo/bin/cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+     End to end, via the run skill or npm run tauri dev under node 24:
+     1. Drop 3 mixed-aspect images (a PNG, a JPEG, one 4:3) on the Decklist tab
+        with
+        the server stopped — 3 cards appear, named after the files. Confirms the
+        offline path.
+     2. Start the local server, hit Generate upscaled images at 1200 DPI —
+        customs
+        upload once, upscale, and show thumbnails alongside Scryfall cards.
+     3. PDF tab with Preferred DPI 1200: a mixed sheet of Scryfall + custom
+        cards
+        renders with correct bleed and no missing_at_dpi entries.
+     4. Delete the generated images, re-export without upscaling — customs still
+        print (the custom_source path), Scryfall cards correctly report missing.
+     5. Repeat step 2 against a Remote server to confirm the upload probe fires
+        and
+        the same images don't re-upload on a second run.
+     6. POST /api/gallery/adopt after a registry wipe recovers custom rows from
+        the
+        output/ filenames.
+
+● Starting with the Python server side. Let me read the files I'll be modifying.
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Now I have what I need. Starting with the sentinel + shared DPI helper in
+  dpi.py:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(proxy_scaler/dpi.py)
+  ⎿  Added 36 lines
+      25  ORIGINAL_DPI = 300
+      26  ORIGINAL_MODEL = "original"
+      27  
+      28 +# Sentinel variant for a Custom Image the user has not upscaled
+         +: the                                                          
+      29 +# uploaded file itself, cover-cropped to card aspect, registere
+         +d so it can                                                    
+      30 +# be printed. Like ORIGINAL_MODEL it is deliberately NOT an Ups
+         +caleModel —                                                    
+      31 +# pipeline.process_task branches on it before parse_model().   
+      32 +#                                                              
+      33 +# Unlike ORIGINAL_MODEL it has no fixed companion DPI: a Scryfa
+         +ll original                                                    
+      34 +# is always 745×1040 (~300 DPI), but a custom upload is whateve
+         +r the user                                                     
+      35 +# had, so its registry row carries the real dpi_at_card_size() 
+         +value. That                                                    
+      36 +# is also why it is a *separate* sentinel rather than reusing  
+      37 +# ORIGINAL_MODEL: pdf_layout.match_quantities treats ORIGINAL_M
+         +ODEL rows as                                                   
+      38 +# an exclusive world (use_originals on/off), and filing customs
+         + there would                                                   
+      39 +# force "Use 300 DPI originals" on to print one — blanking ever
+         +y upscaled                                                     
+      40 +# Scryfall card on the same sheet.                             
+      41 +CUSTOM_SOURCE_MODEL = "custom_source"                          
+      42  
+      43 +                                                               
+      44  def target_pixels(dpi: int) -> tuple[int, int]:
+      45      """Exact pixel size for a given print DPI at card dimension
+          s."""
+      46      return (
+     ...
+      49      )
+      50  
+      51  
+      52 +def dpi_at_card_size(width: int, height: int) -> float:        
+      53 +    """Effective print DPI an image achieves across a 63×88mm c
+         +ard, using                                                     
+      54 +    its longer edge against the card's longer edge.            
+      55 +                                                               
+      56 +    Mirrored in the desktop client (back_images.rs::dpi_at_card
+         +_size) so                                                      
+      57 +    the two halves never disagree about whether an image is low
+         +-res.                                                          
+      58 +    """                                                        
+      59 +    return max(width, height) / (CARD_HEIGHT_MM / MM_PER_IN)   
+      60 +                                                               
+      61 +                                                               
+      62 +def card_aspect_crop_size(width: int, height: int) -> tuple[int
+         +, int]:                                                        
+      63 +    """Largest 63:88 box that fits inside (width, height).     
+      64 +                                                               
+      65 +    Used as the target for a cover-crop of a user-supplied imag
+         +e, so the                                                      
+      66 +    crop keeps every pixel it can in the limiting axis rather t
+         +han                                                            
+      67 +    resampling the whole image down to some fixed size.        
+      68 +    """                                                        
+      69 +    scale = min(width / CARD_WIDTH_MM, height / CARD_HEIGHT_MM)
+      70 +    return max(1, round(CARD_WIDTH_MM * scale)), max(1, round(C
+         +ARD_HEIGHT_MM * scale))                                        
+      71 +                                                               
+      72 +                                                               
+      73  def native_scale_for_dpi(dpi: int, model: UpscaleModel) -> int:
+      74      """Native upscale factor to run before the exact-pixel Lanc
+          zos resize.
+      75  
+
+● Update(proxy_scaler/backs.py)
+  ⎿  Added 2 lines, removed 2 lines
+      135      path = original_path(content_hash, root=root)
+      136      if not path.is_file():
+      137          return None
+      138 -    from proxy_scaler.dpi import CARD_HEIGHT_MM, MM_PER_IN    
+      138 +    from proxy_scaler.dpi import dpi_at_card_size             
+      139  
+      140      with Image.open(path) as img:
+      141 -        return max(img.size) / (CARD_HEIGHT_MM / MM_PER_IN)   
+      141 +        return dpi_at_card_size(*img.size)                    
+      142  
+      143  
+      144  def resolve_print_source(
+
+● Now customs.py — the server-side content-addressed store:
+
+● Write(proxy_scaler/customs.py)
+  ⎿  Wrote 190 lines to proxy_scaler/customs.py
+      1 """Custom Images: user-supplied art printed on a card's *front*.
+      3 A Custom Image is a card — that is the whole difference from a Ba
+        ck Image
+        tity, and
+      5 goes through the upscale pipeline like any Scryfall printing. Wha
+      6 not have is a Scryfall identity, so the generation database ident
+        ifies it
+        arries
+      8 either a `scryfall_id` or a `custom_hash`, never both (see db.py 
+      9 008).
+     … +236 lines (ctrl+o to expand)
+
+● Noted — switching to Bash for file work. Let me check the backs schemas to
+  mirror them:
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+● Now the customs router:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● The import list is alphabetized — let me fix my insertion point:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the riskiest piece — migration 008. Let me study migration 006's rebuild
+  pattern first:
+
+  Searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+● Migrations run inside BEGIN IMMEDIATE with foreign_keys=ON, so the rebuild
+  needs care. Let me read the task row plumbing:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now migration 008. Writing it with the same literal-DDL style migration 006
+  uses:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now update _SCHEMA (the latest-shape copy) to match:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Let me verify the migration actually works before building on it:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Caught a real bug — memberships went 367 → 0. legacy_alter_table doesn't help:
+  with foreign_keys=ON, SQLite rewrites REFERENCES clauses on rename
+  regardless, so DROP TABLE generated_images_old cascade-deleted every
+  membership. That's the destructive case I'd flagged for the other approach; it
+  bit this one instead. Rebuilding memberships as part of the same migration
+  fixes it:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Migration verified: all rows preserved, FK repointed, CHECK and unique index
+  both enforcing. Let me check the existing suite still passes before building
+  on it:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Pre-existing env gap (httpx2 missing blocks the 3 API test modules from even
+  importing). Running the rest:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Both failures are real and worth fixing: those fixtures build a partial DB
+  (only generation_tasks), and 008 assumed the gallery tables exist. Migration
+  006 guards the same way (if "project_gallery_items" not in tables: return) —
+  008 should too:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Migration is solid — 379 pass. Now the identity plumbing. Let me see the
+  remaining scryfall_id touchpoints:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Let me add the shared identity helper, then wire it through db.py:
+
+  Searched for 2 patterns, ran 1 shell command (ctrl+o to expand)
+
+● Now the import and upsert_gallery_item:
+
+  Ran 2 shell commands (ctrl+o to expand)
+● Now FaceResult and CardFaceImage:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● face_group_key would collapse every custom card into one group — let me check
+  how backs resolves its root, then fix both:
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● Now the upscale + pipeline changes:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the pipeline: output_filename, face_group_key, source loading, and the
+  custom task branch:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now wire _regenerate_face_from_card to use the new loader and custom cache
+  paths:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Now process_task's custom branch, and the CardFaceImage built inside it:
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● 379 still green. Now the output-filename parsing so disk rescans can recover
+  custom rows:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Round-trip works. Now the two pdf_layout rules — the core design point:
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● Now the two pdf_layout rules plus DeckEntry.custom_hash:
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● The pdf_layout write didn't happen (assertion fired first); decklist.py did.
+  Re-running with the correct import line:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the enqueue service. Let me read the relevant parts:
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Now rewire the two enqueue loops to use those helpers:
+
+  Read 1 file (ctrl+o to expand)
+
+● I referenced a helper I haven't written, and the task should use the task
+  row's dpi rather than recomputing. Fixing both:
+
+  Ran 1 shell command (ctrl+o to expand)
+● Now the API schemas, then I'll write tests for the whole Python path:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Three duplicated DeckEntryIn → DeckEntry converters all need the new field.
+  Patching them uniformly:
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● Python server side is complete. Now tests. Let me check the existing fixtures:
+
+  Searched for 1 pattern, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Two bugs in my tests (missing db_path, and uppercase hex is deliberately
+  normalized not rejected):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now a regression test for the migration bug I hit (memberships being
+  cascade-deleted):
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Two test-harness bugs of mine — CUSTOMS_DIR_NAME is a frozen default arg (same
+  as backs), so patching the module constant does nothing; the test needs
+  chdir:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Python server complete: 410 passing (+31 new). Now the Rust client. Let me
+  check the build works and read the key parts:
+
+  Searched for 1 pattern, ran 4 shell commands (ctrl+o to expand)
+
+● Now writing the Rust client store. First custom_images.rs:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I have the full template. Writing custom_images.rs:
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Now the project_store.rs changes — schema, CardRow, dedup tier, and
+  add_custom_cards:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the dedup tier and the add_custom_cards command:
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Builds clean. Let me remove the now-dead wrappers I introduced — the custom
+  tier is only needed on the stored-keys side:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Clean build, no warnings. Let me add Rust tests and run them:
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● My test expectation was wrong (file_stem() on a dotfile returns the whole
+  name), but a card named .png is a bad outcome — one-line fix rather than
+  documenting it:
+
+  Ran 3 shell commands (ctrl+o to expand)
+● 58 Rust tests pass (+7). Now the frontend. Let me read the key files:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● CardRow needs the content hash (not just the local id) so the client can build
+  the same identity string the server does. Adding a join:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the shared upload helper and TS API layer:
+
+  Searched for 1 pattern, ran 10 shell commands (ctrl+o to expand)
+
+● Typechecks. Now pointing BacksPage at the shared helper so there's one
+  validator:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Now the Customs tab:
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● The context doesn't expose setCards/ensureProjectRow — I need to add proper
+  mutations there instead:
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● Clean. Now the route and nav entry:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now DecklistPage — the dropzone, custom rows, and the re-resolve guard:
+
+  Searched for 2 patterns, ran 4 shell commands (ctrl+o to expand)
+
+● Now wiring the sync into the generate/download/export mutations:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the PDF and ZIP export paths:
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● Now the DecklistPage UI — dropzone and custom card rows:
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Now the dropzone on the Decklist tab:
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Shell state doesn't persist between calls — that's node 16 again. Re-sourcing
+  nvm:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Let me check the CSS classes I used actually exist:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● .linklike and .custom-drop need styles. Let me look at the existing dropzone
+  styling to match:
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the version floor. Let me see how the existing floors are consumed:
+
+  Searched for 1 pattern, ran 4 shell commands (ctrl+o to expand)
+
+● The floor I picked (0.2.2) is above the current version — let me check whether
+  0.2.1 has shipped:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● No release tags exist and 0.2.1 is the current in-development version, so this
+  lands in it — matching the precedent the ORIGINALS_MIN_SERVER_VERSION comment
+  set:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Let me run the full test suite across all three languages to confirm
+  everything still holds together:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● All green. Now a real end-to-end check against a running server. Let me start
+  it:
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Cover-crop confirmed (1600×1200 → kept full 1200px height, cropped width to
+  63:88). Now let me run the worker and render an actual PDF:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Custom prints at preferred_dpi=1200 with no missing_at_dpi — the core rule
+  works. Now the upscale path, which is the biggest untested piece:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● A real bug the live test caught: the upscale path passed scryfall_id=""
+  alongside a custom_hash, so the CHECK rejected it after the GPU work. Fixing
+  at the source and normalizing defensively:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I'd already added that field earlier — removing the duplicate:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now let me retry the upscale that failed, to confirm the fix:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Session resumed
+
+● This terminal now has its own copy of the session: new work here stays
+  local and will not appear in the Claude app. To continue on your 
+  phone later, run /remote-control in this session.
