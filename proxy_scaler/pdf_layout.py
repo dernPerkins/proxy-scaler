@@ -700,6 +700,14 @@ def match_quantities(
     given, wins among the eligible images; otherwise the most recently
     produced one does. See _pick_dpi_variant.
 
+    Units come back ordered by the first entry each face-group matched —
+    the caller's `entries` order is authoritative for print/export order
+    (the client sends entries pre-sorted by its shared sort control, and
+    "(none)" there is the decklist's own order). Two face-groups matching
+    the same entry (a DFC's front and back faces) keep their relative
+    gallery order, with lower face_index first, so a front never trails
+    its own back.
+
     `use_originals` flips which world of variants is visible at all: True
     makes only the download-only rows (model == ORIGINAL_MODEL, the cached
     ~300 DPI Scryfall originals) eligible — callers pass preferred_dpi/
@@ -724,6 +732,9 @@ def match_quantities(
 
     gallery = [item for item in gallery if _eligible(item)]
     units: list[PrintUnit] = []
+    # Parallel to `units`: (first matched entry index, face_index) per
+    # unit, for the entries-order sort at the end.
+    unit_order_keys: list[tuple[int, int]] = []
     missing_at_dpi: list[str] = []
     matched_face_counts = [0] * len(entries)
     # How many faces each entry's card actually has, learned from whichever
@@ -813,6 +824,12 @@ def match_quantities(
         units.append(
             PrintUnit(face_key=key, quantity=matched_qty, best=best, dpi_fallback=unavailable)
         )
+        unit_order_keys.append((min(matched_indices), best.face_index or 0))
+
+    # Entries order is authoritative for output order (see docstring).
+    # Stable, so ties beyond the (entry, face_index) key keep gallery
+    # order (dpi ASC, face_index ASC from db.list_gallery_items).
+    units = [units[i] for i in sorted(range(len(units)), key=lambda i: unit_order_keys[i])]
 
     missing: list[str] = []
     for i, entry in enumerate(entries):

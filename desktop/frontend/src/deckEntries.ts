@@ -1,5 +1,16 @@
 import type { CardRow } from "./api/project";
-import type { DeckEntryIn } from "./api/types";
+import type { DeckEntryIn, SortPrimary } from "./api/types";
+
+/** The one sort applied everywhere card order is visible: the Decklist
+ *  display AND the entries sent for PDF/ZIP export (the server prints in
+ *  the order the entries array arrives). "(none)" keeps DB sort_order,
+ *  i.e. decklist insert order. */
+export function sortCards(cards: CardRow[], primary: SortPrimary): CardRow[] {
+  if (primary === "(none)") return cards;
+  const key = (c: CardRow) =>
+    (primary === "Name" ? c.name : (c.set_code ?? "")).toLowerCase();
+  return [...cards].sort((a, b) => key(a).localeCompare(key(b)));
+}
 
 /** A project card as the DeckEntryIn the generation server expects.
  *

@@ -205,6 +205,78 @@ def test_tcgplaytest_expands_quantities_into_matched_pairs(
     assert archive.read("Deck/BACK/003.png") == back_bytes
 
 
+def test_export_filenames_follow_entries_order(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """FRONT/NNN numbering follows the entries array, not the order the
+    gallery generated in — the client sends entries pre-sorted by the
+    shared sort control, and that order is the export order."""
+    db_path = tmp_path / "test.db"
+    counter_path = _seed_face(
+        tmp_path, db_path, "tag-a",
+        scryfall_id="counter-id", name="Counterspell",
+        set_code="lea", collector_number="55", color=(1, 2, 3, 255),
+    )
+    sol_path = _seed_face(tmp_path, db_path, "tag-a", color=(4, 5, 6, 255))
+
+    counter_entry = _entry(
+        name="Counterspell", set_code="lea", collector_number="55",
+        raw_line="1 Counterspell (lea) 55",
+    )
+    resp = client.post(
+        "/api/export/zip", json=_body(entries=[_entry(), counter_entry])
+    )
+    archive = _open_zip(resp)
+    assert archive.namelist() == ["Deck/FRONT/001.png", "Deck/FRONT/002.png"]
+    assert archive.read("Deck/FRONT/001.png") == sol_path.read_bytes()
+    assert archive.read("Deck/FRONT/002.png") == counter_path.read_bytes()
+
+
+def test_tcgplaytest_fronts_and_backs_follow_entries_order(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Reordering by entries keeps FRONT/NNN and BACK/NNN in lockstep — a
+    DFC sorted after a normal card still gets its own Back Face on its
+    slot, with the Selected Back on the normal card's."""
+    db_path = tmp_path / "test.db"
+    dfc_front_path = _seed_face(
+        tmp_path, db_path, "tag-a",
+        scryfall_id="dfc-id", face_index=0, name="Delver of Secrets",
+        set_code="isd", collector_number="51",
+        color=(1, 2, 3, 255), total_faces=2,
+    )
+    dfc_back_path = _seed_face(
+        tmp_path, db_path, "tag-a",
+        scryfall_id="dfc-id", face_index=1, name="Insectile Aberration",
+        set_code="isd", collector_number="51",
+        color=(4, 5, 6, 255), total_faces=2,
+    )
+    sol_path = _seed_face(tmp_path, db_path, "tag-a", color=(7, 8, 9, 255))
+    content_hash, back_bytes = _seed_back()
+
+    dfc_entry = _entry(
+        name="Delver of Secrets", set_code="isd",
+        collector_number="51", raw_line="1 Delver of Secrets (isd) 51",
+    )
+    resp = client.post(
+        "/api/export/zip",
+        json=_body(
+            entries=[_entry(), dfc_entry],
+            format="tcgplaytest",
+            back_image_hash=content_hash,
+        ),
+    )
+    archive = _open_zip(resp)
+    assert archive.namelist() == [
+        "Deck/FRONT/001.png", "Deck/FRONT/002.png",
+        "Deck/BACK/001.png", "Deck/BACK/002.png",
+    ]
+    assert archive.read("Deck/FRONT/001.png") == sol_path.read_bytes()
+    assert archive.read("Deck/BACK/001.png") == back_bytes
+    assert archive.read("Deck/FRONT/002.png") == dfc_front_path.read_bytes()
+    assert archive.read("Deck/BACK/002.png") == dfc_back_path.read_bytes()
+
+
 def test_tcgplaytest_without_back_image_is_400(client: TestClient, tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     _seed_face(tmp_path, db_path, "tag-a")

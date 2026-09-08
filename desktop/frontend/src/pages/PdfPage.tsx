@@ -15,7 +15,8 @@ import {
   useServerVersion,
 } from "../config";
 import { useProject } from "../context/ProjectContext";
-import { cardToEntry } from "../deckEntries";
+import { cardToEntry, sortCards } from "../deckEntries";
+import SortSelect from "../components/SortSelect";
 import { hasCustomCards, registerCustomCards, waitForTasks } from "../syncCustoms";
 import { UploadCanceled } from "../uploadProgress";
 import {
@@ -186,7 +187,9 @@ export default function PdfPage() {
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  const entries = cards.map(cardToEntry);
+  // Sorted before mapping: the server prints/paginates in entries order,
+  // so this is where the shared sort dropdown reaches the actual PDF.
+  const entries = sortCards(cards, settings.sort_primary).map(cardToEntry);
 
   // Populates the "Preferred model" picker. Same source as the Decklist
   // tab's generation-model dropdown, but used here to choose which
@@ -988,6 +991,7 @@ export default function PdfPage() {
         )}
 
         <div className="summary-row">
+          <SortSelect />
           <button
             className="btn-primary"
             onClick={() => handleDownload()}

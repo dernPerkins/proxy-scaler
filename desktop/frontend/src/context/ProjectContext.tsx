@@ -99,6 +99,7 @@ function getDefaultSettings(): ProjectSettings {
     back_offset_x_mm: 0,
     back_offset_y_mm: 0,
     back_image_id: null,
+    sort_primary: "Name",
   };
 }
 

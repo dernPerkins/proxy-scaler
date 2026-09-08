@@ -28,7 +28,8 @@ import {
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
 import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
 import { useProject } from "../context/ProjectContext";
-import { cardToEntry } from "../deckEntries";
+import { cardToEntry, sortCards } from "../deckEntries";
+import SortSelect from "../components/SortSelect";
 import { registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { UploadCanceled } from "../uploadProgress";
 import {
@@ -219,7 +220,6 @@ export default function DecklistPage() {
       setImporting(false);
     }
   };
-  const [sortPrimary, setSortPrimary] = useState<"Name" | "Set" | "(none)">("Name");
   const [expandedFaces, setExpandedFaces] = useState<Set<string>>(new Set());
 
   // Where the fixed generation directories resolve on the connected
@@ -606,7 +606,7 @@ export default function DecklistPage() {
   const { galleryByCard, tasksByCard } = groupByCard(gallery, tasks);
   const { galleryByName, tasksByName } = groupByCardName(gallery, tasks);
 
-  const sortedCards = sortCards(cards, sortPrimary);
+  const sortedCards = sortCards(cards, settings.sort_primary);
 
   return (
     <div className="layout">
@@ -913,14 +913,7 @@ export default function DecklistPage() {
             Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
           </h2>
           <div className="decklist-actions">
-            <select
-              value={sortPrimary}
-              onChange={(e) => setSortPrimary(e.target.value as typeof sortPrimary)}
-            >
-              <option value="Name">Sort: Name</option>
-              <option value="Set">Sort: Set</option>
-              <option value="(none)">Sort: (none)</option>
-            </select>
+            <SortSelect />
             <button
               onClick={() => downloadAllMutation.mutate()}
               disabled={!cards.length || downloadAllMutation.isPending || serverUnavailable}
@@ -1014,13 +1007,6 @@ export default function DecklistPage() {
       </main>
     </div>
   );
-}
-
-function sortCards(cards: CardRow[], primary: "Name" | "Set" | "(none)"): CardRow[] {
-  if (primary === "(none)") return cards;
-  const key = (c: CardRow) =>
-    (primary === "Name" ? c.name : (c.set_code ?? "")).toLowerCase();
-  return [...cards].sort((a, b) => key(a).localeCompare(key(b)));
 }
 
 function slugify(name: string): string {

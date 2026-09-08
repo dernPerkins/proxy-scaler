@@ -179,6 +179,10 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // rather than reassigning them to the app default, so a project never
     // quietly starts printing a different back than it did last month.
     ("back_image_id", "INTEGER"),
+    // Card order — one shared control for the Decklist display and the
+    // PDF/ZIP export output ('Name' | 'Set' | '(none)'). Opaque to Rust;
+    // only the frontend interprets the value.
+    ("sort_primary", "TEXT NOT NULL DEFAULT 'Name'"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -484,10 +488,20 @@ pub struct ProjectSettings {
     // across languages instead of strictly preferred_lang.
     #[serde(default)]
     pub lang_any: bool,
+    // Card order for the Decklist display and PDF/ZIP export output.
+    // Opaque to Rust ('Name' | 'Set' | '(none)' as far as the frontend is
+    // concerned). Defaulted on deserialize so an older frontend build
+    // that doesn't send it doesn't wipe the setting.
+    #[serde(default = "default_sort_primary")]
+    pub sort_primary: String,
 }
 
 fn default_preferred_lang() -> String {
     "en".to_string()
+}
+
+fn default_sort_primary() -> String {
+    "Name".to_string()
 }
 
 fn default_true() -> bool {
@@ -542,6 +556,7 @@ impl Default for ProjectSettings {
             use_originals: false,
             preferred_lang: default_preferred_lang(),
             lang_any: false,
+            sort_primary: default_sort_primary(),
         }
     }
 }
@@ -764,6 +779,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         use_originals: bool,
         preferred_lang: String,
         lang_any: bool,
+        sort_primary: String,
         created_at: String,
         updated_at: String,
     }
@@ -779,6 +795,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     page_order, flip_edge,
                     back_offset_x_mm, back_offset_y_mm, back_image_id,
                     preferred_dpi, preferred_model, use_originals, preferred_lang, lang_any,
+                    sort_primary,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -820,6 +837,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     use_originals: row.get("use_originals")?,
                     preferred_lang: row.get("preferred_lang")?,
                     lang_any: row.get("lang_any")?,
+                    sort_primary: row.get("sort_primary")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -869,6 +887,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             use_originals: loaded.use_originals,
             preferred_lang: loaded.preferred_lang,
             lang_any: loaded.lang_any,
+            sort_primary: loaded.sort_primary,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1111,7 +1130,8 @@ fn update_project_row(
          hide_card_guides_back = ?25, hide_page_guides_back = ?26,
          back_printing = ?27, back_faces_as_reverse = ?28, reverse_fill = ?29,
          page_order = ?30, flip_edge = ?31, back_offset_x_mm = ?32,
-         back_offset_y_mm = ?33, back_image_id = ?34, updated_at = ?35
+         back_offset_y_mm = ?33, back_image_id = ?34, sort_primary = ?37,
+         updated_at = ?35
          WHERE id = ?36",
         params![
             trimmed,
@@ -1150,6 +1170,7 @@ fn update_project_row(
             settings.back_image_id,
             now,
             project_id,
+            settings.sort_primary,
         ],
     )
     .map_err(|e| {
@@ -2615,6 +2636,17 @@ mod tests {
     }
 
     #[test]
+    fn sort_primary_setting_roundtrips_through_project_settings() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        assert_eq!(load_project(&conn, id).expect("load").settings.sort_primary, "Name");
+        let settings =
+            ProjectSettings { sort_primary: "Set".to_string(), ..ProjectSettings::default() };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        assert_eq!(load_project(&conn, id).expect("load").settings.sort_primary, "Set");
+    }
+
+    #[test]
     fn set_card_quantity_updates_and_clamps_to_one() {
         let mut conn = test_conn();
         let id = get_or_create_unnamed_project_id(&conn).expect("create");
@@ -2680,6 +2712,7 @@ mod tests {
         let id = get_or_create_unnamed_project_id(&conn).expect("create");
         let loaded = load_project(&conn, id).expect("load through the new columns");
         assert_eq!(loaded.settings.preferred_lang, "en");
+        assert_eq!(loaded.settings.sort_primary, "Name");
         assert!(loaded.cards.is_empty());
     }
 

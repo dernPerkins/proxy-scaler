@@ -496,6 +496,46 @@ def test_match_quantities_dfc_both_faces_get_quantity() -> None:
     assert all(u.quantity == 2 for u in units)
 
 
+def test_match_quantities_units_follow_entries_order() -> None:
+    """The entries array's order is authoritative for print/export order —
+    the client sends it pre-sorted by the shared sort control, so a
+    gallery that generated in a different order must not leak through."""
+    gallery = [
+        _face("counter-id", None, "Counterspell", "Counterspell", "lea", "55", 800),
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
+        DeckEntry(quantity=1, name="Counterspell", set_code="lea", collector_number="55"),
+    ]
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
+    assert [u.best.card_name for u in units] == ["Sol Ring", "Counterspell"]
+
+
+def test_match_quantities_dfc_faces_stay_adjacent_in_entries_order() -> None:
+    """Both of a DFC's face-groups match the same entry, so they sort to
+    that entry's position together — front (face_index 0) first — rather
+    than scattering by gallery order."""
+    name = "Dion, Bahamut's Dominant // Bahamut, Warden of Light"
+    gallery = [
+        _face("dfc-id", 1, "Bahamut, Warden of Light", name, "fin", "376", 800, face_label="back"),
+        _face("dfc-id", 0, "Dion, Bahamut's Dominant", name, "fin", "376", 800, face_label="front"),
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
+        DeckEntry(quantity=2, name=name, set_code="fin", collector_number="376"),
+    ]
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
+    assert [u.best.face_name for u in units] == [
+        "Sol Ring",
+        "Dion, Bahamut's Dominant",
+        "Bahamut, Warden of Light",
+    ]
+
+
 def test_match_quantities_name_fallback() -> None:
     gallery = [_face("x-id", None, "Lightning Bolt", "Lightning Bolt", "lea", "161", 800)]
     entries = [DeckEntry(quantity=4, name="Lightning Bolt")]

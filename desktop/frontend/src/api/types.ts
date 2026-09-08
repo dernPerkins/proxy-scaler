@@ -358,6 +358,11 @@ export type PageOrder = "duplex" | "fronts_then_backs";
  *  its rows, and getting it wrong puts every back on the wrong card. */
 export type FlipEdge = "long" | "short";
 
+/** Card order for the Decklist display AND the PDF/ZIP export output —
+ *  one shared, persisted control (see deckEntries.sortCards). "(none)"
+ *  keeps decklist insert order. */
+export type SortPrimary = "Name" | "Set" | "(none)";
+
 // Mirrors PdfJobOut/PdfJobStatusOut. A render job exists because building
 // a sheet costs ~0.7s per unique card image, so the client needs something
 // to poll instead of one long opaque POST.

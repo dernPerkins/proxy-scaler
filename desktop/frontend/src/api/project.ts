@@ -11,6 +11,7 @@ import type {
   FlipEdge,
   PageOrder,
   ReverseFill,
+  SortPrimary,
 } from "./types";
 
 export interface ProjectSummary {
@@ -71,6 +72,9 @@ export interface ProjectSettings {
   back_offset_y_mm: number;
   /** This project's Selected Back — an id into the Back Library, or null. */
   back_image_id: number | null;
+  // Card order — for the Decklist display and the PDF/ZIP export output
+  // alike (one shared control; see deckEntries.sortCards).
+  sort_primary: SortPrimary;
 }
 
 export interface CardRow {

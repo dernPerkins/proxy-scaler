@@ -13,7 +13,8 @@ import {
   useServerVersion,
 } from "../config";
 import { useProject } from "../context/ProjectContext";
-import { cardToEntry } from "../deckEntries";
+import { cardToEntry, sortCards } from "../deckEntries";
+import SortSelect from "../components/SortSelect";
 import { registerCustomCards, waitForTasks } from "../syncCustoms";
 import { UploadCanceled } from "../uploadProgress";
 import { DownloadCanceled, runDownload } from "../download";
@@ -62,7 +63,9 @@ export default function ExportPage() {
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  const entries = cards.map(cardToEntry);
+  // Sorted before mapping: ZIP filenames are numbered in entries order,
+  // so this is where the shared sort dropdown reaches the exported files.
+  const entries = sortCards(cards, settings.sort_primary).map(cardToEntry);
 
   // Same selectors, same persisted fields as the PDF tab (settings.
   // preferred_model / preferred_dpi) — deliberately shared, not
@@ -352,6 +355,7 @@ export default function ExportPage() {
         ) : null}
 
         <div className="summary-row" style={{ marginTop: 14 }}>
+          <SortSelect />
           <button
             className="btn-primary export-btn"
             onClick={() => handleExport("default")}
