@@ -21,7 +21,22 @@ from proxy_scaler.db import (
     release_worker_hold,
     set_worker_hold,
 )
-from proxy_scaler.worker import _process_one, _wait_while_held
+from proxy_scaler.worker import (
+    CUDA_ALLOC_CONF_DEFAULT,
+    CUDA_ALLOC_CONF_ENV,
+    _configure_cuda_allocator,
+    _process_one,
+    _wait_while_held,
+)
+
+
+def test_configure_cuda_allocator_sets_default_and_keeps_override() -> None:
+    env: dict[str, str] = {}
+    assert _configure_cuda_allocator(env) == CUDA_ALLOC_CONF_DEFAULT
+    assert env[CUDA_ALLOC_CONF_ENV] == "expandable_segments:True"
+    env = {CUDA_ALLOC_CONF_ENV: "max_split_size_mb:128"}
+    assert _configure_cuda_allocator(env) == "max_split_size_mb:128"
+    assert env[CUDA_ALLOC_CONF_ENV] == "max_split_size_mb:128"
 
 
 def _enqueue(db_path: Path, **overrides) -> int:

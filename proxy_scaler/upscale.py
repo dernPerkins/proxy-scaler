@@ -297,48 +297,143 @@ def _dtype_label(dtype: "torch.dtype | None") -> str:
     return "bf16" if dtype == torch.bfloat16 else "fp32"
 
 
-# VRAM thresholds for the auto-tile ladder, from peaks measured on a
-# 3080 Ti with a card-sized DAT2 pass (weights included) × ~1.4 headroom:
-#   tile 768 bf16 peaks ~6.3 GiB → 8 GiB (also correctly excludes 8GB cards)
-#   tile 384 peaks 1.63 GiB bf16 / 3.24 GiB fp32 → 2.5 / 4.5 GiB
-_TILE768_MIN_FREE = 8 * 1024**3
-_TILE384_MIN_FREE_BF16 = int(2.5 * 1024**3)
-_TILE384_MIN_FREE_FP32 = int(4.5 * 1024**3)
-# The auto ladder, largest first. 256 is the floor: below its needs
-# (~1-2 GiB) the DAT models are hopeless on that GPU anyway, and the OOM
-# ladder's terminal CPU relocation still exists as the last resort.
-_AUTO_TILE_LADDER = (768, 384, 256)
+# ---- Auto tile ladder ------------------------------------------------
+#
+# Measured on a 3080 Ti (12 GB, torch 2.14 cu130), bf16, warm model, on a
+# 745x1040 Scryfall card. "reserved" is what the CUDA caching allocator
+# actually holds — the number a GPU runs out of — first with torch's
+# default allocator and then with expandable_segments (worker.py sets it):
+#
+#   tile      secs   allocated   reserved(default)   reserved(expandable)
+#   untiled    7.7    6.27 GiB     10.76 GiB            6.54 GiB
+#   640        8.4    3.66          7.26                3.77
+#   512        8.6    2.59          5.57                2.75
+#   384        9.1    1.63          3.38                1.71
+#   256        9.8    0.98          1.89                1.03
+#
+# Three things fall out of that table:
+#  - Bigger tiles buy little in bf16 (~16% untiled vs 384), so an
+#    aggressive ladder is a memory risk for a small speed reward.
+#  - The default allocator reserves ~2x what it allocates on the DAT
+#    models — the untiled pass reserved 10.8 GiB on a 12 GB card. On
+#    Windows the Nvidia driver's default sysmem-fallback policy then
+#    spills that growth into system RAM rather than failing, so torch
+#    never raises the OOM the retry ladder below depends on and the GPU
+#    thrashes instead. expandable_segments removes the overhead (reserved
+#    lands within ~4% of allocated), which is why the worker enables it.
+#  - Need is linear in the padded tile's pixel count plus a small fixed
+#    base (weights + workspace); the fit below reproduces every measured
+#    allocated peak within ~0.1 GiB, so a rung's need can be estimated
+#    for any image size instead of hard-coding thresholds per rung.
+#
+# The ladder is largest first; 0 means untiled (the same value
+# _run_inference treats as "no tiling"). It also drives the OOM retry
+# path: a rung that OOMs steps down to whatever the re-probed free VRAM
+# says fits. 256 is the floor — the last GPU rung before the terminal CPU
+# relocation, never gated (below its ~1 GiB the DAT models are hopeless on
+# that GPU anyway).
+_AUTO_TILE_LADDER = (0, 640, 512, 384, 256)
+_AUTO_TILE_FLOOR = 256
+# Light models run untiled (effective_tile_size gives 0) and never exceed
+# ~0.8 GiB on a card, so the ladder has nothing to offer them except a
+# single tiled retry before the catastrophic CPU fallback on tiny GPUs.
+_LIGHT_MODEL_RETRY_TILE = 384
+# Cost model (bytes): base + pixels_in_largest_padded_tile * per_px. Fit to
+# the bf16 column above; fp32 doubles the activation term (its measured
+# 3.24 GiB at tile 384 sits within 0.15 GiB of the estimate).
+_VRAM_BASE_BYTES = 180 * 1024**2
+_VRAM_BYTES_PER_PX = {"bf16": 8450, "fp32": 16900}
+# Headroom over the estimate. 1.4x once the allocator is known to behave
+# (reserved ≈ allocated); the first task of a process runs at 2x in case
+# expandable_segments was ignored on this platform — torch then reserves
+# ~2x — and the observed reserved/allocated ratio replaces the guess
+# afterwards (see Upscaler._record_allocator_headroom).
+_VRAM_HEADROOM_DEFAULT = 1.4
+_VRAM_HEADROOM_FIRST_TASK = 2.0
+# The untiled rung's explicit floor, on top of the formula (which lands at
+# ~8.8 GiB for a card at 1.4x): free VRAM only, deliberately not total —
+# what the card can do right now is what matters.
+_UNTILED_MIN_FREE = 9 * 1024**3
+
+
+def _rung_order(tile: int) -> float:
+    """Sort key for ladder rungs: 0 (untiled) is the largest."""
+    return float("inf") if tile <= 0 else float(tile)
+
+
+def _ladder_step_down(tile: int) -> int | None:
+    """The next smaller ladder rung below `tile`, or None at the floor."""
+    for rung in _AUTO_TILE_LADDER:
+        if _rung_order(rung) < _rung_order(tile):
+            return rung
+    return None
+
+
+def _max_padded_tile_px(width: int, height: int, tile: int, pad: int) -> int:
+    """Pixel count of the largest tile _tiled_inference would feed the
+    model for this image — the quantity VRAM need scales with. Mirrors
+    _run_inference's skip condition (an image no bigger than the tile runs
+    untiled) and _tiled_inference's padded bounds exactly."""
+    if tile <= 0 or min(width, height) <= tile:
+        return width * height
+    largest = 0
+    for y in range(0, height, tile):
+        y0, y1 = max(y - pad, 0), min(y + tile + pad, height)
+        for x in range(0, width, tile):
+            x0, x1 = max(x - pad, 0), min(x + tile + pad, width)
+            largest = max(largest, (y1 - y0) * (x1 - x0))
+    return largest
+
+
+def _estimated_vram_need(
+    width: int,
+    height: int,
+    tile: int,
+    pad: int,
+    dtype_label: str,
+    headroom: float,
+) -> int:
+    """Free VRAM a rung wants before the ladder will pick it (bytes)."""
+    px = _max_padded_tile_px(width, height, tile, pad)
+    per_px = _VRAM_BYTES_PER_PX.get(dtype_label, _VRAM_BYTES_PER_PX["fp32"])
+    need = int((_VRAM_BASE_BYTES + px * per_px) * headroom)
+    if px == width * height:
+        # Resolves to a full-image pass for this image: the explicit floor
+        # applies whichever rung got it there.
+        need = max(need, _UNTILED_MIN_FREE)
+    return need
 
 
 def _choose_auto_tile(
-    free_bytes: int | None, dtype: "torch.dtype", base_tile: int
+    free_bytes: int | None,
+    dtype_label: str,
+    base_tile: int,
+    *,
+    width: int,
+    height: int,
+    pad: int,
+    headroom: float = _VRAM_HEADROOM_DEFAULT,
+    below: int | None = None,
 ) -> int:
-    """Pick the auto tile size for a heavy model (base_tile > 0) from free
-    VRAM — a three-rung ladder: 768 (bf16 with plenty free), the 384 base,
-    or a 256 step-down for small GPUs so they stay on the GPU instead of
-    OOMing straight into the catastrophic CPU fallback. Unknown free VRAM
-    gets the benefit of the doubt (base). Untiled light models (base 0)
-    and manual tile settings are never touched (callers gate on tile_auto)."""
-    import torch
-
+    """Pick the auto tile for a heavy model (base_tile > 0): the largest
+    ladder rung whose estimated need fits `free_bytes`, else the floor.
+    The base is just another rung — nothing is special about 384 beyond
+    being the answer when free VRAM is unknown (benefit of the doubt).
+    `below` (the OOM retry path) restricts the walk to rungs strictly
+    smaller than the one that just failed. Untiled light models (base 0)
+    and manual tile settings are never touched (callers gate on
+    tile_auto)."""
     if base_tile <= 0:
         return base_tile
-    if (
-        dtype == torch.bfloat16
-        and free_bytes is not None
-        and free_bytes >= _TILE768_MIN_FREE
-    ):
-        return 768
     if free_bytes is None:
         return base_tile
-    floor = (
-        _TILE384_MIN_FREE_BF16
-        if dtype == torch.bfloat16
-        else _TILE384_MIN_FREE_FP32
-    )
-    if free_bytes >= floor:
-        return base_tile
-    return 256
+    for rung in _AUTO_TILE_LADDER:
+        if below is not None and _rung_order(rung) >= _rung_order(below):
+            continue
+        need = _estimated_vram_need(width, height, rung, pad, dtype_label, headroom)
+        if free_bytes >= need:
+            return rung
+    return _AUTO_TILE_FLOOR
 
 
 @dataclass(frozen=True)
@@ -389,6 +484,25 @@ def ensure_weights(
 # prefetch threads never touch them), so no locking; the API process has
 # its own interpreter and thus its own cache.
 _MODEL_CACHE: dict[tuple, "ImageModelDescriptor"] = {}
+
+# Allocator headroom learned from the first successful GPU pass of this
+# process (reserved/allocated ratio, see Upscaler._record_allocator_headroom).
+# None until then, which means _VRAM_HEADROOM_FIRST_TASK. Same
+# single-thread ownership as _MODEL_CACHE, so no locking.
+_OBSERVED_HEADROOM: float | None = None
+
+
+def _current_headroom() -> float:
+    return _OBSERVED_HEADROOM if _OBSERVED_HEADROOM is not None else _VRAM_HEADROOM_FIRST_TASK
+
+
+def _record_observed_headroom(reserved: int, allocated: int) -> None:
+    """Fold a pass's peak reserved/allocated ratio (x1.15 safety) into the
+    headroom later tasks gate on, never below the default 1.4x."""
+    global _OBSERVED_HEADROOM
+    if allocated <= 0:
+        return
+    _OBSERVED_HEADROOM = max(_VRAM_HEADROOM_DEFAULT, reserved / allocated * 1.15)
 
 
 def _cache_key(model_id: UpscaleModel, scale: int, weights_dir: Path) -> tuple:
@@ -442,8 +556,11 @@ class Upscaler:
         self.tile = tile
         self.tile_pad = tile_pad
         # tile_auto marks `tile` as the auto default rather than a user
-        # choice — only then may _load_model upgrade it from free VRAM.
+        # choice — only then may _apply_auto_tile move it from free VRAM.
+        # The base is kept separately: every task re-picks from it, so an
+        # OOM step-down never pins later tasks low.
         self.tile_auto = tile_auto
+        self._auto_base_tile = tile
         # Duck-typed timing_db.TimingCollector (kept untyped so this module
         # never imports timing_db, which imports db, which imports us).
         self._timings = timings
@@ -485,22 +602,14 @@ class Upscaler:
             torch.bfloat16 if param.dtype == torch.bfloat16 else torch.float32
         )
         self._descriptor = descriptor
-        self._apply_auto_tile()
-        # The one line a user report needs: which capability gates fired.
-        print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
         return descriptor
 
-    def _apply_auto_tile(self) -> None:
-        """Per task (mem_get_info is cheap): pick this task's auto tile
-        from the ladder — a heavy model's 384 may grow to 768 (bf16, lots
-        of free VRAM) or shrink to 256 (small GPU) so it stays on the GPU
-        instead of OOMing straight into the catastrophic CPU fallback."""
+    def _probe_free_vram(self) -> int | None:
+        """Free VRAM this task can count on, or None when unknowable."""
         import torch
 
         if self._device is None or self._device.type != "cuda":
-            return
-        if not (self.tile_auto and self.tile > 0):
-            return
+            return None
         try:
             free_bytes, _ = torch.cuda.mem_get_info()
             # mem_get_info counts this process's allocator arenas as "used",
@@ -510,9 +619,31 @@ class Upscaler:
             # later task below the gate and silently downgrade.
             free_bytes += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
         except Exception:  # noqa: BLE001
-            free_bytes = None
-        new_tile = _choose_auto_tile(free_bytes, self._dtype, self.tile)
-        if new_tile < self.tile:
+            return None
+        return int(free_bytes)
+
+    def _apply_auto_tile(self, width: int, height: int) -> None:
+        """Per task (mem_get_info is cheap): re-pick this task's auto tile
+        from the base via the ladder — a heavy model's 384 may grow up to
+        an untiled pass (lots of free VRAM) or shrink to 256 (small GPU)
+        so it stays on the GPU instead of OOMing straight into the
+        catastrophic CPU fallback. Image-aware: the estimate is for the
+        largest padded tile this image actually produces."""
+        if not self.tile_auto or self._auto_base_tile <= 0:
+            return
+        self.tile = self._auto_base_tile
+        if self._device is None or self._device.type != "cuda":
+            return
+        new_tile = _choose_auto_tile(
+            self._probe_free_vram(),
+            _dtype_label(self._dtype),
+            self._auto_base_tile,
+            width=width,
+            height=height,
+            pad=self.tile_pad,
+            headroom=_current_headroom(),
+        )
+        if _rung_order(new_tile) < _rung_order(self.tile):
             # Worth a line of its own: a step-down means this GPU is tight
             # on VRAM, which is the leading suspect in "why is it slow/on
             # CPU" reports.
@@ -520,6 +651,62 @@ class Upscaler:
                 f"  low free VRAM: stepping tile down from {self.tile} to {new_tile}"
             )
         self.tile = new_tile
+
+    def _next_oom_rung(self, width: int, height: int) -> int | None:
+        """After an OOM at self.tile: the rung to retry on the same device,
+        or None when the GPU has nothing left to offer (→ CPU relocation).
+        Heavy auto rungs re-probe free VRAM and jump to whatever fits
+        below the failed rung — a plain one-step walk only when the probe
+        is unavailable. Light auto models get one tiled retry. Manual tile
+        settings are never second-guessed."""
+        if not self.tile_auto:
+            return None
+        if self._auto_base_tile <= 0:
+            return _LIGHT_MODEL_RETRY_TILE if self.tile <= 0 else None
+        fallback = _ladder_step_down(self.tile)
+        if fallback is None:
+            return None
+        free_bytes = self._probe_free_vram()
+        if free_bytes is None:
+            return fallback
+        estimate = _choose_auto_tile(
+            free_bytes,
+            _dtype_label(self._dtype),
+            self._auto_base_tile,
+            width=width,
+            height=height,
+            pad=self.tile_pad,
+            headroom=_current_headroom(),
+            below=self.tile,
+        )
+        if _rung_order(estimate) < _rung_order(self.tile):
+            return estimate
+        return fallback
+
+    def _record_allocator_headroom(self) -> None:
+        """Best-effort: after a successful GPU pass, learn how much the
+        allocator really reserves over what it allocates, so later tasks
+        gate on the observed ratio rather than the first-task guess."""
+        import torch
+
+        if self._device is None or self._device.type != "cuda":
+            return
+        try:
+            _record_observed_headroom(
+                torch.cuda.max_memory_reserved(), torch.cuda.max_memory_allocated()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _reset_peak_memory_stats(self) -> None:
+        import torch
+
+        if self._device is None or self._device.type != "cuda":
+            return
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _load_model(self) -> ImageModelDescriptor:
         import torch
@@ -594,6 +781,28 @@ class Upscaler:
             return self._tiled_inference(descriptor, tensor)
         return descriptor(tensor)
 
+    def _try_gpu_inference(
+        self,
+        descriptor: ImageModelDescriptor,
+        tensor: torch.Tensor,
+    ) -> "torch.Tensor | None":
+        """One inference attempt on the current device; None means a GPU
+        OOM. Anything else — and any error at all on CPU — propagates.
+        Deliberately its own frame: the caught exception's traceback pins
+        the failed pass's frames and every activation tensor they hold,
+        so it must be gone (this method returned) before a retry clears
+        the cache — see the caller."""
+        try:
+            return self._run_inference(descriptor, tensor)
+        except Exception as exc:
+            if (
+                self._device is None
+                or self._device.type == "cpu"
+                or not _is_oom_error(exc)
+            ):
+                raise
+        return None
+
     def upscale(self, image: Image.Image) -> UpscaleResult:
         # Equivalent to decorating with @torch.inference_mode() — kept as an
         # explicit context manager so torch doesn't need to be importable at
@@ -613,63 +822,71 @@ class Upscaler:
             # instead of letting it get silently discarded.
             alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
             rgb = image.convert("RGB")
+            width, height = rgb.size
+            self._apply_auto_tile(width, height)
+            # The one line a user report needs: which capability gates fired.
+            print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
             dtype = self._dtype or torch.float32
             tensor = to_tensor(rgb).unsqueeze(0).to(self._device, dtype)
+            self._reset_peak_memory_stats()
 
             try:
                 # The inference phase deliberately spans the OOM retries,
                 # so inference_s is the true wall-clock cost including any
                 # fallback (tile downgrade or model relocation + re-run).
                 with self._phase("inference"):
-                    try:
-                        out_gpu = self._run_inference(descriptor, tensor)
-                    except Exception as exc:
-                        if self._device.type == "cpu" or not _is_oom_error(exc):
-                            raise
-                        if self.tile_auto and self.tile > 0:
-                            # The VRAM-probed tile turned out not to fit
-                            # after all (something else grabbed VRAM) —
-                            # step down through the remaining auto rungs on
-                            # the SAME device before resorting to the
-                            # catastrophic CPU path. Manual tile settings
-                            # are never second-guessed.
-                            for rung in _AUTO_TILE_LADDER:
-                                if rung >= self.tile:
-                                    continue
-                                print(
-                                    f"Upscale OOM on {self._device} at tile "
-                                    f"{self.tile}; retrying at tile {rung}…"
-                                )
-                                self.tile = rung
-                                _clear_device_cache(self._device)
-                                try:
-                                    out_gpu = self._run_inference(descriptor, tensor)
-                                except Exception as exc2:
-                                    if not _is_oom_error(exc2):
-                                        raise
-                                    exc = exc2
-                                else:
-                                    exc = None
-                                    break
-                        if exc is not None:
+                    # Every retry below runs OUTSIDE the except block that
+                    # caught the OOM, on purpose: while an except clause is
+                    # active the exception (and its traceback) is alive,
+                    # and the traceback pins the failed forward pass's
+                    # frames — with every activation tensor they hold. Kept
+                    # alive like that, _clear_device_cache() can't release
+                    # a byte and every smaller rung OOMs too, all the way
+                    # to the CPU. Verified live: an untiled OOM with 5 GiB
+                    # still free walked the whole ladder into CPU inference
+                    # when retried from inside the handler.
+                    out_gpu = self._try_gpu_inference(descriptor, tensor)
+                    if out_gpu is None:
+                        # The VRAM-probed tile turned out not to fit after
+                        # all (something else grabbed VRAM, or the estimate
+                        # was off) — retry on the SAME device at whatever
+                        # rung the re-probe says fits before resorting to
+                        # the catastrophic CPU path. _next_oom_rung owns
+                        # the policy (heavy ladder / light single retry /
+                        # manual never second-guessed).
+                        while True:
+                            rung = self._next_oom_rung(width, height)
+                            if rung is None:
+                                break
                             print(
-                                f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
+                                f"Upscale OOM on {self._device} at tile "
+                                f"{self.tile or 'off'}; retrying at tile {rung}…"
                             )
+                            self.tile = rung
                             _clear_device_cache(self._device)
-                            if self._device.type == "cuda":
-                                try:
-                                    torch.cuda.synchronize(self._device)
-                                except Exception:  # noqa: BLE001
-                                    pass
-                            del tensor
-                            descriptor = self._relocate_to_cpu()
-                            tensor = to_tensor(rgb).unsqueeze(0).to(
-                                self._device, self._dtype or torch.float32
-                            )
-                            out_gpu = self._run_inference(descriptor, tensor)
+                            out_gpu = self._try_gpu_inference(descriptor, tensor)
+                            if out_gpu is not None:
+                                break
+                    if out_gpu is None:
+                        print(
+                            f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
+                        )
+                        _clear_device_cache(self._device)
+                        if self._device.type == "cuda":
+                            try:
+                                torch.cuda.synchronize(self._device)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        del tensor
+                        descriptor = self._relocate_to_cpu()
+                        tensor = to_tensor(rgb).unsqueeze(0).to(
+                            self._device, self._dtype or torch.float32
+                        )
+                        out_gpu = self._run_inference(descriptor, tensor)
 
                 out_cpu = out_gpu.clamp(0.0, 1.0).squeeze(0).float().cpu()
                 del out_gpu
+                self._record_allocator_headroom()
                 out_image = to_pil_image(out_cpu)
                 if alpha is not None:
                     resized_alpha = alpha.resize(out_image.size, Image.Resampling.LANCZOS)

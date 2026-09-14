@@ -12,10 +12,18 @@ from proxy_scaler.upscale import (
     Upscaler,
     UpscaleModel,
     UpscaleResult,
+    _AUTO_TILE_LADDER,
+    _LIGHT_MODEL_RETRY_TILE,
+    _UNTILED_MIN_FREE,
     _bf16_supported,
     _choose_auto_tile,
     _clear_device_cache,
+    _current_headroom,
+    _estimated_vram_need,
     _is_oom_error,
+    _ladder_step_down,
+    _max_padded_tile_px,
+    _record_observed_headroom,
     device_backend,
     device_kind,
     read_cache_device,
@@ -282,86 +290,99 @@ def test_resolve_dtype_needs_model_and_device_support() -> None:
         assert resolve_dtype(yes, dev) == torch.float32
 
 
+_GiB = 1024**3
+# 745x1040 Scryfall card, pad 32 — the geometry the ladder was measured on.
+_CARD = dict(width=745, height=1040, pad=32)
+
+
+def test_max_padded_tile_px() -> None:
+    assert _max_padded_tile_px(745, 1040, 0, 32) == 774_800
+    assert _max_padded_tile_px(745, 1040, 640, 32) == 451_584
+    assert _max_padded_tile_px(745, 1040, 512, 32) == 304_640
+    assert _max_padded_tile_px(745, 1040, 384, 32) == 186_368
+    assert _max_padded_tile_px(745, 1040, 256, 32) == 102_400
+    # An image no bigger than the tile runs untiled (mirrors _run_inference).
+    assert _max_padded_tile_px(745, 1040, 745, 32) == 774_800
+    assert _max_padded_tile_px(745, 1040, 768, 32) == 774_800
+
+
+def test_estimated_vram_need_tracks_measured_peaks() -> None:
+    """Guards the cost-model constants against the 3080 Ti measurements
+    (allocated peaks, bf16, headroom 1.0) to within 0.2 GiB."""
+    measured = {640: 3.66, 512: 2.59, 384: 1.63, 256: 0.98}
+    for tile, gib in measured.items():
+        est = _estimated_vram_need(745, 1040, tile, 32, "bf16", 1.0) / _GiB
+        assert abs(est - gib) < 0.2, (tile, est)
+    # The untiled rung (6.27 GiB measured) is pinned to its explicit floor.
+    assert _estimated_vram_need(745, 1040, 0, 32, "bf16", 1.0) == _UNTILED_MIN_FREE
+    assert _estimated_vram_need(745, 1040, 0, 32, "bf16", 1.4) == _UNTILED_MIN_FREE
+    # fp32 doubles the activation term: 3.24 GiB measured at 384.
+    assert abs(_estimated_vram_need(745, 1040, 384, 32, "fp32", 1.0) / _GiB - 3.24) < 0.2
+
+
 def test_choose_auto_tile() -> None:
-    lots, mid, little = 10 * 1024**3, 3 * 1024**3, 2 * 1024**3
-    # Upgrade requires: auto-tiled heavy model (base>0), bf16, enough free.
-    assert _choose_auto_tile(lots, torch.bfloat16, DEFAULT_TILE_SIZE) == 768
-    assert _choose_auto_tile(lots, torch.float32, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
-    # Mid free VRAM: enough for 384 in bf16, not in fp32 (larger activations).
-    assert _choose_auto_tile(mid, torch.bfloat16, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
-    assert _choose_auto_tile(mid, torch.float32, DEFAULT_TILE_SIZE) == 256
-    # Small GPU: step down to 256 instead of OOMing into the CPU fallback.
-    assert _choose_auto_tile(little, torch.bfloat16, DEFAULT_TILE_SIZE) == 256
-    assert _choose_auto_tile(little, torch.float32, DEFAULT_TILE_SIZE) == 256
-    assert _choose_auto_tile(lots, torch.bfloat16, 0) == 0  # untiled light model
+    def pick(free_gib: float, dtype: str = "bf16", **kw) -> int:
+        return _choose_auto_tile(
+            int(free_gib * _GiB), dtype, DEFAULT_TILE_SIZE, headroom=1.4, **_CARD, **kw
+        )
+
+    assert pick(10) == 0  # untiled
+    # 8.5 GiB: the formula alone (~8.8 at 1.4x) is close, but the explicit
+    # 9 GiB untiled floor bites — a 10 GB card never gets the untiled pass.
+    assert pick(8.5) == 640
+    assert pick(4) == 512
+    assert pick(2.5) == 384
+    assert pick(2.5, "fp32") == 256  # fp32 activations are twice the size
+    assert pick(1) == 256  # floor: never below the last GPU rung
+    # First-task conservatism (2x headroom) holds the same GPU one rung lower.
+    assert _choose_auto_tile(10 * _GiB, "bf16", DEFAULT_TILE_SIZE, headroom=2.0, **_CARD) == 640
+    # OOM retry path: only rungs strictly below the failed one.
+    assert pick(10, below=640) == 512
+    assert pick(2.5, below=0) == 384
     # Unknown free VRAM: benefit of the doubt (base), never a blind change.
-    assert _choose_auto_tile(None, torch.bfloat16, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
-    assert _choose_auto_tile(None, torch.float32, DEFAULT_TILE_SIZE) == DEFAULT_TILE_SIZE
+    assert _choose_auto_tile(None, "bf16", DEFAULT_TILE_SIZE, **_CARD) == DEFAULT_TILE_SIZE
+    # Untiled light model (base 0) is never touched.
+    assert _choose_auto_tile(10 * _GiB, "bf16", 0, **_CARD) == 0
 
 
-def test_upscale_oom_retries_smaller_tile_before_cpu(tmp_path) -> None:
-    """An auto-chosen tile that OOMs drops down the ladder on the SAME
-    device first; CPU relocation only happens if every rung OOMs."""
-    up = Upscaler(
-        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
-        tile=768, tile_auto=True,
-    )
+def test_ladder_step_down() -> None:
+    assert _ladder_step_down(0) == 640
+    assert _ladder_step_down(640) == 512
+    assert _ladder_step_down(384) == 256
+    assert _ladder_step_down(256) is None
+
+
+def test_observed_headroom_calibration() -> None:
+    with patch("proxy_scaler.upscale._OBSERVED_HEADROOM", None):
+        assert _current_headroom() == 2.0  # first task: conservative
+        _record_observed_headroom(reserved=2 * _GiB, allocated=1 * _GiB)
+        assert abs(_current_headroom() - 2.3) < 1e-9  # 2.0 x 1.15
+        _record_observed_headroom(reserved=105, allocated=100)
+        assert _current_headroom() == 1.4  # expandable segments: default floor
+        _record_observed_headroom(reserved=0, allocated=0)  # ignored
+        assert _current_headroom() == 1.4
+
+
+class _CudaDev:
+    type = "cuda"
+
+    def __str__(self) -> str:
+        return "cuda"
+
+
+def _drive_upscale(up: Upscaler, *, oom_attempts: int, probe):
+    """Run up.upscale() on a card-sized image with a fake cuda device
+    (the model tensor is a tiny 16x16 stand-in; the ladder only reads the
+    PIL image's size). The first `oom_attempts` inference calls OOM.
+    Headroom is pinned at the post-calibration 1.4x. Returns
+    (result, inference attempts, relocate mock)."""
     up._descriptor = MagicMock()
-
-    class _CudaDev:
-        type = "cuda"
-
-        def __str__(self) -> str:
-            return "cuda"
-
+    up._dtype = torch.bfloat16
     attempts = {"n": 0}
 
-    def oom_once(descriptor, tensor):
+    def inference(descriptor, tensor):
         attempts["n"] += 1
-        if attempts["n"] == 1:
-            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
-        _, _, h, w = tensor.shape
-        return torch.zeros(1, 3, h * 4, w * 4)
-
-    batch = torch.zeros(1, 3, 16, 16)
-    fake_rgb = MagicMock()
-    fake_rgb.unsqueeze.return_value.to.return_value = batch
-
-    src = Image.new("RGB", (16, 16), color=(1, 2, 3))
-    with (
-        patch.object(up, "_ensure_model", return_value=up._descriptor),
-        patch.object(up, "_run_inference", side_effect=oom_once),
-        patch.object(up, "_relocate_to_cpu") as relocate_mock,
-        patch("proxy_scaler.upscale._clear_device_cache"),
-        patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
-    ):
-        up._device = _CudaDev()  # type: ignore[assignment]
-        result = up.upscale(src)
-
-    relocate_mock.assert_not_called()  # stayed on the GPU
-    assert attempts["n"] == 2
-    assert up.tile == DEFAULT_TILE_SIZE
-    assert result.image.size == (64, 64)
-
-
-def test_upscale_oom_ladder_falls_to_cpu_after_every_rung(tmp_path) -> None:
-    up = Upscaler(
-        model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
-        tile=768, tile_auto=True,
-    )
-    up._descriptor = MagicMock()
-
-    class _CudaDev:
-        type = "cuda"
-
-        def __str__(self) -> str:
-            return "cuda"
-
-    attempts = {"n": 0}
-
-    def oom_thrice(descriptor, tensor):
-        attempts["n"] += 1
-        if attempts["n"] <= 3:
+        if attempts["n"] <= oom_attempts:
             raise torch.cuda.OutOfMemoryError("CUDA out of memory")
         _, _, h, w = tensor.shape
         return torch.zeros(1, 3, h * 4, w * 4)
@@ -373,65 +394,108 @@ def test_upscale_oom_ladder_falls_to_cpu_after_every_rung(tmp_path) -> None:
     batch = torch.zeros(1, 3, 16, 16)
     fake_rgb = MagicMock()
     fake_rgb.unsqueeze.return_value.to.return_value = batch
-
-    src = Image.new("RGB", (16, 16), color=(1, 2, 3))
+    src = Image.new("RGB", (745, 1040), color=(1, 2, 3))
     with (
         patch.object(up, "_ensure_model", return_value=up._descriptor),
-        patch.object(up, "_run_inference", side_effect=oom_thrice),
-        patch.object(up, "_relocate_to_cpu", side_effect=relocate),
+        patch.object(up, "_run_inference", side_effect=inference),
+        patch.object(up, "_relocate_to_cpu", side_effect=relocate) as relocate_mock,
+        patch.object(up, "_probe_free_vram", side_effect=probe),
         patch("proxy_scaler.upscale._clear_device_cache"),
+        patch("proxy_scaler.upscale._OBSERVED_HEADROOM", 1.4),
         patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
     ):
         up._device = _CudaDev()  # type: ignore[assignment]
         result = up.upscale(src)
-
-    assert attempts["n"] == 4  # 768 OOM, 384 OOM, 256 OOM, CPU success
-    assert result.device == "cpu"
+    return result, attempts["n"], relocate_mock
 
 
-def test_upscale_oom_fresh_384_steps_down_to_256_before_cpu(tmp_path) -> None:
-    """The gap this ladder closes: a small GPU whose auto-384 OOMs used to
-    fall STRAIGHT to CPU. Now it retries at 256 on the same device."""
-    up = Upscaler(
+def _heavy_auto(tmp_path) -> Upscaler:
+    return Upscaler(
         model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path,
         tile=DEFAULT_TILE_SIZE, tile_auto=True,
     )
-    up._descriptor = MagicMock()
 
-    class _CudaDev:
-        type = "cuda"
 
-        def __str__(self) -> str:
-            return "cuda"
+def test_upscale_oom_retries_smaller_tile_before_cpu(tmp_path) -> None:
+    """An auto-chosen rung that OOMs drops down the ladder on the SAME
+    device first; CPU relocation only happens if every rung OOMs."""
+    up = _heavy_auto(tmp_path)
+    result, attempts, relocate = _drive_upscale(up, oom_attempts=1, probe=lambda: 16 * _GiB)
+    relocate.assert_not_called()  # stayed on the GPU
+    assert attempts == 2  # untiled OOM, 640 ok
+    assert up.tile == 640
+    assert result.image.size == (64, 64)
 
-    attempts = {"n": 0}
 
-    def oom_once(descriptor, tensor):
-        attempts["n"] += 1
-        if attempts["n"] == 1:
-            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
-        _, _, h, w = tensor.shape
-        return torch.zeros(1, 3, h * 4, w * 4)
+def test_upscale_oom_ladder_falls_to_cpu_after_every_rung(tmp_path) -> None:
+    up = _heavy_auto(tmp_path)
+    result, attempts, relocate = _drive_upscale(
+        up, oom_attempts=len(_AUTO_TILE_LADDER), probe=lambda: 16 * _GiB
+    )
+    assert attempts == len(_AUTO_TILE_LADDER) + 1  # every rung OOMs, CPU succeeds
+    relocate.assert_called_once()
+    assert result.device == "cpu"
 
-    batch = torch.zeros(1, 3, 16, 16)
-    fake_rgb = MagicMock()
-    fake_rgb.unsqueeze.return_value.to.return_value = batch
 
-    src = Image.new("RGB", (16, 16), color=(1, 2, 3))
-    with (
-        patch.object(up, "_ensure_model", return_value=up._descriptor),
-        patch.object(up, "_run_inference", side_effect=oom_once),
-        patch.object(up, "_relocate_to_cpu") as relocate_mock,
-        patch("proxy_scaler.upscale._clear_device_cache"),
-        patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
-    ):
-        up._device = _CudaDev()  # type: ignore[assignment]
-        result = up.upscale(src)
+def test_upscale_oom_retry_jumps_to_reprobed_rung(tmp_path) -> None:
+    """The retry re-probes free VRAM and jumps to what fits instead of
+    walking one rung at a time: untiled OOM with 2.5 GiB free → 384."""
+    up = _heavy_auto(tmp_path)
+    probes = iter([16 * _GiB, int(2.5 * _GiB)])
+    result, attempts, relocate = _drive_upscale(up, oom_attempts=1, probe=lambda: next(probes))
+    relocate.assert_not_called()
+    assert attempts == 2
+    assert up.tile == 384
 
-    relocate_mock.assert_not_called()
-    assert attempts["n"] == 2
+
+def test_upscale_oom_fresh_384_steps_down_to_256_before_cpu(tmp_path) -> None:
+    """The gap the ladder closes: a small GPU whose auto-384 OOMs used to
+    fall STRAIGHT to CPU. With no VRAM reading to go on it still steps one
+    rung down on the same device."""
+    up = _heavy_auto(tmp_path)
+    result, attempts, relocate = _drive_upscale(up, oom_attempts=1, probe=lambda: None)
+    relocate.assert_not_called()
+    assert attempts == 2
     assert up.tile == 256
     assert result.image.size == (64, 64)
+
+
+def test_upscale_oom_light_model_gets_one_tiled_retry_before_cpu(tmp_path) -> None:
+    """Untiled light models (auto tile 0) retry once at 384, then CPU."""
+    def light() -> Upscaler:
+        return Upscaler(
+            model=UpscaleModel.REALESRGAN_ANIME_FAST, scale=4, weights_dir=tmp_path,
+            tile=0, tile_auto=True,
+        )
+
+    up = light()
+    result, attempts, relocate = _drive_upscale(up, oom_attempts=1, probe=lambda: 16 * _GiB)
+    relocate.assert_not_called()
+    assert attempts == 2
+    assert up.tile == _LIGHT_MODEL_RETRY_TILE
+    assert result.device == "gpu"
+
+    up = light()
+    result, attempts, relocate = _drive_upscale(up, oom_attempts=2, probe=lambda: 16 * _GiB)
+    assert attempts == 3  # untiled OOM, 384 OOM, CPU ok
+    relocate.assert_called_once()
+    assert result.device == "cpu"
+
+
+def test_apply_auto_tile_repicks_from_base_each_task(tmp_path) -> None:
+    """A previous OOM step-down on the instance never pins a later pick."""
+    up = _heavy_auto(tmp_path)
+    up.tile = 256
+    _, attempts, _ = _drive_upscale(up, oom_attempts=0, probe=lambda: 16 * _GiB)
+    assert attempts == 1
+    assert up.tile == 0
+    # Light models and manual settings are left exactly as constructed.
+    light = Upscaler(model=UpscaleModel.ULTRASHARP_V2_LITE, weights_dir=tmp_path, tile=0, tile_auto=True)
+    _drive_upscale(light, oom_attempts=0, probe=lambda: 16 * _GiB)
+    assert light.tile == 0
+    manual = Upscaler(model=UpscaleModel.ULTRASHARP_V2, weights_dir=tmp_path, tile=512, tile_auto=False)
+    _drive_upscale(manual, oom_attempts=0, probe=lambda: 16 * _GiB)
+    assert manual.tile == 512
 
 
 def test_upscale_oom_manual_tile_goes_straight_to_cpu(tmp_path) -> None:

@@ -13,6 +13,7 @@ regardless of how many times something tries to (re-)spawn it.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -23,6 +24,24 @@ from . import db, pipeline, timing_db
 from .dpi import ORIGINAL_MODEL
 
 POLL_INTERVAL_S = 2.0
+# torch's default CUDA caching allocator reserves ~2x what it allocates on
+# the DAT upscalers (an untiled UltraSharpV2 pass: 6.3 GiB allocated,
+# 10.8 GiB reserved on a 12 GB card — see the ladder notes in upscale.py).
+# expandable_segments brings reserved to within ~4% of allocated at the
+# same speed, which is what the auto-tile VRAM gates assume. It matters
+# most on Windows, where the driver's default sysmem-fallback policy lets
+# that overshoot spill into system RAM and thrash instead of raising the
+# OOM the retry ladder relies on. Must be in the environment before torch
+# is first imported (upscale.py imports it lazily, so main() is early
+# enough); torch warns once and ignores the setting where unsupported.
+CUDA_ALLOC_CONF_ENV = "PYTORCH_CUDA_ALLOC_CONF"
+CUDA_ALLOC_CONF_DEFAULT = "expandable_segments:True"
+
+
+def _configure_cuda_allocator(environ: "os._Environ[str] | dict[str, str]" = os.environ) -> str:
+    """Apply CUDA_ALLOC_CONF_DEFAULT unless the user/dev already set one;
+    returns the value in effect."""
+    return environ.setdefault(CUDA_ALLOC_CONF_ENV, CUDA_ALLOC_CONF_DEFAULT)
 HOLD_POLL_INTERVAL_S = 0.5
 # Upper bound on waiting for an in-flight finish (encode + DB writes) when
 # the worker exits; a healthy finish takes a few seconds.
@@ -182,6 +201,7 @@ def main(
     # plus the orphaned-running requeue cover the SIGKILL case.
     import signal
 
+    _configure_cuda_allocator()
     try:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     except (ValueError, OSError):  # non-main thread / exotic platform
@@ -264,8 +284,6 @@ def main(
 
 
 if __name__ == "__main__":
-    import os
-
     # Env var overrides (unset -> None -> normal default-path behavior) so
     # a supervisor/test harness spawning this as `python -m
     # proxy_scaler.worker` can point it at an isolated DB/lock file
