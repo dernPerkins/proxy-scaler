@@ -496,11 +496,17 @@ def _current_headroom() -> float:
     return _OBSERVED_HEADROOM if _OBSERVED_HEADROOM is not None else _VRAM_HEADROOM_FIRST_TASK
 
 
+# Passes smaller than this don't calibrate: a light model's ~0.4 GiB pass
+# has a noisy reserved/allocated ratio (allocator granularity dominates)
+# that would drag the heavy models' gate around for no reason.
+_HEADROOM_CALIBRATION_MIN_ALLOCATED = 1024**3
+
+
 def _record_observed_headroom(reserved: int, allocated: int) -> None:
     """Fold a pass's peak reserved/allocated ratio (x1.15 safety) into the
     headroom later tasks gate on, never below the default 1.4x."""
     global _OBSERVED_HEADROOM
-    if allocated <= 0:
+    if allocated < _HEADROOM_CALIBRATION_MIN_ALLOCATED:
         return
     _OBSERVED_HEADROOM = max(_VRAM_HEADROOM_DEFAULT, reserved / allocated * 1.15)
 

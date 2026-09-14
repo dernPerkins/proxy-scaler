@@ -357,8 +357,11 @@ def test_observed_headroom_calibration() -> None:
         assert _current_headroom() == 2.0  # first task: conservative
         _record_observed_headroom(reserved=2 * _GiB, allocated=1 * _GiB)
         assert abs(_current_headroom() - 2.3) < 1e-9  # 2.0 x 1.15
-        _record_observed_headroom(reserved=105, allocated=100)
+        _record_observed_headroom(reserved=int(1.05 * _GiB), allocated=1 * _GiB)
         assert _current_headroom() == 1.4  # expandable segments: default floor
+        # Small passes (light models) are too noisy to calibrate from.
+        _record_observed_headroom(reserved=800 * 1024**2, allocated=400 * 1024**2)
+        assert _current_headroom() == 1.4
         _record_observed_headroom(reserved=0, allocated=0)  # ignored
         assert _current_headroom() == 1.4
 
