@@ -224,9 +224,17 @@ def main(
     _wait_while_held(db_path=db_path)
     # Holding the lock proves no other worker is mid-task, so any
     # 'running' row is an orphan from a dead worker — re-queue them.
-    requeued = db.reset_orphaned_running_tasks(db_path=db_path)
-    if requeued:
-        print(f"Re-queued {requeued} task(s) orphaned by a previous worker.")
+    orphans = db.reset_orphaned_running_tasks(db_path=db_path)
+    if orphans.requeued:
+        print(f"Re-queued {orphans.requeued} task(s) orphaned by a previous worker.")
+    if orphans.failed:
+        # Loud on purpose: a task that keeps killing workers is the one
+        # thing a "why does generation keep dying" report needs to name.
+        print(
+            f"Failed {orphans.failed} task(s) that already killed "
+            f"{db.MAX_TASK_ATTEMPTS} worker(s) in a row (not re-queued).",
+            file=sys.stderr,
+        )
     # A fresh worker retries the GPU, so a stale CPU-fallback flag from a
     # previous run describes a condition that no longer holds (mirrors the
     # supervisor clearing stale holds); if the fallback recurs it re-fires

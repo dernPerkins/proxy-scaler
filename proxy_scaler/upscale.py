@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -476,6 +477,150 @@ def ensure_weights(
     return path
 
 
+# ---- DirectML: channel-wise PReLU workaround ------------------------
+#
+# torch-directml 0.2.5 (torch 2.4.1) aborts the whole process — a native
+# CHECK, not a Python exception — the first time a channel-wise
+# nn.PReLU (num_parameters > 1) runs on its "privateuseone" device:
+#
+#   dml_tensor_desc.cc:80] Check failed: rank <= DML_TENSOR_DIMENSION_COUNT_MAX
+#
+# Reproduced in isolation upstream (Microsoft Q&A, same torch/plugin
+# versions: single-parameter PReLU works, num_parameters=2 aborts). Of
+# our models only Real-ESRGAN Compact (realesrgan_anime_fast) uses it —
+# 17 layers with 64 slopes each — which is exactly why that one model
+# killed the worker on a DirectML box while the DAT2 pair and RealPLKSR
+# (GELU/LeakyReLU, no PReLU) ran fine. Being an abort, nothing in-process
+# can catch it, so the guard has to run BEFORE the first forward pass:
+# _load_model swaps every channel-wise PReLU for the arithmetically
+# identical relu(x) - w*relu(-x) below, built only from ops the other
+# models already exercise on DirectML (relu, neg, mul with a [1,C,1,1]
+# broadcast, sub).
+#
+# PROXY_SCALER_DIRECTML_PRELU picks the policy (DirectML devices only;
+# every other backend ignores it):
+#   patch  (default) swap the layers and stay on the GPU
+#   cpu    load models that contain a channel-wise PReLU on the CPU instead
+#   off    leave the model alone — reproduces the abort, for verification
+DIRECTML_PRELU_ENV = "PROXY_SCALER_DIRECTML_PRELU"
+DIRECTML_PRELU_POLICIES = ("patch", "cpu", "off")
+DIRECTML_PRELU_DEFAULT = "patch"
+# torch-directml's device type (see resolve_device); "directml" is the
+# same defensive alias device_kind() accepts.
+_DIRECTML_DEVICE_TYPES = ("privateuseone", "directml")
+
+
+def directml_prelu_policy(environ: "os._Environ[str] | dict[str, str] | None" = None) -> str:
+    """The configured policy, falling back to the default for an unset or
+    unrecognized value (a typo must never silently reproduce the abort)."""
+    env = os.environ if environ is None else environ
+    value = (env.get(DIRECTML_PRELU_ENV) or "").strip().lower()
+    return value if value in DIRECTML_PRELU_POLICIES else DIRECTML_PRELU_DEFAULT
+
+
+def _is_directml_device(device: "torch.device | None") -> bool:
+    return device is not None and getattr(device, "type", None) in _DIRECTML_DEVICE_TYPES
+
+
+def _make_directml_safe_prelu(original):
+    """A module computing exactly nn.PReLU's relu(x) + w*min(0, x) as
+    relu(x) - w*relu(-x), sharing the original's weight Parameter (so it
+    stays in the state dict, moves with .to(device/dtype), and a later
+    _relocate_to_cpu carries it along). Defined inside a function so
+    torch is only imported when a model is actually being loaded — see
+    the module docstring."""
+    import torch
+    import torch.nn.functional as F
+
+    class DirectMLSafePReLU(torch.nn.Module):
+        def __init__(self, weight: torch.nn.Parameter) -> None:
+            super().__init__()
+            self.weight = weight
+
+        @property
+        def num_parameters(self) -> int:
+            return self.weight.numel()
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            # Same broadcast layout torch's own prelu wrapper builds: the
+            # slopes sit on dim 1 (channels) and broadcast over the rest.
+            shape = [1] * x.dim()
+            if x.dim() >= 2:
+                shape[1] = self.weight.numel()
+            w = self.weight.reshape(shape)
+            return F.relu(x) - w * F.relu(-x)
+
+        def extra_repr(self) -> str:
+            return f"num_parameters={self.num_parameters} (DirectML-safe)"
+
+    return DirectMLSafePReLU(original.weight)
+
+
+def replace_channelwise_prelu(model) -> int:
+    """Swap every nn.PReLU with more than one slope inside `model` for the
+    DirectML-safe equivalent, in place. Returns the number swapped (0 for
+    the DAT2 / RealPLKSR models, which have none). Single-parameter PReLU
+    is left alone — it works on DirectML, and the workaround costs three
+    extra elementwise passes per layer."""
+    import torch
+
+    targets = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.PReLU) and module.weight.numel() > 1
+    ]
+    for name in targets:
+        parent_name, _, child = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        original = getattr(parent, child)
+        # Module.__setattr__ registers into parent._modules[child], which is
+        # also how nn.ModuleList (Compact's `body`) stores its entries.
+        setattr(parent, child, _make_directml_safe_prelu(original))
+    return len(targets)
+
+
+def has_channelwise_prelu(model) -> bool:
+    import torch
+
+    return any(
+        isinstance(m, torch.nn.PReLU) and m.weight.numel() > 1
+        for m in model.modules()
+    )
+
+
+def apply_directml_prelu_policy(model, device: "torch.device", *, policy: str | None = None) -> "torch.device":
+    """Decide how a freshly loaded model meets a DirectML device. Returns
+    the device the model should actually be placed on (unchanged unless
+    the "cpu" policy applies), mutating `model` under the default "patch"
+    policy. A no-op — no print, no change — for every other backend and
+    for models without a channel-wise PReLU."""
+    import torch
+
+    if not _is_directml_device(device) or not has_channelwise_prelu(model):
+        return device
+    policy = policy or directml_prelu_policy()
+    if policy == "patch":
+        swapped = replace_channelwise_prelu(model)
+        print(
+            f"  DirectML: swapped {swapped} channel-wise PReLU layer(s) for the "
+            "relu-based equivalent (torch-directml aborts on the native op; "
+            f"{DIRECTML_PRELU_ENV}=cpu|off to change this)"
+        )
+        return device
+    if policy == "cpu":
+        print(
+            f"  DirectML: model uses channel-wise PReLU, which aborts torch-directml; "
+            f"running it on the CPU instead ({DIRECTML_PRELU_ENV}=cpu)"
+        )
+        return torch.device("cpu")
+    print(
+        f"  WARNING: {DIRECTML_PRELU_ENV}=off — channel-wise PReLU left native on "
+        f"{device}; torch-directml 0.2.5 is known to abort the process here",
+        file=sys.stderr,
+    )
+    return device
+
+
 # One-slot cache of the loaded (device-resident, dtype-converted) model
 # descriptor, shared across the per-task Upscaler instances. Decks are
 # homogeneous, so one slot gets a ~99% hit rate and eliminates the
@@ -737,6 +882,16 @@ class Upscaler:
 
         device = resolve_device()
         weights = ensure_weights(self.model_id, self.scale, self.weights_dir)
+        descriptor = ModelLoader().load_from_file(str(weights))
+        if not isinstance(descriptor, ImageModelDescriptor):
+            raise TypeError(f"Unexpected model type for {weights}")
+        # Must precede the first forward pass AND the .to(device) below —
+        # under the "cpu" policy the model never touches the GPU at all.
+        # Deliberately not routed through _notify_cpu_fallback: that hook
+        # raises the client's "GPU ran out of memory, cancel the queue?"
+        # dialog, and this is a known per-model routing, not an OOM.
+        if _is_directml_device(device):
+            device = apply_directml_prelu_policy(descriptor.model, device)
         print(f"Loading {self.model_id.value} x{self.scale} on {device} ({weights.name})...")
         if device.type != "cpu":
             print(
@@ -747,9 +902,6 @@ class Upscaler:
                 "reports a real failure with its own 'Upscale OOM on ...; "
                 "clearing cache and retrying on CPU…' message."
             )
-        descriptor = ModelLoader().load_from_file(str(weights))
-        if not isinstance(descriptor, ImageModelDescriptor):
-            raise TypeError(f"Unexpected model type for {weights}")
         dtype = resolve_dtype(descriptor, device)
         try:
             descriptor = descriptor.to(device).eval()

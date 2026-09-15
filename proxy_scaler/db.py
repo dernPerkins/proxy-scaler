@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
 
 from .customs import identity_key
 from .dpi import CUSTOM_SOURCE_MODEL
@@ -194,6 +194,14 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     -- re-run inference. 0 (first generation) reuses the cache, which is
     -- what lets sibling DPI tasks of one face share a single model pass.
     force INTEGER NOT NULL DEFAULT 0,
+    -- How many times a worker has claimed this row. A task that was
+    -- 'running' when its worker died is re-queued on the next start —
+    -- unless it has already burned MAX_TASK_ATTEMPTS claims, in which
+    -- case it is failed instead (see reset_orphaned_running_tasks): a
+    -- native crash inside inference kills the process rather than
+    -- raising, and without this bound the same row would take down every
+    -- worker that ever started.
+    attempts INTEGER NOT NULL DEFAULT 0,
     CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
 );
 
@@ -337,6 +345,9 @@ class TaskRow:
     # sha256 of a user-uploaded card front (proxy_scaler/customs.py). Set
     # exactly when scryfall_id is not.
     custom_hash: str | None = None
+    # Times a worker has claimed this row (db migration 009); see the
+    # schema comment and reset_orphaned_running_tasks.
+    attempts: int = 0
 
     @property
     def identity_key(self) -> str:
@@ -376,6 +387,7 @@ class TaskRow:
             lang=row["lang"] if "lang" in row.keys() else "en",
             force=bool(row["force"]) if "force" in row.keys() else False,
             custom_hash=row["custom_hash"] if "custom_hash" in row.keys() else None,
+            attempts=int(row["attempts"]) if "attempts" in row.keys() else 0,
         )
 
 
@@ -660,6 +672,32 @@ def _migration_007_add_task_force(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE generation_tasks "
             "ADD COLUMN force INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _migration_009_add_task_attempts(conn: sqlite3.Connection) -> None:
+    """Add generation_tasks.attempts — the per-row claim count that bounds
+    how often a task orphaned by a dead worker is re-queued (see
+    reset_orphaned_running_tasks). Pre-existing rows start at 0, which
+    is honest enough: whatever happened to them before this column
+    existed, the bound only needs to hold from here on. Guarded/no-op the
+    same way as 005/007."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "generation_tasks" not in tables:
+        return
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(generation_tasks)").fetchall()
+    }
+    if "attempts" not in cols:
+        conn.execute(
+            "ALTER TABLE generation_tasks "
+            "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -1041,8 +1079,14 @@ _MIGRATIONS: list[Migration] = [
         "scryfall_id — exactly one of the two, enforced by CHECK",
         _migration_008_custom_image_identity,
     ),
+    Migration(
+        9,
+        "add attempts to generation_tasks — bounds how many times a task "
+        "orphaned by a crashed worker is re-queued before it is failed",
+        _migration_009_add_task_attempts,
+    ),
 ]
-SCHEMA_VERSION = 8  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 9  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -1182,7 +1226,54 @@ def enqueue_task(
         return int(cur.lastrowid)
 
 
-def reset_orphaned_running_tasks(db_path: Path | str | None = None) -> int:
+# Claims a task gets before an orphaned 'running' row is failed rather
+# than re-queued. 2 = one automatic retry: a worker killed mid-task by an
+# app close or power loss gets its second chance, while a task that kills
+# the worker outright (a native abort inside inference, e.g. torch-directml
+# on an unsupported op — see upscale.py's DirectML PReLU section) is
+# failed on the very next start instead of taking down every worker that
+# follows.
+MAX_TASK_ATTEMPTS = 2
+ORPHAN_LIMIT_ERROR = (
+    "Worker process died while running this task {attempts} times in a row; "
+    "not retried automatically. Use Retry to try again."
+)
+
+
+class OrphanReset(NamedTuple):
+    requeued: int
+    failed: int
+
+
+def fail_running_tasks(
+    error: str,
+    *,
+    min_attempts: int = 0,
+    db_path: Path | str | None = None,
+) -> int:
+    """Mark every 'running' row failed with `error` — the worker that
+    claimed them is known to be dead (the caller holds that proof: the
+    worker lock, or the supervisor's own child exit). `min_attempts`
+    restricts it to rows claimed at least that many times. `{attempts}`
+    in `error` is filled per row. Returns the number failed."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, attempts FROM generation_tasks "
+            "WHERE status = 'running' AND attempts >= ?",
+            (min_attempts,),
+        ).fetchall()
+        now = _utc_now()
+        for row in rows:
+            conn.execute(
+                "UPDATE generation_tasks SET status = 'failed', error = ?, "
+                "completed_at = ? WHERE id = ? AND status = 'running'",
+                (error.format(attempts=int(row["attempts"])), now, int(row["id"])),
+            )
+        conn.commit()
+        return len(rows)
+
+
+def reset_orphaned_running_tasks(db_path: Path | str | None = None) -> OrphanReset:
     """Re-queue tasks stuck in 'running' from a worker that died mid-task.
 
     'running' is only ever set by the single live worker (serialized by
@@ -1190,14 +1281,23 @@ def reset_orphaned_running_tasks(db_path: Path | str | None = None) -> int:
     held — any row still 'running' belongs to a dead worker and will
     otherwise sit in that state forever: claim_next_task() only claims
     from 'pending', and clients render the orphan as a generation
-    perpetually in progress. Returns the number of tasks re-queued."""
+    perpetually in progress.
+
+    A row that has already been claimed MAX_TASK_ATTEMPTS times is failed
+    instead of re-queued (with ORPHAN_LIMIT_ERROR): a task whose every
+    attempt ends in a dead worker is the task that is killing it, and
+    re-queuing it again would only crash the next worker too. Returns
+    how many rows went each way."""
+    failed = fail_running_tasks(
+        ORPHAN_LIMIT_ERROR, min_attempts=MAX_TASK_ATTEMPTS, db_path=db_path
+    )
     with connect(db_path) as conn:
         cur = conn.execute(
             "UPDATE generation_tasks SET status = 'pending', started_at = NULL "
             "WHERE status = 'running'"
         )
         conn.commit()
-        return cur.rowcount
+        return OrphanReset(requeued=cur.rowcount, failed=failed)
 
 
 def claim_next_task(db_path: Path | str | None = None) -> TaskRow | None:
@@ -1214,8 +1314,8 @@ def claim_next_task(db_path: Path | str | None = None) -> TaskRow | None:
             return None
         task_id = int(row["id"])
         cur = conn.execute(
-            "UPDATE generation_tasks SET status = 'running', started_at = ? "
-            "WHERE id = ? AND status = 'pending'",
+            "UPDATE generation_tasks SET status = 'running', started_at = ?, "
+            "attempts = attempts + 1 WHERE id = ? AND status = 'pending'",
             (_utc_now(), task_id),
         )
         if cur.rowcount == 0:

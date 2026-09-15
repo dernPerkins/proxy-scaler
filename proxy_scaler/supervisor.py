@@ -57,6 +57,18 @@ SHUTDOWN_GRACE_S = 10.0
 # concurrently rather than one after the other.
 CONSOLE_SIGNAL_GRACE_S = 1.5
 POLL_INTERVAL_S = 1.0
+# How many times one supervisor will respawn a worker that died mid-task
+# (see _recover_from_worker_crash) before treating the next death as the
+# unrecoverable kind and shutting down like it always has. Each respawn
+# costs the task that was running (failed, with the exit code in its
+# error) plus a torch cold start, so a queue full of tasks that all crash
+# the worker grinds through three of them and then stops, rather than
+# either taking the whole server down on the first one or thrashing
+# through every remaining task in turn.
+WORKER_MAX_RESPAWNS = 3
+WORKER_CRASH_ERROR = (
+    "Worker process crashed (exit code {code}) while running this task"
+)
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -300,6 +312,38 @@ def _terminate(proc: subprocess.Popen, *, grace_s: float = SHUTDOWN_GRACE_S) -> 
         pass
 
 
+def _recover_from_worker_crash(
+    code: int,
+    *,
+    db_path: Path | str | None,
+    lock_path: Path | str | None,
+    respawns_so_far: int,
+) -> int:
+    """The worker child just exited on its own. Fail whatever it was
+    running and say whether it is worth spawning a replacement.
+
+    Returns the number of tasks failed; 0 means "don't respawn" — either
+    nothing was running (the worker died at startup or idle, which no
+    respawn will fix), the respawn budget is spent, or a worker process
+    still holds the lock (a dev worker started by hand, say — the rows
+    are then its, not the dead child's).
+
+    The worker itself can't do this: a native abort (torch-directml's
+    CHECK failures, a CUDA driver crash) kills the process before any
+    except clause runs, and until now the row it was on sat 'running'
+    until the next start re-queued it into the same crash — while the
+    supervisor, which does see the exit, took the API server down with
+    it. Marking the task failed here is what turns "the app died" into a
+    row in the Tasks tab with the exit code in its error, and is also
+    what makes the respawn safe: the crashing task is out of the queue
+    before the new worker claims anything."""
+    if respawns_so_far >= WORKER_MAX_RESPAWNS:
+        return 0
+    if db.is_worker_running(lock_path=lock_path):
+        return 0
+    return db.fail_running_tasks(WORKER_CRASH_ERROR.format(code=code), db_path=db_path)
+
+
 def _stdin_can_trigger_shutdown() -> bool:
     """Whether stdin is something a launcher could actually write a
     shutdown line to.
@@ -449,19 +493,42 @@ def main(
             exit_code = api_code or 1
             shutdown_event.set()
 
+        worker_respawns = 0
         while not shutdown_event.is_set():
             exited = False
             for proc, name in ((api_proc, "api"), (worker_proc, "worker")):
                 code = proc.poll()
-                if code is not None:
-                    print(
-                        f"{name} exited unexpectedly (code {code}); shutting down.",
-                        file=sys.stderr,
+                if code is None:
+                    continue
+                if name == "worker":
+                    failed = _recover_from_worker_crash(
+                        code,
+                        db_path=db_path,
+                        lock_path=worker_lock_path,
+                        respawns_so_far=worker_respawns,
                     )
-                    exit_code = code or 1
-                    shutdown_event.set()
-                    exited = True
-                    break
+                    if failed:
+                        worker_respawns += 1
+                        print(
+                            f"worker exited unexpectedly (code {code}) mid-task; "
+                            f"failed {failed} running task(s) and restarting it "
+                            f"({worker_respawns}/{WORKER_MAX_RESPAWNS}).",
+                            file=sys.stderr,
+                        )
+                        worker_proc = _spawn(_child_command("worker"), env=worker_env or None)
+                        children[1] = worker_proc
+                        if job is not None:
+                            _assign_to_job(job, worker_proc)
+                        exited = True  # re-poll immediately, no wait
+                        break
+                print(
+                    f"{name} exited unexpectedly (code {code}); shutting down.",
+                    file=sys.stderr,
+                )
+                exit_code = code or 1
+                shutdown_event.set()
+                exited = True
+                break
             if not exited:
                 shutdown_event.wait(POLL_INTERVAL_S)
     finally:

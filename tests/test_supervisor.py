@@ -176,6 +176,107 @@ def test_child_command_frozen_uses_role_flag_not_module_flag(monkeypatch) -> Non
     assert "-m" not in api_cmd
 
 
+def _enqueue_running_task(db_path: Path, **overrides) -> int:
+    """A task claimed by a worker that is about to die."""
+    from proxy_scaler.db import claim_next_task, enqueue_task, init_db
+
+    init_db(db_path)
+    kwargs = dict(
+        project_tag=None,
+        scryfall_id="sol-id",
+        face_index=None,
+        face_label=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="https://example.com/sol.png",
+        dpi=800,
+        model="realesrgan_anime_fast",
+        output_dir="/tmp/out",
+        cache_dir="/tmp/cache",
+        weights_dir="/tmp/weights",
+        db_path=db_path,
+    )
+    kwargs.update(overrides)
+    tid = enqueue_task(kwargs.pop("project_tag"), **kwargs)
+    claimed = claim_next_task(db_path=db_path)
+    assert claimed is not None and claimed.id == tid
+    return tid
+
+
+def test_recover_from_worker_crash_fails_running_task(tmp_path: Path) -> None:
+    """A worker that dies mid-task (a native abort inside inference — no
+    Python except clause ever runs) leaves its row 'running'. The
+    supervisor sees the exit, so it is the one that can turn that into a
+    failed row with the exit code in it — and say a respawn is worth it."""
+    from proxy_scaler.db import get_task
+
+    db_path = tmp_path / "t.db"
+    lock_path = tmp_path / "worker.lock"
+    tid = _enqueue_running_task(db_path)
+
+    failed = supervisor._recover_from_worker_crash(
+        127, db_path=db_path, lock_path=lock_path, respawns_so_far=0
+    )
+
+    assert failed == 1
+    task = get_task(tid, db_path=db_path)
+    assert task.status == "failed"
+    assert task.error == "Worker process crashed (exit code 127) while running this task"
+    assert task.completed_at is not None
+
+
+def test_recover_from_worker_crash_declines_when_nothing_was_running(tmp_path: Path) -> None:
+    """A worker dying idle or at startup (bad install, port of its own to
+    lose, …) is not something a respawn fixes: 0 keeps the old
+    shut-everything-down behaviour."""
+    from proxy_scaler.db import init_db
+
+    db_path = tmp_path / "t.db"
+    init_db(db_path)
+    assert (
+        supervisor._recover_from_worker_crash(
+            1, db_path=db_path, lock_path=tmp_path / "worker.lock", respawns_so_far=0
+        )
+        == 0
+    )
+
+
+def test_recover_from_worker_crash_respects_lock_and_budget(tmp_path: Path) -> None:
+    from proxy_scaler.db import acquire_worker_lock, get_task, release_worker_lock
+
+    db_path = tmp_path / "t.db"
+    lock_path = tmp_path / "worker.lock"
+    tid = _enqueue_running_task(db_path)
+
+    # Budget spent: leave the row alone (the next start's orphan reset
+    # still bounds it via attempts).
+    assert (
+        supervisor._recover_from_worker_crash(
+            127, db_path=db_path, lock_path=lock_path,
+            respawns_so_far=supervisor.WORKER_MAX_RESPAWNS,
+        )
+        == 0
+    )
+    assert get_task(tid, db_path=db_path).status == "running"
+
+    # Some other worker holds the lock (a dev worker started by hand):
+    # the running row is that worker's, not the dead child's.
+    fd = acquire_worker_lock(lock_path)
+    assert fd is not None
+    try:
+        assert (
+            supervisor._recover_from_worker_crash(
+                127, db_path=db_path, lock_path=lock_path, respawns_so_far=0
+            )
+            == 0
+        )
+    finally:
+        release_worker_lock(fd)
+    assert get_task(tid, db_path=db_path).status == "running"
+
+
 def _child_pids(ppid: int, needle: str) -> list[int]:
     """PIDs of *direct children* of `ppid` whose command line contains
     `needle`. Filtering by parent PID (not just command line) is what
@@ -321,6 +422,48 @@ def running_supervisor(tmp_path: Path):
     finally:
         _shutdown(proc)
         log_file.close()
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="fixture needs procps `ps --cols` and /proc-based child checks (Linux-only)",
+)
+def test_supervisor_respawns_worker_killed_mid_task(running_supervisor, tmp_path: Path) -> None:
+    """End to end: a worker that dies on a task (here: SIGKILLed while a
+    row is 'running' — the closest a Linux box gets to torch-directml's
+    native abort) is replaced, the API server stays up, and the task it
+    was on is failed with the exit code rather than re-queued into the
+    next worker."""
+    from proxy_scaler.db import get_task
+
+    db_path = tmp_path / "test.db"  # the fixture's own isolated DB
+    tid = _enqueue_running_task(db_path)
+    [old_worker] = running_supervisor.worker_pids
+
+    os.kill(old_worker, signal.SIGKILL)
+
+    deadline = time.monotonic() + 30.0
+    new_workers: list[int] = []
+    while time.monotonic() < deadline:
+        new_workers = [
+            pid
+            for pid in _child_pids(running_supervisor.proc.pid, "proxy_scaler.worker")
+            if pid != old_worker
+        ]
+        if new_workers and get_task(tid, db_path=db_path).status == "failed":
+            break
+        time.sleep(0.2)
+    log = running_supervisor.log_path.read_text()
+    assert new_workers, f"no replacement worker spawned; log:\n{log}"
+    assert running_supervisor.proc.poll() is None, f"supervisor exited; log:\n{log}"
+    task = get_task(tid, db_path=db_path)
+    assert task.status == "failed"
+    assert "exit code -9" in task.error
+    assert "restarting it (1/" in log
+    # The API server never went away.
+    for pid in running_supervisor.api_pids:
+        assert Path(f"/proc/{pid}").exists()
+    running_supervisor.worker_pids = new_workers
 
 
 @pytest.mark.skipif(

@@ -491,7 +491,9 @@ def test_migration_008_preserves_gallery_memberships(tmp_path: Path) -> None:
 
     conn = sqlite3.connect(str(path))
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        # Ends at whatever the newest migration is — later steps (009's
+        # attempts column) replay on top; this test is about 008's rebuild.
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
         assert conn.execute(
             "SELECT COUNT(*) FROM project_gallery_memberships"
         ).fetchone()[0] == 3

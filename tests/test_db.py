@@ -577,7 +577,7 @@ def test_reset_orphaned_running_tasks_requeues_only_running(db_path: Path) -> No
 
     mark_task_done(done, db_path=db_path)
 
-    assert reset_orphaned_running_tasks(db_path=db_path) == 1
+    assert reset_orphaned_running_tasks(db_path=db_path) == (1, 0)
 
     by_id = {t.id: t for t in list_tasks(db_path=db_path)}
     assert by_id[orphan].status == "pending"
@@ -587,6 +587,95 @@ def test_reset_orphaned_running_tasks_requeues_only_running(db_path: Path) -> No
     # And the re-queued task is claimable again.
     reclaimed = claim_next_task(db_path=db_path)
     assert reclaimed is not None and reclaimed.id == orphan
+
+
+def test_claim_counts_attempts_and_retry_keeps_the_count(db_path: Path) -> None:
+    """attempts is the per-row claim count that bounds orphan re-queues
+    (migration 009). A manual Retry deliberately does NOT reset it: a task
+    that crashed the worker twice and is retried by hand gets exactly one
+    more try before the orphan reset fails it again."""
+    from proxy_scaler.db import reset_orphaned_running_tasks, retry_task
+
+    tid = _enqueue_sol_ring(db_path)
+    assert get_task(tid, db_path=db_path).attempts == 0
+    assert claim_next_task(db_path=db_path).attempts == 1
+    assert reset_orphaned_running_tasks(db_path=db_path) == (1, 0)
+    assert claim_next_task(db_path=db_path).attempts == 2
+    mark_task_failed(tid, "boom", db_path=db_path)
+    assert retry_task(tid, db_path=db_path)
+    assert get_task(tid, db_path=db_path).attempts == 2
+    assert claim_next_task(db_path=db_path).attempts == 3
+
+
+def test_reset_orphaned_running_tasks_fails_repeat_offenders(db_path: Path) -> None:
+    """The crash-loop guard: a row that has already been claimed
+    MAX_TASK_ATTEMPTS times and is orphaned again is failed with a
+    message naming the count, while a first-time orphan is re-queued."""
+    from proxy_scaler.db import MAX_TASK_ATTEMPTS, reset_orphaned_running_tasks
+
+    assert MAX_TASK_ATTEMPTS == 2
+    repeat = _enqueue_sol_ring(db_path, collector_number="1")
+    first_timer = _enqueue_sol_ring(db_path, collector_number="2")
+    # Simulate one worker dying on `repeat`, a restart, and dying again.
+    assert claim_next_task(db_path=db_path).id == repeat
+    assert reset_orphaned_running_tasks(db_path=db_path) == (1, 0)
+    assert claim_next_task(db_path=db_path).id == repeat
+    # (`first_timer` is claimed by the same worker's finish thread, say.)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'running', attempts = 1 WHERE id = ?",
+            (first_timer,),
+        )
+
+    result = reset_orphaned_running_tasks(db_path=db_path)
+
+    assert result.requeued == 1 and result.failed == 1
+    failed = get_task(repeat, db_path=db_path)
+    assert failed.status == "failed"
+    assert "2 times in a row" in failed.error
+    assert failed.completed_at is not None
+    assert get_task(first_timer, db_path=db_path).status == "pending"
+    # The failed row stays out of the queue: the next claim is the other one.
+    assert claim_next_task(db_path=db_path).id == first_timer
+
+
+def test_fail_running_tasks_only_touches_running_rows(db_path: Path) -> None:
+    from proxy_scaler.db import fail_running_tasks
+
+    running = _enqueue_sol_ring(db_path, collector_number="1")
+    pending = _enqueue_sol_ring(db_path, collector_number="2")
+    done = _enqueue_sol_ring(db_path, collector_number="3")
+    assert claim_next_task(db_path=db_path).id == running
+    mark_task_done(done, db_path=db_path)
+
+    assert fail_running_tasks("crashed (exit {attempts})", db_path=db_path) == 1
+
+    assert get_task(running, db_path=db_path).status == "failed"
+    assert get_task(running, db_path=db_path).error == "crashed (exit 1)"
+    assert get_task(pending, db_path=db_path).status == "pending"
+    assert get_task(done, db_path=db_path).status == "done"
+    # min_attempts gates it: nothing running has 5 claims.
+    claim_next_task(db_path=db_path)
+    assert fail_running_tasks("x", min_attempts=5, db_path=db_path) == 0
+    assert get_task(pending, db_path=db_path).status == "running"
+
+
+def test_migration_009_adds_attempts_to_an_older_database(tmp_path: Path) -> None:
+    """A schema-8 database (no attempts column) must come up at 9 with the
+    column defaulted to 0 and every existing row still readable."""
+    path = tmp_path / "old.db"
+    init_db(path)
+    with sqlite3.connect(path) as conn:
+        # Rebuild the table without the column, exactly as version 8 had it.
+        conn.execute("ALTER TABLE generation_tasks DROP COLUMN attempts")
+        conn.execute("PRAGMA user_version = 8")
+    init_db(path)  # migrates 8 -> 9
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_tasks)")}
+    assert "attempts" in cols
+    tid = _enqueue_sol_ring(path)
+    assert get_task(tid, db_path=path).attempts == 0
 
 
 def test_mark_task_done_and_failed(db_path: Path) -> None:
