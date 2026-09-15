@@ -23,6 +23,15 @@ export interface PatchNotesEntry {
 
 export const PATCH_NOTES: PatchNotesEntry[] = [
   {
+    version: "0.2.2",
+    date: "September 2026",
+    notes: [
+      "Smarter GPU memory use — the automatic tile size now steps through five levels based on the VRAM actually free, so cards with 10 GB or less no longer attempt the largest pass.",
+      "Running out of VRAM mid-card now retries on the GPU at a smaller tile instead of dropping to the much slower CPU path.",
+      "Windows: generation stays inside real VRAM instead of silently spilling into system RAM and crawling with the GPU pinned at 100%.",
+    ],
+  },
+  {
     version: "0.2.1",
     date: "August 2026",
     notes: [

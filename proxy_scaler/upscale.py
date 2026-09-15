@@ -356,6 +356,44 @@ _VRAM_HEADROOM_FIRST_TASK = 2.0
 # what the card can do right now is what matters.
 _UNTILED_MIN_FREE = 9 * 1024**3
 
+# ---- Per-task allocator cap ------------------------------------------
+#
+# The ladder can only step down if a pass that doesn't fit actually raises
+# torch's OutOfMemoryError. On Windows it doesn't: the Nvidia driver's
+# default "CUDA - Sysmem Fallback Policy" lets cudaMalloc succeed out of
+# system RAM once VRAM is gone, so the pass never fails — it crawls (~15x
+# slower, GPU pegged, measured on an RTX 5080 laptop) with no retry. That
+# is the 0.2.1 "GPU at 100% for minutes" report. torch's per-process
+# memory fraction is enforced inside the caching allocator, before the
+# driver is asked, so capping it at what is physically free right now
+# turns the spill back into the OOM the ladder is built around. Second
+# benefit: the cap bounds *reserved* memory — an allocator that can't use
+# expandable_segments (again Windows: the cu128 wheel ignores it) trims
+# its cache at the cap instead of growing to ~2x allocated.
+#
+# Recomputed per task from mem_get_info: free + this process's own arena
+# (reusable by us, invisible to mem_get_info's "free") - a margin for the
+# driver and other allocations. Never below _VRAM_CAP_MIN so the light
+# models still get to try on a nearly-full card.
+_VRAM_CAP_MARGIN = 512 * 1024**2
+_VRAM_CAP_MIN = 1024**3
+
+
+def _allocator_fraction(
+    free_bytes: int,
+    reserved_bytes: int,
+    total_bytes: int,
+    margin: int = _VRAM_CAP_MARGIN,
+) -> float | None:
+    """torch.cuda.set_per_process_memory_fraction() value that keeps this
+    process's allocator inside physically available VRAM; None when the
+    inputs are unusable."""
+    if total_bytes <= 0:
+        return None
+    cap = free_bytes + reserved_bytes - margin
+    cap = max(cap, min(_VRAM_CAP_MIN, total_bytes))
+    return min(1.0, cap / total_bytes)
+
 
 def _rung_order(tile: int) -> float:
     """Sort key for ladder rungs: 0 (untiled) is the largest."""
@@ -876,6 +914,27 @@ class Upscaler:
         except Exception:  # noqa: BLE001
             pass
 
+    def _cap_allocator_to_free(self) -> float | None:
+        """Per task (and again on every OOM retry): cap torch's caching
+        allocator at what is physically free right now, so a pass that
+        doesn't fit raises an OOM the ladder can act on instead of the
+        driver quietly spilling it into system RAM — see the
+        _VRAM_CAP_MARGIN notes. Best-effort; returns the fraction set."""
+        import torch
+
+        if self._device is None or self._device.type != "cuda":
+            return None
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            fraction = _allocator_fraction(
+                int(free_bytes), int(torch.cuda.memory_reserved()), int(total_bytes)
+            )
+            if fraction is not None:
+                torch.cuda.set_per_process_memory_fraction(float(fraction))
+            return fraction
+        except Exception:  # noqa: BLE001
+            return None
+
     def _load_model(self) -> ImageModelDescriptor:
         import torch
         from spandrel import ImageModelDescriptor, ModelLoader
@@ -1006,6 +1065,7 @@ class Upscaler:
             alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
             rgb = image.convert("RGB")
             width, height = rgb.size
+            self._cap_allocator_to_free()
             self._apply_auto_tile(width, height)
             # The one line a user report needs: which capability gates fired.
             print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
@@ -1047,6 +1107,7 @@ class Upscaler:
                             )
                             self.tile = rung
                             _clear_device_cache(self._device)
+                            self._cap_allocator_to_free()
                             out_gpu = self._try_gpu_inference(descriptor, tensor)
                             if out_gpu is not None:
                                 break

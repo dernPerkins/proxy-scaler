@@ -24,16 +24,22 @@ from . import db, pipeline, timing_db
 from .dpi import ORIGINAL_MODEL
 
 POLL_INTERVAL_S = 2.0
+HOLD_POLL_INTERVAL_S = 0.5
+# Upper bound on waiting for an in-flight finish (encode + DB writes) when
+# the worker exits; a healthy finish takes a few seconds.
+FINISH_JOIN_TIMEOUT_S = 60.0
+
 # torch's default CUDA caching allocator reserves ~2x what it allocates on
 # the DAT upscalers (an untiled UltraSharpV2 pass: 6.3 GiB allocated,
 # 10.8 GiB reserved on a 12 GB card — see the ladder notes in upscale.py).
 # expandable_segments brings reserved to within ~4% of allocated at the
-# same speed, which is what the auto-tile VRAM gates assume. It matters
-# most on Windows, where the driver's default sysmem-fallback policy lets
-# that overshoot spill into system RAM and thrash instead of raising the
-# OOM the retry ladder relies on. Must be in the environment before torch
-# is first imported (upscale.py imports it lazily, so main() is early
-# enough); torch warns once and ignores the setting where unsupported.
+# same speed. Must be in the environment before torch is first imported
+# (upscale.py imports it lazily, so main() is early enough); torch warns
+# once and ignores the setting where unsupported — which the Windows cu128
+# wheel does (confirmed on an RTX 5080, 2026-09). Windows is therefore
+# carried by upscale.py's per-task allocator cap
+# (Upscaler._cap_allocator_to_free) and the calibrated headroom instead;
+# this setting is a Linux/ROCm improvement, not the Windows fix.
 CUDA_ALLOC_CONF_ENV = "PYTORCH_CUDA_ALLOC_CONF"
 CUDA_ALLOC_CONF_DEFAULT = "expandable_segments:True"
 
@@ -42,10 +48,6 @@ def _configure_cuda_allocator(environ: "os._Environ[str] | dict[str, str]" = os.
     """Apply CUDA_ALLOC_CONF_DEFAULT unless the user/dev already set one;
     returns the value in effect."""
     return environ.setdefault(CUDA_ALLOC_CONF_ENV, CUDA_ALLOC_CONF_DEFAULT)
-HOLD_POLL_INTERVAL_S = 0.5
-# Upper bound on waiting for an in-flight finish (encode + DB writes) when
-# the worker exits; a healthy finish takes a few seconds.
-FINISH_JOIN_TIMEOUT_S = 60.0
 
 
 def _wait_while_held(

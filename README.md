@@ -106,6 +106,11 @@ models' loader are all bundled. What you need beyond the download:
 - **Windows** — you may need the
   [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
   (x64) if it isn't already installed. Nothing else.
+  If Multistage generation ever slows to a crawl with the GPU pinned at
+  100% for minutes per card, the Nvidia driver is paging VRAM into system
+  RAM: in NVIDIA Control Panel → Manage 3D Settings → *CUDA - Sysmem
+  Fallback Policy*, choose **Prefer No Sysmem Fallback**. The app caps its
+  own VRAM use to avoid this, so it should be rare.
 - **macOS** — Apple Silicon only; nothing to install. GPU acceleration
   needs macOS 12.3+.
 - **Linux (desktop app / server app)** — needs WebKitGTK and the tray

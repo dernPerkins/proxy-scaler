@@ -15,6 +15,8 @@ from proxy_scaler.upscale import (
     _AUTO_TILE_LADDER,
     _LIGHT_MODEL_RETRY_TILE,
     _UNTILED_MIN_FREE,
+    _VRAM_CAP_MARGIN,
+    _allocator_fraction,
     _bf16_supported,
     _choose_auto_tile,
     _clear_device_cache,
@@ -351,6 +353,51 @@ def test_ladder_step_down() -> None:
     assert _ladder_step_down(640) == 512
     assert _ladder_step_down(384) == 256
     assert _ladder_step_down(256) is None
+
+
+def test_allocator_fraction() -> None:
+    total = 12 * _GiB
+    # Plenty free, nothing reserved: cap = free - margin.
+    assert _allocator_fraction(11 * _GiB, 0, total) == (11 * _GiB - _VRAM_CAP_MARGIN) / total
+    # This process's own arena is reusable, so it counts towards the cap.
+    assert _allocator_fraction(4 * _GiB, 7 * _GiB, total) == (11 * _GiB - _VRAM_CAP_MARGIN) / total
+    # Never above 1.0 (mem_get_info can report more free than expected).
+    assert _allocator_fraction(13 * _GiB, 0, total) == 1.0
+    # Never below the 1 GiB floor: light models still get to try.
+    assert _allocator_fraction(100 * _MiB, 0, total) == _GiB / total
+    # Unusable total.
+    assert _allocator_fraction(_GiB, 0, 0) is None
+
+
+def test_cap_allocator_to_free_sets_fraction_from_mem_get_info(tmp_path) -> None:
+    up = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir=tmp_path, tile=0)
+    up._device = _CudaDev()  # type: ignore[assignment]
+    calls: list[float] = []
+    with (
+        patch("torch.cuda.mem_get_info", return_value=(8 * _GiB, 16 * _GiB)),
+        patch("torch.cuda.memory_reserved", return_value=2 * _GiB),
+        patch("torch.cuda.set_per_process_memory_fraction", side_effect=calls.append),
+    ):
+        fraction = up._cap_allocator_to_free()
+    assert calls == [fraction]
+    assert fraction == (10 * _GiB - _VRAM_CAP_MARGIN) / (16 * _GiB)
+    # Non-CUDA devices (CPU, MPS, DirectML): no-op.
+    up._device = torch.device("cpu")
+    assert up._cap_allocator_to_free() is None
+
+
+def test_upscale_caps_allocator_per_task_and_per_retry(tmp_path) -> None:
+    """The cap is applied before every task's pick and again on each OOM
+    retry (free VRAM may have moved), so a pass that doesn't fit raises
+    inside torch instead of spilling to system RAM on Windows."""
+    up = _heavy_auto(tmp_path)
+    with patch.object(up, "_cap_allocator_to_free") as cap:
+        _drive_upscale(up, oom_attempts=0, probe=lambda: 16 * _GiB)
+    assert cap.call_count == 1
+    up = _heavy_auto(tmp_path)
+    with patch.object(up, "_cap_allocator_to_free") as cap:
+        _drive_upscale(up, oom_attempts=2, probe=lambda: 16 * _GiB)
+    assert cap.call_count == 3  # task start + two retries
 
 
 def test_observed_headroom_calibration() -> None:
