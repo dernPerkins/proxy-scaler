@@ -204,6 +204,11 @@ help:
 	@echo "sidecar          Freeze the Python API+worker, placed next to the compiled binary"
 	@echo "sidecar-clean    Remove built sidecar artifacts (stale placements, dist/build dirs)"
 	@echo ""
+	@echo "serve            Run the API server + worker as one managed pair from the"
+	@echo "                 source tree (the supervisor, same as the packaged sidecar);"
+	@echo "                 BIND_ALL=1 make serve to accept connections from other"
+	@echo "                 machines, PORT=... to override $(PORT)"
+	@echo ""
 	@echo "--- fast dev loop (hot reload -- no Tauri, no PyInstaller) ---"
 	@echo "api-dev          Run the API server with uvicorn --reload"
 	@echo "                 (PORT=9001 make api-dev to override, default $(PORT);"
@@ -307,8 +312,11 @@ reinstall:
 test:
 	$(PYTHON) -m pytest tests/ -q
 
+# Same HOST/PORT/BIND_ALL knobs as api-dev, so a from-source supervisor
+# run can be reached from another machine (BIND_ALL=1 make serve) without
+# going through an installed package. Unauthenticated -- see the README.
 serve:
-	$(VENV_BIN)/proxy-scaler-serve$(EXE)
+	$(VENV_BIN)/proxy-scaler-serve$(EXE) --host $(HOST) --port $(PORT)
 
 sidecar-clean:
 	rm -rf desktop/pyinstaller/dist desktop/pyinstaller/build
