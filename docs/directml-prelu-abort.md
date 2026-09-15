@@ -159,14 +159,35 @@ python docs/scripts/directml_prelu_probe.py
 Expected:
 
 ```
-prelu_channelwise        ABORT (exit 127)   <- confirms the root cause
+prelu_channelwise        ABORT (exit 3221226505)   <- confirms the root cause
 prelu_single             ok
-prelu_safe_channelwise   ok                 max abs diff vs CPU nn.PReLU: ~1e-7
+prelu_safe_channelwise   ok                        max abs diff vs CPU nn.PReLU: 0.0
 pixel_shuffle            ok
 interpolate_nearest      ok
-compact_native           ABORT (exit 127)   <- the old worker behaviour
-compact_patched          ok                 swapped 17 PReLU layers, max abs diff ~1e-5
+compact_native           ABORT (exit 3221226505)   <- the old worker behaviour
+compact_patched          ok                        swapped 17 PReLU layers, max abs diff ~4e-6
 ```
+
+3221226505 is 0xC0000409 (Windows fail-fast) as a bare interpreter reports
+it; the frozen sidecar reported the same abort as exit 127.
+
+**Step 1 result, 2026-09-14, RTX 5080 laptop** (torch `2.4.1+cpu`,
+torch-directml `0.2.5.dev240914`, Python 3.12.10): all seven verdicts
+exactly as above. The real `Upscaler.upscale()` path was also run
+directly in the same venv: `ultrasharp_v2_lite` and the patched
+`realesrgan_anime_fast` both completed on `privateuseone:0`, and the
+anime-fast output under the default `patch` policy matched the `cpu`
+policy's output to within 1/255 (mean abs diff 0.0). The probe as first
+written reported both full-model cases as `RuntimeError: Cannot set
+version_counter for inference tensor` instead: on this plugin build every
+conv2d fails when the parameters were moved to the device *outside*
+`torch.inference_mode()` but the activations are inference tensors
+(spandrel's `ImageModelDescriptor.__call__` is `@torch.inference_mode()`).
+The worker never hits this only because `upscale()` enters
+`inference_mode()` before `_ensure_model()` moves the model, so the probe
+now does the same. Anyone restructuring `upscale()` so the model move
+happens outside that context will break every model on DirectML, not
+just this one.
 
 If `prelu_safe_channelwise` or `compact_patched` aborts, the workaround
 is wrong for this plugin build: set `PROXY_SCALER_DIRECTML_PRELU=cpu`

@@ -18,6 +18,19 @@ docs/directml-prelu-abort.md):
     compact_native         ABORT   (full anime-fast model, unpatched)
     compact_patched        ok      (full anime-fast model, as the worker loads it)
 
+An ABORT from a bare interpreter is exit 3221226505 (0xC0000409, Windows
+fail-fast); the frozen sidecar reported the same abort as exit 127.
+
+The two full-model probes move the model to the device INSIDE
+torch.inference_mode(), exactly as Upscaler.upscale() does, and that is
+load-bearing on this plugin build: parameters moved *outside* inference
+mode combined with inference-mode activations make every conv2d raise
+"Cannot set version_counter for inference tensor" (spandrel's
+ImageModelDescriptor.__call__ is itself @torch.inference_mode()), which
+would hide the PReLU abort behind an unrelated RuntimeError. The
+patched-model reference is taken through the same descriptor wrapper as
+the DirectML run because that wrapper clamps its output to [0, 1].
+
 Usage (from the repo root, in the directml venv):
 
     python docs/scripts/directml_prelu_probe.py            # all probes
@@ -72,8 +85,10 @@ y = F.interpolate(torch.rand(1, 3, 32, 32, device=dev), scale_factor=4, mode="ne
 import torch, torch_directml
 from spandrel import ModelLoader
 dev = torch_directml.device()
-d = ModelLoader().load_from_file(r"{WEIGHTS}").to(dev).eval()
-with torch.inference_mode(): y = d(torch.rand(1, 3, 64, 64, device=dev))
+d = ModelLoader().load_from_file(r"{WEIGHTS}")
+with torch.inference_mode():
+    d = d.to(dev).eval()
+    y = d(torch.rand(1, 3, 64, 64, device=dev))
 print(y.shape)
 """,
     "compact_patched": f"""
@@ -82,12 +97,12 @@ from spandrel import ModelLoader
 from proxy_scaler.upscale import replace_channelwise_prelu
 dev = torch_directml.device()
 d = ModelLoader().load_from_file(r"{WEIGHTS}")
-ref_model = d.model.eval()
 x = torch.rand(1, 3, 64, 64)
-with torch.inference_mode(): ref = ref_model(x)
+with torch.inference_mode(): ref = d.eval()(x)
 print("swapped", replace_channelwise_prelu(d.model), "PReLU layers")
-d = d.to(dev).eval()
-with torch.inference_mode(): y = d(x.to(dev)).cpu()
+with torch.inference_mode():
+    d = d.to(dev).eval()
+    y = d(x.to(dev)).cpu()
 print("max abs diff vs CPU native:", (y - ref).abs().max().item())
 """,
 }
