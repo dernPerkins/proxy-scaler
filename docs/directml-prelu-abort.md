@@ -211,15 +211,23 @@ output against a CUDA-generated one of the same card.
 *"running it on the CPU instead"*, Tasks shows device `cpu`, and the
 "GPU ran out of memory" dialog does **not** appear.
 
-**Step 4 — the crash-loop guard, using the abort as the crash:** restart
-with `PROXY_SCALER_DIRECTML_PRELU=off`, queue 2 anime-fast cards.
-Expect:
+**Step 4 — the crash-loop guard, using the abort as the crash.** This is
+the one step that exercises Windows-specific behaviour the Linux test
+can't (the msvcrt lock releasing on a fail-fast death, the respawn under
+the Job Object, the desktop app not treating the supervisor's stderr
+line as fatal), so it is the step that matters most. No sidecar rebuild
+is needed: run `proxy-scaler-serve` from the directml venv in a terminal
+with `PROXY_SCALER_DIRECTML_PRELU=off` set and point the desktop app at
+it in Remote mode (`http://127.0.0.1:13207`), or drive the API with curl.
+Queue 2 anime-fast cards. Expect:
 
 1. Worker aborts on card 1. Supervisor stderr:
-   `worker exited unexpectedly (code 127) mid-task; failed 1 running
+   `worker exited unexpectedly (code N) mid-task; failed 1 running
    task(s) and restarting it (1/3).` The app stays connected (no "server
    died"); card 1 shows `failed` with *"Worker process crashed (exit code
-   127) while running this task"*.
+   N) while running this task"*. N is 127 from the frozen sidecar and
+   3221226505 from `proxy-scaler-serve` in a venv (see Step 1); either is
+   fine, the supervisor just reports what it got.
 2. The replacement worker claims card 2 and aborts → `(2/3)`, card 2
    failed the same way. Queue empty; the third replacement worker sits
    idle. API still answering.

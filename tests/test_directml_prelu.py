@@ -211,3 +211,37 @@ def test_load_model_runs_policy_before_moving_to_device(tmp_path, monkeypatch) -
     up._load_model()
     assert calls == [("to", "cpu")]
     assert has_channelwise_prelu(fake.model)
+
+
+def test_upscale_loads_and_runs_the_model_inside_inference_mode(tmp_path, monkeypatch) -> None:
+    """Pins the ordering the DirectML run found load-bearing (see the
+    comment in Upscaler.upscale): on torch-directml 0.2.5 a model whose
+    parameters were moved to the device OUTSIDE torch.inference_mode()
+    fails in its first conv2d once inference-mode activations reach it.
+    The worker only works there because _ensure_model() — and so
+    _load_model()'s .to(device) — runs inside upscale()'s block."""
+    from PIL import Image
+
+    monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {})
+    seen: dict[str, bool] = {}
+    model = _tiny_compact()
+
+    class _FakeDescriptor:
+        def __init__(self) -> None:
+            self.model = model
+
+        def __call__(self, tensor):
+            seen["forward"] = torch.is_inference_mode_enabled()
+            return self.model(tensor)
+
+    def fake_load(self):
+        seen["load"] = torch.is_inference_mode_enabled()
+        return _FakeDescriptor()
+
+    monkeypatch.setattr(Upscaler, "_load_model", fake_load)
+    up = Upscaler(model=UpscaleModel.REALESRGAN_ANIME_FAST, scale=4, weights_dir=tmp_path)
+
+    result = up.upscale(Image.new("RGB", (8, 6)))
+
+    assert result.image.size == (32, 24)
+    assert seen == {"load": True, "forward": True}

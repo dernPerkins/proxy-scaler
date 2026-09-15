@@ -988,6 +988,14 @@ class Upscaler:
         from torchvision.transforms.functional import to_pil_image, to_tensor
 
         with torch.inference_mode():
+            # The model load/move MUST stay inside this block. Verified on
+            # torch-directml 0.2.5 (docs/directml-prelu-abort.md, Step 1
+            # result): its conv2d raises "Cannot set version_counter for
+            # inference tensor" whenever the parameters were moved to the
+            # device outside inference mode but the activations are
+            # inference tensors — which is every model, since spandrel's
+            # descriptor __call__ is itself @torch.inference_mode(). Pinned
+            # by tests/test_directml_prelu.py.
             descriptor = self._ensure_model()
             assert self._device is not None
             # Scryfall PNGs carry real per-card alpha (transparent rounded
