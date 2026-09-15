@@ -1,6 +1,6 @@
 # Windows validation: five-rung auto tile ladder + allocator change
 
-> **Status (2026-09-14):** run once on the RTX 5080 laptop against `0d9e5a4` — results in `windows-auto-tile-validation-results.md`. Confirmed there: the cu128 wheel ignores `expandable_segments` (reserved ≈ 2× allocated; the calibrated headroom of ~2.3 covers it), the OOM retry works only with the driver's sysmem fallback disabled, and a headroom ratchet found in that run is fixed in `0d9e5a4`. This revision folds the agent's corrections in. **Still open: the AMD 7900 XTX (§6).**
+> **Status (2026-09-14):** run once on the RTX 5080 laptop against `0d9e5a4` — results in `windows-auto-tile-validation-results.md`. Confirmed there: the cu128 wheel ignores `expandable_segments` (reserved ≈ 2× allocated; the calibrated headroom of ~2.3 covers it), the OOM retry works only with the driver's sysmem fallback disabled, and a headroom ratchet found in that run is fixed in `0d9e5a4`. This revision folds the agent's corrections in. **Run 2 (2026-09-15, `ea5ca94`):** T3 now passes with the driver at its stock default (the per-task allocator cap raises the OOM inside torch; shared GPU memory stayed flat); T1/T2/T4 unchanged. New finding F7 in the results file: a CPU fallback is sticky for the worker's lifetime. **Still open: the AMD 7900 XTX (§6).**
 
 You are validating a change to proxy-scaler on Windows. Two machines are in scope:
 

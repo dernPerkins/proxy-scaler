@@ -26,6 +26,7 @@ from proxy_scaler.upscale import (
     _ladder_step_down,
     _max_padded_tile_px,
     _record_observed_headroom,
+    _should_return_to_gpu,
     device_backend,
     device_kind,
     read_cache_device,
@@ -669,6 +670,13 @@ class _TinyDescriptor:
     def __init__(self, device="cpu", dtype=torch.float32):
         self.model = torch.nn.Linear(1, 1).to(device=device, dtype=dtype)
 
+    def to(self, target):  # spandrel's descriptor moves in place and returns self
+        self.model = self.model.to(target)
+        return self
+
+    def eval(self):
+        return self
+
 
 def _fresh_upscaler(tmp_path, **kw) -> Upscaler:
     return Upscaler(
@@ -680,6 +688,9 @@ def test_model_cache_hit_skips_reload(tmp_path, monkeypatch) -> None:
     from proxy_scaler import upscale as upscale_module
 
     monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {})
+    # The stub loads onto the CPU; on a CUDA box the return-to-GPU path
+    # would otherwise (rightly) try to move it.
+    monkeypatch.setattr(upscale_module, "resolve_device", lambda: torch.device("cpu"))
     loads = {"n": 0}
     shared = _TinyDescriptor()
 
@@ -703,6 +714,7 @@ def test_model_cache_one_slot_evicts_other_model(tmp_path, monkeypatch) -> None:
     from proxy_scaler import upscale as upscale_module
 
     monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {})
+    monkeypatch.setattr(upscale_module, "resolve_device", lambda: torch.device("cpu"))
     loads = {"n": 0}
 
     def fake_load(self):
@@ -739,11 +751,97 @@ def test_cache_hit_derives_state_from_relocated_descriptor(
     relocated = _TinyDescriptor(device="cpu", dtype=torch.float32)
     key = _cache_key(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
     monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {key: relocated})
+    # No GPU to return to (the return path has its own tests below); pinned
+    # so this doesn't depend on whether the test box has a CUDA device.
+    monkeypatch.setattr(upscale_module, "resolve_device", lambda: torch.device("cpu"))
 
     up = _fresh_upscaler(tmp_path)
     assert up._ensure_model() is relocated
     assert up._device.type == "cpu"
     assert up._dtype == torch.float32
+
+
+# --- Returning to the GPU after an earlier task's CPU fallback ----------------
+
+
+def test_should_return_to_gpu() -> None:
+    assert not _should_return_to_gpu(None)  # no CUDA / probe failed
+    assert not _should_return_to_gpu(4 * _GiB - 1)
+    assert _should_return_to_gpu(4 * _GiB)
+
+
+def _seed_relocated_cache(tmp_path, monkeypatch, *, device, free):
+    """A cached descriptor already parked on the CPU by an earlier task's
+    fallback, with resolve_device()/free VRAM pinned to the scenario."""
+    from proxy_scaler import upscale as upscale_module
+    from proxy_scaler.upscale import _cache_key
+
+    relocated = _TinyDescriptor(device="cpu", dtype=torch.float32)
+    key = _cache_key(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
+    monkeypatch.setattr(upscale_module, "_MODEL_CACHE", {key: relocated})
+    monkeypatch.setattr(upscale_module, "resolve_device", lambda: torch.device(device))
+    monkeypatch.setattr(upscale_module, "_free_cuda_vram", lambda: free)
+    return relocated
+
+
+def test_cache_hit_returns_relocated_descriptor_to_gpu(tmp_path, monkeypatch) -> None:
+    """Plenty of VRAM again and a CUDA device to go to: the cache hit moves
+    the parked descriptor back before deriving this task's device."""
+    relocated = _seed_relocated_cache(tmp_path, monkeypatch, device="cuda", free=12 * _GiB)
+    up = _fresh_upscaler(tmp_path)
+    with patch.object(Upscaler, "_return_to_gpu", return_value=relocated) as ret:
+        assert up._ensure_model() is relocated
+    ret.assert_called_once()
+    assert ret.call_args.args[0] is relocated
+    assert ret.call_args.args[1] == torch.device("cuda")
+
+
+def test_cache_hit_stays_on_cpu_when_vram_is_still_tight(tmp_path, monkeypatch) -> None:
+    _seed_relocated_cache(tmp_path, monkeypatch, device="cuda", free=1 * _GiB)
+    up = _fresh_upscaler(tmp_path)
+    with patch.object(Upscaler, "_return_to_gpu") as ret:
+        up._ensure_model()
+    ret.assert_not_called()
+    assert up._device.type == "cpu"
+    assert up._dtype == torch.float32
+
+
+def test_cache_hit_stays_on_cpu_without_cuda(tmp_path, monkeypatch) -> None:
+    """MPS/DirectML/CPU-only boxes have no free-VRAM probe; the return
+    path is CUDA-only and must not fire even with 'free' reported."""
+    _seed_relocated_cache(tmp_path, monkeypatch, device="cpu", free=12 * _GiB)
+    up = _fresh_upscaler(tmp_path)
+    with patch.object(Upscaler, "_return_to_gpu") as ret:
+        up._ensure_model()
+    ret.assert_not_called()
+    assert up._device.type == "cpu"
+
+
+def test_return_to_gpu_survives_a_failed_move(tmp_path, monkeypatch, capsys) -> None:
+    """The move itself OOMing (or anything else) must leave the descriptor
+    usable on the CPU and never break the task that tried."""
+    from proxy_scaler import upscale as upscale_module
+
+    class _Stuck(_TinyDescriptor):
+        def to(self, target):
+            if isinstance(target, torch.device) and target.type == "cuda":
+                raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+            return super().to(target)
+
+    stuck = _Stuck(device="cpu", dtype=torch.float32)
+    monkeypatch.setattr(upscale_module, "_free_cuda_vram", lambda: 12 * _GiB)
+    up = _fresh_upscaler(tmp_path)
+    with (
+        patch.object(up, "_cap_allocator_to_free", return_value=None) as cap,
+        patch("proxy_scaler.upscale._clear_device_cache") as clear_mock,
+    ):
+        out = up._return_to_gpu(stuck, torch.device("cuda"))
+    assert out is stuck
+    assert up._device.type == "cpu"
+    assert next(out.model.parameters()).device.type == "cpu"
+    cap.assert_called_once()  # cap recomputed before the move was attempted
+    clear_mock.assert_called_once_with(torch.device("cuda"))
+    assert "staying on CPU" in capsys.readouterr().out
 
 
 def test_upscale_no_longer_clears_cache_per_image(tmp_path) -> None:

@@ -309,3 +309,146 @@ the doc's three scripts, the Windows-corrected `val_auto2.py` /
 `val_fix_proto2.py` (proposed fix by monkeypatch, both scenarios) are in the
 session scratchpad under `validation-artifacts/`. A rendered version of this
 report: https://claude.ai/code/artifact/f9a8a768-6d65-4c78-9c19-79cd8ef47d89
+
+---
+
+# Run 2 (2026-09-15): per-task allocator cap, stock driver setting
+
+Re-run on the same RTX 5080 laptop against `ea5ca94` (includes the
+`Upscaler._cap_allocator_to_free` change from `898b021`). Driver *CUDA -
+Sysmem Fallback Policy* restored to its **stock default** before the run and
+confirmed in-process: a bare 20 GiB `torch.empty` on the 15.89 GiB card
+succeeded in 1.3 s, which only the fallback allows. No application code
+changed. Scripts were the doc's §4 versions verbatim; deleted afterwards.
+
+## TL;DR
+
+| question | answer |
+|---|---|
+| Does the cap raise the OOM inside torch on a stock driver? | **Yes.** T3 passes with the driver at default: three clean step-downs, GPU result in 16 s. Shared GPU memory flat at 0.1-0.2 G throughout. |
+| Does the cap bound reserved? | Partly. Unpressured passes still reserve 12.43 G for 6.27 G allocated (the cap is ~14.7 G there, so nothing to trim). Under pressure reserved now tracks the cap (13.4-14.2 G) instead of blowing past the card (15.39 G in run 1). |
+| Any regression in T1/T2/T4? | T1, T2 at 7/10/12, T4: same picks as run 1, all on the GPU. |
+| Anything new? | **F7.** With ~0.9 GiB really free (13.5 GiB hold) even the 256 rung now OOMs and the code falls back to CPU, as designed. But the CPU fallback is sticky: the card after the hold was released, with 14.4 GiB free, also ran on CPU at 88 s. Pre-existing behaviour, newly reachable. |
+
+## Environment
+
+```
+Machine: laptop, RTX 5080 Laptop GPU, 15.89 GiB, driver 616.64, ~1 GiB idle desktop use
+HEAD:    ea5ca94 (feature/auto-tiling-improvements), working tree clean
+torch:   2.11.0+cu128  python 3.14.7  cuda True
+Sysmem fallback policy: STOCK (verified, see above)
+Unit tests: tests/test_oom.py + tests/test_worker.py -> 52 passed
+            full suite (excluding test_integration.py) -> 549 passed, 5 skipped
+```
+
+## Filled template
+
+```
+T1 baseline:
+  alloc conf line: expandable_segments:True   (still ignored by the wheel, warning x1)
+  card1..3 tiles: 0 / 0 / 0     headroom after card1: 2.28, flat through lite / anime-fast
+  peak reserved / allocated: 12.43G / 6.27G  (unchanged from run 1: cap ~14.7G is above it)
+  lite 1.1s tile 0, anime-fast 0.2s tile 0
+
+T2 pressure:
+  hold 7    -> card4 free 7.32G -> 512   card5 7.57G -> 640   peak_resv 12.57 / 13.43G
+  hold 10   -> card4 free 4.53G -> 384   card5 4.53G -> 512   peak_resv 13.38 / 14.01G
+  hold 12   -> card4 free 2.53G -> 256*  card5 2.53G -> 384   peak_resv 13.89 / 14.09G
+  hold 13.5 -> card4 ~0.9G real  -> 256* OOM -> CPU fp32 96.4s    (see F7)
+               card5             -> CPU fp32 87.8s
+  released  -> tile 0 gpu for 7/10/12;  hold 13.5: CPU fp32 tile 384, 87.7s  (F7)
+  * = "low free VRAM: stepping tile down from 384 to 256" printed
+  Compared with run 1: identical picks at 7/10/12. Peak reserved under pressure now
+  stays under the card (run 1 hit 15.39G on a 15.89G card at hold 13.5 = silent spill).
+
+T3 OOM, driver at STOCK default:   PASS
+  Upscale OOM on cuda:0 at tile off; retrying at tile 640
+  Upscale OOM on cuda:0 at tile 640; retrying at tile 512
+  Upscale OOM on cuda:0 at tile 512; retrying at tile 384
+  final tile=384 device=gpu       wall 16.4s   (really free after hold: 3.51G)
+  jump run: one retry straight to 256, final tile=256 device=gpu, 14.3s
+  Shared GPU memory (perf counter, 2 s samples, both runs): 0.10-0.19G, flat.
+  Dedicated peaked 14.96G / 14.75G.
+  sysmem fallback observed? NO.  "Prefer No Sysmem Fallback" not needed, not tested.
+  Note: run 1 (fallback disabled at the driver) settled at 512; this run needed one
+  more step to 384. The cap is free + own arena - 512 MiB, slightly tighter than the
+  driver's hard limit, so 512 at 3.5G free now fails where the driver let it squeak
+  through. Consistent with the 2.0x-column gate (512 needs 5.2G); not a defect.
+
+T4 manual tile: PASS  "bf16, tile 384" / tile 384 gpu
+T5: not re-run (cross-process hold is n/a on Windows per run 1 F3).
+```
+
+## Findings
+
+### F7 - a CPU fallback is permanent for the life of the worker. Pre-existing, newly reachable.
+
+`_relocate_to_cpu()` moves the descriptor that lives in `_MODEL_CACHE` to
+CPU/fp32 in place, and `_ensure_model()` derives every later instance's
+device from the cached weights ("stays on CPU afterward" is in its
+docstring). `pipeline.py` builds a fresh `Upscaler` per task, so after one
+fallback every subsequent task for that model runs on CPU until the worker
+process restarts. Observed at hold 13.5 GiB:
+
+```
+[card4 with 13.5 GiB held] tile=256 device=cpu dtype=fp32 96.4s  free=n/a
+[card5 with 13.5 GiB held] tile=384 device=cpu dtype=fp32 87.8s  free=n/a
+[card6 released]           tile=384 device=cpu dtype=fp32 87.7s  free=n/a   <- 14.4 GiB free
+[lite]                     tile=0   device=gpu dtype=bf16  1.1s              <- other models unaffected
+```
+
+`free=n/a` because `_probe_free_vram` returns None for a non-CUDA device, so
+the ladder is out of the picture too (tile 384 is just the base). Same code
+on `main`; run 1 never reached it because on this box the driver's sysmem
+fallback swallowed the OOM (its hold-13.5 card4 was "tile=256 gpu 8.3s" with
+15.39 G reserved on a 15.89 G card - a spill that reported success). The
+cap makes the fallback reachable on Windows for the first time, and the
+release notes now promise "retries on the GPU at a smaller tile instead of
+dropping to the much slower CPU path", so a one-time pressure spike that
+parks a worker at ~90 s per card for the rest of the session is worth a
+ticket. Suggested shape (not implemented, per the doc's no-code rule): in
+`_ensure_model`, when the cached descriptor is on CPU but `resolve_device()`
+is CUDA and free VRAM is above the untiled floor (or the model's 256-rung
+need), move it back and re-derive dtype. Not a blocker for this change.
+
+**Addressed on the branch (2026-09-15):** `_ensure_model` now moves a cached descriptor that a fallback parked on the CPU back to CUDA once free VRAM (plus this process's reusable arena) is at least `_GPU_RETURN_MIN_FREE` = 4 GiB; below that it stays put, so it does not flap while the card is still squeezed. Covered by five tests in `tests/test_oom.py`; hardware check below in run 3.
+
+### F8 - trade-off note, no action: at ~1 GiB free the cap is slower than the spill it replaces.
+
+Run 1's silent spill at the 256 rung cost 8.3 s per card; run 2's honest
+CPU pass costs 96 s. The spill only got that cheap because a 256 tile is
+~1 GiB and the driver paged a fraction of it. For the untiled pass that
+motivated the change (the 0.2.1 "GPU pinned for minutes" report) the spill
+was 1m28s vs ~6 s and the cap is a clear win. This corner is the 13.5 GiB
+hold, i.e. under 1 GiB genuinely free, which real users only hit with
+another heavy GPU app running. Mentioned so the numbers in T2 are not
+misread as a regression; F7 is what makes it hurt.
+
+## Artifacts
+
+`t1.log`, `t2-{7,10,12,13.5}.log`, `t3.log`, `t3-jump.log`, `t4.log`,
+`gpumem-t3.log` (shared/dedicated samples) in this session's scratchpad
+under `run2/`.
+
+---
+
+# Run 3 (2026-09-15): return-to-GPU after a CPU fallback (F7 fix)
+
+Same laptop, driver at stock, working tree = `ea5ca94` + the F7 change in
+`proxy_scaler/upscale.py` / `tests/test_oom.py`. Doc's §4 scripts verbatim,
+deleted afterwards. Unit tests: 57 passed (`test_oom.py` + `test_worker.py`),
+full suite 554 passed / 5 skipped.
+
+```
+val_auto.py 13.5   (the F7 scenario)
+  card4 with 13.5 GiB held -> OOM at 256 -> CPU fp32  93.8s     (fallback, as designed)
+  card5 with 13.5 GiB held -> CPU fp32               87.2s     (<1 GiB free: stays put, no flap)
+  Returning ultrasharp_v2 to cuda (14.6 GiB free after an earlier CPU fallback)
+  card6 released           -> tile=0 device=gpu bf16  6.1s     (was 87.7s on CPU in run 2)
+  lite / anime-fast        -> unchanged, gpu
+
+val_auto.py 12     -> 256* / 384 held, tile 0 released; identical to run 2
+val_oom.py 11      -> off -> 640 -> 512 -> 384, final tile=384 gpu, 16.2s; identical to run 2
+```
+
+Logs in this session's scratchpad under `run3/`.

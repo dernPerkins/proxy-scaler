@@ -356,6 +356,41 @@ _VRAM_HEADROOM_FIRST_TASK = 2.0
 # what the card can do right now is what matters.
 _UNTILED_MIN_FREE = 9 * 1024**3
 
+# Free VRAM a later task needs to see before it moves a model that an
+# earlier task's OOM parked on the CPU (_relocate_to_cpu) back onto the
+# GPU. The fallback only fires once even the 256 rung fails, i.e. with
+# well under 1 GiB genuinely free, so "things have clearly changed" is
+# the bar: 4 GiB covers the 512 rung at steady-state headroom (3.6 GiB),
+# so the returning task gets a useful tile, and sits far enough above
+# the failure point that the model doesn't bounce between CPU and GPU
+# while whatever squeezed the card (a game, another app) is still there.
+# Observed on an RTX 5080: without this, one squeeze left every later
+# UltraSharpV2 card on the CPU (~90 s vs ~6 s) until the worker restarted.
+_GPU_RETURN_MIN_FREE = 4 * 1024**3
+
+
+def _should_return_to_gpu(free_bytes: int | None) -> bool:
+    return free_bytes is not None and free_bytes >= _GPU_RETURN_MIN_FREE
+
+
+def _free_cuda_vram() -> int | None:
+    """Free VRAM this process can count on right now (bytes), or None
+    without CUDA / when the probe fails. mem_get_info counts this
+    process's allocator arenas as "used", but reserved-yet-unallocated
+    blocks are reusable for our own tiles — without adding them back, a
+    warm allocator (no per-image empty_cache) would push every later task
+    below the gate and silently downgrade."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info()
+        free_bytes += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+    except Exception:  # noqa: BLE001
+        return None
+    return int(free_bytes)
+
 # ---- Per-task allocator cap ------------------------------------------
 #
 # The ladder can only step down if a pass that doesn't fit actually raises
@@ -798,11 +833,21 @@ class Upscaler:
             _cache_put(key, descriptor)
         import torch
 
+        param = next(descriptor.model.parameters())
+        if param.device.type == "cpu":
+            # A cached descriptor on the CPU is (almost always) one that
+            # _relocate_to_cpu() parked there after an OOM in an earlier
+            # task. That was the right call then; it shouldn't be forever.
+            # CUDA only: it's the one backend with a free-VRAM probe.
+            target = resolve_device()
+            if target.type == "cuda" and _should_return_to_gpu(_free_cuda_vram()):
+                descriptor = self._return_to_gpu(descriptor, target)
+                param = next(descriptor.model.parameters())
         # Per-instance state is derived from the descriptor's own weights,
         # hit or miss: a shared descriptor that _relocate_to_cpu() moved to
-        # CPU/fp32 in a previous task is then described truthfully instead
-        # of through stale cached metadata.
-        param = next(descriptor.model.parameters())
+        # CPU/fp32 in a previous task (and _return_to_gpu() may just have
+        # moved back) is then described truthfully instead of through
+        # stale cached metadata.
         self._device = param.device
         self._dtype = (
             torch.bfloat16 if param.dtype == torch.bfloat16 else torch.float32
@@ -812,21 +857,9 @@ class Upscaler:
 
     def _probe_free_vram(self) -> int | None:
         """Free VRAM this task can count on, or None when unknowable."""
-        import torch
-
         if self._device is None or self._device.type != "cuda":
             return None
-        try:
-            free_bytes, _ = torch.cuda.mem_get_info()
-            # mem_get_info counts this process's allocator arenas as "used",
-            # but reserved-yet-unallocated blocks are reusable for our own
-            # tiles — without adding them back, the first task's warm
-            # allocator (no more per-image empty_cache) would push every
-            # later task below the gate and silently downgrade.
-            free_bytes += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
-        except Exception:  # noqa: BLE001
-            return None
-        return int(free_bytes)
+        return _free_cuda_vram()
 
     def _apply_auto_tile(self, width: int, height: int) -> None:
         """Per task (mem_get_info is cheap): re-pick this task's auto tile
@@ -992,7 +1025,10 @@ class Upscaler:
             print(f"warning: cpu-fallback hook failed: {exc}", file=sys.stderr)
 
     def _relocate_to_cpu(self) -> ImageModelDescriptor:
-        """Move loaded weights to CPU after a GPU OOM (stays on CPU afterward)."""
+        """Move loaded weights to CPU after a GPU OOM. Stays there for the
+        rest of this task and any later task that finds the GPU still
+        tight; _ensure_model() moves it back once free VRAM clears
+        _GPU_RETURN_MIN_FREE (see _return_to_gpu)."""
         import torch
 
         assert self._descriptor is not None
@@ -1005,6 +1041,44 @@ class Upscaler:
         self._dtype = torch.float32
         self._descriptor = self._descriptor.to(self._device).to(torch.float32).eval()
         return self._descriptor
+
+    def _return_to_gpu(
+        self, descriptor: ImageModelDescriptor, device: torch.device
+    ) -> ImageModelDescriptor:
+        """Mirror of _relocate_to_cpu: move a descriptor an earlier task's
+        OOM parked on the CPU back onto `device`, restoring bf16 where
+        supported. Best-effort — a failed move leaves the descriptor on the
+        CPU and this task runs there as before, never raising. Deliberately
+        not routed through _notify_cpu_fallback: that hook raises the
+        client's "GPU ran out of memory" dialog, and this is the recovery."""
+        import torch
+
+        free = _free_cuda_vram()
+        free_label = "?" if free is None else f"{free / 1024**3:.1f}"
+        print(
+            f"Returning {self.model_id.value} to {device} "
+            f"({free_label} GiB free after an earlier CPU fallback)…"
+        )
+        self._device = device
+        # After a fallback the per-task cap may still sit at its floor from
+        # the task that failed; recompute it before the weights move.
+        self._cap_allocator_to_free()
+        try:
+            descriptor = descriptor.to(device).eval()
+            if resolve_dtype(descriptor, device) == torch.bfloat16:
+                try:
+                    descriptor = descriptor.to(torch.bfloat16)
+                except Exception:  # noqa: BLE001 — any bf16 hiccup means fp32
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not return {self.model_id.value} to {device} ({exc}); staying on CPU…")
+            _clear_device_cache(device)
+            try:
+                descriptor = descriptor.to(torch.device("cpu")).eval()
+            except Exception:  # noqa: BLE001
+                pass
+            self._device = torch.device("cpu")
+        return descriptor
 
     def _run_inference(
         self,
