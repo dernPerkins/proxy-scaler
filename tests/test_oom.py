@@ -291,6 +291,7 @@ def test_resolve_dtype_needs_model_and_device_support() -> None:
 
 
 _GiB = 1024**3
+_MiB = 1024**2
 # 745x1040 Scryfall card, pad 32 — the geometry the ladder was measured on.
 _CARD = dict(width=745, height=1040, pad=32)
 
@@ -353,7 +354,10 @@ def test_ladder_step_down() -> None:
 
 
 def test_observed_headroom_calibration() -> None:
-    with patch("proxy_scaler.upscale._OBSERVED_HEADROOM", None):
+    with (
+        patch("proxy_scaler.upscale._OBSERVED_HEADROOM", None),
+        patch("proxy_scaler.upscale._PEAK_ALLOCATED_SEEN", 0),
+    ):
         assert _current_headroom() == 2.0  # first task: conservative
         _record_observed_headroom(reserved=2 * _GiB, allocated=1 * _GiB)
         assert abs(_current_headroom() - 2.3) < 1e-9  # 2.0 x 1.15
@@ -364,6 +368,30 @@ def test_observed_headroom_calibration() -> None:
         assert _current_headroom() == 1.4
         _record_observed_headroom(reserved=0, allocated=0)  # ignored
         assert _current_headroom() == 1.4
+
+
+def test_observed_headroom_ignores_passes_below_the_peak() -> None:
+    """A smaller pass reuses the arena an earlier, larger pass reserved, so
+    its reserved/allocated is not a measurement of itself -- calibrating from
+    it ratchets the gate up and walks the ladder down to its floor for the
+    rest of the process. Only a new allocated high-water re-measures."""
+    with (
+        patch("proxy_scaler.upscale._OBSERVED_HEADROOM", None),
+        patch("proxy_scaler.upscale._PEAK_ALLOCATED_SEEN", 0),
+    ):
+        # A big pass: 12.43 GiB reserved against 6.27 GiB allocated.
+        _record_observed_headroom(reserved=12_430 * _MiB, allocated=6_270 * _MiB)
+        calibrated = _current_headroom()
+        assert calibrated != 2.0  # moved off the first-task default
+        # Smaller passes still see the big pass's arena; none may calibrate.
+        for allocated_mib in (3_660, 2_590, 1_630):
+            _record_observed_headroom(
+                reserved=12_430 * _MiB, allocated=allocated_mib * _MiB
+            )
+            assert _current_headroom() == calibrated
+        # A new high-water does re-measure.
+        _record_observed_headroom(reserved=13_000 * _MiB, allocated=7_000 * _MiB)
+        assert abs(_current_headroom() - (13_000 / 7_000 * 1.15)) < 1e-9
 
 
 class _CudaDev:
@@ -405,6 +433,7 @@ def _drive_upscale(up: Upscaler, *, oom_attempts: int, probe):
         patch.object(up, "_probe_free_vram", side_effect=probe),
         patch("proxy_scaler.upscale._clear_device_cache"),
         patch("proxy_scaler.upscale._OBSERVED_HEADROOM", 1.4),
+        patch("proxy_scaler.upscale._PEAK_ALLOCATED_SEEN", 0),
         patch("torchvision.transforms.functional.to_tensor", return_value=fake_rgb),
     ):
         up._device = _CudaDev()  # type: ignore[assignment]

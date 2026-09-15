@@ -501,13 +501,30 @@ def _current_headroom() -> float:
 # that would drag the heavy models' gate around for no reason.
 _HEADROOM_CALIBRATION_MIN_ALLOCATED = 1024**3
 
+# Largest allocated peak this process has seen. Reserved is a process-wide
+# high-water the allocator never returns (reset_peak_memory_stats() can't
+# lower it below what's currently reserved), so for a pass smaller than an
+# earlier one `reserved` describes the EARLIER pass's arena and the ratio
+# just scales with how much bigger that pass was. Verified live on Windows,
+# where expandable_segments is unsupported and the arena really does sit at
+# its high-water: after a 6.27 GiB untiled pass reserved 12.43 GiB, a
+# 3.66 GiB tile-640 pass measured 3.91x and a 1.63 GiB tile-384 pass 8.77x,
+# and the gate walked the ladder down to its 256 floor for good. Only a new
+# allocated peak re-measures something real.
+_PEAK_ALLOCATED_SEEN = 0
+
 
 def _record_observed_headroom(reserved: int, allocated: int) -> None:
     """Fold a pass's peak reserved/allocated ratio (x1.15 safety) into the
-    headroom later tasks gate on, never below the default 1.4x."""
-    global _OBSERVED_HEADROOM
+    headroom later tasks gate on, never below the default 1.4x. Only passes
+    that set a new allocated high-water calibrate -- see
+    _PEAK_ALLOCATED_SEEN for why a smaller pass's ratio is meaningless."""
+    global _OBSERVED_HEADROOM, _PEAK_ALLOCATED_SEEN
     if allocated < _HEADROOM_CALIBRATION_MIN_ALLOCATED:
         return
+    if allocated < _PEAK_ALLOCATED_SEEN:
+        return
+    _PEAK_ALLOCATED_SEEN = allocated
     _OBSERVED_HEADROOM = max(_VRAM_HEADROOM_DEFAULT, reserved / allocated * 1.15)
 
 
