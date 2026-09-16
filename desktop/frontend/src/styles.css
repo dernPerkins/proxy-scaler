@@ -583,6 +583,33 @@ button:disabled {
   background: var(--accent-soft);
 }
 
+/* A message with a dismiss "×" on its right (the PDF tab's registration-
+   mark warning). The text takes the width; the button stays a fixed
+   square aligned to the first line. */
+.dismissable {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.dismissable > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.dismiss-x {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  line-height: 1;
+  font-size: 16px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border-strong);
+}
+.dismiss-x:hover:not(:disabled) {
+  color: var(--text);
+}
+
 /* A button that reads as a link, for an action offered mid-sentence. A
    real <button> rather than an <a href="#">: it performs an action and
    navigates nowhere, so it should be focusable and Enter/Space-activated

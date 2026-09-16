@@ -1302,21 +1302,24 @@ export default function PdfPage() {
                   </p>
                 )}
                 {registrationConflict && !conflictIgnored && (
-                  <p className="error-text" style={{ marginBottom: 8 }}>
-                    <strong>
-                      Cards overlap the registration marks&apos; keep-out zones (hatched in
-                      the preview).
-                    </strong>{" "}
-                    The cutter may fail to read the marks — use fewer rows or columns, add
-                    spacing, or nudge the grid with the offsets.{" "}
+                  <div className="dismissable" style={{ marginBottom: 8 }}>
+                    <p className="error-text" style={{ margin: 0 }}>
+                      <strong>
+                        Cards overlap the registration marks&apos; keep-out zones (hatched in
+                        the preview).
+                      </strong>{" "}
+                      The cutter may fail to read the marks — use fewer rows or columns, add
+                      spacing, or nudge the grid with the offsets.
+                    </p>
                     <button
-                      className="linklike"
+                      className="dismiss-x"
+                      aria-label="Ignore this warning"
                       onClick={() => setConflictIgnored.mutate(true)}
                       title="Stop showing this warning. Many people cut sheets like this without trouble; you can turn it back on from the note that replaces it."
                     >
-                      Ignore
+                      ×
                     </button>
-                  </p>
+                  </div>
                 )}
                 {registrationConflict && conflictIgnored && (
                   /* The one-line trace of the ignored warning, so the
