@@ -271,6 +271,21 @@ class FlipEdgeIn(str, Enum):
     SHORT = "short"
 
 
+class CutterIn(str, Enum):
+    NONE = "none"
+    SILHOUETTE = "silhouette"
+
+
+class CutterMarkStyleIn(str, Enum):
+    THREE_POINT = "three_point"
+    FOUR_POINT = "four_point"
+
+
+class CutterOrientationIn(str, Enum):
+    PORTRAIT = "portrait"
+    LANDSCAPE = "landscape"
+
+
 class PdfLayoutIn(BaseModel):
     # project_tag scopes which generated images to draw from; entries carry
     # the quantities (not persisted server-side any more — see
@@ -327,6 +342,26 @@ class PdfLayoutIn(BaseModel):
     hide_page_guides_front: bool
     hide_card_guides_back: bool
     hide_page_guides_back: bool
+
+    # --- Electronic cutter -----------------------------------------------
+    #
+    # Registration marks for a cutting machine (pdf_layout.RegistrationMarks)
+    # and the matching /cut-file export. All defaulted, so a client that
+    # predates cutters gets exactly the sheet it always got. The reverse
+    # drift — a new client against an old server — is the silent kind
+    # again (Pydantic drops the unknown fields and the sheet comes back
+    # without marks), and is gated client-side by a version floor, see
+    # desktop/frontend/src/config.ts.
+    cutter: CutterIn = CutterIn.NONE
+    cutter_mark_style: CutterMarkStyleIn = CutterMarkStyleIn.THREE_POINT
+    # The orientation the sheet is loaded into the cutter — independent of
+    # the page's own orientation (see pdf_layout.cutter_frame).
+    cutter_orientation: CutterOrientationIn = CutterOrientationIn.PORTRAIT
+    cutter_inset_mm: float = 10.0
+    # Same HIDE polarity as the guide flags above, same back-page default,
+    # for the same reason: the marks only matter on the side you cut from.
+    hide_cutter_marks_front: bool = False
+    hide_cutter_marks_back: bool = True
 
     # --- Back printing ---------------------------------------------------
     back_printing: bool = False
@@ -418,6 +453,15 @@ class PdfPageSlotOut(BaseModel):
     is_back_image: bool = False
 
 
+class RectOut(BaseModel):
+    """An axis-aligned box on the page, mm, y down."""
+
+    x_mm: float
+    y_mm: float
+    w_mm: float
+    h_mm: float
+
+
 class PdfPagePreviewOut(BaseModel):
     """Page-1-only visual layout preview — distinct from PdfPreviewOut
     (that one's a settled, numbers-only summary; this one carries the
@@ -455,6 +499,14 @@ class PdfPagePreviewOut(BaseModel):
     # of the four flags applies.
     hide_card_guides: bool
     hide_page_guides: bool
+    # Cutter registration marks this page carries (empty when there is no
+    # cutter, or the marks are hidden on this page kind), the keep-out
+    # zones around them, and whether any card intrudes on a zone — a
+    # warning the client shows, like grid overflow. Defaulted so an older
+    # server's response still validates against a newer client.
+    registration_marks: list[RectOut] = []
+    registration_keep_out: list[RectOut] = []
+    registration_conflict: bool = False
     page_count: int
     slots: list[PdfPageSlotOut]
 

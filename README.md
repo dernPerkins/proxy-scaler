@@ -159,6 +159,25 @@ pages.
 **Back printing** puts something on the reverse of every card so a sheet
 can be duplex-printed. See [Backs](#backs).
 
+**Cutting machines.** Set **Electronic cutter** to *Silhouette* on the PDF
+tab and every sheet gets registration marks a Cameo or Portrait scans to
+align its cuts: a filled square top-left and L-marks in the other corners
+(**3-point**, or **4-point** for the Cameo 5α and Pro MK II). The
+**Standard** and **Auto Sheet Feeder** buttons set the mark inset to what
+each needs (0.394 in and 0.625 in), or drag the slider; **Mark
+orientation** is the way you load the sheet into the cutter, independent
+of the paper's own orientation. The preview draws the marks and their
+keep-out zones and warns when cards sit under one — the default 3×3 grid
+does, so drop to fewer rows or columns — and page guides stop short of
+those corners so they can't confuse the scanner. On duplex sheets the
+marks can be hidden per side (backs are hidden by default). A callout
+lists the Silhouette Studio settings to match, and **Download cut file
+(SVG)** gives you every card's trim box plus the marks in the cutter's
+orientation, ready to import into Studio (SVG import needs the Designer
+Edition; set the imported marks to no-cut and line them up with Studio's
+own). Bleed of about 0.5 mm suits the cutter better than the 1 mm
+default.
+
 ### Backs
 
 A **Backs** tab holds your library of card-back images — drag one in (or

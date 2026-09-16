@@ -7,7 +7,7 @@ separation used elsewhere in this codebase.
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -118,6 +118,262 @@ class GuideVisibility:
     hide_page_guides_front: bool = False
     hide_card_guides_back: bool = True
     hide_page_guides_back: bool = True
+
+# --- Registration marks (electronic cutters) -------------------------------
+#
+# Silhouette "Type 1" registration marks: a filled 5mm square in the
+# top-left corner and L-shaped brackets in the top-right and bottom-left
+# corners (plus a bottom-right L for the newer four-mark machines), each
+# L's arms pointing in toward the page centre. The cutter's optical scanner
+# finds these to align its cut file with the printed sheet, so the geometry
+# is fixed here rather than user-editable: Silhouette Studio never scales
+# the square, and the length/thickness below are what the UI tells users to
+# enter in Studio. Thickness is Studio's maximum — faint or thin marks are
+# the most common cause of "registration failed".
+REG_SQUARE_MM = 5.0
+REG_ARM_MM = 8.89  # 0.35 in
+REG_THICKNESS_MM = 1.0  # 0.039 in, Silhouette Studio's maximum
+# Clearance around every mark that must carry no other ink. Studio hatches
+# a zone around each mark and the scanner cannot read through printed
+# content there — a stray page guide in that zone fails the whole sheet.
+REG_KEEP_OUT_MM = 3.0
+REG_INSET_MIN_MM = 5.0
+REG_INSET_DEFAULT_MM = 10.0  # Studio's "Standard" inset, 0.394 in
+# 1/8 in — the corner radius a cut file rounds each card's trim box to.
+CARD_CORNER_RADIUS_MM = 3.175
+
+
+class CutterMarkStyle(str, Enum):
+    THREE_POINT = "three_point"  # Cameo 4/5, Portrait: square + two L's
+    FOUR_POINT = "four_point"  # Cameo 5α, Pro MK II: plus a bottom-right L
+
+
+class CutterOrientation(str, Enum):
+    """Which way the sheet is loaded into the cutter. Independent of the
+    page's own orientation, which only says how it went through the
+    printer: a portrait sheet can be loaded landscape into a Cameo, and the
+    marks then have to be laid out for the landscape frame the cutter
+    sees. See cutter_frame for the rotation convention."""
+
+    PORTRAIT = "portrait"
+    LANDSCAPE = "landscape"
+
+
+@dataclass(frozen=True)
+class Rect:
+    """An axis-aligned box in mm, y down — page coordinates unless a
+    function says otherwise."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+
+    @property
+    def x1(self) -> float:
+        return self.x + self.w
+
+    @property
+    def y1(self) -> float:
+        return self.y + self.h
+
+    def inflated(self, d: float) -> Rect:
+        return Rect(self.x - d, self.y - d, self.w + 2 * d, self.h + 2 * d)
+
+
+def rects_overlap(a: Rect, b: Rect) -> bool:
+    """Strictly positive overlap area — boxes that merely touch don't count."""
+    eps = 1e-9
+    return (
+        min(a.x1, b.x1) - max(a.x, b.x) > eps
+        and min(a.y1, b.y1) - max(a.y, b.y) > eps
+    )
+
+
+@dataclass(frozen=True)
+class RegistrationMarks:
+    """The cutter registration marks a sheet carries. Same per-page-kind
+    polarity as GuideVisibility, for the same reason: `hide_back` defaults
+    True because the marks only matter on the side you cut from, and the
+    back is the side of the card that shows."""
+
+    style: CutterMarkStyle = CutterMarkStyle.THREE_POINT
+    orientation: CutterOrientation = CutterOrientation.PORTRAIT
+    inset_mm: float = REG_INSET_DEFAULT_MM
+    hide_front: bool = False
+    hide_back: bool = True
+
+    def drawn_on(self, *, is_back: bool) -> bool:
+        return not self.hide_back if is_back else not self.hide_front
+
+
+def page_orientation(page_w_mm: float, page_h_mm: float) -> CutterOrientation:
+    """Same rule PageLayout.orientation uses: a square page is portrait."""
+    return CutterOrientation.PORTRAIT if page_h_mm >= page_w_mm else CutterOrientation.LANDSCAPE
+
+
+def cutter_frame(
+    page_w_mm: float, page_h_mm: float, orientation: CutterOrientation
+) -> tuple[float, float, bool]:
+    """(width, height, rotated) of the frame the cutter sees the sheet in.
+
+    When the requested orientation matches the page's own, the frame is the
+    page and nothing rotates. When it differs, the convention — chosen
+    here once, and relied on by the PDF marks, the preview and the cut file
+    alike — is that the sheet is loaded turned 90° CLOCKWISE: the page's
+    bottom-left corner becomes the cutter's top-left, where the square
+    goes. The user never has to know which way round: they load the sheet
+    with the square mark top-left, and everything else follows from that.
+    """
+    if orientation is page_orientation(page_w_mm, page_h_mm):
+        return page_w_mm, page_h_mm, False
+    return page_h_mm, page_w_mm, True
+
+
+def cutter_rect_to_page(rect: Rect, page_w_mm: float, page_h_mm: float, rotated: bool) -> Rect:
+    """A cutter-frame box in page coordinates (see cutter_frame)."""
+    if not rotated:
+        return rect
+    return Rect(rect.y, page_h_mm - rect.x - rect.w, rect.h, rect.w)
+
+
+def page_rect_to_cutter(rect: Rect, page_w_mm: float, page_h_mm: float, rotated: bool) -> Rect:
+    """Inverse of cutter_rect_to_page — a page box in cutter coordinates."""
+    if not rotated:
+        return rect
+    return Rect(page_h_mm - rect.y - rect.h, rect.x, rect.h, rect.w)
+
+
+def _mark_rects_in_frame(
+    frame_w: float, frame_h: float, *, style: CutterMarkStyle, inset_mm: float
+) -> list[Rect]:
+    """The filled rectangles that make up the marks, in the cutter frame.
+    Each L is two overlapping bars (harmless — both solid black). Every mark
+    lies entirely inside the inset boundary: the square's outer corner and
+    each L's outer vertex sit exactly `inset_mm` from their two edges."""
+    i, a, t = inset_mm, REG_ARM_MM, REG_THICKNESS_MM
+    rects = [
+        Rect(i, i, REG_SQUARE_MM, REG_SQUARE_MM),
+        # Top-right L: arms run left and down from the corner vertex.
+        Rect(frame_w - i - a, i, a, t),
+        Rect(frame_w - i - t, i, t, a),
+        # Bottom-left L: arms run right and up.
+        Rect(i, frame_h - i - t, a, t),
+        Rect(i, frame_h - i - a, t, a),
+    ]
+    if style is CutterMarkStyle.FOUR_POINT:
+        # Bottom-right L: arms run left and up.
+        rects.append(Rect(frame_w - i - a, frame_h - i - t, a, t))
+        rects.append(Rect(frame_w - i - t, frame_h - i - a, t, a))
+    return rects
+
+
+def _mark_bboxes_in_frame(
+    frame_w: float, frame_h: float, *, style: CutterMarkStyle, inset_mm: float
+) -> list[Rect]:
+    """One bounding box per mark (not per bar), in the cutter frame."""
+    i, a = inset_mm, REG_ARM_MM
+    boxes = [
+        Rect(i, i, REG_SQUARE_MM, REG_SQUARE_MM),
+        Rect(frame_w - i - a, i, a, a),
+        Rect(i, frame_h - i - a, a, a),
+    ]
+    if style is CutterMarkStyle.FOUR_POINT:
+        boxes.append(Rect(frame_w - i - a, frame_h - i - a, a, a))
+    return boxes
+
+
+def registration_mark_rects(
+    page_w_mm: float, page_h_mm: float, marks: RegistrationMarks
+) -> list[Rect]:
+    """The filled black rectangles to draw, in PAGE coordinates. Depends on
+    the page size and the marks alone — never on the grid or its offsets,
+    so front and back pages carry identical marks."""
+    fw, fh, rotated = cutter_frame(page_w_mm, page_h_mm, marks.orientation)
+    return [
+        cutter_rect_to_page(r, page_w_mm, page_h_mm, rotated)
+        for r in _mark_rects_in_frame(fw, fh, style=marks.style, inset_mm=marks.inset_mm)
+    ]
+
+
+def registration_mark_bboxes(
+    page_w_mm: float, page_h_mm: float, marks: RegistrationMarks
+) -> list[Rect]:
+    fw, fh, rotated = cutter_frame(page_w_mm, page_h_mm, marks.orientation)
+    return [
+        cutter_rect_to_page(r, page_w_mm, page_h_mm, rotated)
+        for r in _mark_bboxes_in_frame(fw, fh, style=marks.style, inset_mm=marks.inset_mm)
+    ]
+
+
+def registration_keep_out(
+    page_w_mm: float, page_h_mm: float, marks: RegistrationMarks
+) -> list[Rect]:
+    """The zones (page coordinates) that must carry no ink but the mark."""
+    return [b.inflated(REG_KEEP_OUT_MM) for b in registration_mark_bboxes(page_w_mm, page_h_mm, marks)]
+
+
+def registration_conflict(layout: PageLayout, keep_out: list[Rect]) -> bool:
+    """Does any card's bled box intrude on a keep-out zone? A warning, not
+    an error, like the grid-overflow check: the marks stay where the cutter
+    expects them and the user is told to change the grid."""
+    for row in range(layout.rows):
+        for col in range(layout.cols):
+            card = Rect(
+                layout.margin_x_mm + col * layout.cell_w_mm,
+                layout.margin_y_mm + row * layout.cell_h_mm,
+                layout.bled_card_w_mm,
+                layout.bled_card_h_mm,
+            )
+            if any(rects_overlap(card, zone) for zone in keep_out):
+                return True
+    return False
+
+
+def _clip_edge_segment(
+    start: float,
+    end: float,
+    cross_lo: float,
+    cross_hi: float,
+    keep_out: Sequence[Rect],
+    *,
+    vertical: bool,
+    from_edge: bool,
+) -> tuple[float, float] | None:
+    """Shorten one page guide so it never enters a keep-out zone.
+
+    A page guide is axis-aligned and runs between a page edge and the grid;
+    `start < end` are its coordinates along its own axis, and
+    `[cross_lo, cross_hi]` is its stroke's extent across it. `from_edge`
+    says the segment begins at the page edge (top/left) rather than ending
+    at one (bottom/right). Any zone the stroke crosses cuts the segment
+    back to the zone's far side, so nothing survives between the page edge
+    and the mark — a stub of black line there is exactly what confuses the
+    scanner. Returns None when nothing is left.
+    """
+    for zone in keep_out:
+        cross0, cross1 = (zone.x, zone.x1) if vertical else (zone.y, zone.y1)
+        along0, along1 = (zone.y, zone.y1) if vertical else (zone.x, zone.x1)
+        if cross1 <= cross_lo or cross0 >= cross_hi:
+            continue
+        if along1 <= start or along0 >= end:
+            continue
+        if from_edge:
+            start = max(start, along1)
+        else:
+            end = min(end, along0)
+    return (start, end) if start < end else None
+
+
+def _draw_registration_marks(
+    pdf: FPDF, page_w_mm: float, page_h_mm: float, marks: RegistrationMarks
+) -> None:
+    """Solid black, filled (no stroke): a stroked outline would pick up the
+    guide line width and blur the mark's edge the scanner locks on to."""
+    pdf.set_fill_color(0, 0, 0)
+    for r in registration_mark_rects(page_w_mm, page_h_mm, marks):
+        pdf.rect(r.x, r.y, r.w, r.h, style="F")
+
 
 # Outer guide lines run from the page edge to the card grid block — full,
 # dark, and continuous (there's no card content there to obscure, and a
@@ -239,6 +495,7 @@ def _draw_cut_marks(
     *,
     card_guides: bool = True,
     page_guides: bool = True,
+    keep_out: Sequence[Rect] = (),
 ) -> None:
     """Draw Page Guides (black lines from the page edge to the grid block —
     outer margins, nothing to obscure there; two closely-spaced lines per
@@ -257,7 +514,11 @@ def _draw_cut_marks(
     border; nudged, the stroke's inner edge sits exactly on the trim line
     (card edge, then guide) and a perfectly cut card carries no guide ink.
     Which way is outward falls out of _card_trim_edges' ordering: even
-    indices are leading (left/top) edges, odd are trailing (right/bottom)."""
+    indices are leading (left/top) edges, odd are trailing (right/bottom).
+
+    `keep_out` (registration-mark zones, see registration_keep_out) clips
+    Page Guides only: they are the ones that run out to the page edge and
+    through the corners the cutter scans. Card Guides stay inside the grid."""
     if not card_guides and not page_guides:
         return
 
@@ -282,16 +543,32 @@ def _draw_cut_marks(
 
     if page_guides:
         pdf.set_draw_color(*_OUTER_LINE_COLOR)
+        # start < end is the old "grid edge inside the page" test, and the
+        # clip is a no-op with no keep-out zones.
         for x in xs:
-            if grid_y0 > 0:
-                pdf.line(x, 0, x, grid_y0)
-            if grid_y1 < layout.page_h_mm:
-                pdf.line(x, grid_y1, x, layout.page_h_mm)
+            seg = _clip_edge_segment(
+                0.0, grid_y0, x - half, x + half, keep_out, vertical=True, from_edge=True
+            )
+            if seg:
+                pdf.line(x, seg[0], x, seg[1])
+            seg = _clip_edge_segment(
+                grid_y1, layout.page_h_mm, x - half, x + half, keep_out,
+                vertical=True, from_edge=False,
+            )
+            if seg:
+                pdf.line(x, seg[0], x, seg[1])
         for y in ys:
-            if grid_x0 > 0:
-                pdf.line(0, y, grid_x0, y)
-            if grid_x1 < layout.page_w_mm:
-                pdf.line(grid_x1, y, layout.page_w_mm, y)
+            seg = _clip_edge_segment(
+                0.0, grid_x0, y - half, y + half, keep_out, vertical=False, from_edge=True
+            )
+            if seg:
+                pdf.line(seg[0], y, seg[1], y)
+            seg = _clip_edge_segment(
+                grid_x1, layout.page_w_mm, y - half, y + half, keep_out,
+                vertical=False, from_edge=False,
+            )
+            if seg:
+                pdf.line(seg[0], y, seg[1], y)
 
     if card_guides:
         pdf.set_draw_color(*_MARK_COLOR)
@@ -1111,6 +1388,7 @@ def build_pdf(
     reverse_fill: ReverseFill = ReverseFill.BACK_IMAGE,
     flip_edge: FlipEdge = FlipEdge.LONG,
     page_order: PageOrder = PageOrder.DUPLEX,
+    registration: RegistrationMarks | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> bytes:
     """Render pages of PrintSlots into a print-ready PDF, in memory.
@@ -1131,6 +1409,13 @@ def build_pdf(
     the whole reason those offsets exist — and defaults to the front
     layout when not given. Guides are drawn per page kind (see
     GuideVisibility).
+
+    `registration` adds cutter registration marks (see RegistrationMarks),
+    again per page kind. They depend on the page size alone, so the front
+    and back offsets never move them and a Back Page's marks are never
+    mirrored — the cutter reads whichever side is face up, in that side's
+    own frame. Page Guides on a page that carries marks are clipped out of
+    the marks' keep-out zones.
 
     `on_progress(completed, total)` fires once per *unique* image, right
     after that image's expensive work lands in the cache — see
@@ -1237,12 +1522,19 @@ def build_pdf(
                 h=page_layout.bled_card_h_mm,
             )
 
+        draw_marks = registration is not None and registration.drawn_on(is_back=is_back)
+        keep_out = (
+            registration_keep_out(page_layout.page_w_mm, page_layout.page_h_mm, registration)
+            if registration is not None and draw_marks
+            else ()
+        )
         if is_back:
             _draw_cut_marks(
                 pdf,
                 page_layout,
                 card_guides=not guides.hide_card_guides_back,
                 page_guides=not guides.hide_page_guides_back,
+                keep_out=keep_out,
             )
         else:
             _draw_cut_marks(
@@ -1250,6 +1542,11 @@ def build_pdf(
                 page_layout,
                 card_guides=not guides.hide_card_guides_front,
                 page_guides=not guides.hide_page_guides_front,
+                keep_out=keep_out,
+            )
+        if registration is not None and draw_marks:
+            _draw_registration_marks(
+                pdf, page_layout.page_w_mm, page_layout.page_h_mm, registration
             )
 
     def front_cells(page_slots: list[PrintSlot]) -> list[PrintSlot | None]:

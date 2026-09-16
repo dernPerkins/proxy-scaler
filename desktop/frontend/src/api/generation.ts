@@ -231,6 +231,11 @@ export const generationApi = {
   // Rust POSTs the body and streams the response to disk.
   exportZipUrl: () => `${getApiBaseUrl()}/api/export/zip`,
 
+  // The cutter's cut file (SVG). Pure geometry server-side, no render
+  // phase — Rust POSTs the layout body and streams the file to disk,
+  // like the ZIP.
+  pdfCutFileUrl: () => `${getApiBaseUrl()}/api/pdf/cut-file`,
+
   clearGeneratedData: (outputDir: string, cacheDir: string, projectTag?: string) =>
     request<{ notes: string[] }>("/api/generated-data/clear", {
       method: "POST",

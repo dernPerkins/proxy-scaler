@@ -100,6 +100,15 @@ function getDefaultSettings(): ProjectSettings {
     back_offset_y_mm: 0,
     back_image_id: null,
     sort_primary: "Name",
+    // Electronic cutter: off. Marks hidden on back pages by default for
+    // the same reason the guides are — they only matter on the side you
+    // cut from. Mirrors project_store.rs's column defaults.
+    cutter: "none",
+    cutter_mark_style: "three_point",
+    cutter_orientation: "portrait",
+    cutter_inset_mm: 10,
+    hide_cutter_marks_front: false,
+    hide_cutter_marks_back: true,
   };
 }
 

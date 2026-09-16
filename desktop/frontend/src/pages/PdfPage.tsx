@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
 import NumberInput from "../components/NumberInput";
@@ -10,6 +10,7 @@ import {
   BACK_PRINTING_MIN_SERVER_VERSION,
   getApiBaseUrl,
   serverSupportsBackPrinting,
+  serverSupportsCutterMarks,
   serverSupportsOriginals,
   useServerReadiness,
   useServerVersion,
@@ -25,9 +26,11 @@ import {
   setDownloadCancel,
   setDownloadPhase,
 } from "../download";
-import { pdfFilename } from "../pdfFilename";
+import { cutFileFilename, pdfFilename } from "../pdfFilename";
 import type {
+  Cutter,
   FlipEdge,
+  InsetUnit,
   PageOrder,
   PdfLayoutRequest,
   ReverseFill,
@@ -88,6 +91,41 @@ function matchPagePreset(width: number, height: number): string {
 
 type LayoutSettings = Omit<PdfLayoutRequest, "project_tag" | "entries" | "project_name">;
 
+// --- Electronic cutter -------------------------------------------------------
+//
+// The registration-mark inset is stored in mm whatever the display unit.
+// Silhouette Studio shows inches by default, so the two presets read as
+// the numbers users see there: "Standard" is Studio's 0.394 in minimum,
+// and the Auto Sheet Feeder needs 0.625 in of clearance for its rollers.
+// The slider's 5mm floor is below Studio's own minimum on purpose — a
+// few users run marks closer than Studio nominally allows — and the
+// hint says what the normal values are.
+const MM_PER_IN = 25.4;
+const INSET_MIN_MM = 5;
+const INSET_MAX_MM = 40;
+const STANDARD_INSET_MM = 10;
+const ASF_INSET_MM = 15.875;
+
+/** Which feed preset the current inset corresponds to, or null. Same
+ *  tolerance idea as matchPagePreset: a slider value round-trips through
+ *  floats and 15.875000000000002 is still the Auto Sheet Feeder. */
+function matchFeedPreset(insetMm: number): "standard" | "asf" | null {
+  if (Math.abs(insetMm - STANDARD_INSET_MM) < 0.05) return "standard";
+  if (Math.abs(insetMm - ASF_INSET_MM) < 0.05) return "asf";
+  return null;
+}
+
+function insetToDisplay(mm: number, unit: InsetUnit): number {
+  return unit === "in" ? Number((mm / MM_PER_IN).toFixed(3)) : Number(mm.toFixed(2));
+}
+
+function insetFromDisplay(value: number, unit: InsetUnit): number {
+  const mm = unit === "in" ? value * MM_PER_IN : value;
+  // Rounded so the stored value stays clean after a slider drag or a
+  // unit conversion — matchFeedPreset and the readout both rely on it.
+  return Math.max(INSET_MIN_MM, Number(mm.toFixed(3)));
+}
+
 export default function PdfPage() {
   const { projectId, projectTag, projectName, cards, settings, setSettings } = useProject();
   const readiness = useServerReadiness();
@@ -111,6 +149,27 @@ export default function PdfPage() {
   // and a stored true is not sent.
   const originalsSupported = serverSupportsOriginals(serverVersion);
   const useOriginals = settings.use_originals && originalsSupported;
+  // Same silent-drop failure for the cutter fields: an old server would
+  // render a sheet with no marks (and page guides through the corners the
+  // cutter scans) while the preview claimed otherwise. The controls are
+  // disabled against it, and a stored cutter is sent as "none".
+  const cutterSupported = serverSupportsCutterMarks(serverVersion);
+  const cutter: Cutter = cutterSupported ? settings.cutter : "none";
+  const cutterOn = cutter !== "none";
+
+  // The inset's display unit is an app-wide preference (the stored value
+  // is always mm), persisted in the client's app_settings store the same
+  // way PrintingPicker's "Show digital" is.
+  const insetUnitQuery = useQuery({
+    queryKey: ["cutter-inset-unit"],
+    queryFn: () => projectApi.getCutterInsetUnit(),
+    staleTime: Infinity,
+  });
+  const insetUnit: InsetUnit = insetUnitQuery.data ?? "in";
+  const setInsetUnit = useMutation({
+    mutationFn: (unit: InsetUnit) => projectApi.setCutterInsetUnit(unit),
+    onSuccess: (_data, unit) => queryClient.setQueryData(["cutter-inset-unit"], unit),
+  });
   // The project's Selected Back, resolved out of the app-global library.
   // Library reads are local invokes — they work with no server reachable,
   // which is the whole point of the client owning it (docs/adr/0003).
@@ -181,6 +240,12 @@ export default function PdfPage() {
     flip_edge: settings.flip_edge,
     back_offset_x_mm: settings.back_offset_x_mm,
     back_offset_y_mm: settings.back_offset_y_mm,
+    cutter,
+    cutter_mark_style: settings.cutter_mark_style,
+    cutter_orientation: settings.cutter_orientation,
+    cutter_inset_mm: settings.cutter_inset_mm,
+    hide_cutter_marks_front: settings.hide_cutter_marks_front,
+    hide_cutter_marks_back: settings.hide_cutter_marks_back,
     back_image_hash: selectedBack?.content_hash ?? null,
     back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
   };
@@ -275,6 +340,12 @@ export default function PdfPage() {
   const gridOverflows =
     preview != null &&
     (preview.grid_w_mm > preview.page_w_mm || preview.grid_h_mm > preview.page_h_mm);
+  // Same shape of warning for the cutter: a card under a registration
+  // mark's keep-out zone is a sheet the cutter will refuse to read. The
+  // marks stay put (they are where Studio expects them) and the grid is
+  // what the user changes.
+  const registrationConflict = preview?.registration_conflict === true;
+  const feedPreset = matchFeedPreset(settings.cutter_inset_mm);
 
   const dfcSlotHint =
     layout.back_printing && layout.back_faces_as_reverse
@@ -362,6 +433,27 @@ export default function PdfPage() {
     } catch (err) {
       // Cancelling is a normal outcome, not something to show as an error.
       if (err instanceof DownloadCanceled || err instanceof UploadCanceled) return;
+      setDownloadError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  /** The cutter's cut file. No render phase and no gallery read server-
+   *  side — pure geometry — so unlike the PDF there is nothing to poll or
+   *  to sync first; Rust POSTs the layout body and streams the SVG to
+   *  disk, like the ZIP export. */
+  async function handleCutFileDownload() {
+    if (projectTag == null || serverUnavailable || !cutterOn) return;
+    setDownloadError(null);
+    setDownloading(true);
+    try {
+      await runDownload(cutFileFilename(projectName), {
+        url: generationApi.pdfCutFileUrl(),
+        body: { project_tag: projectTag, entries, project_name: projectName, ...layout },
+      });
+    } catch (err) {
+      if (err instanceof DownloadCanceled) return;
       setDownloadError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setDownloading(false);
@@ -819,6 +911,231 @@ export default function PdfPage() {
                 </>
               )}
             </div>
+
+            {/* Electronic cutter: registration marks a cutting machine's
+                optical scanner aligns to, so a matching cut file (the
+                button in the main column) can trim the sheet. The layout
+                copies Proxxied's, which users asked for by name. Only
+                Silhouette for now; the select is the seam for the next
+                one. */}
+            <h3 style={{ margin: "18px 0 14px" }}>
+              Electronic cutter{" "}
+              <span
+                className="hint"
+                title="Prints registration marks a cutting machine scans to align its cuts, and offers a matching cut file. The marks sit in the page corners, outside every card."
+              >
+                (?)
+              </span>
+            </h3>
+
+            <div className="field-group">
+              <label
+                className="field"
+                title={
+                  cutterSupported
+                    ? undefined
+                    : "The connected generation server is too old for cutter marks — update it."
+                }
+              >
+                <span>Electronic cutter</span>
+                <select
+                  value={cutter}
+                  disabled={!cutterSupported}
+                  onChange={(e) => updateLayout("cutter", e.target.value as Cutter)}
+                >
+                  <option value="none">None</option>
+                  <option value="silhouette">Silhouette</option>
+                </select>
+              </label>
+              {!cutterSupported && !serverUnavailable && (
+                <p className="hint" style={{ margin: "-6px 0 0" }}>
+                  This server is too old to print registration marks — update it to
+                  turn the cutter on.
+                </p>
+              )}
+
+              {cutterOn && (
+                <>
+                  <div className="field">
+                    <span>Registration marks</span>
+                    <div className="segmented">
+                      <button
+                        className={settings.cutter_mark_style === "three_point" ? "active" : ""}
+                        onClick={() => updateLayout("cutter_mark_style", "three_point")}
+                        title="Square top-left, L-marks top-right and bottom-left. Cameo 4, Cameo 5, Portrait, Curio."
+                      >
+                        3-point
+                      </button>
+                      <button
+                        className={settings.cutter_mark_style === "four_point" ? "active" : ""}
+                        onClick={() => updateLayout("cutter_mark_style", "four_point")}
+                        title="Adds a fourth L-mark bottom-right. Cameo 5α and Pro MK II."
+                      >
+                        4-point
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* A preset for the inset, nothing more: which button is
+                      lit is read back from the value, so a hand-edited inset
+                      shows neither rather than a stale choice. */}
+                  <div className="field">
+                    <span>Feed</span>
+                    <div className="segmented">
+                      <button
+                        className={feedPreset === "standard" ? "active" : ""}
+                        onClick={() => updateLayout("cutter_inset_mm", STANDARD_INSET_MM)}
+                        title="Cutting mat: Silhouette Studio's standard 0.394 in inset."
+                      >
+                        Standard
+                      </button>
+                      <button
+                        className={feedPreset === "asf" ? "active" : ""}
+                        onClick={() => updateLayout("cutter_inset_mm", ASF_INSET_MM)}
+                        title="Auto Sheet Feeder: needs 0.625 in of clearance for its rollers."
+                      >
+                        Auto Sheet Feeder
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="field">
+                    <span>Inset units</span>
+                    <div className="segmented">
+                      <button
+                        className={insetUnit === "in" ? "active" : ""}
+                        onClick={() => setInsetUnit.mutate("in")}
+                      >
+                        inches
+                      </button>
+                      <button
+                        className={insetUnit === "mm" ? "active" : ""}
+                        onClick={() => setInsetUnit.mutate("mm")}
+                      >
+                        mm
+                      </button>
+                    </div>
+                  </div>
+
+                  <label className="field">
+                    <span>
+                      Registration mark inset{" "}
+                      <span
+                        className="hint"
+                        title="Distance from the page edge to the registration marks. The minimum is 5 mm. Standard is 0.394 in; Auto Sheet Feeder requires 0.625 in."
+                      >
+                        (?)
+                      </span>
+                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <input
+                        type="range"
+                        min={INSET_MIN_MM}
+                        max={INSET_MAX_MM}
+                        step={0.1}
+                        value={settings.cutter_inset_mm}
+                        onChange={(e) =>
+                          updateLayout("cutter_inset_mm", insetFromDisplay(Number(e.target.value), "mm"))
+                        }
+                      />
+                      <div style={{ width: 92, flexShrink: 0 }}>
+                        <NumberInput
+                          step={insetUnit === "in" ? 0.001 : 0.1}
+                          min={insetToDisplay(INSET_MIN_MM, insetUnit)}
+                          value={insetToDisplay(settings.cutter_inset_mm, insetUnit)}
+                          onChange={(v) => updateLayout("cutter_inset_mm", insetFromDisplay(v, insetUnit))}
+                        />
+                      </div>
+                      <span className="hint" style={{ flexShrink: 0 }}>
+                        {insetUnit}
+                      </span>
+                    </div>
+                  </label>
+
+                  <div className="field">
+                    <span>
+                      Mark orientation{" "}
+                      <span
+                        className="hint"
+                        title="The orientation you load the sheet into the cutter, and the page orientation to set in Silhouette Studio. When it differs from the paper's orientation the marks are rotated 90° and the cut file is exported that way round. Always load the sheet with the square mark at the top-left."
+                      >
+                        (?)
+                      </span>
+                    </span>
+                    <div className="segmented">
+                      <button
+                        className={settings.cutter_orientation === "landscape" ? "active" : ""}
+                        onClick={() => updateLayout("cutter_orientation", "landscape")}
+                      >
+                        Landscape
+                      </button>
+                      <button
+                        className={settings.cutter_orientation === "portrait" ? "active" : ""}
+                        onClick={() => updateLayout("cutter_orientation", "portrait")}
+                      >
+                        Portrait
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Same per-page-kind switches as the guides, same back
+                      default: the cutter reads whichever side is face up,
+                      so marks on the other side are just ink. */}
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={settings.hide_cutter_marks_front}
+                      onChange={(e) => updateLayout("hide_cutter_marks_front", e.target.checked)}
+                    />
+                    Hide marks on front faces
+                  </label>
+                  <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+                    <input
+                      type="checkbox"
+                      disabled={!layout.back_printing}
+                      checked={settings.hide_cutter_marks_back}
+                      onChange={(e) => updateLayout("hide_cutter_marks_back", e.target.checked)}
+                    />
+                    Hide marks on back faces
+                  </label>
+
+                  {/* What to enter in Studio so its marks land on ours. The
+                      length/thickness are fixed constants server-side
+                      (pdf_layout.REG_ARM_MM / REG_THICKNESS_MM); only the
+                      inset follows the slider. */}
+                  <div className="callout">
+                    <strong>Silhouette Studio settings</strong>
+                    <ul>
+                      <li>
+                        Registration marks: <strong>Type 1</strong> (just &ldquo;On&rdquo; in
+                        Studio 4.3 and later)
+                      </li>
+                      <li>
+                        Mark thickness: <strong>0.039 in</strong> (1.0 mm, the maximum)
+                      </li>
+                      <li>
+                        Mark length: <strong>0.35 in</strong>
+                      </li>
+                      <li>
+                        Mark inset:{" "}
+                        <strong>
+                          {insetToDisplay(settings.cutter_inset_mm, insetUnit)} {insetUnit}
+                        </strong>
+                      </li>
+                      <li>
+                        Page orientation:{" "}
+                        <strong>
+                          {settings.cutter_orientation === "landscape" ? "Landscape" : "Portrait"}
+                        </strong>
+                      </li>
+                      <li>
+                        Suggested bleed: <strong>0.5 mm</strong>
+                      </li>
+                    </ul>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </aside>
@@ -984,6 +1301,16 @@ export default function PdfPage() {
                     other orientation.
                   </p>
                 )}
+                {registrationConflict && (
+                  <p className="error-text" style={{ marginBottom: 8 }}>
+                    <strong>
+                      Cards overlap the registration marks&apos; keep-out zones (hatched in
+                      the preview).
+                    </strong>{" "}
+                    The cutter will fail to read the marks — use fewer rows or columns, add
+                    spacing, or nudge the grid with the offsets.
+                  </p>
+                )}
                 <PdfPagePreview preview={pagePreviewQuery.data} />
               </>
             ) : null}
@@ -1014,6 +1341,16 @@ export default function PdfPage() {
           >
             {downloading ? "Generating…" : "Generate & Download PDF"}
           </button>
+          {cutterOn && (
+            <button
+              className="btn-sm"
+              onClick={() => handleCutFileDownload()}
+              disabled={downloading || serverUnavailable || serverTooOld}
+              title="An SVG of every card's trim box plus the registration marks, in the cutter's orientation, for import into Silhouette Studio."
+            >
+              Download cut file (SVG)
+            </button>
+          )}
           {downloadError && <span className="error-text">{downloadError}</span>}
         </div>
       </main>

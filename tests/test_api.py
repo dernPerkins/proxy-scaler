@@ -850,6 +850,102 @@ def test_pdf_generate_falls_back_to_a_dated_filename(client: TestClient, tmp_pat
     assert "tag-a" not in resp.headers["content-disposition"]
 
 
+def test_pdf_preview_page_has_no_marks_without_a_cutter(client: TestClient) -> None:
+    resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["registration_marks"] == []
+    assert body["registration_keep_out"] == []
+    assert body["registration_conflict"] is False
+
+
+def test_pdf_preview_page_reports_marks_and_conflict_for_silhouette(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The app's default 3x3 grid runs under the top-left square — the
+    warning fires the moment a cutter is picked, which is the point."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(cutter="silhouette"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["registration_marks"]) == 5
+    assert len(body["registration_keep_out"]) == 3
+    assert body["registration_conflict"] is True
+    assert {"x_mm": 10.0, "y_mm": 10.0, "w_mm": 5.0, "h_mm": 5.0} in body["registration_marks"]
+
+    four = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(cutter="silhouette", cutter_mark_style="four_point"),
+    ).json()
+    assert len(four["registration_marks"]) == 7
+    assert len(four["registration_keep_out"]) == 4
+
+    clear = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(cutter="silhouette", cols=2, rows=2)
+    ).json()
+    assert clear["registration_conflict"] is False
+
+
+def test_pdf_preview_page_hides_marks_on_the_back_by_default(
+    client: TestClient, tmp_path: Path
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    common = dict(
+        cutter="silhouette",
+        back_printing=True,
+        preview_back_page=True,
+        reverse_fill="blank",
+    )
+    hidden = client.post("/api/pdf/preview/page", json=_pdf_layout_body(**common)).json()
+    assert hidden["registration_marks"] == []
+    assert hidden["registration_conflict"] is False
+    shown = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(hide_cutter_marks_back=False, **common)
+    ).json()
+    assert len(shown["registration_marks"]) == 5
+
+
+def test_pdf_generate_accepts_cutter_fields(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    plain = client.post("/api/pdf", json=_pdf_layout_body())
+    marked = client.post(
+        "/api/pdf",
+        json=_pdf_layout_body(cutter="silhouette", cutter_orientation="landscape", cutter_inset_mm=12.0),
+    )
+    assert plain.status_code == 200 and marked.status_code == 200
+    assert len(marked.content) > len(plain.content)
+
+
+def test_pdf_layout_rejects_an_unknown_cutter(client: TestClient) -> None:
+    resp = client.post("/api/pdf/preview", json=_pdf_layout_body(cutter="cricut"))
+    assert resp.status_code == 422
+
+
+def test_cut_file_returns_svg_with_project_filename(client: TestClient) -> None:
+    """No gallery item written on purpose: the cut file is pure geometry
+    and must work before a single card has been generated."""
+    resp = client.post(
+        "/api/pdf/cut-file", json=_pdf_layout_body(cutter="silhouette", project_name="Deck")
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/svg+xml")
+    assert 'filename="Deck-cut.svg"' in resp.headers["content-disposition"]
+    from xml.etree import ElementTree as ET
+
+    root = ET.fromstring(resp.content)
+    assert root.tag.endswith("svg")
+    assert root.get("width") == "210.000mm"
+
+
+def test_cut_file_requires_a_cutter(client: TestClient) -> None:
+    resp = client.post("/api/pdf/cut-file", json=_pdf_layout_body())
+    assert resp.status_code == 400
+
+
 def test_pdf_preview_page_no_entries_is_400(client: TestClient) -> None:
     resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(entries=[]))
     assert resp.status_code == 400

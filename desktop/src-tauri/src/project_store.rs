@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS projects (
     -- across languages, 0 = strictly the preferred_lang (see the resolve-
     -- gated import flow in ARCHITECTURE.md).
     lang_any INTEGER NOT NULL DEFAULT 0,
+    -- Electronic cutter (PDF tab): which cutter ('none' | 'silhouette'),
+    -- its registration-mark style, the orientation the sheet is loaded
+    -- into it, the mark inset, and the per-page-kind HIDE flags — same
+    -- polarity and same back-page default as the guide flags. The enum-
+    -- like strings are opaque to Rust; the generation server validates.
+    cutter TEXT NOT NULL DEFAULT 'none',
+    cutter_mark_style TEXT NOT NULL DEFAULT 'three_point',
+    cutter_orientation TEXT NOT NULL DEFAULT 'portrait',
+    cutter_inset_mm REAL NOT NULL DEFAULT 10.0,
+    hide_cutter_marks_front INTEGER NOT NULL DEFAULT 0,
+    hide_cutter_marks_back INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -183,6 +194,14 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // PDF/ZIP export output ('Name' | 'Set' | '(none)'). Opaque to Rust;
     // only the frontend interprets the value.
     ("sort_primary", "TEXT NOT NULL DEFAULT 'Name'"),
+    // Electronic cutter settings — see the SCHEMA comment. Opaque strings
+    // like sort_primary; only the generation server interprets them.
+    ("cutter", "TEXT NOT NULL DEFAULT 'none'"),
+    ("cutter_mark_style", "TEXT NOT NULL DEFAULT 'three_point'"),
+    ("cutter_orientation", "TEXT NOT NULL DEFAULT 'portrait'"),
+    ("cutter_inset_mm", "REAL NOT NULL DEFAULT 10.0"),
+    ("hide_cutter_marks_front", "INTEGER NOT NULL DEFAULT 0"),
+    ("hide_cutter_marks_back", "INTEGER NOT NULL DEFAULT 1"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -494,6 +513,39 @@ pub struct ProjectSettings {
     // that doesn't send it doesn't wipe the setting.
     #[serde(default = "default_sort_primary")]
     pub sort_primary: String,
+    // Electronic cutter (registration marks for a cutting machine). All
+    // defaulted on deserialize so a frontend build that predates cutters
+    // can't wipe them. The strings are opaque here, like sort_primary.
+    #[serde(default = "default_cutter")]
+    pub cutter: String,
+    #[serde(default = "default_cutter_mark_style")]
+    pub cutter_mark_style: String,
+    #[serde(default = "default_cutter_orientation")]
+    pub cutter_orientation: String,
+    #[serde(default = "default_cutter_inset_mm")]
+    pub cutter_inset_mm: f64,
+    #[serde(default)]
+    pub hide_cutter_marks_front: bool,
+    // Hidden on back pages by default, like the guide flags: marks only
+    // matter on the side you cut from.
+    #[serde(default = "default_true")]
+    pub hide_cutter_marks_back: bool,
+}
+
+fn default_cutter() -> String {
+    "none".to_string()
+}
+
+fn default_cutter_mark_style() -> String {
+    "three_point".to_string()
+}
+
+fn default_cutter_orientation() -> String {
+    "portrait".to_string()
+}
+
+fn default_cutter_inset_mm() -> f64 {
+    10.0
 }
 
 fn default_preferred_lang() -> String {
@@ -557,6 +609,12 @@ impl Default for ProjectSettings {
             preferred_lang: default_preferred_lang(),
             lang_any: false,
             sort_primary: default_sort_primary(),
+            cutter: default_cutter(),
+            cutter_mark_style: default_cutter_mark_style(),
+            cutter_orientation: default_cutter_orientation(),
+            cutter_inset_mm: default_cutter_inset_mm(),
+            hide_cutter_marks_front: false,
+            hide_cutter_marks_back: true,
         }
     }
 }
@@ -780,6 +838,12 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         preferred_lang: String,
         lang_any: bool,
         sort_primary: String,
+        cutter: String,
+        cutter_mark_style: String,
+        cutter_orientation: String,
+        cutter_inset_mm: f64,
+        hide_cutter_marks_front: bool,
+        hide_cutter_marks_back: bool,
         created_at: String,
         updated_at: String,
     }
@@ -796,6 +860,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     back_offset_x_mm, back_offset_y_mm, back_image_id,
                     preferred_dpi, preferred_model, use_originals, preferred_lang, lang_any,
                     sort_primary,
+                    cutter, cutter_mark_style, cutter_orientation, cutter_inset_mm,
+                    hide_cutter_marks_front, hide_cutter_marks_back,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -838,6 +904,12 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     preferred_lang: row.get("preferred_lang")?,
                     lang_any: row.get("lang_any")?,
                     sort_primary: row.get("sort_primary")?,
+                    cutter: row.get("cutter")?,
+                    cutter_mark_style: row.get("cutter_mark_style")?,
+                    cutter_orientation: row.get("cutter_orientation")?,
+                    cutter_inset_mm: row.get("cutter_inset_mm")?,
+                    hide_cutter_marks_front: row.get("hide_cutter_marks_front")?,
+                    hide_cutter_marks_back: row.get("hide_cutter_marks_back")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -888,6 +960,12 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             preferred_lang: loaded.preferred_lang,
             lang_any: loaded.lang_any,
             sort_primary: loaded.sort_primary,
+            cutter: loaded.cutter,
+            cutter_mark_style: loaded.cutter_mark_style,
+            cutter_orientation: loaded.cutter_orientation,
+            cutter_inset_mm: loaded.cutter_inset_mm,
+            hide_cutter_marks_front: loaded.hide_cutter_marks_front,
+            hide_cutter_marks_back: loaded.hide_cutter_marks_back,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1131,6 +1209,9 @@ fn update_project_row(
          back_printing = ?27, back_faces_as_reverse = ?28, reverse_fill = ?29,
          page_order = ?30, flip_edge = ?31, back_offset_x_mm = ?32,
          back_offset_y_mm = ?33, back_image_id = ?34, sort_primary = ?37,
+         cutter = ?38, cutter_mark_style = ?39, cutter_orientation = ?40,
+         cutter_inset_mm = ?41, hide_cutter_marks_front = ?42,
+         hide_cutter_marks_back = ?43,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1171,6 +1252,12 @@ fn update_project_row(
             now,
             project_id,
             settings.sort_primary,
+            settings.cutter,
+            settings.cutter_mark_style,
+            settings.cutter_orientation,
+            settings.cutter_inset_mm,
+            settings.hide_cutter_marks_front,
+            settings.hide_cutter_marks_back,
         ],
     )
     .map_err(|e| {
@@ -1790,6 +1877,40 @@ pub fn get_show_digital_printings(app: AppHandle) -> Result<bool, String> {
 pub fn set_show_digital_printings(app: AppHandle, show: bool) -> Result<(), String> {
     let conn = open_db(&app)?;
     write_show_digital_printings(&conn, show)
+}
+
+// --- The PDF tab's registration-mark inset unit ----------------------------
+//
+// Display-only ("in" or "mm") — the stored inset is always millimetres, so
+// this is an app-wide preference, not project data. Same app_settings
+// idiom; absent means inches, which is what Silhouette Studio shows.
+
+const CUTTER_INSET_UNIT_KEY: &str = "cutter_inset_unit";
+
+fn read_cutter_inset_unit(conn: &Connection) -> Result<String, String> {
+    Ok(match read_app_setting(conn, CUTTER_INSET_UNIT_KEY)?.as_deref() {
+        Some("mm") => "mm".to_string(),
+        _ => "in".to_string(),
+    })
+}
+
+fn write_cutter_inset_unit(conn: &Connection, unit: &str) -> Result<(), String> {
+    if unit != "in" && unit != "mm" {
+        return Err(format!("unknown inset unit {unit:?}; expected \"in\" or \"mm\""));
+    }
+    write_app_setting(conn, CUTTER_INSET_UNIT_KEY, unit)
+}
+
+#[tauri::command]
+pub fn get_cutter_inset_unit(app: AppHandle) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    read_cutter_inset_unit(&conn)
+}
+
+#[tauri::command]
+pub fn set_cutter_inset_unit(app: AppHandle, unit: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_cutter_inset_unit(&conn, &unit)
 }
 
 // --- The boot card-database offer's "Don't ask again" ----------------------
@@ -2647,6 +2768,73 @@ mod tests {
     }
 
     #[test]
+    fn cutter_settings_roundtrip_through_project_settings() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.cutter, "none");
+        assert_eq!(loaded.cutter_mark_style, "three_point");
+        assert_eq!(loaded.cutter_orientation, "portrait");
+        assert_eq!(loaded.cutter_inset_mm, 10.0);
+        assert!(!loaded.hide_cutter_marks_front);
+        assert!(loaded.hide_cutter_marks_back);
+
+        let settings = ProjectSettings {
+            cutter: "silhouette".to_string(),
+            cutter_mark_style: "four_point".to_string(),
+            cutter_orientation: "landscape".to_string(),
+            cutter_inset_mm: 15.875,
+            hide_cutter_marks_front: true,
+            hide_cutter_marks_back: false,
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.cutter, "silhouette");
+        assert_eq!(loaded.cutter_mark_style, "four_point");
+        assert_eq!(loaded.cutter_orientation, "landscape");
+        assert_eq!(loaded.cutter_inset_mm, 15.875);
+        assert!(loaded.hide_cutter_marks_front);
+        assert!(!loaded.hide_cutter_marks_back);
+    }
+
+    #[test]
+    fn cutter_settings_default_when_an_older_frontend_omits_them() {
+        // The whole point of #[serde(default)] on the new fields: a
+        // settings object from a build that predates cutters must not
+        // fail to deserialize, and must land on the defaults.
+        let json = serde_json::to_value(ProjectSettings::default()).expect("serialize");
+        let mut object = json.as_object().cloned().expect("object");
+        for key in [
+            "cutter",
+            "cutter_mark_style",
+            "cutter_orientation",
+            "cutter_inset_mm",
+            "hide_cutter_marks_front",
+            "hide_cutter_marks_back",
+        ] {
+            object.remove(key);
+        }
+        let settings: ProjectSettings =
+            serde_json::from_value(serde_json::Value::Object(object)).expect("deserialize");
+        assert_eq!(settings.cutter, "none");
+        assert_eq!(settings.cutter_inset_mm, 10.0);
+        assert!(!settings.hide_cutter_marks_front);
+        assert!(settings.hide_cutter_marks_back);
+    }
+
+    #[test]
+    fn cutter_inset_unit_setting_roundtrips() {
+        let conn = test_conn();
+        assert_eq!(read_cutter_inset_unit(&conn).expect("default"), "in");
+        write_cutter_inset_unit(&conn, "mm").expect("set mm");
+        assert_eq!(read_cutter_inset_unit(&conn).expect("read"), "mm");
+        write_cutter_inset_unit(&conn, "in").expect("set in");
+        assert_eq!(read_cutter_inset_unit(&conn).expect("read"), "in");
+        assert!(write_cutter_inset_unit(&conn, "cm").is_err());
+    }
+
+    #[test]
     fn set_card_quantity_updates_and_clamps_to_one() {
         let mut conn = test_conn();
         let id = get_or_create_unnamed_project_id(&conn).expect("create");
@@ -2713,6 +2901,9 @@ mod tests {
         let loaded = load_project(&conn, id).expect("load through the new columns");
         assert_eq!(loaded.settings.preferred_lang, "en");
         assert_eq!(loaded.settings.sort_primary, "Name");
+        assert_eq!(loaded.settings.cutter, "none");
+        assert_eq!(loaded.settings.cutter_inset_mm, 10.0);
+        assert!(loaded.settings.hide_cutter_marks_back);
         assert!(loaded.cards.is_empty());
     }
 

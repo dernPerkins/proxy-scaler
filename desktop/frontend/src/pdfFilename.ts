@@ -38,3 +38,9 @@ export function defaultPdfBasename(today: Date = new Date()): string {
 export function pdfFilename(projectName: string | null | undefined, today?: Date): string {
   return `${projectName || defaultPdfBasename(today)}.pdf`;
 }
+
+/** The cut file that goes with the sheet — same stem, `-cut.svg`, matching
+ *  the server's Content-Disposition in routers/pdf.py::cut_file. */
+export function cutFileFilename(projectName: string | null | undefined, today?: Date): string {
+  return `${projectName || defaultPdfBasename(today)}-cut.svg`;
+}

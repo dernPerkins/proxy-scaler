@@ -14,7 +14,9 @@ from PIL import Image
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
+    CutterIn,
     DeckEntryIn,
+    RectOut,
     ReverseFillIn,
     PdfJobOut,
     PdfJobStatusOut,
@@ -27,15 +29,20 @@ from proxy_scaler.decklist import DeckEntry
 from proxy_scaler import pdf_jobs
 from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler import backs
+from proxy_scaler.cut_file import build_cut_file_svg
 from proxy_scaler.pdf_layout import (
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
     MM_PER_IN,
+    CutterMarkStyle,
+    CutterOrientation,
     FlipEdge,
     GuideVisibility,
     PageLayout,
     PageOrder,
     PrintSlot,
+    Rect,
+    RegistrationMarks,
     ReverseFill,
     back_pages_are_rotated,
     add_bleed,
@@ -44,6 +51,9 @@ from proxy_scaler.pdf_layout import (
     build_print_slots,
     match_quantities,
     paginate,
+    registration_conflict,
+    registration_keep_out,
+    registration_mark_rects,
     resolve_page_layout,
     unique_image_count,
 )
@@ -121,6 +131,42 @@ def _guides(body: PdfLayoutIn) -> GuideVisibility:
     )
 
 
+def _registration(body: PdfLayoutIn) -> RegistrationMarks | None:
+    """None when no cutter is selected — the sheet carries no marks and
+    the guides are not clipped, exactly the pre-cutter output."""
+    if body.cutter is CutterIn.NONE:
+        return None
+    return RegistrationMarks(
+        style=CutterMarkStyle(body.cutter_mark_style.value),
+        orientation=CutterOrientation(body.cutter_orientation.value),
+        inset_mm=body.cutter_inset_mm,
+        hide_front=body.hide_cutter_marks_front,
+        hide_back=body.hide_cutter_marks_back,
+    )
+
+
+def _layout_from_body(body: PdfLayoutIn, offset_x: float, offset_y: float) -> PageLayout:
+    """Pure geometry from the request — no database, no entries — so the
+    cut-file route can share it with _prepare."""
+    return resolve_page_layout(
+        page_w_mm=body.page_width_mm,
+        page_h_mm=body.page_height_mm,
+        cols=body.cols,
+        rows=body.rows,
+        bleed_mm=body.bleed_mm,
+        spacing_x_mm=body.spacing_x_mm,
+        spacing_y_mm=body.spacing_y_mm,
+        offset_x_mm=offset_x,
+        offset_y_mm=offset_y,
+        guide_width_pt=body.guide_width_pt,
+        guide_length_mm=body.guide_length_mm,
+    )
+
+
+def _rect_out(r: Rect) -> RectOut:
+    return RectOut(x_mm=r.x, y_mm=r.y, w_mm=r.w, h_mm=r.h)
+
+
 def _prepare(body: PdfLayoutIn) -> PreparedRender:
     if not body.entries:
         raise HTTPException(status_code=400, detail="No cards to print.")
@@ -139,27 +185,12 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         use_originals=body.use_originals,
     )
 
-    def layout_with(offset_x: float, offset_y: float) -> PageLayout:
-        return resolve_page_layout(
-            page_w_mm=body.page_width_mm,
-            page_h_mm=body.page_height_mm,
-            cols=body.cols,
-            rows=body.rows,
-            bleed_mm=body.bleed_mm,
-            spacing_x_mm=body.spacing_x_mm,
-            spacing_y_mm=body.spacing_y_mm,
-            offset_x_mm=offset_x,
-            offset_y_mm=offset_y,
-            guide_width_pt=body.guide_width_pt,
-            guide_length_mm=body.guide_length_mm,
-        )
-
-    layout = layout_with(body.offset_x_mm, body.offset_y_mm)
+    layout = _layout_from_body(body, body.offset_x_mm, body.offset_y_mm)
     # Back Pages carry their own offset ON TOP of nothing — not on top of
     # the front's. The two are independent calibrations of two physical
     # passes through the printer, and adding them would make nudging the
     # fronts silently move the backs too.
-    back_layout = layout_with(body.back_offset_x_mm, body.back_offset_y_mm)
+    back_layout = _layout_from_body(body, body.back_offset_x_mm, body.back_offset_y_mm)
 
     # Pairing only means anything while back printing is on: with it off,
     # a Back Face has no Reverse to live on and stays its own card, which
@@ -207,6 +238,7 @@ def _render_kwargs(body: PdfLayoutIn, prepared: PreparedRender) -> dict:
         flip_edge=FlipEdge(body.flip_edge.value),
         page_order=PageOrder(body.page_order.value),
         reverse_fill=ReverseFill(body.reverse_fill.value),
+        registration=_registration(body),
     )
 
 
@@ -387,7 +419,23 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
                 thumbnail_data_url=data_url,
             )
         )
+    # Marks and keep-out zones for the side being previewed, in that side's
+    # own frame: a Back Page uses the back layout (its own offsets) and only
+    # carries marks if they are not hidden there. Deliberately not "always
+    # the front layout" — the conflict warning has to describe the page
+    # the user is looking at.
+    registration = _registration(body)
+    marks: list[Rect] = []
+    keep_out: list[Rect] = []
+    conflict = False
+    if registration is not None and registration.drawn_on(is_back=show_back):
+        marks = registration_mark_rects(layout.page_w_mm, layout.page_h_mm, registration)
+        keep_out = registration_keep_out(layout.page_w_mm, layout.page_h_mm, registration)
+        conflict = registration_conflict(layout, keep_out)
     return PdfPagePreviewOut(
+        registration_marks=[_rect_out(r) for r in marks],
+        registration_keep_out=[_rect_out(r) for r in keep_out],
+        registration_conflict=conflict,
         page_w_mm=layout.page_w_mm,
         page_h_mm=layout.page_h_mm,
         cols=layout.cols,
@@ -437,6 +485,29 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/cut-file")
+def cut_file(body: PdfLayoutIn) -> Response:
+    """The cut file that goes with the sheet: an SVG of every card's trim
+    box plus the registration marks, in the cutter's own frame, for import
+    into Silhouette Studio. Pure geometry — the body's entries are accepted
+    (it is the same PdfLayoutIn the preview sends) but never read, so this
+    needs no generated images and no database."""
+    if body.cutter is CutterIn.NONE:
+        raise HTTPException(
+            status_code=400, detail="Pick an electronic cutter first — there are no marks to cut against."
+        )
+    registration = _registration(body)
+    assert registration is not None
+    layout = _layout_from_body(body, body.offset_x_mm, body.offset_y_mm)
+    svg = build_cut_file_svg(layout, registration)
+    filename = f"{_slugify(body.project_name or _default_pdf_basename())}-cut.svg"
+    return Response(
+        content=svg.encode("utf-8"),
+        media_type="image/svg+xml",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

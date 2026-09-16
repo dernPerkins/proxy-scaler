@@ -191,6 +191,16 @@ export const ORIGINALS_MIN_SERVER_VERSION = "0.2.0";
 // floor that tracks the current version is not a floor.
 export const CUSTOM_IMAGES_MIN_SERVER_VERSION = "0.3.0";
 
+// Electronic-cutter registration marks need PdfLayoutIn's cutter fields
+// and /api/pdf/cut-file. Against an older server the failure is the
+// silent kind again: Pydantic drops the unknown fields and the sheet
+// comes back with no marks and its page guides running through the
+// corners the cutter scans, while the preview claimed otherwise. So the
+// controls are disabled and a stored cutter is not sent. 0.3.0 because
+// that is the release it ships in (same still-uncut version as customs);
+// packaging/set-version.py must never rewrite it.
+export const CUTTER_MARKS_MIN_SERVER_VERSION = "0.3.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -252,6 +262,15 @@ export function serverSupportsOriginals(serverVersion: string | null): boolean {
 export function serverSupportsCustomImages(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, CUSTOM_IMAGES_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server draw cutter registration marks and serve
+ *  /api/pdf/cut-file? Same null/unparseable semantics as
+ *  serverSupportsBackPrinting. */
+export function serverSupportsCutterMarks(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, CUTTER_MARKS_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

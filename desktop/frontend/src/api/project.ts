@@ -8,7 +8,11 @@ import type {
   BackSyncResult,
   CustomImage,
   CustomSyncResult,
+  Cutter,
+  CutterMarkStyle,
+  CutterOrientation,
   FlipEdge,
+  InsetUnit,
   PageOrder,
   ReverseFill,
   SortPrimary,
@@ -75,6 +79,15 @@ export interface ProjectSettings {
   // Card order — for the Decklist display and the PDF/ZIP export output
   // alike (one shared control; see deckEntries.sortCards).
   sort_primary: SortPrimary;
+  // Electronic cutter — registration marks for a cutting machine, and the
+  // per-page-kind HIDE flags (same polarity and back default as the guide
+  // flags). The inset is always mm; the display unit is an app setting.
+  cutter: Cutter;
+  cutter_mark_style: CutterMarkStyle;
+  cutter_orientation: CutterOrientation;
+  cutter_inset_mm: number;
+  hide_cutter_marks_front: boolean;
+  hide_cutter_marks_back: boolean;
 }
 
 export interface CardRow {
@@ -241,6 +254,12 @@ export const projectApi = {
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>
     invokeCommand<void>("set_show_digital_printings", { show }),
+
+  // The PDF tab's registration-mark inset display unit — app-wide, since
+  // the stored inset is always mm and this only changes how it reads.
+  getCutterInsetUnit: () => invokeCommand<InsetUnit>("get_cutter_inset_unit"),
+  setCutterInsetUnit: (unit: InsetUnit) =>
+    invokeCommand<void>("set_cutter_inset_unit", { unit }),
 
   // The boot card-database offer's "Don't ask again" (CardDbPrompt.tsx).
   getCardDbPromptDismissed: () =>

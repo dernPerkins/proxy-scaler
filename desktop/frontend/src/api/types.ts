@@ -322,6 +322,17 @@ export interface PdfLayoutRequest {
   hide_card_guides_back: boolean;
   hide_page_guides_back: boolean;
 
+  // Electronic cutter — registration marks for a cutting machine. All
+  // optional: the server defaults them. Only send a cutter other than
+  // "none" after serverSupportsCutterMarks() — older servers silently
+  // drop the fields and render a sheet without marks.
+  cutter?: Cutter;
+  cutter_mark_style?: CutterMarkStyle;
+  cutter_orientation?: CutterOrientation;
+  cutter_inset_mm?: number;
+  hide_cutter_marks_front?: boolean;
+  hide_cutter_marks_back?: boolean;
+
   // Back printing.
   back_printing?: boolean;
   /** A double-faced card's transform side prints on its own back rather
@@ -357,6 +368,31 @@ export type PageOrder = "duplex" | "fronts_then_backs";
  *  duplex setting — it decides whether a Back Page mirrors its columns or
  *  its rows, and getting it wrong puts every back on the wrong card. */
 export type FlipEdge = "long" | "short";
+
+/** Which cutting machine, if any, the sheet carries registration marks
+ *  for. Mirrors CutterIn. */
+export type Cutter = "none" | "silhouette";
+
+/** Silhouette mark layout: three_point (Cameo 4/5, Portrait — square plus
+ *  two L's) or four_point (Cameo 5α, Pro MK II — plus a bottom-right L). */
+export type CutterMarkStyle = "three_point" | "four_point";
+
+/** The orientation the sheet is loaded into the cutter — independent of
+ *  the page's own. When it differs, the marks (and the cut file) are laid
+ *  out for the rotated frame the cutter sees. */
+export type CutterOrientation = "portrait" | "landscape";
+
+/** Display unit for the registration-mark inset. The stored value is
+ *  always mm; this is an app-wide preference. */
+export type InsetUnit = "in" | "mm";
+
+/** An axis-aligned box on the page, mm, y down. Mirrors RectOut. */
+export interface RectMm {
+  x_mm: number;
+  y_mm: number;
+  w_mm: number;
+  h_mm: number;
+}
 
 /** Card order for the Decklist display AND the PDF/ZIP export output —
  *  one shared, persisted control (see deckEntries.sortCards). "(none)"
@@ -447,6 +483,13 @@ export interface PdfPagePreview {
    *  re-derive which of the four flags applies. */
   hide_card_guides: boolean;
   hide_page_guides: boolean;
+  /** Cutter registration marks this page carries (empty when there is no
+   *  cutter or they are hidden on this page kind), the keep-out zones
+   *  around them, and whether any card intrudes on a zone. Absent from
+   *  servers older than cutter support. */
+  registration_marks?: RectMm[];
+  registration_keep_out?: RectMm[];
+  registration_conflict?: boolean;
   page_count: number;
   /** A Back Page preview returns the FULL grid including empty positions
    *  (cells are placed by mirrored index); a front preview returns only

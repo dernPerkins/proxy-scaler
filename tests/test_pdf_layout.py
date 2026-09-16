@@ -1518,3 +1518,282 @@ def test_rotating_a_back_image_does_not_break_its_caching(tmp_path: Path) -> Non
     )
     # Four distinct fronts plus the one back image, each encoded once.
     assert calls == [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]
+
+
+# --- Registration marks (electronic cutters) --------------------------------
+
+
+from proxy_scaler.pdf_layout import (  # noqa: E402
+    REG_ARM_MM,
+    REG_KEEP_OUT_MM,
+    REG_SQUARE_MM,
+    REG_THICKNESS_MM,
+    CutterMarkStyle,
+    CutterOrientation,
+    Rect,
+    RegistrationMarks,
+    cutter_frame,
+    cutter_rect_to_page,
+    page_rect_to_cutter,
+    registration_conflict,
+    registration_keep_out,
+    registration_mark_bboxes,
+    registration_mark_rects,
+    rects_overlap,
+)
+
+
+def _rect_set(rects: list[Rect]) -> set[tuple[float, float, float, float]]:
+    return {(round(r.x, 6), round(r.y, 6), round(r.w, 6), round(r.h, 6)) for r in rects}
+
+
+class _MarkRecordingPdf:
+    """Duck-typed canvas recording strokes (as inflated boxes) and filled
+    rects — the fake-canvas pattern test_draw_cut_marks_ink_stays_off_the_cards
+    uses, extended for marks."""
+
+    def __init__(self) -> None:
+        self.line_width = 0.0
+        self.strokes: list[tuple[float, float, float, float]] = []
+        self.fills: list[tuple[float, float, float, float, str | None]] = []
+        self.fill_colors: list[tuple[int, ...]] = []
+
+    def set_line_width(self, w: float) -> None:
+        self.line_width = w
+
+    def set_draw_color(self, *_: int) -> None:
+        pass
+
+    def set_fill_color(self, *rgb: int) -> None:
+        self.fill_colors.append(rgb)
+
+    def line(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        half = self.line_width / 2
+        self.strokes.append(
+            (min(x1, x2) - half, min(y1, y2) - half, max(x1, x2) + half, max(y1, y2) + half)
+        )
+
+    def rect(self, x: float, y: float, w: float, h: float, style: str | None = None) -> None:
+        self.fills.append((x, y, w, h, style))
+
+
+def test_three_point_marks_sit_inset_from_their_corners() -> None:
+    """Square top-left; L's top-right and bottom-left with arms pointing
+    inward; nothing bottom-right. Every outer edge exactly `inset` from the
+    page edge."""
+    a, t = REG_ARM_MM, REG_THICKNESS_MM
+    rects = registration_mark_rects(210.0, 297.0, RegistrationMarks(inset_mm=10.0))
+    assert len(rects) == 5
+    assert _rect_set(rects) == _rect_set(
+        [
+            Rect(10, 10, REG_SQUARE_MM, REG_SQUARE_MM),
+            Rect(210 - 10 - a, 10, a, t),
+            Rect(210 - 10 - t, 10, t, a),
+            Rect(10, 297 - 10 - t, a, t),
+            Rect(10, 297 - 10 - a, t, a),
+        ]
+    )
+
+
+def test_four_point_adds_the_bottom_right_l() -> None:
+    a, t = REG_ARM_MM, REG_THICKNESS_MM
+    three = registration_mark_rects(210.0, 297.0, RegistrationMarks(inset_mm=10.0))
+    four = registration_mark_rects(
+        210.0, 297.0, RegistrationMarks(style=CutterMarkStyle.FOUR_POINT, inset_mm=10.0)
+    )
+    assert len(four) == 7
+    assert _rect_set(four) - _rect_set(three) == _rect_set(
+        [Rect(210 - 10 - a, 297 - 10 - t, a, t), Rect(210 - 10 - t, 297 - 10 - a, t, a)]
+    )
+    assert len(registration_mark_bboxes(210.0, 297.0, RegistrationMarks())) == 3
+    assert (
+        len(registration_mark_bboxes(210.0, 297.0, RegistrationMarks(style=CutterMarkStyle.FOUR_POINT)))
+        == 4
+    )
+
+
+@pytest.mark.parametrize("style", list(CutterMarkStyle))
+@pytest.mark.parametrize("orientation", list(CutterOrientation))
+@pytest.mark.parametrize("inset", [5.0, 10.0, 15.875])
+@pytest.mark.parametrize("page", [(210.0, 297.0), (279.4, 215.9)])
+def test_marks_lie_entirely_inside_the_inset_boundary(style, orientation, inset, page) -> None:
+    w, h = page
+    marks = RegistrationMarks(style=style, orientation=orientation, inset_mm=inset)
+    for r in registration_mark_rects(w, h, marks):
+        assert r.x >= inset - 1e-9 and r.x1 <= w - inset + 1e-9
+        assert r.y >= inset - 1e-9 and r.y1 <= h - inset + 1e-9
+    # And every bar lies inside exactly one mark's bounding box.
+    boxes = registration_mark_bboxes(w, h, marks)
+    for r in registration_mark_rects(w, h, marks):
+        containing = [
+            b for b in boxes
+            if b.x - 1e-9 <= r.x and r.x1 <= b.x1 + 1e-9 and b.y - 1e-9 <= r.y and r.y1 <= b.y1 + 1e-9
+        ]
+        assert len(containing) == 1
+
+
+def test_landscape_marks_on_a_portrait_page_rotate_the_frame_clockwise() -> None:
+    """The sheet is loaded turned 90° clockwise: the page's bottom-left
+    corner becomes the cutter's top-left, where the square goes; the
+    cutter's top-right L lands in the page's top-left and its bottom-left
+    L in the page's bottom-right. Same rule the other way round."""
+    a = REG_ARM_MM
+    marks = RegistrationMarks(orientation=CutterOrientation.LANDSCAPE, inset_mm=10.0)
+    assert cutter_frame(210.0, 297.0, CutterOrientation.LANDSCAPE) == (297.0, 210.0, True)
+    assert cutter_frame(210.0, 297.0, CutterOrientation.PORTRAIT) == (210.0, 297.0, False)
+    boxes = _rect_set(registration_mark_bboxes(210.0, 297.0, marks))
+    assert boxes == _rect_set(
+        [
+            Rect(10, 297 - 10 - REG_SQUARE_MM, REG_SQUARE_MM, REG_SQUARE_MM),  # square: page BL
+            Rect(10, 10, a, a),  # cutter TR L: page TL
+            Rect(210 - 10 - a, 297 - 10 - a, a, a),  # cutter BL L: page BR
+        ]
+    )
+    # A landscape page with portrait marks rotates by the same rule.
+    marks_p = RegistrationMarks(orientation=CutterOrientation.PORTRAIT, inset_mm=10.0)
+    assert cutter_frame(297.0, 210.0, CutterOrientation.PORTRAIT) == (210.0, 297.0, True)
+    assert Rect(10, 210 - 10 - REG_SQUARE_MM, REG_SQUARE_MM, REG_SQUARE_MM) in registration_mark_bboxes(
+        297.0, 210.0, marks_p
+    )
+
+
+def test_page_and_cutter_rects_round_trip() -> None:
+    r = Rect(12.5, 40.0, 63.0, 88.0)
+    for rotated in (False, True):
+        back = cutter_rect_to_page(page_rect_to_cutter(r, 210.0, 297.0, rotated), 210.0, 297.0, rotated)
+        assert back == r
+    # A rotated card is 88 wide and 63 tall in the cutter frame.
+    c = page_rect_to_cutter(r, 210.0, 297.0, True)
+    assert (c.w, c.h) == (88.0, 63.0)
+    assert c == Rect(297.0 - 40.0 - 88.0, 12.5, 88.0, 63.0)
+
+
+def test_keep_out_is_the_mark_box_inflated() -> None:
+    marks = RegistrationMarks(inset_mm=10.0)
+    zones = registration_keep_out(210.0, 297.0, marks)
+    assert Rect(
+        10 - REG_KEEP_OUT_MM,
+        10 - REG_KEEP_OUT_MM,
+        REG_SQUARE_MM + 2 * REG_KEEP_OUT_MM,
+        REG_SQUARE_MM + 2 * REG_KEEP_OUT_MM,
+    ) in zones
+    assert len(zones) == 3
+
+
+def test_rects_overlap_ignores_touching_edges() -> None:
+    assert rects_overlap(Rect(0, 0, 10, 10), Rect(9, 9, 5, 5))
+    assert not rects_overlap(Rect(0, 0, 10, 10), Rect(10, 0, 5, 5))
+    assert not rects_overlap(Rect(0, 0, 10, 10), Rect(0, 10, 5, 5))
+
+
+def test_registration_conflict_flags_a_card_under_a_mark() -> None:
+    """The app's default 3x3 A4 grid starts 7.5mm in — under the top-left
+    square's keep-out zone. That is the warning's whole job. A 2x2 grid
+    sits clear."""
+    marks = RegistrationMarks(inset_mm=10.0)
+    zones = registration_keep_out(210.0, 297.0, marks)
+    assert registration_conflict(_a4_portrait_layout(), zones)
+    assert not registration_conflict(_a4_portrait_layout(cols=2, rows=2), zones)
+    assert not registration_conflict(_a4_portrait_layout(), [])
+
+
+def test_page_guides_are_clipped_out_of_keep_out_zones() -> None:
+    """With zones supplied no page-guide stroke enters one; without them
+    the same layout does — proving the clip did something — and the card
+    guides (which never reach the corners) are untouched either way."""
+    from proxy_scaler.pdf_layout import _draw_cut_marks
+
+    layout = _a4_portrait_layout()
+    zones = registration_keep_out(layout.page_w_mm, layout.page_h_mm, RegistrationMarks(inset_mm=10.0))
+
+    def overlaps_any(strokes: list[tuple[float, float, float, float]]) -> bool:
+        return any(
+            rects_overlap(Rect(x0, y0, x1 - x0, y1 - y0), z) for (x0, y0, x1, y1) in strokes for z in zones
+        )
+
+    unclipped = _MarkRecordingPdf()
+    _draw_cut_marks(unclipped, layout, card_guides=False)  # type: ignore[arg-type]
+    clipped = _MarkRecordingPdf()
+    _draw_cut_marks(clipped, layout, card_guides=False, keep_out=zones)  # type: ignore[arg-type]
+    assert overlaps_any(unclipped.strokes)
+    assert not overlaps_any(clipped.strokes)
+    assert clipped.strokes  # still guides elsewhere on the page
+
+    cards_only = _MarkRecordingPdf()
+    _draw_cut_marks(cards_only, layout, page_guides=False)  # type: ignore[arg-type]
+    cards_clipped = _MarkRecordingPdf()
+    _draw_cut_marks(cards_clipped, layout, page_guides=False, keep_out=zones)  # type: ignore[arg-type]
+    assert cards_only.strokes == cards_clipped.strokes
+
+
+def test_clipping_removes_the_whole_edge_side_stub() -> None:
+    """A guide that crosses a zone loses everything between the page edge
+    and the zone's far side, not just the part inside the zone — a stub of
+    black line beside a mark is exactly what confuses the scanner."""
+    from proxy_scaler.pdf_layout import _clip_edge_segment
+
+    zone = Rect(7, 7, 11, 11)
+    # Vertical guide at x=10 from the top edge down to y=40.
+    assert _clip_edge_segment(0.0, 40.0, 9.9, 10.1, [zone], vertical=True, from_edge=True) == (18, 40.0)
+    # The same guide entirely inside the zone disappears.
+    assert _clip_edge_segment(0.0, 15.0, 9.9, 10.1, [zone], vertical=True, from_edge=True) is None
+    # A guide that misses the zone across its axis is untouched.
+    assert _clip_edge_segment(0.0, 40.0, 30.0, 30.2, [zone], vertical=True, from_edge=True) == (0.0, 40.0)
+    # Bottom/right guides are cut at the zone's near side instead.
+    zone_br = Rect(190, 280, 20, 20)
+    assert _clip_edge_segment(250.0, 297.0, 199.9, 200.1, [zone_br], vertical=True, from_edge=False) == (
+        250.0,
+        280,
+    )
+
+
+def test_registration_marks_are_filled_black_rects() -> None:
+    from proxy_scaler.pdf_layout import _draw_registration_marks
+
+    pdf = _MarkRecordingPdf()
+    _draw_registration_marks(pdf, 210.0, 297.0, RegistrationMarks())  # type: ignore[arg-type]
+    assert pdf.fill_colors == [(0, 0, 0)]
+    assert len(pdf.fills) == 5
+    assert all(style == "F" for *_, style in pdf.fills)
+    assert not pdf.strokes
+
+
+def test_registration_marks_default_to_front_only() -> None:
+    marks = RegistrationMarks()
+    assert (marks.hide_front, marks.hide_back) == (False, True)
+    assert marks.drawn_on(is_back=False)
+    assert not marks.drawn_on(is_back=True)
+
+
+def test_registration_marks_are_gated_per_page_kind(tmp_path: Path) -> None:
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    layout = _a4_portrait_layout(cols=1, rows=1)
+    common = dict(
+        layout=layout,
+        export_dpi=600,
+        guides=_no_guides(),
+        back_printing=True,
+        back_image_path=_back_image(tmp_path),
+    )
+    both = build_pdf(pages, registration=RegistrationMarks(hide_front=False, hide_back=False), **common)
+    front_only = build_pdf(pages, registration=RegistrationMarks(), **common)
+    neither = build_pdf(pages, registration=RegistrationMarks(hide_front=True, hide_back=True), **common)
+    none_at_all = build_pdf(pages, registration=None, **common)
+    assert len(both) > len(front_only) > len(neither)
+    assert len(neither) == len(none_at_all)
+
+
+def test_registration_marks_render_through_a_real_canvas(tmp_path: Path) -> None:
+    """fpdf2's rect(style="F") signature is what _draw_registration_marks
+    relies on; a duck-typed canvas can't prove it exists."""
+    pages = [[_slot(_pdf_source_face(tmp_path, "a"))]]
+    layout = _a4_portrait_layout(cols=2, rows=2)
+    plain = build_pdf(pages, layout=layout, export_dpi=600)
+    marked = build_pdf(
+        pages,
+        layout=layout,
+        export_dpi=600,
+        registration=RegistrationMarks(style=CutterMarkStyle.FOUR_POINT),
+    )
+    assert marked.startswith(b"%PDF")
+    assert len(marked) > len(plain)

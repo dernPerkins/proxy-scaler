@@ -164,6 +164,41 @@ input[type="checkbox"] {
   flex-shrink: 0;
 }
 
+/* The registration-mark inset slider (PdfPage). Paired with a NumberInput
+   readout in a flex row, so it takes whatever width is left. */
+input[type="range"] {
+  accent-color: var(--accent);
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+/* An informational aside inside a settings section — what to enter in
+   another program (PdfPage's Silhouette Studio settings). Quieter than a
+   .panel, louder than a .hint. */
+.callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.callout > strong {
+  color: var(--text);
+}
+.callout ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+}
+.callout li + li {
+  margin-top: 3px;
+}
+
 :focus-visible {
   outline: none;
   border-color: var(--accent);
