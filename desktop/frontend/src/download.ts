@@ -67,6 +67,20 @@ export function setDownloadPhase(phase: DownloadPhase): void {
   notify();
 }
 
+/** The name the modal shows, once the save dialog has settled it. */
+export function setDownloadFilename(filename: string): void {
+  if (!downloadStatus) return;
+  downloadStatus = { ...downloadStatus, filename };
+  notify();
+}
+
+/** Last path segment, for either separator — the path comes from the
+ *  native save dialog, so it is Windows-shaped on Windows. */
+function basename(path: string): string {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return cut === -1 ? path : path.slice(cut + 1);
+}
+
 export function setDownloadCancel(cancel: (() => void) | undefined): void {
   if (!downloadStatus) return;
   downloadStatus = { ...downloadStatus, cancel };
@@ -157,6 +171,9 @@ export async function runDownload(
 
     const path = await invokePickSavePath(filename);
     if (path == null) return; // dismissed the save dialog — not an error
+    // `filename` was only the save dialog's suggestion; the user may have
+    // renamed it there. The modal shows what is actually being written.
+    setDownloadFilename(basename(path));
 
     const resolved = typeof source === "function" ? await source() : source;
 
