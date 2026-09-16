@@ -1315,7 +1315,7 @@ export default function PdfPage() {
                       className="dismiss-x"
                       aria-label="Ignore this warning"
                       onClick={() => setConflictIgnored.mutate(true)}
-                      title="Stop showing this warning. Many people cut sheets like this without trouble; you can turn it back on from the note that replaces it."
+                      title="Stop showing this warning. Many people cut sheets like this without trouble."
                     >
                       {/* Same inline-SVG convention as the dropzone icons:
                           stroked in currentColor so it takes the button's
@@ -1335,16 +1335,6 @@ export default function PdfPage() {
                       </svg>
                     </button>
                   </div>
-                )}
-                {registrationConflict && conflictIgnored && (
-                  /* The one-line trace of the ignored warning, so the
-                     choice stays reversible without a settings screen. */
-                  <p className="hint" style={{ marginBottom: 8 }}>
-                    Cards overlap the registration-mark zones (warning ignored).{" "}
-                    <button className="linklike" onClick={() => setConflictIgnored.mutate(false)}>
-                      Show warning
-                    </button>
-                  </p>
                 )}
                 <PdfPagePreview preview={pagePreviewQuery.data} />
               </>
