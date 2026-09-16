@@ -1317,7 +1317,22 @@ export default function PdfPage() {
                       onClick={() => setConflictIgnored.mutate(true)}
                       title="Stop showing this warning. Many people cut sheets like this without trouble; you can turn it back on from the note that replaces it."
                     >
-                      ×
+                      {/* Same inline-SVG convention as the dropzone icons:
+                          stroked in currentColor so it takes the button's
+                          (warning) colour. */}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.25"
+                        strokeLinecap="round"
+                        aria-hidden="true"
+                      >
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                      </svg>
                     </button>
                   </div>
                 )}

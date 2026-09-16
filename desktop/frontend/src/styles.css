@@ -588,26 +588,31 @@ button:disabled {
    square aligned to the first line. */
 .dismissable {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
 }
 .dismissable > :first-child {
   flex: 1;
   min-width: 0;
 }
+/* Takes the message's colour: inside an error the X reads as part of the
+   warning, not a neutral control beside it. Flex-centred so the icon sits
+   dead centre regardless of font metrics. */
 .dismiss-x {
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  line-height: 1;
-  font-size: 16px;
-  color: var(--text-muted);
+  color: var(--err);
   background: none;
-  border: 1px solid var(--border-strong);
+  border: 1px solid color-mix(in srgb, var(--err) 45%, var(--border-strong));
 }
 .dismiss-x:hover:not(:disabled) {
-  color: var(--text);
+  background: var(--err-soft);
+  border-color: var(--err);
 }
 
 /* A button that reads as a link, for an action offered mid-sentence. A
