@@ -141,8 +141,22 @@ def test_page_layout_offset_shifts_margins() -> None:
     assert shifted.margin_y_mm == pytest.approx(base.margin_y_mm - 9.0)
 
 
+def test_a3_three_by_three_fits_with_registration_marks() -> None:
+    """A3 exists so a marked sheet has room for a full 3x3 grid: on A4 and
+    Letter that grid runs under the top-left mark's keep-out zone."""
+    from proxy_scaler.pdf_layout import RegistrationMarks, registration_conflict, registration_keep_out
+
+    expected = {"portrait": (297.0, 420.0, 51.0, 75.0), "landscape": (420.0, 297.0, 112.5, 13.5)}
+    for orientation, (page_w, page_h, margin_x, margin_y) in expected.items():
+        layout = resolve_page_layout(page_w_mm=page_w, page_h_mm=page_h, cols=3, rows=3)
+        assert layout.margin_x_mm == pytest.approx(margin_x)
+        assert layout.margin_y_mm == pytest.approx(margin_y)
+        zones = registration_keep_out(page_w, page_h, RegistrationMarks(inset_mm=10.0))
+        assert not registration_conflict(layout, zones), orientation
+
+
 def test_fpdf2_page_size_matches_layout() -> None:
-    for paper in ("letter", "a4"):
+    for paper in ("letter", "a4", "a3"):
         for cols, rows in ((3, 3), (4, 2)):
             w, h = PAGE_SIZE_PRESETS_MM[paper]
             layout = resolve_page_layout(page_w_mm=w, page_h_mm=h, cols=cols, rows=rows)

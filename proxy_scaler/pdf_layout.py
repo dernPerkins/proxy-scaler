@@ -46,6 +46,7 @@ BLEED_MM = 1.0
 PAGE_SIZE_PRESETS_MM: dict[str, tuple[float, float]] = {
     "letter": (215.9, 279.4),
     "a4": (210.0, 297.0),
+    "a3": (297.0, 420.0),
 }
 
 

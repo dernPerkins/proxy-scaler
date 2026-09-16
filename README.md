@@ -141,7 +141,7 @@ decklist and go, and everything is persisted as you work. Type a name
 when you want the project to be findable later — it keeps the images you
 have already generated.
 
-**PDF generation** is a full tab of its own: page size presets (A4 and
+**PDF generation** is a full tab of its own: page size presets (A4, A3 and
 Letter, each in portrait and landscape — paper grain makes a sheet more
 rigid one way than the other, and which way depends on the stock; each
 preset also sets the grid that fits it, 3×3 portrait or 4×2 landscape) or
