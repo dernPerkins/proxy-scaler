@@ -726,6 +726,19 @@ export default function PdfPage() {
                 </label>
               </div>
             </div>
+
+            {/* Decklist-level settings that shape the print run. Card
+                sorting is the shared, persisted control (SortSelect) — it
+                lives with the other settings rather than beside the
+                download button, where it read as a one-off. */}
+            <h3 style={{ margin: "18px 0 14px" }}>Deck list</h3>
+
+            <div className="field-group">
+              <label className="field">
+                <span>Card sorting</span>
+                <SortSelect />
+              </label>
+            </div>
           </div>
 
           <div>
@@ -735,7 +748,9 @@ export default function PdfPage() {
                 to share one switch, which couldn't express the setting most
                 duplex printers actually want: guides on the fronts you cut
                 against, none on the backs that show. */}
-            <h3 style={{ margin: "18px 0 14px" }}>
+            {/* No top margin: this is the column's first heading and has to
+                sit level with "Source images" in the other column. */}
+            <h3 style={{ marginBottom: 14 }}>
               Guides{" "}
               <span
                 className="hint"
@@ -1038,7 +1053,7 @@ export default function PdfPage() {
                           updateLayout("cutter_inset_mm", insetFromDisplay(Number(e.target.value), "mm"))
                         }
                       />
-                      <div style={{ width: 92, flexShrink: 0 }}>
+                      <div className="inset-readout">
                         <NumberInput
                           step={insetUnit === "in" ? 0.001 : 0.1}
                           min={insetToDisplay(INSET_MIN_MM, insetUnit)}
@@ -1098,41 +1113,6 @@ export default function PdfPage() {
                     />
                     Hide marks on back faces
                   </label>
-
-                  {/* What to enter in Studio so its marks land on ours. The
-                      length/thickness are fixed constants server-side
-                      (pdf_layout.REG_ARM_MM / REG_THICKNESS_MM); only the
-                      inset follows the slider. */}
-                  <div className="callout">
-                    <strong>Silhouette Studio settings</strong>
-                    <ul>
-                      <li>
-                        Registration marks: <strong>Type 1</strong> (just &ldquo;On&rdquo; in
-                        Studio 4.3 and later)
-                      </li>
-                      <li>
-                        Mark thickness: <strong>0.039 in</strong> (1.0 mm, the maximum)
-                      </li>
-                      <li>
-                        Mark length: <strong>0.35 in</strong>
-                      </li>
-                      <li>
-                        Mark inset:{" "}
-                        <strong>
-                          {insetToDisplay(settings.cutter_inset_mm, insetUnit)} {insetUnit}
-                        </strong>
-                      </li>
-                      <li>
-                        Page orientation:{" "}
-                        <strong>
-                          {settings.cutter_orientation === "landscape" ? "Landscape" : "Portrait"}
-                        </strong>
-                      </li>
-                      <li>
-                        Suggested bleed: <strong>0.5 mm</strong>
-                      </li>
-                    </ul>
-                  </div>
                 </>
               )}
             </div>
@@ -1318,7 +1298,6 @@ export default function PdfPage() {
         )}
 
         <div className="summary-row">
-          <SortSelect />
           <button
             className="btn-primary"
             onClick={() => handleDownload()}
@@ -1343,7 +1322,6 @@ export default function PdfPage() {
           </button>
           {cutterOn && (
             <button
-              className="btn-sm"
               onClick={() => handleCutFileDownload()}
               disabled={downloading || serverUnavailable || serverTooOld}
               title="An SVG of every card's trim box plus the registration marks, in the cutter's orientation, for import into Silhouette Studio."

@@ -176,27 +176,14 @@ input[type="range"] {
   background: none;
 }
 
-/* An informational aside inside a settings section — what to enter in
-   another program (PdfPage's Silhouette Studio settings). Quieter than a
-   .panel, louder than a .hint. */
-.callout {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--text-muted);
+/* The inset slider's numeric readout: a fixed-width box, with the number
+   input inside it filling that box instead of its own intrinsic width. */
+.inset-readout {
+  width: 92px;
+  flex-shrink: 0;
 }
-.callout > strong {
-  color: var(--text);
-}
-.callout ul {
-  margin: 6px 0 0;
-  padding-left: 16px;
-}
-.callout li + li {
-  margin-top: 3px;
+.inset-readout input {
+  width: 100%;
 }
 
 :focus-visible {

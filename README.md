@@ -170,12 +170,13 @@ of the paper's own orientation. The preview draws the marks and their
 keep-out zones and warns when cards sit under one — the default 3×3 grid
 does, so drop to fewer rows or columns — and page guides stop short of
 those corners so they can't confuse the scanner. On duplex sheets the
-marks can be hidden per side (backs are hidden by default). A callout
-lists the Silhouette Studio settings to match, and **Download cut file
-(SVG)** gives you every card's trim box plus the marks in the cutter's
-orientation, ready to import into Studio (SVG import needs the Designer
-Edition; set the imported marks to no-cut and line them up with Studio's
-own). Bleed of about 0.5 mm suits the cutter better than the 1 mm
+marks can be hidden per side (backs are hidden by default). **Download
+cut file (SVG)** gives you every card's trim box plus the marks in the
+cutter's orientation, ready to import into Studio (SVG import needs the
+Designer Edition; set the imported marks to no-cut and line them up with
+Studio's own). In Silhouette Studio, match the marks with Type 1 (or just
+"On" in 4.3+), thickness 0.039 in, length 0.35 in, and the inset you
+chose here. Bleed of about 0.5 mm suits the cutter better than the 1 mm
 default.
 
 ### Backs
