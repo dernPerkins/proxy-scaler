@@ -59,8 +59,10 @@ def test_cut_file_marks_match_the_printed_marks() -> None:
         build_cut_file_svg(_a4(), RegistrationMarks(style=CutterMarkStyle.FOUR_POINT, inset_mm=10.0)),
         "registration-marks",
     )
-    assert len(four) == 7
+    assert len(four) == 8
     assert _has(four, 210 - 10 - a, 297 - 10 - t, a, t)
+    assert _has(four, 10, 10, a, t)  # top-left is an L now, not the square
+    assert not _has(four, 10, 10, REG_SQUARE_MM, REG_SQUARE_MM)
 
 
 def test_cut_file_has_one_rounded_trim_box_per_grid_cell() -> None:

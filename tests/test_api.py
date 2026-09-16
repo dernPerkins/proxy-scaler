@@ -879,7 +879,7 @@ def test_pdf_preview_page_reports_marks_and_conflict_for_silhouette(
         "/api/pdf/preview/page",
         json=_pdf_layout_body(cutter="silhouette", cutter_mark_style="four_point"),
     ).json()
-    assert len(four["registration_marks"]) == 7
+    assert len(four["registration_marks"]) == 8
     assert len(four["registration_keep_out"]) == 4
 
     clear = client.post(

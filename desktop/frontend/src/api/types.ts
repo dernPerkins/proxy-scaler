@@ -374,7 +374,7 @@ export type FlipEdge = "long" | "short";
 export type Cutter = "none" | "silhouette";
 
 /** Silhouette mark layout: three_point (Cameo 4/5, Portrait — square plus
- *  two L's) or four_point (Cameo 5α, Pro MK II — plus a bottom-right L). */
+ *  two L's) or four_point (Cameo 5α, Pro MK II — an L in every corner). */
 export type CutterMarkStyle = "three_point" | "four_point";
 
 /** The orientation the sheet is loaded into the cutter — independent of

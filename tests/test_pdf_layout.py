@@ -1611,15 +1611,23 @@ def test_three_point_marks_sit_inset_from_their_corners() -> None:
     )
 
 
-def test_four_point_adds_the_bottom_right_l() -> None:
+def test_four_point_is_an_l_in_every_corner_with_no_square() -> None:
+    """The newer four-mark machines replace the top-left square with an
+    L (arms right and down) and add a bottom-right L."""
     a, t = REG_ARM_MM, REG_THICKNESS_MM
     three = registration_mark_rects(210.0, 297.0, RegistrationMarks(inset_mm=10.0))
     four = registration_mark_rects(
         210.0, 297.0, RegistrationMarks(style=CutterMarkStyle.FOUR_POINT, inset_mm=10.0)
     )
-    assert len(four) == 7
+    assert len(four) == 8
+    assert not any(r.w == REG_SQUARE_MM and r.h == REG_SQUARE_MM for r in four)
     assert _rect_set(four) - _rect_set(three) == _rect_set(
-        [Rect(210 - 10 - a, 297 - 10 - t, a, t), Rect(210 - 10 - t, 297 - 10 - a, t, a)]
+        [
+            Rect(10, 10, a, t),
+            Rect(10, 10, t, a),
+            Rect(210 - 10 - a, 297 - 10 - t, a, t),
+            Rect(210 - 10 - t, 297 - 10 - a, t, a),
+        ]
     )
     assert len(registration_mark_bboxes(210.0, 297.0, RegistrationMarks())) == 3
     assert (

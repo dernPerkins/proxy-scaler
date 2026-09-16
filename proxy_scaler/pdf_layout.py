@@ -124,8 +124,8 @@ class GuideVisibility:
 #
 # Silhouette "Type 1" registration marks: a filled 5mm square in the
 # top-left corner and L-shaped brackets in the top-right and bottom-left
-# corners (plus a bottom-right L for the newer four-mark machines), each
-# L's arms pointing in toward the page centre. The cutter's optical scanner
+# corners, each L's arms pointing in toward the page centre. The newer
+# four-mark machines use an L in every corner instead — no square. The cutter's optical scanner
 # finds these to align its cut file with the printed sheet, so the geometry
 # is fixed here rather than user-editable: Silhouette Studio never scales
 # the square, and the length/thickness below are what the UI tells users to
@@ -146,7 +146,7 @@ CARD_CORNER_RADIUS_MM = 3.175
 
 class CutterMarkStyle(str, Enum):
     THREE_POINT = "three_point"  # Cameo 4/5, Portrait: square + two L's
-    FOUR_POINT = "four_point"  # Cameo 5α, Pro MK II: plus a bottom-right L
+    FOUR_POINT = "four_point"  # Cameo 5α, Pro MK II: an L in all four corners
 
 
 class CutterOrientation(str, Enum):
@@ -253,8 +253,12 @@ def _mark_rects_in_frame(
     lies entirely inside the inset boundary: the square's outer corner and
     each L's outer vertex sit exactly `inset_mm` from their two edges."""
     i, a, t = inset_mm, REG_ARM_MM, REG_THICKNESS_MM
-    rects = [
-        Rect(i, i, REG_SQUARE_MM, REG_SQUARE_MM),
+    if style is CutterMarkStyle.FOUR_POINT:
+        # Top-left L: arms run right and down.
+        rects = [Rect(i, i, a, t), Rect(i, i, t, a)]
+    else:
+        rects = [Rect(i, i, REG_SQUARE_MM, REG_SQUARE_MM)]
+    rects += [
         # Top-right L: arms run left and down from the corner vertex.
         Rect(frame_w - i - a, i, a, t),
         Rect(frame_w - i - t, i, t, a),
@@ -275,7 +279,7 @@ def _mark_bboxes_in_frame(
     """One bounding box per mark (not per bar), in the cutter frame."""
     i, a = inset_mm, REG_ARM_MM
     boxes = [
-        Rect(i, i, REG_SQUARE_MM, REG_SQUARE_MM),
+        Rect(i, i, a, a) if style is CutterMarkStyle.FOUR_POINT else Rect(i, i, REG_SQUARE_MM, REG_SQUARE_MM),
         Rect(frame_w - i - a, i, a, a),
         Rect(i, frame_h - i - a, a, a),
     ]

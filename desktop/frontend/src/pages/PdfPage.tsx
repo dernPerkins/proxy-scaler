@@ -990,7 +990,7 @@ export default function PdfPage() {
                       <button
                         className={settings.cutter_mark_style === "four_point" ? "active" : ""}
                         onClick={() => updateLayout("cutter_mark_style", "four_point")}
-                        title="Adds a fourth L-mark bottom-right. Cameo 5α and Pro MK II."
+                        title="An L-mark in all four corners, no square. Cameo 5α and Pro MK II."
                       >
                         4-point
                       </button>
@@ -1078,7 +1078,7 @@ export default function PdfPage() {
                       Mark orientation{" "}
                       <span
                         className="hint"
-                        title="The orientation you load the sheet into the cutter, and the page orientation to set in Silhouette Studio. When it differs from the paper's orientation the marks are rotated 90° and the cut file is exported that way round. Always load the sheet with the square mark at the top-left."
+                        title="The orientation you load the sheet into the cutter, and the page orientation to set in Silhouette Studio. When it differs from the paper's orientation the marks are rotated 90° and the cut file is exported that way round. With 3-point marks, load the sheet with the square at the top-left."
                       >
                         (?)
                       </span>

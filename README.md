@@ -162,7 +162,8 @@ can be duplex-printed. See [Backs](#backs).
 **Cutting machines.** Set **Electronic cutter** to *Silhouette* on the PDF
 tab and every sheet gets registration marks a Cameo or Portrait scans to
 align its cuts: a filled square top-left and L-marks in the other corners
-(**3-point**, or **4-point** for the Cameo 5α and Pro MK II). The
+(**3-point**), or an L-mark in every corner (**4-point**, for the Cameo 5α
+and Pro MK II). The
 **Standard** and **Auto Sheet Feeder** buttons set the mark inset to what
 each needs (0.394 in and 0.625 in), or drag the slider; **Mark
 orientation** is the way you load the sheet into the cutter, independent
