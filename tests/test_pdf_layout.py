@@ -141,18 +141,20 @@ def test_page_layout_offset_shifts_margins() -> None:
     assert shifted.margin_y_mm == pytest.approx(base.margin_y_mm - 9.0)
 
 
-def test_a3_three_by_three_fits_with_registration_marks() -> None:
-    """A3 exists so a marked sheet has room for a full 3x3 grid: on A4 and
-    Letter that grid runs under the top-left mark's keep-out zone."""
+def test_a3_preset_grids_fit_and_portrait_clears_registration_marks() -> None:
+    """The A3 presets: 4x4 portrait and 6x3 landscape both fit the sheet.
+    Portrait also clears a cutter's keep-out zones; landscape does not
+    (15mm side / 13.5mm top margins against 18mm zones), which the
+    preset's comment in PdfPage.tsx says out loud."""
     from proxy_scaler.pdf_layout import RegistrationMarks, registration_conflict, registration_keep_out
 
-    expected = {"portrait": (297.0, 420.0, 51.0, 75.0), "landscape": (420.0, 297.0, 112.5, 13.5)}
-    for orientation, (page_w, page_h, margin_x, margin_y) in expected.items():
-        layout = resolve_page_layout(page_w_mm=page_w, page_h_mm=page_h, cols=3, rows=3)
-        assert layout.margin_x_mm == pytest.approx(margin_x)
-        assert layout.margin_y_mm == pytest.approx(margin_y)
-        zones = registration_keep_out(page_w, page_h, RegistrationMarks(inset_mm=10.0))
-        assert not registration_conflict(layout, zones), orientation
+    portrait = resolve_page_layout(page_w_mm=297.0, page_h_mm=420.0, cols=4, rows=4)
+    assert (portrait.margin_x_mm, portrait.margin_y_mm) == pytest.approx((18.5, 30.0))
+    landscape = resolve_page_layout(page_w_mm=420.0, page_h_mm=297.0, cols=6, rows=3)
+    assert (landscape.margin_x_mm, landscape.margin_y_mm) == pytest.approx((15.0, 13.5))
+    marks = RegistrationMarks(inset_mm=10.0)
+    assert not registration_conflict(portrait, registration_keep_out(297.0, 420.0, marks))
+    assert registration_conflict(landscape, registration_keep_out(420.0, 297.0, marks))
 
 
 def test_fpdf2_page_size_matches_layout() -> None:

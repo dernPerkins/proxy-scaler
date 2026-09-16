@@ -51,20 +51,21 @@ const POLL_INTERVAL_MS = 400;
 // this paper", and the grid that fits a portrait sheet does not fit the
 // landscape one. 3×3 needs 195×270mm (fits both portrait presets, with
 // Letter the tightest at 9.4mm of vertical slack); 4×2 needs 260×180mm
-// and is the most cards that fit either landscape sheet. A3 keeps 3×3 in
-// both orientations for now — it exists so a sheet with cutter
-// registration marks has room for a full grid clear of the marks' corner
-// zones, and its grid has not been validated on real stock beyond that.
-// Everything stays editable afterwards, and the overflow warning below
-// covers whatever the user changes them to.
+// and is the most cards that fit either landscape sheet. A3 takes 4×4
+// portrait (260×360mm) and 6×3 landscape (390×270mm). Note the landscape
+// grid sits 15mm from the sides and 13.5mm from the top/bottom, inside a
+// cutter's registration-mark keep-out zones (18mm at the standard inset),
+// so with a cutter on it trips the conflict warning — drop a column or
+// row for that. Everything stays editable afterwards, and the overflow
+// warning below covers whatever the user changes them to.
 const PAGE_PRESETS: Record<
   string,
   { width: number; height: number; cols: number; rows: number }
 > = {
   "A4 (Portrait)": { width: 210, height: 297, cols: 3, rows: 3 },
   "A4 (Landscape)": { width: 297, height: 210, cols: 4, rows: 2 },
-  "A3 (Portrait)": { width: 297, height: 420, cols: 3, rows: 3 },
-  "A3 (Landscape)": { width: 420, height: 297, cols: 3, rows: 3 },
+  "A3 (Portrait)": { width: 297, height: 420, cols: 4, rows: 4 },
+  "A3 (Landscape)": { width: 420, height: 297, cols: 6, rows: 3 },
   "Letter (Portrait)": { width: 215.9, height: 279.4, cols: 3, rows: 3 },
   "Letter (Landscape)": { width: 279.4, height: 215.9, cols: 4, rows: 2 },
 };
