@@ -1078,6 +1078,19 @@ tbody tr:last-child td {
   border-bottom: none;
 }
 
+/* Inline "Sort" label + select (SortSelect), for the Decklist and Export
+   action rows. Same label treatment as .field > span. */
+.sort-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sort-select > span {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+}
+
 .summary-row {
   display: flex;
   gap: 16px;

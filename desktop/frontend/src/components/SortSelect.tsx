@@ -6,18 +6,30 @@ import type { SortPrimary } from "../api/types";
 // the value is shared, persisted project state that decides both the
 // Decklist display order and the printed/exported output order — the
 // options must never drift between pages.
-export default function SortSelect() {
+//
+// The label sits outside the options ("Sort" + "Name"), not inside them
+// ("Sort: Name"): the options are the values, and a caller that already
+// labels the control (the PDF tab's "Card sorting" field) passes
+// `label={null}` for the bare select rather than getting a second label.
+export default function SortSelect({ label = "Sort" }: { label?: string | null }) {
   const { settings, setSettings } = useProject();
-  return (
+  const select = (
     <select
       value={settings.sort_primary}
       onChange={(e) =>
         setSettings((s) => ({ ...s, sort_primary: e.target.value as SortPrimary }))
       }
     >
-      <option value="Name">Sort: Name</option>
-      <option value="Set">Sort: Set</option>
-      <option value="(none)">Sort: (none)</option>
+      <option value="Name">Name</option>
+      <option value="Set">Set</option>
+      <option value="(none)">(none)</option>
     </select>
+  );
+  if (label == null) return select;
+  return (
+    <label className="sort-select">
+      <span>{label}</span>
+      {select}
+    </label>
   );
 }

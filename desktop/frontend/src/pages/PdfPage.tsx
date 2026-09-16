@@ -736,7 +736,7 @@ export default function PdfPage() {
             <div className="field-group">
               <label className="field">
                 <span>Card sorting</span>
-                <SortSelect />
+                <SortSelect label={null} />
               </label>
             </div>
           </div>
