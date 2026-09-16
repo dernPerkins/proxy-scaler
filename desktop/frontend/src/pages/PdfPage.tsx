@@ -351,6 +351,20 @@ export default function PdfPage() {
   // marks stay put (they are where Studio expects them) and the grid is
   // what the user changes.
   const registrationConflict = preview?.registration_conflict === true;
+  // The warning's permanent "Ignore" — an app-wide dismissal like the
+  // card-database prompt's, since the overlap is a failure mode most of
+  // the community works around rather than designs for.
+  const conflictIgnoredQuery = useQuery({
+    queryKey: ["registration-conflict-ignored"],
+    queryFn: () => projectApi.getRegistrationConflictIgnored(),
+    staleTime: Infinity,
+  });
+  const conflictIgnored = conflictIgnoredQuery.data ?? false;
+  const setConflictIgnored = useMutation({
+    mutationFn: (ignored: boolean) => projectApi.setRegistrationConflictIgnored(ignored),
+    onSuccess: (_data, ignored) =>
+      queryClient.setQueryData(["registration-conflict-ignored"], ignored),
+  });
   const feedPreset = matchFeedPreset(settings.cutter_inset_mm);
 
   const dfcSlotHint =
@@ -1287,14 +1301,31 @@ export default function PdfPage() {
                     other orientation.
                   </p>
                 )}
-                {registrationConflict && (
+                {registrationConflict && !conflictIgnored && (
                   <p className="error-text" style={{ marginBottom: 8 }}>
                     <strong>
                       Cards overlap the registration marks&apos; keep-out zones (hatched in
                       the preview).
                     </strong>{" "}
-                    The cutter will fail to read the marks — use fewer rows or columns, add
-                    spacing, or nudge the grid with the offsets.
+                    The cutter may fail to read the marks — use fewer rows or columns, add
+                    spacing, or nudge the grid with the offsets.{" "}
+                    <button
+                      className="linklike"
+                      onClick={() => setConflictIgnored.mutate(true)}
+                      title="Stop showing this warning. Many people cut sheets like this without trouble; you can turn it back on from the note that replaces it."
+                    >
+                      Ignore
+                    </button>
+                  </p>
+                )}
+                {registrationConflict && conflictIgnored && (
+                  /* The one-line trace of the ignored warning, so the
+                     choice stays reversible without a settings screen. */
+                  <p className="hint" style={{ marginBottom: 8 }}>
+                    Cards overlap the registration-mark zones (warning ignored).{" "}
+                    <button className="linklike" onClick={() => setConflictIgnored.mutate(false)}>
+                      Show warning
+                    </button>
                   </p>
                 )}
                 <PdfPagePreview preview={pagePreviewQuery.data} />

@@ -1945,6 +1945,39 @@ pub fn set_card_db_prompt_dismissed(app: AppHandle, dismissed: bool) -> Result<(
     write_card_db_prompt_dismissed(&conn, dismissed)
 }
 
+// --- The PDF tab's registration-mark overlap warning's "Ignore" -----------
+//
+// Cards under a cutter's mark keep-out zones is a real failure mode, but
+// one the community mostly works around rather than designs for, so the
+// warning offers a permanent "Ignore". Same app_settings idiom; absent
+// means the warning shows.
+
+const REGISTRATION_CONFLICT_IGNORED_KEY: &str = "registration_conflict_ignored";
+
+fn read_registration_conflict_ignored(conn: &Connection) -> Result<bool, String> {
+    Ok(read_app_setting(conn, REGISTRATION_CONFLICT_IGNORED_KEY)?.as_deref() == Some("1"))
+}
+
+fn write_registration_conflict_ignored(conn: &Connection, ignored: bool) -> Result<(), String> {
+    write_app_setting(
+        conn,
+        REGISTRATION_CONFLICT_IGNORED_KEY,
+        if ignored { "1" } else { "0" },
+    )
+}
+
+#[tauri::command]
+pub fn get_registration_conflict_ignored(app: AppHandle) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    read_registration_conflict_ignored(&conn)
+}
+
+#[tauri::command]
+pub fn set_registration_conflict_ignored(app: AppHandle, ignored: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_registration_conflict_ignored(&conn, ignored)
+}
+
 // --- The update prompt's "skip this version" -------------------------------
 //
 // Which release the user has explicitly declined (UpdatePrompt.tsx), so
@@ -2724,6 +2757,16 @@ mod tests {
         assert!(!read_card_db_prompt_dismissed(&conn).expect("default: keep asking"));
         write_card_db_prompt_dismissed(&conn, true).expect("dismiss");
         assert!(read_card_db_prompt_dismissed(&conn).expect("read"));
+    }
+
+    #[test]
+    fn registration_conflict_ignored_setting_roundtrips() {
+        let conn = test_conn();
+        assert!(!read_registration_conflict_ignored(&conn).expect("default: warn"));
+        write_registration_conflict_ignored(&conn, true).expect("ignore");
+        assert!(read_registration_conflict_ignored(&conn).expect("read"));
+        write_registration_conflict_ignored(&conn, false).expect("show again");
+        assert!(!read_registration_conflict_ignored(&conn).expect("read"));
     }
 
     #[test]

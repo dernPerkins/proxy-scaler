@@ -261,6 +261,13 @@ export const projectApi = {
   setCutterInsetUnit: (unit: InsetUnit) =>
     invokeCommand<void>("set_cutter_inset_unit", { unit }),
 
+  // The PDF tab's registration-mark overlap warning's permanent "Ignore"
+  // — app-wide, like the other dismissals above. False until chosen.
+  getRegistrationConflictIgnored: () =>
+    invokeCommand<boolean>("get_registration_conflict_ignored"),
+  setRegistrationConflictIgnored: (ignored: boolean) =>
+    invokeCommand<void>("set_registration_conflict_ignored", { ignored }),
+
   // The boot card-database offer's "Don't ask again" (CardDbPrompt.tsx).
   getCardDbPromptDismissed: () =>
     invokeCommand<boolean>("get_card_db_prompt_dismissed"),
