@@ -23,11 +23,17 @@ export interface PatchNotesEntry {
 
 export const PATCH_NOTES: PatchNotesEntry[] = [
   {
-    version: "0.2.2",
+    version: "0.3.0",
     date: "September 2026",
     notes: [
+      "Custom images — drop your own card art into the new Customs tab (or straight onto the Decklist) and it becomes a card in the project, with its own quantity and a slot in every PDF and ZIP export, mixed freely with Scryfall printings.",
+      "Custom images print at the resolution you uploaded and are never upscaled, so the file you prepared is exactly what lands on the page — the Customs tab flags anything below about 300 DPI.",
+      "Custom images reach a remote server on their own: the first Generate or export uploads whatever that server hasn't seen, with a progress dialog, and switching servers offers to do the same.",
+      "One sort control shared by the Decklist, PDF, and Export tabs — the order you see is the order that prints and exports.",
+      "Light-bordered cards no longer get a black band in the bleed from the thin dark row some Scryfall renders carry on their bottom edge, and freshly downloaded originals are cleaned of the dark fill under their rounded corners that could halo after upscaling.",
       "Smarter GPU memory use — the automatic tile size now steps through five levels based on the VRAM actually free, so cards with 10 GB or less no longer attempt the largest pass.",
       "Running out of VRAM mid-card now retries on the GPU at a smaller tile instead of dropping to the much slower CPU path.",
+      "A model that did fall back to the CPU returns to the GPU once VRAM frees up, instead of every later card crawling on the CPU until the worker restarted.",
       "Windows: generation stays inside real VRAM instead of silently spilling into system RAM and crawling with the GPU pinned at 100%.",
     ],
   },

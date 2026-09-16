@@ -60,15 +60,11 @@ the deck list, with the English name in the tooltip.
 
 Planned, in roughly the order they're likely to land:
 
-1. **Custom image upload** — use an artist's custom cards, or your own
-   images, instead of the Scryfall printing. The [Backs](#backs) tab
-   already does the uploading half of this for card backs; what's left is
-   pointing a *card* at an uploaded image.
-2. **Better project management** — see how much storage space each
+1. **Better project management** — see how much storage space each
    project is consuming, and clean up the ones you no longer need.
-3. **MPCFill exploration** — browsing and selecting already-created
-   custom art the way other proxy tools do. Custom image upload above is
-   the stop-gap until something like this exists.
+2. **MPCFill exploration** — browsing and selecting already-created
+   custom art the way other proxy tools do. The [Customs](#customs) tab
+   is the stop-gap until something like this exists.
 
 Have an opinion on the order, or something missing? That's what the
 [Discord](https://discord.gg/bSshvYpKy) is for.
@@ -209,6 +205,27 @@ the box. AMD works too — ROCm on Linux, DirectML on Windows — see
 
 Building it yourself: [`desktop/README.md`](desktop/README.md) for the dev
 loop, [`docs/releasing.md`](docs/releasing.md) for producing installers.
+
+### Customs
+
+A **Customs** tab holds your library of custom card fronts — an artist's
+custom cards, your own designs, anything Scryfall doesn't have. Drag
+images in (or click to pick a file), same formats and 50MB limit as
+backs, and **Add to project** turns one into a card: it gets a decklist
+row and a quantity, sorts and exports alongside the Scryfall printings,
+and takes a slot in the PDF like any other card. Dropping images straight
+onto the Decklist tab adds them in one step. The library is shared across
+every project on your machine, and removing an image removes the cards
+that use it.
+
+Custom images are **not** upscaled: the file you uploaded prints at its
+native resolution, so prepare art at the DPI you want on paper. The tab
+flags anything that works out below about 300 DPI across a card.
+
+With a remote [server](#server), custom art is uploaded the first time
+something needs it — Generate, PDF, or ZIP export — with a progress
+dialog, and switching servers offers to upload whatever the new one is
+missing. The server has to be 0.3.0 or newer.
 
 ### Decklist formats
 
@@ -351,7 +368,7 @@ side by side.
 ### Debian/Ubuntu package
 
 ```bash
-sudo apt install ./proxy-scaler_0.2.0_amd64.deb
+sudo apt install ./proxy-scaler_0.3.0_amd64.deb
 ```
 
 Installs a self-contained bundle to `/opt/proxy-scaler` (no system Python

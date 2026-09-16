@@ -88,9 +88,10 @@ function CustomTile({
       <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{image.label}</div>
       <div className="hint" style={{ fontSize: 12 }}>
         {Math.round(image.source_dpi)} DPI
-        {/* A warning, never a block — and unlike a Back Image, there is a
-            real remedy beyond finding a better file, so it says so. */}
-        {lowRes ? " — low; upscaling will help" : null}
+        {/* A warning, never a block. Same remedy as a Back Image — a
+            sharper file — since Custom Images are never upscaled
+            (services/generation.py routes them to download-only). */}
+        {lowRes ? " — low for print" : null}
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
         <button type="button" onClick={onAdd} disabled={inProject}>

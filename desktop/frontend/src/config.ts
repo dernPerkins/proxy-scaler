@@ -181,13 +181,15 @@ export const ORIGINALS_MIN_SERVER_VERSION = "0.2.0";
 // — leaving an entry with no printing, which resolves to nothing or, worse,
 // to whatever real card shares its filename. Gated rather than attempted.
 //
-// 0.2.2 because that is the version this feature lands in, the same rule
-// its neighbours above followed. (Not 0.2.1: that shipped on 2026-09-01
+// 0.3.0 because that is the release this feature ships in, the same rule
+// its neighbours above followed. It was developed under the 0.2.2 working
+// version, but 0.2.2 was renamed 0.3.0 before it was ever cut, so no
+// released server reports 0.2.2. (Not 0.2.1: that shipped on 2026-09-01
 // without customs support, and a released server passing the floor is
 // exactly the silent-drop failure described above — a real 0.2.1 server
 // box produced it.) packaging/set-version.py must never rewrite it — a
 // floor that tracks the current version is not a floor.
-export const CUSTOM_IMAGES_MIN_SERVER_VERSION = "0.2.2";
+export const CUSTOM_IMAGES_MIN_SERVER_VERSION = "0.3.0";
 
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
