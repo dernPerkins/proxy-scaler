@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS projects (
     cutter_inset_mm REAL NOT NULL DEFAULT 10.0,
     hide_cutter_marks_front INTEGER NOT NULL DEFAULT 0,
     hide_cutter_marks_back INTEGER NOT NULL DEFAULT 1,
-    export_image_format TEXT NOT NULL DEFAULT 'png',
+    export_image_format TEXT NOT NULL DEFAULT 'jpg',
     export_with_bleed INTEGER NOT NULL DEFAULT 0,
     export_bleed_mm REAL NOT NULL DEFAULT 3.0,
     created_at TEXT NOT NULL,
@@ -207,11 +207,12 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("hide_cutter_marks_back", "INTEGER NOT NULL DEFAULT 1"),
     // Export tab output options. The format is an opaque string like
     // sort_primary ('png' | 'jpg'; only the frontend and the generation
-    // server interpret it). The bleed is the ZIP export's own and
+    // server interpret it). JPG by default: the ZIP is usually a vendor
+    // upload, where the much smaller files matter. The bleed is the ZIP export's own and
     // deliberately separate from the PDF's `bleed_mm`: the PDF's 1 mm is
     // a print-and-cut-at-home margin, while this defaults to the 3 mm
     // MakePlayingCards.com expects inside the file.
-    ("export_image_format", "TEXT NOT NULL DEFAULT 'png'"),
+    ("export_image_format", "TEXT NOT NULL DEFAULT 'jpg'"),
     ("export_with_bleed", "INTEGER NOT NULL DEFAULT 0"),
     ("export_bleed_mm", "REAL NOT NULL DEFAULT 3.0"),
 ];
@@ -554,7 +555,7 @@ pub struct ProjectSettings {
 }
 
 fn default_export_image_format() -> String {
-    "png".to_string()
+    "jpg".to_string()
 }
 
 fn default_export_bleed_mm() -> f64 {
@@ -2892,19 +2893,19 @@ mod tests {
         let conn = test_conn();
         let id = get_or_create_unnamed_project_id(&conn).expect("create");
         let loaded = load_project(&conn, id).expect("load").settings;
-        assert_eq!(loaded.export_image_format, "png");
+        assert_eq!(loaded.export_image_format, "jpg");
         assert!(!loaded.export_with_bleed);
         assert_eq!(loaded.export_bleed_mm, 3.0);
 
         let settings = ProjectSettings {
-            export_image_format: "jpg".to_string(),
+            export_image_format: "png".to_string(),
             export_with_bleed: true,
             export_bleed_mm: 2.5,
             ..ProjectSettings::default()
         };
         update_project_row(&conn, id, "", &settings).expect("update");
         let loaded = load_project(&conn, id).expect("load").settings;
-        assert_eq!(loaded.export_image_format, "jpg");
+        assert_eq!(loaded.export_image_format, "png");
         assert!(loaded.export_with_bleed);
         assert_eq!(loaded.export_bleed_mm, 2.5);
     }
@@ -2917,7 +2918,7 @@ mod tests {
         obj.remove("export_with_bleed");
         obj.remove("export_bleed_mm");
         let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(settings.export_image_format, "png");
+        assert_eq!(settings.export_image_format, "jpg");
         assert!(!settings.export_with_bleed);
         assert_eq!(settings.export_bleed_mm, 3.0);
     }
