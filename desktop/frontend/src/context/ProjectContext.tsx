@@ -109,6 +109,12 @@ function getDefaultSettings(): ProjectSettings {
     cutter_inset_mm: 10,
     hide_cutter_marks_front: false,
     hide_cutter_marks_back: true,
+    // Export tab: the stored files as they are, no bleed — the original
+    // export. 3 mm is MakePlayingCards.com's bleed, ready for when the
+    // toggle goes on. Mirrors project_store.rs's column defaults.
+    export_image_format: "png",
+    export_with_bleed: false,
+    export_bleed_mm: 3.0,
   };
 }
 

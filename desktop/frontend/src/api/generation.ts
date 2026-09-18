@@ -14,6 +14,8 @@ import type {
   DownloadOriginalsRequest,
   ExportZipPreview,
   ExportZipRequest,
+  ExportZipJobStarted,
+  ExportZipJobStatus,
   GalleryItem,
   GalleryStatusResult,
   GenerateRequest,
@@ -219,17 +221,31 @@ export const generationApi = {
   pdfJobResultUrl: (jobId: string) => `${getApiBaseUrl()}/api/pdf/jobs/${jobId}/result`,
 
   // --- ZIP export ---
-  // Unlike the PDF, no job/polling: zipping is disk-speed file copying,
-  // so the export POST streams the archive straight back.
   exportZipPreview: (body: ExportZipRequest) =>
     request<ExportZipPreview>("/api/export/zip/preview", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  // URL rather than a fetch, same reason as pdfUrl: the archive is
-  // exactly the kind of large payload that must not transit the webview —
-  // Rust POSTs the body and streams the response to disk.
+  // The synchronous route: URL rather than a fetch, same reason as pdfUrl
+  // — the archive is exactly the kind of large payload that must not
+  // transit the webview, so Rust POSTs the body and streams the response
+  // to disk. Only used against servers without the job routes below.
   exportZipUrl: () => `${getApiBaseUrl()}/api/export/zip`,
+  // Export jobs — the PDF job quartet's twin. Adding bleed or converting
+  // to JPG re-renders every image (~1s each at 1200 DPI), so the UI
+  // starts a job and polls it; a plain PNG export finishes at disk speed
+  // and is simply "done" on the first poll. One client code path.
+  startExportZipJob: (body: ExportZipRequest) =>
+    request<ExportZipJobStarted>("/api/export/zip/jobs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  exportZipJobStatus: (jobId: string) =>
+    request<ExportZipJobStatus>(`/api/export/zip/jobs/${jobId}`),
+  cancelExportZipJob: (jobId: string) =>
+    request<void>(`/api/export/zip/jobs/${jobId}/cancel`, { method: "POST" }),
+  exportZipJobResultUrl: (jobId: string) =>
+    `${getApiBaseUrl()}/api/export/zip/jobs/${jobId}/result`,
 
   // The cutter's cut file (SVG). Pure geometry server-side, no render
   // phase — Rust POSTs the layout body and streams the file to disk,

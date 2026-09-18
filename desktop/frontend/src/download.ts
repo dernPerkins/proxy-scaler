@@ -27,7 +27,7 @@ import {
 // transfer is byte progress pushed from Rust. Both feed one bar.
 export type DownloadPhase =
   | { kind: "preparing" }
-  | { kind: "rendering"; completed: number; total: number }
+  | { kind: "rendering"; label: string; completed: number; total: number }
   | { kind: "transferring"; downloaded: number; total: number | null };
 
 export interface DownloadStatus {

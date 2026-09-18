@@ -428,7 +428,12 @@ export default function PdfPage() {
           ...layout,
         };
         const started = await generationApi.startPdfJob(body);
-        setDownloadPhase({ kind: "rendering", completed: 0, total: started.total });
+        setDownloadPhase({
+          kind: "rendering",
+          label: "Rendering PDF…",
+          completed: 0,
+          total: started.total,
+        });
         setDownloadCancel(() => {
           void generationApi.cancelPdfJob(started.job_id);
         });
@@ -442,6 +447,7 @@ export default function PdfPage() {
           }
           setDownloadPhase({
             kind: "rendering",
+            label: "Rendering PDF…",
             completed: status.completed,
             total: status.total,
           });

@@ -201,6 +201,17 @@ export const CUSTOM_IMAGES_MIN_SERVER_VERSION = "0.3.0";
 // packaging/set-version.py must never rewrite it.
 export const CUTTER_MARKS_MIN_SERVER_VERSION = "0.3.0";
 
+// Export output options (PNG/JPG, bleed) need ExportZipIn's image_format /
+// with_bleed / bleed_mm fields and the /api/export/zip/jobs routes. The
+// failure mode against an older server is the silent kind: Pydantic drops
+// the unknown fields and the archive comes back as unbled PNGs while the
+// controls claim otherwise — the exact "cards blown up at MPC" outcome
+// the option exists to fix. So the controls are disabled and inert, and
+// the export falls back to the synchronous route. 0.3.1 because that is
+// the release it ships in; packaging/set-version.py must never rewrite
+// it.
+export const EXPORT_OPTIONS_MIN_SERVER_VERSION = "0.3.1";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -271,6 +282,15 @@ export function serverSupportsCustomImages(serverVersion: string | null): boolea
 export function serverSupportsCutterMarks(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, CUTTER_MARKS_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server understand the export output options (image
+ *  format, bleed) and serve the export job routes? Same null/unparseable
+ *  semantics as serverSupportsBackPrinting. */
+export function serverSupportsExportOptions(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, EXPORT_OPTIONS_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

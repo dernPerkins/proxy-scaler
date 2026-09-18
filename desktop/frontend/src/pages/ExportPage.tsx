@@ -5,8 +5,10 @@ import { projectApi } from "../api/project";
 import { DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import {
+  EXPORT_OPTIONS_MIN_SERVER_VERSION,
   EXPORT_ZIP_MIN_SERVER_VERSION,
   getApiBaseUrl,
+  serverSupportsExportOptions,
   serverSupportsOriginals,
   serverSupportsZipExport,
   useServerReadiness,
@@ -14,13 +16,25 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
+import NumberInput from "../components/NumberInput";
 import SortSelect from "../components/SortSelect";
 import { registerCustomCards, waitForTasks } from "../syncCustoms";
 import { UploadCanceled } from "../uploadProgress";
-import { DownloadCanceled, runDownload } from "../download";
+import {
+  DownloadCanceled,
+  runDownload,
+  setDownloadCancel,
+  setDownloadPhase,
+} from "../download";
 import { zipFilename } from "../zipFilename";
-import type { ExportZipFormat } from "../api/types";
+import type { ExportImageFormat, ExportZipFormat } from "../api/types";
 import tcgplaytestLogo from "../assets/tcgplaytest.webp";
+
+// Same cadence as the PDF tab's job polling.
+const POLL_INTERVAL_MS = 400;
+
+// MakePlayingCards.com's spec: 63x88 mm trim, 69x94 mm with bleed.
+const MPC_BLEED_MM = 3;
 
 export default function ExportPage() {
   const { projectId, projectTag, projectName, cards, settings, setSettings } = useProject();
@@ -39,6 +53,12 @@ export default function ExportPage() {
   // originals.
   const originalsSupported = serverSupportsOriginals(serverVersion);
   const useOriginals = settings.use_originals && originalsSupported;
+  // Output options are the same silent-drop shape (see config.ts): an
+  // older server would ship unbled PNGs whatever the controls say, so
+  // they're disabled and the request sends the inert defaults.
+  const optionsSupported = serverSupportsExportOptions(serverVersion);
+  const withBleed = settings.export_with_bleed && optionsSupported;
+  const imageFormat: ExportImageFormat = optionsSupported ? settings.export_image_format : "png";
 
   // The project's Selected Back, resolved out of the app-global library —
   // same resolution + sync-to-connected-server dance as PdfPage (the
@@ -86,6 +106,12 @@ export default function ExportPage() {
       use_originals: useOriginals,
       format,
       back_image_hash: selectedBack?.content_hash ?? null,
+      image_format: imageFormat,
+      with_bleed: withBleed,
+      bleed_mm: settings.export_bleed_mm,
+      // The Back Library's own declaration about the file, same as the
+      // PDF tab sends — the server cover-fits rather than double-bleeds.
+      back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
     };
   }
 
@@ -97,6 +123,11 @@ export default function ExportPage() {
       settings.preferred_dpi,
       settings.preferred_model,
       useOriginals,
+      // The counts don't depend on these, but a key that omits part of
+      // the body it sends is a lie waiting to be believed.
+      imageFormat,
+      withBleed,
+      settings.export_bleed_mm,
     ],
     queryFn: () => generationApi.exportZipPreview(requestBody("default")),
     enabled:
@@ -119,12 +150,51 @@ export default function ExportPage() {
       // (registerCustomCards is idempotent; the wait covers the
       // file-copy task a never-cached upload needs).
       await waitForTasks(await registerCustomCards(cards, projectTag, serverVersion));
-      // Static source, no prepare callback: zipping is disk-speed file
-      // copying server-side, so unlike the PDF there is no render phase
-      // to poll — Rust POSTs the body and streams the archive to disk.
-      await runDownload(zipFilename(projectName), {
-        url: generationApi.exportZipUrl(),
-        body: requestBody(format),
+      const body = requestBody(format);
+      if (!optionsSupported) {
+        // A server without the job routes: the original synchronous
+        // export — Rust POSTs the body and streams the archive to disk.
+        // Only ever the verbatim PNG copy here (the options are inert),
+        // which is disk-speed, so there's nothing to poll anyway.
+        await runDownload(zipFilename(projectName), {
+          url: generationApi.exportZipUrl(),
+          body,
+        });
+        return;
+      }
+      // Otherwise the PDF tab's job loop: adding bleed or converting to
+      // JPG re-renders every image (~1s each at 1200 DPI), so the server
+      // reports per-image progress and the finished archive is fetched
+      // from a plain GET Rust can stream. A plain PNG export is "done" on
+      // the first poll — one code path regardless of the options.
+      await runDownload(zipFilename(projectName), async () => {
+        const started = await generationApi.startExportZipJob(body);
+        setDownloadPhase({
+          kind: "rendering",
+          label: "Rendering images…",
+          completed: 0,
+          total: started.total,
+        });
+        setDownloadCancel(() => {
+          void generationApi.cancelExportZipJob(started.job_id);
+        });
+
+        for (;;) {
+          const status = await generationApi.exportZipJobStatus(started.job_id);
+          if (status.status === "done") break;
+          if (status.status === "canceled") throw new DownloadCanceled();
+          if (status.status === "failed") {
+            throw new Error(status.error || "Export failed.");
+          }
+          setDownloadPhase({
+            kind: "rendering",
+            label: "Rendering images…",
+            completed: status.completed,
+            total: status.total,
+          });
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        }
+        return { url: generationApi.exportZipJobResultUrl(started.job_id) };
       });
     } catch (err) {
       // Cancelling is a normal outcome, not something to show as an error.
@@ -157,6 +227,12 @@ export default function ExportPage() {
   // Selected Back — even an all-DFC deck waits for one, by design.
   const tcgNeedsBack = settings.back_image_id == null;
   const tcgWaitingOnSync = !tcgNeedsBack && !backReady;
+
+  const optionsTooOldTitle = "The connected generation server is too old for this — update it.";
+  const bledSizeNote =
+    settings.export_bleed_mm === MPC_BLEED_MM
+      ? " (69 × 94 mm — MakePlayingCards.com's size)"
+      : ` (${(63 + 2 * settings.export_bleed_mm).toFixed(1)} × ${(88 + 2 * settings.export_bleed_mm).toFixed(1)} mm)`;
 
   return (
     <div className="layout">
@@ -243,6 +319,83 @@ export default function ExportPage() {
           Both exports share these with the PDF tab — they pick which
           already-generated image is used, and never trigger generation.
         </p>
+
+        <h3 style={{ margin: "18px 0 14px" }}>Output</h3>
+
+        {/* Export-only, persisted per project like everything else on this
+            page. PNG + no bleed is the original export (the stored files,
+            untouched); anything else re-renders each image server-side. */}
+        <div className="field-group">
+          <div
+            className="field"
+            title={
+              !optionsSupported
+                ? optionsTooOldTitle
+                : "PNG ships the stored images exactly as they are. JPG re-encodes every image for much smaller files."
+            }
+          >
+            <span>Image format</span>
+            <div className="segmented">
+              <button
+                className={imageFormat === "png" ? "active" : ""}
+                disabled={!optionsSupported}
+                onClick={() => setSettings((s) => ({ ...s, export_image_format: "png" }))}
+              >
+                PNG
+              </button>
+              <button
+                className={imageFormat === "jpg" ? "active" : ""}
+                disabled={!optionsSupported}
+                onClick={() => setSettings((s) => ({ ...s, export_image_format: "jpg" }))}
+              >
+                JPG
+              </button>
+            </div>
+          </div>
+
+          <label
+            className="check"
+            title={
+              !optionsSupported
+                ? optionsTooOldTitle
+                : `Adds a bleed border around every image. Defaults to the ${MPC_BLEED_MM} mm bleed MakePlayingCards.com expects (69 × 94 mm cards).`
+            }
+          >
+            <input
+              type="checkbox"
+              disabled={!optionsSupported}
+              checked={withBleed}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, export_with_bleed: e.target.checked }))
+              }
+            />
+            Export with bleed
+          </label>
+
+          {withBleed && (
+            <label
+              className="field"
+              title={`Per side. MakePlayingCards.com expects ${MPC_BLEED_MM} mm.`}
+            >
+              <span>Bleed (mm)</span>
+              <NumberInput
+                step={0.1}
+                min={0.1}
+                value={settings.export_bleed_mm}
+                onChange={(v) => setSettings((s) => ({ ...s, export_bleed_mm: v }))}
+              />
+            </label>
+          )}
+        </div>
+
+        {/* A tooltip on a disabled control isn't discoverable — nothing
+            invites hovering it — so the reason is also written out. */}
+        {!serverUnavailable && !serverTooOld && !optionsSupported && (
+          <p className="hint" style={{ marginTop: 10 }}>
+            Image format and bleed need a generation server v
+            {EXPORT_OPTIONS_MIN_SERVER_VERSION} or newer — update it to use them.
+          </p>
+        )}
       </aside>
 
       <main className="content">
@@ -300,6 +453,18 @@ export default function ExportPage() {
               {previewQuery.data.paired_fronts === 1 ? "" : "s"} — one per physical card,
               quantities included — with double-faced cards backed by their own transform
               side and everything else by your selected back image.
+            </p>
+            {/* What the files will be, so the Output settings' effect is
+                visible before the export, not discovered after. */}
+            <p className="hint" style={{ marginTop: 6 }}>
+              {imageFormat === "jpg"
+                ? "Every image is re-encoded as JPG"
+                : withBleed
+                  ? "Every image is re-encoded as PNG"
+                  : "Images are exported exactly as stored (PNG)"}
+              {withBleed
+                ? `, with a ${settings.export_bleed_mm} mm bleed on each side${bledSizeNote}.`
+                : "."}
             </p>
             {previewQuery.data.missing.length > 0 && (
               <>

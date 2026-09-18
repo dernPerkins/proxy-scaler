@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ModelOptionOut(BaseModel):
@@ -520,6 +520,14 @@ class ExportFormatIn(str, Enum):
     TCGPLAYTEST = "tcgplaytest"
 
 
+class ExportImageFormatIn(str, Enum):
+    # "png": the stored files as they are (byte-for-byte when no bleed is
+    # added). "jpg": every image re-encoded — smaller files, no alpha, so
+    # the rounded-corner transparency is flattened first.
+    PNG = "png"
+    JPG = "jpg"
+
+
 class ExportZipIn(BaseModel):
     # Same scoping/quantity story as PdfLayoutIn: project_tag picks the
     # gallery, entries carry the quantities, project_name is cosmetic
@@ -540,6 +548,21 @@ class ExportZipIn(BaseModel):
     # Content hash of the project's Selected Back (see PdfLayoutIn's
     # back_image_hash) — bytes are synced separately via POST /api/backs.
     back_image_hash: str | None = None
+    # Output options. Defaults reproduce the original export exactly (the
+    # stored PNGs, verbatim), so an older client that sends neither gets
+    # what it always got. Everything else re-renders each image — see
+    # routers/export.py for the copy-vs-render matrix.
+    image_format: ExportImageFormatIn = ExportImageFormatIn.PNG
+    # Edge-extend a bleed border of bleed_mm per side onto every image, at
+    # its own native DPI — what MakePlayingCards.com and similar vendors
+    # expect. 3.0 mm is MPC's spec (63x88 mm trim -> 69x94 mm with bleed).
+    # Capped at 10 mm: anything past that is a typo, not a print spec.
+    with_bleed: bool = False
+    bleed_mm: float = Field(default=3.0, gt=0, le=10)
+    # Same meaning as PdfLayoutIn.back_image_includes_bleed: the Selected
+    # Back already carries its own bleed, so with_bleed cover-fits it to
+    # the bled size instead of edge-extending a second border.
+    back_image_includes_bleed: bool = False
 
 
 class ExportZipPreviewOut(BaseModel):

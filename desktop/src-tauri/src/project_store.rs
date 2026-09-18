@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS projects (
     cutter_inset_mm REAL NOT NULL DEFAULT 10.0,
     hide_cutter_marks_front INTEGER NOT NULL DEFAULT 0,
     hide_cutter_marks_back INTEGER NOT NULL DEFAULT 1,
+    export_image_format TEXT NOT NULL DEFAULT 'png',
+    export_with_bleed INTEGER NOT NULL DEFAULT 0,
+    export_bleed_mm REAL NOT NULL DEFAULT 3.0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -202,6 +205,15 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("cutter_inset_mm", "REAL NOT NULL DEFAULT 10.0"),
     ("hide_cutter_marks_front", "INTEGER NOT NULL DEFAULT 0"),
     ("hide_cutter_marks_back", "INTEGER NOT NULL DEFAULT 1"),
+    // Export tab output options. The format is an opaque string like
+    // sort_primary ('png' | 'jpg'; only the frontend and the generation
+    // server interpret it). The bleed is the ZIP export's own and
+    // deliberately separate from the PDF's `bleed_mm`: the PDF's 1 mm is
+    // a print-and-cut-at-home margin, while this defaults to the 3 mm
+    // MakePlayingCards.com expects inside the file.
+    ("export_image_format", "TEXT NOT NULL DEFAULT 'png'"),
+    ("export_with_bleed", "INTEGER NOT NULL DEFAULT 0"),
+    ("export_bleed_mm", "REAL NOT NULL DEFAULT 3.0"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -530,6 +542,23 @@ pub struct ProjectSettings {
     // matter on the side you cut from.
     #[serde(default = "default_true")]
     pub hide_cutter_marks_back: bool,
+    // Export tab output options — see PROJECTS_ADDED_COLUMNS. Defaulted
+    // on deserialize so a frontend build that predates them can't wipe
+    // them.
+    #[serde(default = "default_export_image_format")]
+    pub export_image_format: String,
+    #[serde(default)]
+    pub export_with_bleed: bool,
+    #[serde(default = "default_export_bleed_mm")]
+    pub export_bleed_mm: f64,
+}
+
+fn default_export_image_format() -> String {
+    "png".to_string()
+}
+
+fn default_export_bleed_mm() -> f64 {
+    3.0
 }
 
 fn default_cutter() -> String {
@@ -615,6 +644,9 @@ impl Default for ProjectSettings {
             cutter_inset_mm: default_cutter_inset_mm(),
             hide_cutter_marks_front: false,
             hide_cutter_marks_back: true,
+            export_image_format: default_export_image_format(),
+            export_with_bleed: false,
+            export_bleed_mm: default_export_bleed_mm(),
         }
     }
 }
@@ -844,6 +876,9 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         cutter_inset_mm: f64,
         hide_cutter_marks_front: bool,
         hide_cutter_marks_back: bool,
+        export_image_format: String,
+        export_with_bleed: bool,
+        export_bleed_mm: f64,
         created_at: String,
         updated_at: String,
     }
@@ -862,6 +897,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     sort_primary,
                     cutter, cutter_mark_style, cutter_orientation, cutter_inset_mm,
                     hide_cutter_marks_front, hide_cutter_marks_back,
+                    export_image_format, export_with_bleed, export_bleed_mm,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -910,6 +946,9 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     cutter_inset_mm: row.get("cutter_inset_mm")?,
                     hide_cutter_marks_front: row.get("hide_cutter_marks_front")?,
                     hide_cutter_marks_back: row.get("hide_cutter_marks_back")?,
+                    export_image_format: row.get("export_image_format")?,
+                    export_with_bleed: row.get("export_with_bleed")?,
+                    export_bleed_mm: row.get("export_bleed_mm")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -966,6 +1005,9 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             cutter_inset_mm: loaded.cutter_inset_mm,
             hide_cutter_marks_front: loaded.hide_cutter_marks_front,
             hide_cutter_marks_back: loaded.hide_cutter_marks_back,
+            export_image_format: loaded.export_image_format,
+            export_with_bleed: loaded.export_with_bleed,
+            export_bleed_mm: loaded.export_bleed_mm,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1212,6 +1254,7 @@ fn update_project_row(
          cutter = ?38, cutter_mark_style = ?39, cutter_orientation = ?40,
          cutter_inset_mm = ?41, hide_cutter_marks_front = ?42,
          hide_cutter_marks_back = ?43,
+         export_image_format = ?44, export_with_bleed = ?45, export_bleed_mm = ?46,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1258,6 +1301,9 @@ fn update_project_row(
             settings.cutter_inset_mm,
             settings.hide_cutter_marks_front,
             settings.hide_cutter_marks_back,
+            settings.export_image_format,
+            settings.export_with_bleed,
+            settings.export_bleed_mm,
         ],
     )
     .map_err(|e| {
@@ -2839,6 +2885,41 @@ mod tests {
         assert_eq!(loaded.cutter_inset_mm, 15.875);
         assert!(loaded.hide_cutter_marks_front);
         assert!(!loaded.hide_cutter_marks_back);
+    }
+
+    #[test]
+    fn export_output_settings_roundtrip_through_project_settings() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.export_image_format, "png");
+        assert!(!loaded.export_with_bleed);
+        assert_eq!(loaded.export_bleed_mm, 3.0);
+
+        let settings = ProjectSettings {
+            export_image_format: "jpg".to_string(),
+            export_with_bleed: true,
+            export_bleed_mm: 2.5,
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.export_image_format, "jpg");
+        assert!(loaded.export_with_bleed);
+        assert_eq!(loaded.export_bleed_mm, 2.5);
+    }
+
+    #[test]
+    fn export_output_settings_default_when_an_older_frontend_omits_them() {
+        let mut json = serde_json::to_value(ProjectSettings::default()).expect("serialize");
+        let obj = json.as_object_mut().expect("object");
+        obj.remove("export_image_format");
+        obj.remove("export_with_bleed");
+        obj.remove("export_bleed_mm");
+        let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(settings.export_image_format, "png");
+        assert!(!settings.export_with_bleed);
+        assert_eq!(settings.export_bleed_mm, 3.0);
     }
 
     #[test]

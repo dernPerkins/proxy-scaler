@@ -505,6 +505,11 @@ export interface PdfPagePreview {
  *  per physical copy, matched by natural filename order, counts equal. */
 export type ExportZipFormat = "default" | "tcgplaytest";
 
+/** Mirrors ExportImageFormatIn. "png": the stored files as they are
+ *  (byte-for-byte when no bleed is added). "jpg": every image re-encoded,
+ *  rounded-corner alpha flattened first. */
+export type ExportImageFormat = "png" | "jpg";
+
 /** Mirrors ExportZipIn. Same scoping/quantity/selector story as
  *  PdfLayoutRequest: preferred_dpi is a hard filter, preferred_model
  *  wins among the eligible variants. */
@@ -519,7 +524,22 @@ export interface ExportZipRequest {
   use_originals?: boolean;
   format: ExportZipFormat;
   back_image_hash: string | null;
+  /** Output options (server-version caveat: see config.ts's
+   *  EXPORT_OPTIONS_MIN_SERVER_VERSION). Omitted = the original export. */
+  image_format?: ExportImageFormat;
+  /** Edge-extend bleed_mm per side onto every image at its native DPI —
+   *  what MakePlayingCards.com expects inside the file. */
+  with_bleed?: boolean;
+  bleed_mm?: number;
+  /** The Selected Back already carries bleed (its Back Library flag), so
+   *  with_bleed cover-fits it rather than adding a second border. */
+  back_image_includes_bleed?: boolean;
 }
+
+/** The export job routes reuse the PDF job shapes — same registry
+ *  server-side, same poll loop client-side. */
+export type ExportZipJobStarted = PdfJobStarted;
+export type ExportZipJobStatus = PdfJobStatus;
 
 /** Mirrors ExportZipPreviewOut. */
 export interface ExportZipPreview {

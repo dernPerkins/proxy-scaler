@@ -11,6 +11,7 @@ import type {
   Cutter,
   CutterMarkStyle,
   CutterOrientation,
+  ExportImageFormat,
   FlipEdge,
   InsetUnit,
   PageOrder,
@@ -88,6 +89,13 @@ export interface ProjectSettings {
   cutter_inset_mm: number;
   hide_cutter_marks_front: boolean;
   hide_cutter_marks_back: boolean;
+  // Export tab output options. "png" ships the stored files as they are;
+  // "jpg" re-encodes. The bleed is the ZIP export's own, separate from
+  // the PDF tab's bleed_mm: it defaults to the 3 mm MakePlayingCards.com
+  // expects to find inside the file.
+  export_image_format: ExportImageFormat;
+  export_with_bleed: boolean;
+  export_bleed_mm: number;
 }
 
 export interface CardRow {

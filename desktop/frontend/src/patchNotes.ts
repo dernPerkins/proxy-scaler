@@ -23,6 +23,15 @@ export interface PatchNotesEntry {
 
 export const PATCH_NOTES: PatchNotesEntry[] = [
   {
+    version: "0.3.1",
+    date: "September 2026",
+    notes: [
+      "Export with bleed — a new option on the Export tab adds a bleed border to every image in the ZIP, defaulting to the 3 mm MakePlayingCards.com expects, so uploads there are no longer stretched and cards no longer come out blown up. The bleed size is adjustable, and a selected back marked as already including bleed is handled correctly.",
+      "Export as PNG or JPG — PNG ships the stored images exactly as they are; JPG re-encodes them for much smaller files.",
+      "ZIP exports that re-render (bleed or JPG) now show the same per-image progress dialog as the PDF, with a Cancel button.",
+    ],
+  },
+  {
     version: "0.3.0",
     date: "September 2026",
     notes: [

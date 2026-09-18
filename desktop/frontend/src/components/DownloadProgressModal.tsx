@@ -12,7 +12,10 @@ function describe(phase: DownloadPhase): { title: string; detail: string; fracti
       return { title: "Preparing…", detail: "Getting ready", fraction: null };
     case "rendering":
       return {
-        title: "Rendering PDF…",
+        // Named by the caller: a PDF sheet and a re-rendered ZIP export
+        // both spend this phase on per-image work, but they aren't the
+        // same thing to the person watching.
+        title: phase.label,
         detail: `Card image ${phase.completed} of ${phase.total}`,
         // Guard against a zero denominator rather than rendering NaN.
         fraction: phase.total > 0 ? phase.completed / phase.total : null,
