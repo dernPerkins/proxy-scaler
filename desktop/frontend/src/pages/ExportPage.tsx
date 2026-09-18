@@ -331,7 +331,7 @@ export default function ExportPage() {
             title={
               !optionsSupported
                 ? optionsTooOldTitle
-                : "PNG ships the stored images exactly as they are. JPG re-encodes every image for much smaller files."
+                : "PNG ships the stored images exactly as they are. JPG re-encodes every image for much smaller files — recommended when ordering from a vendor."
             }
           >
             <span>Image format</span>
@@ -351,6 +351,14 @@ export default function ExportPage() {
                 JPG
               </button>
             </div>
+            {/* Vendor uploads (TCGPlaytest, MakePlayingCards) are where the
+                size difference matters most, and print quality is the same
+                either way — so say so here, at the moment of choosing,
+                rather than only in a hover tooltip. */}
+            <p className="hint">
+              JPG is recommended for vendor orders (TCGPlaytest, MakePlayingCards) —
+              far smaller uploads with no visible difference in print.
+            </p>
           </div>
 
           <label

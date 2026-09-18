@@ -29,6 +29,7 @@ export const PATCH_NOTES: PatchNotesEntry[] = [
       "Export with bleed — a new option on the Export tab adds a bleed border to every image in the ZIP, defaulting to 3 mm. The bleed size is adjustable, and a selected back marked as already including bleed is handled correctly.",
       "Export as PNG or JPG — PNG ships the stored images exactly as they are; JPG re-encodes them for much smaller files.",
       "ZIP exports that re-render (bleed or JPG) now show the same per-image progress dialog as the PDF, with a Cancel button.",
+      "Lowercase card names resolve — typing a name like \"verdant kraken\" without a local card database no longer fails with \"Card not found\". Scryfall's fuzzy search isn't reliably case-insensitive, so names are now matched exactly first, with fuzzy matching kept as the fallback for typos and partial names. Using a database avoids API calls and is still highly recommend to download.",
     ],
   },
   {
