@@ -2,6 +2,15 @@ import type { ReactNode } from "react";
 import type { PdfPagePreview as PdfPagePreviewData, RectMm } from "../api/types";
 
 const PANEL_WIDTH_PX = 360;
+// A landscape page at the portrait width is a short, squat strip — the
+// cards come out ~60% the size they get on a portrait sheet. Widening
+// the panel 1.5× brings them back to roughly the same on-screen size.
+// Same rule as pdf_layout.page_orientation: a square page is portrait.
+const LANDSCAPE_PANEL_WIDTH_PX = 540;
+
+function panelWidthPx(preview: PdfPagePreviewData): number {
+  return preview.page_w_mm > preview.page_h_mm ? LANDSCAPE_PANEL_WIDTH_PX : PANEL_WIDTH_PX;
+}
 const MM_PER_IN = 25.4;
 
 // Matches pdf_layout.py's own hardcoded _OUTER_LINE_COLOR / _MARK_COLOR —
@@ -250,7 +259,8 @@ function KeepOutZones({ rects, scale }: { rects: RectMm[]; scale: number }) {
 // exactly (col, row = idx % cols, idx // cols) so the preview lines up
 // with the real PDF output at the same layout settings.
 export default function PdfPagePreview({ preview }: { preview: PdfPagePreviewData }) {
-  const scale = PANEL_WIDTH_PX / preview.page_w_mm;
+  const panelWidth = panelWidthPx(preview);
+  const scale = panelWidth / preview.page_w_mm;
   const pageHeightPx = preview.page_h_mm * scale;
   const marks = preview.registration_marks ?? [];
   const keepOut = preview.registration_keep_out ?? [];
@@ -260,7 +270,7 @@ export default function PdfPagePreview({ preview }: { preview: PdfPagePreviewDat
       className="pdf-page-preview"
       style={{
         position: "relative",
-        width: PANEL_WIDTH_PX,
+        width: panelWidth,
         height: pageHeightPx,
         background: "#fff",
         border: "1px solid var(--border)",
