@@ -93,6 +93,12 @@ class ScryfallError(Exception):
     """Raised when Scryfall cannot resolve a card."""
 
 
+class ScryfallNotFound(ScryfallError):
+    """Scryfall answered 404: the request was fine, there is just no such
+    card. Distinguished from other failures so a lookup can try another
+    strategy on a miss without also retrying on rate limits or outages."""
+
+
 class ScryfallClient:
     def __init__(
         self,
@@ -120,7 +126,7 @@ class ScryfallClient:
         resp = self._session.get(url, params=params, timeout=30)
         self._last_request = time.monotonic()
         if resp.status_code == 404:
-            raise ScryfallError(f"Card not found: {url} params={params}")
+            raise ScryfallNotFound(f"Card not found: {url} params={params}")
         if not resp.ok:
             raise ScryfallError(
                 f"Scryfall HTTP {resp.status_code} for {url}: {resp.text[:200]}"
@@ -153,8 +159,20 @@ class ScryfallClient:
         return self._get(f"/cards/{code}/{number}")
 
     def fetch_by_name(self, name: str) -> dict[str, Any]:
-        # Prefer fuzzy named lookup (mpc-scryfall style)
-        return self._get("/cards/named", params={"fuzzy": name})
+        """Resolve a bare card name: exact match first, fuzzy on a miss.
+
+        Scryfall documents both ``exact`` and ``fuzzy`` as case-insensitive,
+        but fuzzy isn't reliably so — as of 2026-09-18, fuzzy="verdant
+        kraken" 404s while fuzzy="Verdant Kraken" and exact="verdant
+        kraken" both resolve (other lowercase names, like "lightning
+        bolt", are fine). Exact is case-insensitive in practice, so a
+        correctly spelled name of any casing settles in one request; only
+        typos and partial names pay for the second, fuzzy, request.
+        """
+        try:
+            return self._get("/cards/named", params={"exact": name})
+        except ScryfallNotFound:
+            return self._get("/cards/named", params={"fuzzy": name})
 
     def resolve_collection(
         self, identifiers: list[dict[str, str]], *, chunk_size: int = 75

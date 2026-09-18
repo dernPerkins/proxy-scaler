@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from proxy_scaler.decklist import DeckEntry
-from proxy_scaler.scryfall import USER_AGENT, ScryfallClient, ScryfallError, download_png
+from proxy_scaler.scryfall import (
+    USER_AGENT,
+    ScryfallClient,
+    ScryfallError,
+    ScryfallNotFound,
+    download_png,
+)
 
 
 def _entry(set_code: str, collector: str, name: str = "X") -> DeckEntry:
@@ -267,3 +273,84 @@ def test_download_png_reuses_shared_session(monkeypatch) -> None:
     assert download_png("https://example.com/b.png") == b"png-bytes"
     assert len(created) == 1  # one session for both calls
     assert created[0].headers["User-Agent"] == USER_AGENT
+
+
+def test_fetch_by_name_tries_exact_before_fuzzy(monkeypatch) -> None:
+    """A correctly spelled name of any casing resolves via the
+    case-insensitive exact endpoint in one request — fuzzy is never hit."""
+    client = ScryfallClient(delay_s=0)
+    calls: list[dict] = []
+
+    def fake_get(path, params=None):
+        assert path == "/cards/named"
+        calls.append(params)
+        return LIGHTNING_BOLT
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.fetch_by_name("lightning bolt")["name"] == "Lightning Bolt"
+    assert calls == [{"exact": "lightning bolt"}]
+
+
+def test_fetch_by_name_falls_back_to_fuzzy_on_not_found(monkeypatch) -> None:
+    """Exact 404s on a typo'd/partial name; fuzzy gets the same, unmodified
+    text as the second request."""
+    client = ScryfallClient(delay_s=0)
+    calls: list[dict] = []
+
+    def fake_get(path, params=None):
+        calls.append(params)
+        if "exact" in params:
+            raise ScryfallNotFound("Card not found")
+        return LIGHTNING_BOLT
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    assert client.fetch_by_name("ligtning bolt")["name"] == "Lightning Bolt"
+    assert calls == [{"exact": "ligtning bolt"}, {"fuzzy": "ligtning bolt"}]
+
+
+def test_fetch_by_name_fuzzy_miss_surfaces_fuzzy_error(monkeypatch) -> None:
+    client = ScryfallClient(delay_s=0)
+
+    def fake_get(path, params=None):
+        raise ScryfallNotFound(f"Card not found: {path} params={params}")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    with pytest.raises(ScryfallNotFound, match="fuzzy"):
+        client.fetch_by_name("nonsense")
+
+
+def test_fetch_by_name_does_not_retry_on_non_404_failure(monkeypatch) -> None:
+    """A rate limit or outage on the exact request is not a miss — don't
+    burn a second request against a struggling API."""
+    client = ScryfallClient(delay_s=0)
+    calls: list[dict] = []
+
+    def fake_get(path, params=None):
+        calls.append(params)
+        raise ScryfallError("Scryfall HTTP 503")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    with pytest.raises(ScryfallError):
+        client.fetch_by_name("Lightning Bolt")
+    assert calls == [{"exact": "Lightning Bolt"}]
+
+
+def test_get_raises_not_found_subclass_on_404() -> None:
+    class _Resp:
+        status_code = 404
+        ok = False
+        text = ""
+
+    class _Session:
+        headers: dict = {}
+
+        def get(self, url, params=None, timeout=None):
+            return _Resp()
+
+    client = ScryfallClient(session=_Session(), delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(ScryfallNotFound):
+        client._get("/cards/named", params={"exact": "nope"})
