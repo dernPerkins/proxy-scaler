@@ -941,9 +941,19 @@ def test_cut_file_returns_svg_with_project_filename(client: TestClient) -> None:
     assert root.get("width") == "210.000mm"
 
 
-def test_cut_file_requires_a_cutter(client: TestClient) -> None:
-    resp = client.post("/api/pdf/cut-file", json=_pdf_layout_body())
-    assert resp.status_code == 400
+def test_cut_file_without_a_cutter_is_trim_boxes_only(client: TestClient) -> None:
+    """No cutter selected still gets a cut file — the Cricut route, which
+    cuts against the mat and cannot scan marks — with no marks layer."""
+    resp = client.post("/api/pdf/cut-file", json=_pdf_layout_body(project_name="Deck"))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/svg+xml")
+    assert 'filename="Deck-cut.svg"' in resp.headers["content-disposition"]
+    from xml.etree import ElementTree as ET
+
+    root = ET.fromstring(resp.content)
+    groups = [g.get("id") for g in root.findall("{http://www.w3.org/2000/svg}g")]
+    assert groups == ["cut-lines"]
+    assert root.get("width") == "210.000mm"
 
 
 def test_pdf_preview_page_no_entries_is_400(client: TestClient) -> None:

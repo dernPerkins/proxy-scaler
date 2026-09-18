@@ -180,6 +180,14 @@ Studio's own). In Silhouette Studio, match the marks with Type 1 (or just
 chose here. Bleed of about 0.5 mm suits the cutter better than the 1 mm
 default.
 
+**Cricut** (and any machine that cuts against the mat rather than
+scanning marks): leave **Electronic cutter** on *None*. Design Space
+can't read marks printed by another program, so the sheet needs none —
+print it as usual, load it square into the corner of the mat's grid, and
+import the same **Download cut file (SVG)**, which with no cutter selected
+is every card's trim box alone in the page's own frame. Keep the default
+1 mm bleed: it covers the small placement error of aligning by hand.
+
 ### Backs
 
 A **Backs** tab holds your library of card-back images — drag one in (or

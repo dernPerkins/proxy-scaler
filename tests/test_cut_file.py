@@ -96,3 +96,24 @@ def test_cut_file_is_emitted_in_the_cutter_frame_when_rotated() -> None:
     x0 = layout.margin_x_mm + layout.bleed_mm
     y0 = layout.margin_y_mm + layout.bleed_mm
     assert _has(cuts, 297 - y0 - CARD_HEIGHT_MM, x0, CARD_HEIGHT_MM, CARD_WIDTH_MM)
+
+
+def test_cut_file_without_a_cutter_has_no_marks_and_uses_the_page_frame() -> None:
+    """No cutter selected: the trim boxes alone, in the page frame as
+    printed — the mat-aligned route (Cricut), which never scans marks."""
+    layout = _a4(cols=2, rows=2)
+    svg = build_cut_file_svg(layout, None)
+    root = ET.fromstring(svg)
+    assert (root.get("width"), root.get("height")) == ("210.000mm", "297.000mm")
+    assert [g.get("id") for g in root.findall(f"{{{SVG_NS}}}g")] == ["cut-lines"]
+    cuts = _rects(svg, "cut-lines")
+    assert len(cuts) == 4
+    x0 = layout.margin_x_mm + layout.bleed_mm
+    y0 = layout.margin_y_mm + layout.bleed_mm
+    assert _has(cuts, x0, y0, CARD_WIDTH_MM, CARD_HEIGHT_MM)
+    assert _has(cuts, x0 + layout.cell_w_mm, y0 + layout.cell_h_mm, CARD_WIDTH_MM, CARD_HEIGHT_MM)
+    # A landscape page stays in its own frame too — nothing to rotate for.
+    wide = build_cut_file_svg(_a4(page_w_mm=297.0, page_h_mm=210.0), None)
+    wide_root = ET.fromstring(wide)
+    assert (wide_root.get("width"), wide_root.get("height")) == ("297.000mm", "210.000mm")
+    assert all(abs(c["width"] - CARD_WIDTH_MM) < 1e-3 for c in _rects(wide, "cut-lines"))

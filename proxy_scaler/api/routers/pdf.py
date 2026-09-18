@@ -492,18 +492,15 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
 @router.post("/cut-file")
 def cut_file(body: PdfLayoutIn) -> Response:
     """The cut file that goes with the sheet: an SVG of every card's trim
-    box plus the registration marks, in the cutter's own frame, for import
-    into Silhouette Studio. Pure geometry — the body's entries are accepted
-    (it is the same PdfLayoutIn the preview sends) but never read, so this
-    needs no generated images and no database."""
-    if body.cutter is CutterIn.NONE:
-        raise HTTPException(
-            status_code=400, detail="Pick an electronic cutter first — there are no marks to cut against."
-        )
-    registration = _registration(body)
-    assert registration is not None
+    box, plus the registration marks in the cutter's own frame when a
+    cutter is selected (for import into Silhouette Studio). With no cutter
+    it is the trim boxes alone in the page frame — the mat-aligned route
+    for a Cricut, which cannot scan third-party marks. Pure geometry — the
+    body's entries are accepted (it is the same PdfLayoutIn the preview
+    sends) but never read, so this needs no generated images and no
+    database."""
     layout = _layout_from_body(body, body.offset_x_mm, body.offset_y_mm)
-    svg = build_cut_file_svg(layout, registration)
+    svg = build_cut_file_svg(layout, _registration(body))
     filename = f"{_slugify(body.project_name or _default_pdf_basename())}-cut.svg"
     return Response(
         content=svg.encode("utf-8"),

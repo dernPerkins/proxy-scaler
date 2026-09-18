@@ -37,7 +37,7 @@ export const PATCH_NOTES: PatchNotesEntry[] = [
       "Windows: generation stays inside real VRAM instead of silently spilling into system RAM and crawling with the GPU pinned at 100%.",
       "Cutting-machine support — an Electronic cutter setting on the PDF tab prints Silhouette registration marks (3- or 4-point, Standard or Auto Sheet Feeder inset, marks oriented for how you load the sheet).",
       "The page preview shows the marks and their keep-out zones, warns when cards sit under one, and page guides are kept out of the corners the cutter scans; marks can be hidden per side for duplex sheets.",
-      "Download cut file (SVG) — every card's trim box plus the marks, in the cutter's orientation, ready to import into Silhouette Studio.",
+      "Download cut file (SVG) — every card's trim box plus the marks, in the cutter's orientation, ready to import into Silhouette Studio. It also works with no cutter selected, as the trim boxes alone: the route for a Cricut or any machine that cuts against the mat instead of scanning marks.",
     ],
   },
   {

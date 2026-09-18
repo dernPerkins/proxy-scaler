@@ -1,17 +1,24 @@
-"""The cut file that accompanies a registration-marked sheet.
+"""The cut file that accompanies a printed sheet.
 
-An SVG for import into the cutter's software (Silhouette Studio): one
-rounded rectangle per card trim box on the "cut-lines" layer, plus the
-registration marks on their own layer so the user can line the import up
-against Studio's own marks (and set that layer to no-cut). Pure geometry —
-no images, no database — so it can be produced without a single card
-having been generated.
+An SVG for import into the cutter's software: one rounded rectangle per
+card trim box on the "cut-lines" layer. Pure geometry — no images, no
+database — so it can be produced without a single card having been
+generated.
 
-Emitted in the CUTTER's frame, not the page's: when the marks are rotated
-(see pdf_layout.cutter_frame) the file is the landscape-or-portrait sheet
-the cutter actually sees, with the square top-left, and every card box is
+With a cutter selected (Silhouette Studio) the registration marks come
+along on their own layer, so the user can line the import up against
+Studio's own marks (and set that layer to no-cut), and the file is emitted
+in the CUTTER's frame, not the page's: when the marks are rotated (see
+pdf_layout.cutter_frame) the file is the landscape-or-portrait sheet the
+cutter actually sees, with the square top-left, and every card box is
 rotated to match. The user sets Studio's page orientation to the cutter
 orientation and everything lines up.
+
+With no cutter selected the file is the trim boxes alone, in the page's
+own frame. That is the route for machines that cut against the mat rather
+than scanning marks — a Cricut cannot read third-party marks at all, so
+the user prints the plain sheet, loads it square in the mat's corner and
+imports this file.
 """
 
 from __future__ import annotations
@@ -55,12 +62,18 @@ def card_trim_rects(layout: PageLayout) -> list[Rect]:
     return rects
 
 
-def build_cut_file_svg(layout: PageLayout, marks: RegistrationMarks) -> str:
+def build_cut_file_svg(layout: PageLayout, marks: RegistrationMarks | None) -> str:
     """The SVG document, as text. Uses the FRONT layout: you cut from the
     side the marks are read on. Ignores the marks' hide flags — the file
     is for the cutter, which needs them regardless of which printed side
-    carries them."""
-    frame_w, frame_h, rotated = cutter_frame(layout.page_w_mm, layout.page_h_mm, marks.orientation)
+    carries them. `marks` None (no cutter selected) means no marks layer
+    and no rotation: the page frame as printed."""
+    if marks is None:
+        frame_w, frame_h, rotated = layout.page_w_mm, layout.page_h_mm, False
+    else:
+        frame_w, frame_h, rotated = cutter_frame(
+            layout.page_w_mm, layout.page_h_mm, marks.orientation
+        )
 
     root = ET.Element(
         "svg",
@@ -71,13 +84,14 @@ def build_cut_file_svg(layout: PageLayout, marks: RegistrationMarks) -> str:
             "viewBox": f"0 0 {_fmt(frame_w)} {_fmt(frame_h)}",
         },
     )
-    reg = ET.SubElement(root, "g", {"id": "registration-marks"})
-    for r in _mark_rects_in_frame(frame_w, frame_h, style=marks.style, inset_mm=marks.inset_mm):
-        ET.SubElement(
-            reg,
-            "rect",
-            {"x": _fmt(r.x), "y": _fmt(r.y), "width": _fmt(r.w), "height": _fmt(r.h), "fill": "#000"},
-        )
+    if marks is not None:
+        reg = ET.SubElement(root, "g", {"id": "registration-marks"})
+        for r in _mark_rects_in_frame(frame_w, frame_h, style=marks.style, inset_mm=marks.inset_mm):
+            ET.SubElement(
+                reg,
+                "rect",
+                {"x": _fmt(r.x), "y": _fmt(r.y), "width": _fmt(r.w), "height": _fmt(r.h), "fill": "#000"},
+            )
     cuts = ET.SubElement(root, "g", {"id": "cut-lines"})
     for page_rect in card_trim_rects(layout):
         r = page_rect_to_cutter(page_rect, layout.page_w_mm, layout.page_h_mm, rotated)

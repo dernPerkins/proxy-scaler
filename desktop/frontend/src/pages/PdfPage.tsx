@@ -459,12 +459,14 @@ export default function PdfPage() {
     }
   }
 
-  /** The cutter's cut file. No render phase and no gallery read server-
-   *  side — pure geometry — so unlike the PDF there is nothing to poll or
-   *  to sync first; Rust POSTs the layout body and streams the SVG to
-   *  disk, like the ZIP export. */
+  /** The cut file. No render phase and no gallery read server-side —
+   *  pure geometry — so unlike the PDF there is nothing to poll or to
+   *  sync first; Rust POSTs the layout body and streams the SVG to disk,
+   *  like the ZIP export. Not gated on a cutter: with none selected the
+   *  file is the trim boxes alone, which is what a mat-aligned machine
+   *  (Cricut) wants. */
   async function handleCutFileDownload() {
-    if (projectTag == null || serverUnavailable || !cutterOn) return;
+    if (projectTag == null || serverUnavailable) return;
     setDownloadError(null);
     setDownloading(true);
     try {
@@ -952,7 +954,9 @@ export default function PdfPage() {
                 button in the main column) can trim the sheet. The layout
                 copies Proxxied's, which users asked for by name. Only
                 Silhouette for now; the select is the seam for the next
-                one. */}
+                one. Cricut is deliberately NOT an option: Design Space
+                can't scan third-party marks, so its route is None here
+                plus the cut file (trim boxes alone, aligned to the mat). */}
             <h3 style={{ margin: "18px 0 14px" }}>
               Electronic cutter{" "}
               <span
@@ -986,6 +990,11 @@ export default function PdfPage() {
                 <p className="hint" style={{ margin: "-6px 0 0" }}>
                   This server is too old to print registration marks — update it to
                   turn the cutter on.
+                </p>
+              )}
+              {cutterSupported && !cutterOn && (
+                <p className="hint" style={{ margin: "-6px 0 0" }}>
+                  Cricut? Leave this on None and use Download cut file (SVG).
                 </p>
               )}
 
@@ -1365,11 +1374,15 @@ export default function PdfPage() {
           >
             {downloading ? "Generating…" : "Generate & Download PDF"}
           </button>
-          {cutterOn && (
+          {cutterSupported && (
             <button
               onClick={() => handleCutFileDownload()}
               disabled={downloading || serverUnavailable || serverTooOld}
-              title="An SVG of every card's trim box plus the registration marks, in the cutter's orientation, for import into Silhouette Studio."
+              title={
+                cutterOn
+                  ? "An SVG of every card's trim box plus the registration marks, in the cutter's orientation, for import into Silhouette Studio."
+                  : "An SVG of every card's trim box, no registration marks, in the page's own frame — for cutters that cut against the mat, like Cricut: print the sheet, load it square in the mat's corner, and import this file."
+              }
             >
               Download cut file (SVG)
             </button>
