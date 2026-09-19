@@ -401,6 +401,16 @@ _sidecar-freeze: sidecar-clean
 	$(PYTHON) -m PyInstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
 		--workpath desktop/pyinstaller/build
+	# PyInstaller only WARNS when it can't find a hidden import, and the
+	# one that matters most here -- torchvision's path-loaded C++ ops
+	# extension -- is exactly the kind it misses: v0.3.0/v0.3.1 froze
+	# torchvision 0.29 with no extension at all after the file was renamed
+	# `_C.so` -> `_C_stable.so`, and every upscale then failed at runtime
+	# with "operator torchvision::nms does not exist" (see the spec's
+	# collect_dynamic_libs comment). Turn that into a build failure. The
+	# glob spans the old and new names and every platform's suffix.
+	@ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/torchvision/_C* >/dev/null 2>&1 \
+		|| { echo "ERROR: frozen bundle has no torchvision C++ extension (_internal/torchvision/_C*) -- every upscale would fail; see proxy-scaler-serve.spec"; exit 1; }
 	# The variant marker rides inside the onedir bundle, so every staged
 	# copy (client, server-app, .app Resources, deb) carries it for free —
 	# update.rs reads it to pick this install's artifact out of the update

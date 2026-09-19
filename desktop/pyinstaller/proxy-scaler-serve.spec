@@ -34,7 +34,7 @@
 import importlib.util
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 # Spec files are exec()'d directly by PyInstaller, not imported as a
 # module — there's no __file__ in this namespace. PyInstaller injects
@@ -71,6 +71,29 @@ if importlib.util.find_spec("torch_directml") is not None:
     DATAS += dml_datas
     BINARIES += dml_binaries
     HIDDEN_IMPORTS += dml_hiddenimports
+
+# torchvision's C++ ops extension is loaded by path via
+# torch.ops.load_library (torchvision/extension.py), not imported, so the
+# static import graph never sees it. The contrib hook papers over that
+# with a `torchvision._C` hiddenimport -- which stopped matching anything
+# when torchvision 0.29 renamed the file to `_C_stable.so` (and
+# `image.so` to `image_stable.so`). The freeze then merely WARNS ("Hidden
+# import 'torchvision._C' not found!") and ships torchvision with no
+# extension at all. torchvision swallows the load failure, and the first
+# `import torchvision` -- which is lazy, inside UpscaleWorker.upscale() --
+# dies in _meta_registrations with "operator torchvision::nms does not
+# exist", so every task fails and nothing surfaces until a user reports
+# it (v0.3.0/v0.3.1 on every Linux variant; v0.2.1 still had 0.28's
+# `_C.so`). Sweeping the package's shared libraries by glob is immune to
+# the next rename -- but only with explicit patterns: collect_dynamic_libs'
+# defaults are `lib*.so`/`*.dll`/`*.dylib`, which match neither `_C*.so`
+# nor a Windows `_C*.pyd`, so without them it silently returns [] (that
+# was the first attempt at this fix). _sidecar-freeze in the Makefile
+# double-checks the result so a future miss fails the build instead of
+# the user.
+BINARIES += collect_dynamic_libs(
+    "torchvision", search_patterns=["*.so", "*.pyd", "*.dll", "*.dylib"]
+)
 
 a = Analysis(
     [str(ENTRY_SCRIPT)],
