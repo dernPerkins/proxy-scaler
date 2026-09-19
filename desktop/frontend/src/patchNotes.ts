@@ -23,6 +23,14 @@ export interface PatchNotesEntry {
 
 export const PATCH_NOTES: PatchNotesEntry[] = [
   {
+    version: "0.3.2",
+    date: "September 2026",
+    notes: [
+      "Fixed every generation task failing with \"operator torchvision::nms does not exist\" — the 0.3.0 and 0.3.1 installers shipped without a torchvision component the upscaler needs, after torchvision 0.29 renamed the file that the packaging step bundles. All Linux builds (CUDA, CUDA legacy, ROCm) were affected, along with some macOS and Windows builds; the build now fails outright if that component is missing, so it can't ship silently again.",
+      "After updating, use Retry All in the Tasks panel to re-run any cards that failed with that error.",
+    ],
+  },
+  {
     version: "0.3.1",
     date: "September 2026",
     notes: [
