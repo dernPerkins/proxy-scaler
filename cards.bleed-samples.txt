@@ -33,3 +33,33 @@
 # Ordinary modern black border (control) — black bleed all around,
 # scrub is a no-op because the interior probe is just as dark.
 1 Company Commander (40k) 113
+
+# Gold borders (2026-09). Every ptc/wc97..wc04 card is composited onto one
+# of two shared gold-frame templates: corner arcs anti-aliased against
+# WHITE, a bright opaque highlight line inside each arc, and (older
+# template, ptc..wc02) a lone white pixel on the top and bottom edge rows.
+# Used to print as a white arc on every corner, white bars stretched out
+# of each corner into the bleed, and a white streak across the top/bottom
+# bleed. Bleed must be plain textured gold; corners fan out radially.
+1 Academy Rector (wc00) nl1
+4 Accumulated Knowledge (wc01) ar26
+1 Adarkar Wastes (wc00) tvdl319
+1 Aeolipile (ptc) ml81sb
+1 Abeyance (wc97) jk1
+1 Anger (wc03) pk77
+1 Akroma's Vengeance (wc04) gn2
+
+# Phantom near-white 1px column on the LEFT edge of a dark borderless
+# print — the SLZ defect inverted. Left bleed must be dark like the art.
+1 Fellwar Stone (sld) 7062
+
+# Alpha's rounder die cut: Scryfall renders it with a 4.4mm corner radius
+# (Beta onward: 2.7mm). Measured from the alpha channel, so the corner
+# fan follows the larger arc with no special case.
+1 Lightning Bolt (lea) 161
+
+# Borderless / full-art (control) — art runs to the edge, so the bleed is
+# the art's own edge colours; the outer 0.25mm strip is re-sourced from
+# just inside it and nothing deeper changes.
+1 Dawn's Truce (blb) 295
+1 Urborg, Tomb of Yawgmoth (slz) 121

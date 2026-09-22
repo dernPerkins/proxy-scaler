@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
@@ -25,7 +26,7 @@ from .dpi import (
     target_pixels,
 )
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
-from .postprocess import DARK_EDGE_DELTA_MIN, DARK_EDGE_LUM_MAX
+from .edge_extend import corner_radius_px, extend_edges
 
 # fpdf2 embeds raw PIL images losslessly (FlateDecode/zlib), which compresses
 # photographic card art poorly (~1.5-3x) and produces huge files — a 9-card
@@ -583,262 +584,89 @@ def _draw_cut_marks(
                 pdf.line(x, y - layout.guide_length_mm, x, y + layout.guide_length_mm)
 
 
-def _replicate_top_left_corner(img: Image.Image, r: int, alpha_threshold: int) -> None:
-    """Mutates `img` in place: for each of the first r rows, fill only that
-    row's leading *transparent* run with a colour sampled just past the
-    first opaque pixel it runs into.
-
-    Per-row and transparency-aware on purpose. A previous version stretched
-    one fixed column (x=r) across the full width of every row in the r×r
-    square, which overwrote opaque card art that happened to fall inside
-    that square — the rounded arc only covers part of it — and painted the
-    result as horizontal bands. That was visible in the PDF as smeared
-    streaks running out of every card corner. Only genuinely transparent
-    pixels should ever be touched here.
-
-    The fill colour comes from a few pixels *past* the arc boundary, not
-    the boundary pixel itself: upscaling smears the black RGB that sits
-    under the transparent corner into the first opaque pixel or two (the
-    upscaled alpha and colour boundaries don't land on exactly the same
-    pixel), so on a light-bordered card the boundary pixel is often
-    near-black. add_bleed() then stretches row 0 / column 0 ~50x into the
-    bleed border, magnifying that one contaminated pixel into a visible
-    black smear sweeping out of the corner. Median-of-three sampling past
-    the halo keeps a single stray art pixel from streaking a whole row.
-    """
-    px = img.load()
-    w, h = img.size
-    # Halo width scales with the upscale factor, and this patch scales
-    # with the image (probe_frac of it) — ~3% of the patch clears the
-    # halo at any DPI while staying well inside the border/art region.
-    skip = max(2, round(min(w, h) * 0.03))
-
-    def _lum(p) -> float:
-        return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
-
-    def _median_color(pixels) -> tuple[int, int, int]:
-        s = sorted(pixels, key=_lum)
-        return s[1][:3]
-
-    def _is_halo(p, sample_lum: float) -> bool:
-        # The artifact signature, and only the artifact signature: the
-        # upscaler blends the black under the transparent corner into the
-        # arc's rim pixels, so a bad pixel is near-black AND markedly
-        # darker than the interior right next to it. Genuinely black
-        # borders fail the second test (their interior is just as dark,
-        # and overwriting would be a no-op anyway), and genuine art
-        # detail fails the first — it stays untouched.
-        pl = _lum(p)
-        return pl < DARK_EDGE_LUM_MAX and sample_lum - pl > DARK_EDGE_DELTA_MIN
-
-    # Column-top offsets must be measured before any fill mutates alpha —
-    # the vertical scrub below needs to know where each column's
-    # transparent run originally ended.
-    col_y0 = [
-        next((y for y in range(h) if px[x, y][3] >= alpha_threshold), None)
-        for x in range(min(r, w))
-    ]
-
-    for y in range(min(r, h)):
-        # Scan the full row, not just the first r pixels: when the probe
-        # window is narrower than the corner radius there is no opaque
-        # pixel within r, and stopping early would leave the corner
-        # transparent (add_bleed would then drop it to black).
-        x0 = next((x for x in range(w) if px[x, y][3] >= alpha_threshold), None)
-        if not x0:  # row fully opaque already (x0 == 0), or no opaque pixel found
-            continue
-        # Sample diagonally inward, not along the row: near the arc's
-        # tangent point the halo band runs almost parallel to the row, so
-        # stepping horizontally can stay inside it indefinitely — stepping
-        # toward the card's interior crosses the band at its ~2px
-        # thickness no matter where on the arc this row lands.
-        color = _median_color(
-            px[min(x0 + skip * k, w - 1), min(y + skip * k, h - 1)] for k in (1, 2, 3)
-        )
-        # Fill the transparent run, then scrub the rim just past it —
-        # but only pixels carrying the black-contamination signature:
-        # they're opaque, so they survive the fill — leaving a thin dark
-        # arc line in the printed card, and (where the arc meets row 0) a
-        # dark streak stretched into the bleed right where the rounding
-        # starts. Anything that isn't the artifact keeps its art.
-        for x in range(x0):
-            px[x, y] = (*color, 255)
-        sample_lum = _lum(color)
-        for x in range(x0, min(x0 + skip, w)):
-            if _is_halo(px[x, y], sample_lum):
-                px[x, y] = (*color, 255)
-
-    # Same scrub vertically: the arc's other endpoint meets column 0 on
-    # rows that have no transparent run at all (the row loop skips them),
-    # so their halo only shows up as a column-top run.
-    for x in range(min(r, w)):
-        y0 = col_y0[x]
-        if not y0:
-            continue
-        color = _median_color(
-            px[min(x + skip * k, w - 1), min(y0 + skip * k, h - 1)] for k in (1, 2, 3)
-        )
-        sample_lum = _lum(color)
-        for y in range(y0, min(y0 + skip, h)):
-            if _is_halo(px[x, y], sample_lum):
-                px[x, y] = (*color, 255)
+# How far inside the true edge the export-time extension samples from, in
+# mm: the outermost 0.25mm of every card is re-sourced from the pixels just
+# inside it. That strip sits on the trim line and carries every edge defect
+# Scryfall's renders are known for (see postprocess.py) plus whatever the
+# upscaler smeared into the corner rims — and 0.25mm is far inside anything
+# genuine (the modern collector-info bar is ~6mm deep).
+_EDGE_INSET_MM = 0.25
 
 
-def flatten_corner_alpha(
-    image: Image.Image,
-    *,
-    probe_frac: float = 0.12,
-    alpha_threshold: int = 250,
-) -> Image.Image:
-    """Flatten the 4 small rounded-corner alpha arcs to fully opaque.
+def _inset_px(width: int, height: int) -> int:
+    """_EDGE_INSET_MM in pixels for an image that is a whole card wide."""
+    return max(1, round(min(width, height) / CARD_WIDTH_MM * _EDGE_INSET_MM))
+
+
+def flatten_corner_alpha(image: Image.Image) -> Image.Image:
+    """Flatten the rounded-corner alpha to fully opaque, and re-source the
+    outer 0.25mm strip (rim included) from just inside it.
 
     Physical proxy printing prints a full opaque rectangle then rounds the
     physical paper corners afterward with a punch tool — so the print should
-    have zero transparent/unprinted regions. For each corner: crop a small
-    probe square, reorient it to the canonical top-left case via a
-    self-inverse transpose, measure the transparent bbox from the alpha
-    channel, replicate-fill it, transpose back, and paste in place.
+    have zero transparent/unprinted regions. The transparent arcs are filled
+    with the nearest-point extension (edge_extend.extend_edges), the same
+    geometry add_bleed() uses for the bleed border, so the corner and the
+    bleed beyond it read as one continuous fan. The same pass overwrites the
+    anti-aliased rim and whatever the upscaler smeared into it (a dark arc
+    on light cards, a white arc on gold-bordered ones).
 
-    Strictly an export-time step: it belongs to the PDF pipelines only,
-    never to generation. The replicated pixels are a visible smear when
-    viewed as an image rather than composited onto a print sheet, and
-    baking them into the stored PNG is irreversible — see
+    Strictly an export-time step: it belongs to the PDF/export pipelines
+    only, never to generation. Baking the fill into the stored PNG is
+    irreversible and visible when the image is viewed on its own — see
     pipeline.py::_write_dpi_variant, which deliberately does not call this.
     """
-    img = image.convert("RGBA")
-    w, h = img.size
-    probe = max(4, round(min(w, h) * probe_frac))
-
-    corners = [
-        (None, (0, 0)),
-        (Image.Transpose.FLIP_LEFT_RIGHT, (w - probe, 0)),
-        (Image.Transpose.FLIP_TOP_BOTTOM, (0, h - probe)),
-        (Image.Transpose.ROTATE_180, (w - probe, h - probe)),
-    ]
-    for transpose_op, (px, py) in corners:
-        patch = img.crop((px, py, px + probe, py + probe))
-        # transpose_op may be Image.Transpose.FLIP_LEFT_RIGHT, whose IntEnum
-        # value is 0 (falsy) — must check "is not None", not truthiness, or
-        # that specific transpose silently gets skipped.
-        oriented = patch.transpose(transpose_op) if transpose_op is not None else patch
-        alpha = oriented.getchannel("A")
-        mask = alpha.point(lambda p: 255 if p < alpha_threshold else 0)
-        bbox = mask.getbbox()
-        if bbox is None:
-            continue
-        r = min(probe - 1, max(bbox[2], bbox[3]) + 1)
-        if r <= 0:
-            continue
-        _replicate_top_left_corner(oriented, r, alpha_threshold)
-        result = oriented.transpose(transpose_op) if transpose_op is not None else oriented
-        img.paste(result, (px, py))
-    return img
+    rgba = image.convert("RGBA")
+    radius = corner_radius_px(rgba)
+    arr = np.asarray(rgba)
+    w, h = rgba.size
+    extended = extend_edges(
+        arr[..., :3],
+        radius_px=radius,
+        inset_px=_inset_px(w, h),
+        bleed_px=0,
+        mode="nearest",
+        alpha=arr[..., 3],
+    )
+    return Image.fromarray(extended, "RGB").convert("RGBA")
 
 
-# How far past an edge to sample the replacement bleed source when the true
-# edge strip carries the phantom-dark-row artifact (see _bleed_edge_index).
-# 0.25mm clears the artifact at any DPI — a 1px row in the ~300dpi Scryfall
-# original smears to roughly the upscale factor in pixels, and 0.25mm is
-# ~3px per 300dpi — while staying far inside a genuine black bottom strip
-# (the modern collector-info bar is ~6mm deep).
-_EDGE_SCRUB_PROBE_MM = 0.25
+def add_bleed(
+    image: Image.Image,
+    *,
+    dpi: int,
+    bleed_mm: float = BLEED_MM,
+    radius_px: int | None = None,
+) -> Image.Image:
+    """Extend a bleed border on all sides. Returns an opaque RGB image.
 
+    Every bleed pixel takes the colour of the nearest point on the card's
+    rounded rectangle, inset by _EDGE_INSET_MM: straight edges stretch
+    perpendicularly, corners fan out radially from the arc. The transparent
+    corners themselves are filled the same way, so this is complete on its
+    own for an RGBA card image.
 
-def _median_lum(strip: Image.Image) -> int:
-    data = sorted(strip.convert("L").getdata())
-    return data[len(data) // 2]
-
-
-def _bleed_edge_index(
-    rgb: Image.Image, *, horizontal: bool, edge_index: int, inset_index: int
-) -> int:
-    """Pick which 1px row/column add_bleed() stretches for one edge.
-
-    Some recent Scryfall renders (the SLZ and MB2 sets, at least) ship with
-    a single near-black row baked into the bottom edge of an otherwise
-    light card — a processing artifact on Scryfall's side, not part of the
-    card. Clamp-to-edge replication magnifies that row ~50x into a solid
-    black bleed band, which is invisible on black-bordered cards but ruins
-    light-bordered ones.
-
-    Same signature test as _is_halo, applied to whole-strip medians: the
-    edge strip must be near-black AND markedly darker than a strip a probe
-    width further in. A genuine black edge (modern collector-info bars,
-    black borders) fails the second test — its interior is just as dark —
-    and pre-2006 white-border scans have clean edges and fail the first,
-    so both keep exact edge replication. Only the bleed source moves; the
-    card face keeps the artifact row Scryfall shipped (it sits on the trim
-    line, where the cut swallows it).
+    `radius_px` is the corner radius at this image's scale. Callers that
+    already flattened the corners (so the alpha no longer carries the arc)
+    must pass it; otherwise it is measured from the alpha channel, and an
+    image with no alpha — the preview thumbnails, square-cornered Custom
+    Images — gets 0, i.e. plain clamp-to-edge replication.
     """
-    w, h = rgb.size
-
-    def strip(i: int) -> Image.Image:
-        return rgb.crop((0, i, w, i + 1)) if horizontal else rgb.crop((i, 0, i + 1, h))
-
-    edge = _median_lum(strip(edge_index))
-    if (
-        edge < DARK_EDGE_LUM_MAX
-        and _median_lum(strip(inset_index)) - edge > DARK_EDGE_DELTA_MIN
-    ):
-        return inset_index
-    return edge_index
-
-
-def add_bleed(image: Image.Image, *, dpi: int, bleed_mm: float = BLEED_MM) -> Image.Image:
-    """Corner-flatten, then edge-extend a bleed border on all sides.
-
-    Returns an opaque RGB image (alpha dropped — safe once corners are
-    flattened to opaque). Uses NEAREST resampling to stretch true 1px source
-    edge strips — exact clamp-to-edge replication regardless of filter.
-    Each edge's source strip is vetted by _bleed_edge_index first, so a
-    phantom dark row on an otherwise light edge never becomes the bleed.
-    """
-    rgb = flatten_corner_alpha(image).convert("RGB")
-    w, h = rgb.size
+    rgba = image.convert("RGBA")
+    if radius_px is None:
+        radius_px = corner_radius_px(rgba)
+    arr = np.asarray(rgba)
+    w, h = rgba.size
     bleed_px = max(1, round(dpi / MM_PER_IN * bleed_mm))
-
-    canvas = Image.new("RGB", (w + 2 * bleed_px, h + 2 * bleed_px))
-    canvas.paste(rgb, (bleed_px, bleed_px))
-
-    probe = max(3, round(dpi / MM_PER_IN * _EDGE_SCRUB_PROBE_MM))
-    probe_y = min(probe, (h - 1) // 2)
-    probe_x = min(probe, (w - 1) // 2)
-    top_y = _bleed_edge_index(rgb, horizontal=True, edge_index=0, inset_index=probe_y)
-    bottom_y = _bleed_edge_index(
-        rgb, horizontal=True, edge_index=h - 1, inset_index=h - 1 - probe_y
+    extended = extend_edges(
+        arr[..., :3],
+        radius_px=radius_px,
+        inset_px=_inset_px(w, h),
+        bleed_px=bleed_px,
+        mode="nearest",
+        alpha=arr[..., 3],
     )
-    left_x = _bleed_edge_index(rgb, horizontal=False, edge_index=0, inset_index=probe_x)
-    right_x = _bleed_edge_index(
-        rgb, horizontal=False, edge_index=w - 1, inset_index=w - 1 - probe_x
-    )
-
-    R = Image.Resampling.NEAREST
-    top = rgb.crop((0, top_y, w, top_y + 1)).resize((w, bleed_px), R)
-    bottom = rgb.crop((0, bottom_y, w, bottom_y + 1)).resize((w, bleed_px), R)
-    left = rgb.crop((left_x, 0, left_x + 1, h)).resize((bleed_px, h), R)
-    right = rgb.crop((right_x, 0, right_x + 1, h)).resize((bleed_px, h), R)
-    canvas.paste(top, (bleed_px, 0))
-    canvas.paste(bottom, (bleed_px, bleed_px + h))
-    canvas.paste(left, (0, bleed_px))
-    canvas.paste(right, (bleed_px + w, bleed_px))
-
-    # Corner fills take the same vetted indices, so a scrubbed bottom edge
-    # can't leak its artifact row back in through the corner pixels.
-    tl = rgb.crop((left_x, top_y, left_x + 1, top_y + 1)).resize((bleed_px, bleed_px), R)
-    tr = rgb.crop((right_x, top_y, right_x + 1, top_y + 1)).resize(
-        (bleed_px, bleed_px), R
-    )
-    bl = rgb.crop((left_x, bottom_y, left_x + 1, bottom_y + 1)).resize(
-        (bleed_px, bleed_px), R
-    )
-    br = rgb.crop((right_x, bottom_y, right_x + 1, bottom_y + 1)).resize(
-        (bleed_px, bleed_px), R
-    )
-    canvas.paste(tl, (0, 0))
-    canvas.paste(tr, (bleed_px + w, 0))
-    canvas.paste(bl, (0, bleed_px + h))
-    canvas.paste(br, (bleed_px + w, bleed_px + h))
-    return canvas
+    return Image.fromarray(extended, "RGB")
 
 
 @dataclass
@@ -1367,17 +1195,22 @@ def _bled_card(face: FaceResult, *, export_dpi: int, bleed_mm: float) -> Image.I
     placement. Encoding is the caller's job — it also owns the optional
     180° rotation, and rotating after encoding would mean a decode."""
     with Image.open(face.out_path) as raw:
+        rgba = raw.convert("RGBA")
+        # Measured before flattening: once the corners are opaque the alpha
+        # no longer carries the arc, and add_bleed() needs the radius to fan
+        # the bleed out of the corners rather than clamp to a square one.
+        radius = corner_radius_px(rgba)
         # Flatten the rounded-corner alpha to opaque BEFORE any resize —
         # resizing while corners are still transparent lets the resample
         # filter (LANCZOS) blend the transparent region's RGB into the
         # opaque body right at the boundary (classic alpha fringing),
-        # baking in a visible smear at every corner. add_bleed() below
-        # also flattens internally, but that's now a safe no-op
-        # (already-opaque corners have nothing left to flatten).
-        img = flatten_corner_alpha(raw.convert("RGBA"))
+        # baking in a visible smear at every corner.
+        img = flatten_corner_alpha(rgba)
+        native_width = rgba.width
     if export_dpi != face.dpi:
         img = _resize_to_dpi(img, export_dpi)
-    return add_bleed(img, dpi=export_dpi, bleed_mm=bleed_mm)
+        radius = round(radius * img.width / native_width)
+    return add_bleed(img, dpi=export_dpi, bleed_mm=bleed_mm, radius_px=radius)
 
 
 def build_pdf(

@@ -31,6 +31,7 @@ from proxy_scaler.pdf_layout import (
     fit_cover,
     mirror_page_index,
     render_back_image,
+    _inset_px,
     flatten_corner_alpha,
     match_quantities,
     paginate,
@@ -299,67 +300,78 @@ def test_flatten_corner_alpha() -> None:
     assert flattened.getpixel((w // 2, h // 2)) == (10, 20, 30, 255)
 
 
-def test_flatten_corner_fill_ignores_dark_halo_on_arc() -> None:
-    """Regression guard for the black-smear-in-bleed bug on light cards:
-    upscaling smears the black RGB under the transparent corner into the
-    first opaque pixel or two along the arc, so the fill colour must be
-    sampled past that halo, never from the boundary pixel itself —
-    add_bleed() magnifies whatever lands on row 0 / column 0 ~50x into
-    the bleed border."""
-    w = h = 400
-    radius = 40
+def _halo_card(halo: tuple[int, int, int]) -> tuple[Image.Image, int]:
+    """A light 1000px card with a transparent top-left arc and a 2px halo
+    of `halo` colour on the first opaque pixels along it, in both
+    directions — the way an upscaled card actually arrives (the RGB-only
+    upscaler smears whatever sat under the transparent corner into the
+    rim). Proportions matter: a real 4x upscale is ~3000px wide with a
+    ~3px halo against a 12px (0.25mm) inset; at 1000px the inset is 4px."""
+    w = h = 1000
+    radius = 64
     light = (230, 225, 210)
     img = Image.new("RGBA", (w, h), (*light, 255))
     px = img.load()
-    # Transparent quarter-circle cutout at the top-left…
     for y in range(radius):
         for x in range(radius):
             center_dx, center_dy = radius - x, radius - y
             if center_dx * center_dx + center_dy * center_dy > radius * radius:
                 px[x, y] = (0, 0, 0, 0)
-    # …with a 2px near-black halo on the first opaque pixels along the
-    # arc — in both directions, the way an upscaled light-bordered card
-    # actually arrives. The column-top pixels near (0, radius) sit on
-    # rows with no transparent run at all, so only the vertical scrub
-    # ever reaches them.
     for y in range(radius):
         x0 = next(x for x in range(w) if px[x, y][3] == 255)
         for x in (x0, x0 + 1):
-            px[x, y] = (25, 25, 25, 255)
+            px[x, y] = (*halo, 255)
     for x in range(radius):
         y0 = next(y for y in range(h) if px[x, y][3] == 255)
         for y in (y0, y0 + 1):
-            px[x, y] = (25, 25, 25, 255)
+            px[x, y] = (*halo, 255)
+    return img, radius
 
-    # A genuine art pixel sitting inside the scrub band, right past the
-    # halo — clearly not near-black, so the scrub must leave it alone
-    # (only pixels with the black-contamination signature get rewritten).
-    art_y = 5
-    art_x = next(x for x in range(w) if px[x, art_y][3] == 255) + 2
-    px[art_x, art_y] = (255, 140, 0, 255)
 
-    flattened = flatten_corner_alpha(img)
-
-    assert flattened.getpixel((art_x, art_y)) == (255, 140, 0, 255), (
-        "scrub overwrote genuine art detail next to the arc"
-    )
+def test_flatten_corner_fill_removes_halo_of_any_colour() -> None:
+    """Regression guard for the smear-in-bleed bugs on light and gold
+    cards: upscaling smears whatever RGB sits under the transparent corner
+    into the first opaque pixel or two along the arc — black on most
+    cards, WHITE on the gold-border template — and add_bleed() magnifies
+    whatever lands on the outer row ~50x into the bleed border. The fill
+    is sourced from just inside the rim, with no colour test, so the halo
+    is gone whichever way it goes; art past the inset strip is untouched."""
 
     def lum(p):
         return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
 
-    # The whole corner region — filled arc, the arc line itself, and both
-    # spots where the rounding starts — must be opaque and light: no fill
-    # that took the halo colour, and no surviving halo pixels (they're what
-    # add_bleed stretches into black streaks at the arc's endpoints).
-    for y in range(radius + 4):
-        for x in range(radius + 4):
-            p = flattened.getpixel((x, y))
-            assert p[3] == 255, f"({x},{y}) still transparent"
-            assert lum(p) > 150, f"({x},{y}) is halo-dark: {p[:3]}"
+    for halo, is_clean in (((25, 25, 25), lambda p: lum(p) > 150), ((255, 255, 255), lambda p: lum(p) < 240)):
+        img, radius = _halo_card(halo)
+        w, h = img.size
+        px = img.load()
+        inset = _inset_px(w, h)
+        # A genuine art pixel just past the re-sourced strip must survive:
+        # 3px inside the inset arc, on the 45° diagonal (the strip is
+        # radial, so "past it" is measured toward the arc's centre, not
+        # along the row).
+        rr = radius - inset
+        art_x = art_y = round(radius - (rr - 3) / 2**0.5)
+        px[art_x, art_y] = (255, 140, 0, 255)
 
-    # And the bleed built from it stays light at the corner too.
-    bled = add_bleed(img, dpi=300)
-    assert lum(bled.getpixel((2, 2))) > 150
+        flattened = flatten_corner_alpha(img)
+
+        assert flattened.getpixel((art_x, art_y)) == (255, 140, 0, 255), (
+            f"fill overwrote genuine art detail past the inset strip (halo {halo})"
+        )
+        # The whole corner region — filled arc, the arc line itself, and
+        # both spots where the rounding starts — must be opaque and free of
+        # the halo colour.
+        for y in range(radius + 4):
+            for x in range(radius + 4):
+                if (x, y) == (art_x, art_y):
+                    continue
+                p = flattened.getpixel((x, y))
+                assert p[3] == 255, f"({x},{y}) still transparent"
+                assert is_clean(p), f"({x},{y}) kept the halo: {p[:3]}"
+
+        # And the bleed built from it is halo-free at the corner too.
+        bled = add_bleed(img, dpi=300)
+        assert is_clean(bled.getpixel((2, 2)))
 
 
 def test_build_pdf_flattens_corners_before_resizing_for_export_dpi(tmp_path) -> None:
@@ -422,12 +434,18 @@ def test_build_pdf_flattens_corners_before_resizing_for_export_dpi(tmp_path) -> 
 def test_add_bleed_dimensions_and_replicate() -> None:
     w, h = 40, 40
     img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-    for x in range(w):
-        img.putpixel((x, 0), (255, 0, 0, 255))
-        img.putpixel((x, h - 1), (0, 255, 0, 255))
-    for y in range(h):
-        img.putpixel((0, y), (0, 0, 255, 255))
-        img.putpixel((w - 1, y), (255, 255, 0, 255))
+    # Edge bands wider than the inset strip, so the bleed is sourced from
+    # inside the band (the outermost row itself is on the trim line and is
+    # re-sourced, see test_add_bleed_scrubs_phantom_dark_bottom_row).
+    band = _inset_px(w, h) + 2
+    for k in range(band):
+        for x in range(w):
+            img.putpixel((x, k), (255, 0, 0, 255))
+            img.putpixel((x, h - 1 - k), (0, 255, 0, 255))
+    for k in range(band):
+        for y in range(band, h - band):
+            img.putpixel((k, y), (0, 0, 255, 255))
+            img.putpixel((w - 1 - k, y), (255, 255, 0, 255))
 
     dpi = 100
     bleed_px = round(dpi / MM_PER_IN * BLEED_MM)
@@ -437,23 +455,71 @@ def test_add_bleed_dimensions_and_replicate() -> None:
     assert result.size == (w + 2 * bleed_px, h + 2 * bleed_px)
     assert result.mode == "RGB"
 
-    assert result.getpixel((bleed_px + 5, 0)) == (255, 0, 0)  # top strip
-    assert result.getpixel((bleed_px + 5, result.size[1] - 1)) == (0, 255, 0)  # bottom
-    assert result.getpixel((0, bleed_px + 5)) == (0, 0, 255)  # left strip
-    assert result.getpixel((result.size[0] - 1, bleed_px + 5)) == (255, 255, 0)  # right
+    mid = bleed_px + w // 2
+    assert result.getpixel((mid, 0)) == (255, 0, 0)  # top strip
+    assert result.getpixel((mid, result.size[1] - 1)) == (0, 255, 0)  # bottom
+    assert result.getpixel((0, mid)) == (0, 0, 255)  # left strip
+    assert result.getpixel((result.size[0] - 1, mid)) == (255, 255, 0)  # right
+    # The card body is copied verbatim.
+    assert result.getpixel((mid, mid)) == (0, 0, 0)
+
+
+def test_add_bleed_square_corners_clamp_to_the_corner_pixel() -> None:
+    # No alpha → radius 0 → the old clamp-to-edge behaviour: each bleed
+    # corner square is the card's (inset) corner pixel, not a fan.
+    w, h = 60, 60
+    img = Image.new("RGB", (w, h), (40, 40, 40))
+    for y in range(6):
+        for x in range(6):
+            img.putpixel((x, y), (200, 30, 30))
+    bled = add_bleed(img, dpi=100)
+    assert bled.getpixel((0, 0)) == (200, 30, 30)
+    assert bled.getpixel((bled.width - 1, bled.height - 1)) == (40, 40, 40)
+
+
+def test_add_bleed_fans_out_of_rounded_corners() -> None:
+    """The bleed outside a rounded corner is sourced radially from the arc
+    (nearest boundary point), not clamped to a square corner: a marker on
+    the arc at 45° must appear along the corner's diagonal in the bleed,
+    and the corner square must not be one flat colour."""
+    w, h, radius = 300, 300, 40
+    img = _rounded_rect_rgba(w, h, radius)
+    px = img.load()
+    inset = _inset_px(w, h)
+    rr = radius - inset
+    # Marker on the inset boundary at 45° from the top-left arc's centre.
+    mx = round(radius - rr / 2**0.5)
+    my = round(radius - rr / 2**0.5)
+    for dx in range(-2, 3):
+        for dy in range(-2, 3):
+            px[mx + dx, my + dy] = (250, 20, 20, 255)
+
+    dpi = 300
+    bleed_px = round(dpi / MM_PER_IN * BLEED_MM)
+    bled = add_bleed(img, dpi=dpi)
+    # Every pixel on the diagonal from the sheet corner to the marker maps
+    # back to the marker.
+    for k in range(0, bleed_px + radius - int(rr / 2**0.5) - 3):
+        assert bled.getpixel((k, k)) == (250, 20, 20), k
+    # Off the diagonal the fan carries the plain card colour.
+    assert bled.getpixel((bleed_px + 2, 0)) == (10, 20, 30)
+    assert bled.getpixel((0, bleed_px + 2)) == (10, 20, 30)
 
 
 def test_add_bleed_scrubs_phantom_dark_bottom_row() -> None:
     """Regression guard for the black-bottom-bleed bug on light cards:
     some recent Scryfall renders (SLZ, MB2) bake a single near-black row
     into the bottom edge of an otherwise bone-white card. The bleed must
-    be sourced from past that row, while the card face itself keeps it —
-    the tool ships Scryfall's pixels untampered inside the trim line."""
+    be sourced from past that row. The outer inset strip of the card face
+    (on the trim line, where the cut swallows it) is re-sourced the same
+    way; everything inside it ships as Scryfall's pixels, untampered."""
     w, h = 400, 560
     light = (243, 239, 227)
     img = Image.new("RGBA", (w, h), (*light, 255))
     for x in range(w):
         img.putpixel((x, h - 1), (19, 12, 12, 255))
+    marker = (200, 60, 60)
+    img.putpixel((w // 2, h - 1 - _inset_px(w, h) - 1), (*marker, 255))
 
     dpi = 300
     bleed_px = round(dpi / MM_PER_IN * BLEED_MM)
@@ -466,8 +532,10 @@ def test_add_bleed_scrubs_phantom_dark_bottom_row() -> None:
     assert lum(bled.getpixel((bled.size[0] // 2, bled.size[1] - 1))) > 150
     assert lum(bled.getpixel((2, bled.size[1] - 2))) > 150
     assert lum(bled.getpixel((bled.size[0] - 2, bled.size[1] - 2))) > 150
-    # The artifact row inside the card face is preserved verbatim.
-    assert bled.getpixel((bleed_px + w // 2, bleed_px + h - 1)) == (19, 12, 12)
+    # The artifact row on the trim line is gone from the card face too…
+    assert lum(bled.getpixel((bleed_px + w // 2, bleed_px + h - 1))) > 150
+    # …and the first pixel past the inset strip is exactly what was there.
+    assert bled.getpixel((bleed_px + w // 2, bleed_px + h - 1 - _inset_px(w, h) - 1)) == marker
 
 
 def test_add_bleed_keeps_genuine_black_bottom_strip() -> None:

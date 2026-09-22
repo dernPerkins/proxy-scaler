@@ -1,9 +1,10 @@
 """Download-time cleanup of Scryfall originals (proxy_scaler/postprocess.py).
 
-Synthetic cards cover the four real-world categories measured in
-cards.bleed-samples.txt: phantom-row bone-white renders (SLZ/MB2), modern
-white borders with a genuine black collector bar, clean vintage scans, and
-ordinary black-border cards.
+Synthetic cards cover the real-world categories measured in
+cards.bleed-samples.txt: phantom-row bone-white renders (SLZ/MB2), the
+phantom white column (Fellwar Stone), the gold-border template's white
+corner rim and lone white edge pixels, modern white borders with a genuine
+black collector bar, clean vintage scans, and ordinary black-border cards.
 """
 
 from __future__ import annotations
@@ -13,12 +14,14 @@ import io
 from PIL import Image
 
 from proxy_scaler.postprocess import (
-    _MAX_PHANTOM_EDGE_PX,
+    FIXUP_NAME,
+    RIM_INSET_PX,
     clean_original_png,
 )
 
 _BORDER = (243, 239, 227)  # bone white
 _PHANTOM = (19, 12, 12)  # measured SLZ bottom-row color
+_GOLD = (170, 136, 72)  # measured gold-template border colour
 
 
 def _card(
@@ -30,6 +33,7 @@ def _card(
     underlay: tuple[int, int, int] = (0, 0, 0),
     phantom_edges: tuple[str, ...] = (),
     phantom_px: int = 1,
+    phantom_color: tuple[int, int, int] = _PHANTOM,
     bar_px: int = 0,
 ) -> Image.Image:
     img = Image.new("RGBA", (w, h), (*border, 255))
@@ -57,7 +61,7 @@ def _card(
                 coords = [(w - 1 - k, y) for y in range(h)]
             for c in coords:
                 if px[c][3] == 255:
-                    px[c] = (*_PHANTOM, 255)
+                    px[c] = (*phantom_color, 255)
     return img
 
 
@@ -75,15 +79,19 @@ def _alpha_bytes(png_bytes: bytes) -> bytes:
     return Image.open(io.BytesIO(png_bytes)).getchannel("A").tobytes()
 
 
+def _decode(png_bytes: bytes) -> Image.Image:
+    return Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+
+
 def test_phantom_bottom_row_scrubbed_alpha_untouched() -> None:
-    # underlay == border so only fixup A can fire — isolates the scrub.
+    # underlay == border so the corners contribute nothing — isolates the
+    # edge strip.
     raw = _png(_card(phantom_edges=("bottom",), underlay=_BORDER))
     result = clean_original_png(raw)
-    assert result.applied == ("edge_row_scrub",)
+    assert result.applied == (FIXUP_NAME,)
     assert _alpha_bytes(result.png_bytes) == _alpha_bytes(raw)
-    out = Image.open(io.BytesIO(result.png_bytes))
-    px = out.load()
-    w, h = out.size
+    px = _decode(result.png_bytes).load()
+    w, h = 100, 140
     assert _lum(px[w // 2, h - 1]) > 150
     assert px[w // 2, h - 1][:3] == _BORDER
 
@@ -96,43 +104,59 @@ def test_phantom_rows_scrubbed_on_every_edge() -> None:
     ):
         raw = _png(_card(phantom_edges=(edge,), underlay=_BORDER))
         result = clean_original_png(raw)
-        assert result.applied == ("edge_row_scrub",), edge
-        out = Image.open(io.BytesIO(result.png_bytes))
+        assert result.applied == (FIXUP_NAME,), edge
+        out = _decode(result.png_bytes)
         w, h = out.size
         assert _lum(out.getpixel(probe(w, h))) > 150, edge
 
 
-def test_two_px_phantom_run_fully_scrubbed() -> None:
-    raw = _png(_card(phantom_edges=("bottom",), phantom_px=2, underlay=_BORDER))
+def test_phantom_run_up_to_inset_fully_scrubbed() -> None:
+    # The whole outer strip is re-sourced from just inside it, so any run
+    # up to RIM_INSET_PX deep disappears — no per-row colour test involved.
+    raw = _png(
+        _card(phantom_edges=("bottom",), phantom_px=RIM_INSET_PX, underlay=_BORDER)
+    )
     result = clean_original_png(raw)
-    assert result.applied == ("edge_row_scrub",)
-    out = Image.open(io.BytesIO(result.png_bytes))
-    px = out.load()
-    w, h = out.size
-    assert _lum(px[w // 2, h - 1]) > 150
-    assert _lum(px[w // 2, h - 2]) > 150
+    assert result.applied == (FIXUP_NAME,)
+    px = _decode(result.png_bytes).load()
+    w, h = 100, 140
+    for k in range(RIM_INSET_PX):
+        assert px[w // 2, h - 1 - k][:3] == _BORDER, k
 
 
-def test_dark_band_deeper_than_max_is_left_alone() -> None:
-    # A run past _MAX_PHANTOM_EDGE_PX is card design, not the artifact —
-    # partial scrubbing of a real black bar would be worse than none.
+def test_phantom_white_column_on_dark_card_scrubbed() -> None:
+    # Fellwar Stone (sld 7062): a near-white 1px column on the left edge of
+    # a dark borderless print — the SLZ defect inverted. The old dark-only
+    # signature never saw it; the geometric strip replacement does not care
+    # which way the defect goes.
+    dark = (30, 34, 40)
     raw = _png(
         _card(
-            phantom_edges=("bottom",),
-            phantom_px=_MAX_PHANTOM_EDGE_PX + 1,
-            underlay=_BORDER,
+            border=dark,
+            underlay=dark,
+            phantom_edges=("left",),
+            phantom_color=(240, 240, 240),
         )
     )
     result = clean_original_png(raw)
-    assert result.applied == ()
-    assert result.png_bytes is raw
+    assert result.applied == (FIXUP_NAME,)
+    px = _decode(result.png_bytes).load()
+    assert px[0, 70][:3] == dark
 
 
-def test_genuine_collector_bar_is_byte_identical() -> None:
+def test_genuine_collector_bar_keeps_its_black_edge() -> None:
+    # A real ~6mm black bar is far deeper than the inset strip: mirroring
+    # within it changes nothing on the edge row. (The bytes still change —
+    # the bone-white underlay beneath the bottom corners now mirrors the
+    # bar's black, which is exactly what the upscaler should see there.)
     raw = _png(_card(bar_px=20, underlay=_BORDER))
     result = clean_original_png(raw)
-    assert result.applied == ()
-    assert result.png_bytes is raw
+    assert _alpha_bytes(result.png_bytes) == _alpha_bytes(raw)
+    px = _decode(result.png_bytes).load()
+    w, h = 100, 140
+    for k in range(RIM_INSET_PX + 1):
+        assert px[w // 2, h - 1 - k][:3] == (10, 10, 10), k
+    assert px[w // 2, h - 30][:3] == _BORDER
 
 
 def test_clean_opaque_card_is_byte_identical() -> None:
@@ -143,21 +167,21 @@ def test_clean_opaque_card_is_byte_identical() -> None:
 
 
 def test_black_border_card_with_black_underlay_is_byte_identical() -> None:
-    # Sampled border ≈ (10,10,10), underlay (0,0,0): inside the delta gate,
-    # so the vast majority of real cards never get re-encoded.
+    # Border (10,10,10), underlay (0,0,0): inside the no-op delta gate, so
+    # the vast majority of real cards never get re-encoded.
     raw = _png(_card(border=(10, 10, 10), underlay=(0, 0, 0)))
     result = clean_original_png(raw)
     assert result.applied == ()
     assert result.png_bytes is raw
 
 
-def test_underlay_recolored_to_border_alpha_untouched() -> None:
+def test_underlay_takes_border_colour_alpha_untouched() -> None:
     raw = _png(_card(underlay=(0, 0, 0)))
     result = clean_original_png(raw)
-    assert result.applied == ("underlay_recolor",)
+    assert result.applied == (FIXUP_NAME,)
     assert _alpha_bytes(result.png_bytes) == _alpha_bytes(raw)
-    before = Image.open(io.BytesIO(raw))
-    after = Image.open(io.BytesIO(result.png_bytes))
+    before = _decode(raw)
+    after = _decode(result.png_bytes)
     bpx, apx = before.load(), after.load()
     w, h = after.size
     for x in range(w):
@@ -165,7 +189,61 @@ def test_underlay_recolored_to_border_alpha_untouched() -> None:
             if bpx[x, y][3] == 0:
                 assert apx[x, y][:3] == _BORDER, (x, y)
             else:
+                # Flat border: the mirrored strip is the same colour, so
+                # every opaque pixel is unchanged.
                 assert apx[x, y] == bpx[x, y], (x, y)
+
+
+def test_white_corner_rim_takes_border_colour() -> None:
+    # The gold-border template: the arc's partial-alpha rim pixels are
+    # near-white, and a bright fully-opaque line sits one pixel inside the
+    # arc. Both must come out border-coloured so the upscaler never sees a
+    # white arc to smear. Alpha stays byte-identical.
+    img = _card(border=_GOLD, underlay=(254, 255, 255), radius=16)
+    px = img.load()
+    w, h = img.size
+    rim: list[tuple[int, int]] = []
+    for y in range(16):
+        row = [x for x in range(w) if px[x, y][3] == 255]
+        x0 = row[0]
+        px[x0 - 1, y] = (255, 255, 255, 120)  # anti-aliased rim
+        px[x0, y] = (230, 220, 200, 255)  # bright opaque highlight line
+        rim.extend([(x0 - 1, y), (x0, y)])
+    raw = _png(img)
+    result = clean_original_png(raw)
+    assert result.applied == (FIXUP_NAME,)
+    assert _alpha_bytes(result.png_bytes) == _alpha_bytes(raw)
+    out = _decode(result.png_bytes).load()
+    for x, y in rim:
+        assert out[x, y][:3] == _GOLD, (x, y, out[x, y])
+    # Deep interior untouched.
+    assert out[w // 2, h // 2][:3] == _GOLD
+
+
+def test_lone_white_edge_pixel_scrubbed() -> None:
+    # Older gold template: a single white opaque pixel on the top and
+    # bottom edge rows. It used to stretch into a white streak across the
+    # bleed.
+    img = _card(border=_GOLD, underlay=_GOLD)
+    px = img.load()
+    w, h = img.size
+    px[w // 2, 0] = (255, 255, 255, 255)
+    px[w // 2, h - 1] = (255, 255, 255, 255)
+    result = clean_original_png(_png(img))
+    assert result.applied == (FIXUP_NAME,)
+    out = _decode(result.png_bytes).load()
+    assert out[w // 2, 0][:3] == _GOLD
+    assert out[w // 2, h - 1][:3] == _GOLD
+
+
+def test_rgb_png_stays_rgb() -> None:
+    # A PNG that never had alpha must not come back with one grafted on.
+    img = _card(radius=0, phantom_edges=("bottom",)).convert("RGB")
+    result = clean_original_png(_png(img))
+    assert result.applied == (FIXUP_NAME,)
+    out = Image.open(io.BytesIO(result.png_bytes))
+    assert out.mode == "RGB"
+    assert out.getpixel((50, 139)) == _BORDER
 
 
 def test_tiny_image_passes_through_byte_identical() -> None:
