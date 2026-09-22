@@ -41,6 +41,15 @@ ORIGINAL_MODEL = "original"
 CUSTOM_SOURCE_MODEL = "custom_source"
 
 
+# Upper bound on a declared or requested bleed, per side. Anything past
+# this is a typo, not a print spec (MakePlayingCards' is 3.175 mm).
+MAX_BLEED_MM = 10.0
+
+# MakePlayingCards' bleed: 1/8 in per side (63x88 trim -> 69.35x94.35).
+# The default for "this image already includes bleed" in both libraries.
+MPC_BLEED_MM = 3.175
+
+
 def target_pixels(dpi: int) -> tuple[int, int]:
     """Exact pixel size for a given print DPI at card dimensions."""
     return (
@@ -49,25 +58,44 @@ def target_pixels(dpi: int) -> tuple[int, int]:
     )
 
 
-def dpi_at_card_size(width: int, height: int) -> float:
+def bled_target_pixels(dpi: float, bleed_mm: float) -> tuple[int, int]:
+    """Pixel size of one card *including* a bleed of bleed_mm on every
+    side. bled_target_pixels(dpi, 0) == target_pixels(dpi)."""
+    return (
+        round((CARD_WIDTH_MM + 2 * bleed_mm) / MM_PER_IN * dpi),
+        round((CARD_HEIGHT_MM + 2 * bleed_mm) / MM_PER_IN * dpi),
+    )
+
+
+def dpi_at_card_size(width: int, height: int, bleed_mm: float = 0.0) -> float:
     """Effective print DPI an image achieves across a 63×88mm card, using
     its longer edge against the card's longer edge.
 
-    Mirrored in the desktop client (back_images.rs::dpi_at_card_size) so
-    the two halves never disagree about whether an image is low-res.
+    `bleed_mm` is the bleed the image is declared to carry per side: a
+    pre-bled file spans (88 + 2*bleed) mm on its long edge, so measuring
+    it against 88 mm would over-report its resolution by that ratio.
+
+    Mirrored in the desktop client (back_images.rs::dpi_at_card_size and
+    custom_images.rs) so the two halves never disagree about whether an
+    image is low-res.
     """
-    return max(width, height) / (CARD_HEIGHT_MM / MM_PER_IN)
+    return max(width, height) / ((CARD_HEIGHT_MM + 2 * bleed_mm) / MM_PER_IN)
 
 
-def card_aspect_crop_size(width: int, height: int) -> tuple[int, int]:
-    """Largest 63:88 box that fits inside (width, height).
+def card_aspect_crop_size(
+    width: int, height: int, bleed_mm: float = 0.0
+) -> tuple[int, int]:
+    """Largest 63:88 box (or, with bleed_mm, the largest
+    (63+2b):(88+2b) box) that fits inside (width, height).
 
     Used as the target for a cover-crop of a user-supplied image, so the
     crop keeps every pixel it can in the limiting axis rather than
     resampling the whole image down to some fixed size.
     """
-    scale = min(width / CARD_WIDTH_MM, height / CARD_HEIGHT_MM)
-    return max(1, round(CARD_WIDTH_MM * scale)), max(1, round(CARD_HEIGHT_MM * scale))
+    w_mm = CARD_WIDTH_MM + 2 * bleed_mm
+    h_mm = CARD_HEIGHT_MM + 2 * bleed_mm
+    scale = min(width / w_mm, height / h_mm)
+    return max(1, round(w_mm * scale)), max(1, round(h_mm * scale))
 
 
 def native_scale_for_dpi(dpi: int, model: UpscaleModel) -> int:

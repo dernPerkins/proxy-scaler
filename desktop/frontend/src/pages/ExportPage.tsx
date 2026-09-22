@@ -112,6 +112,7 @@ export default function ExportPage() {
       // The Back Library's own declaration about the file, same as the
       // PDF tab sends — the server cover-fits rather than double-bleeds.
       back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
+      back_image_bleed_mm: selectedBack?.includes_bleed ? selectedBack.bleed_mm : null,
     };
   }
 

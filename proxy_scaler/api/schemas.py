@@ -390,6 +390,12 @@ class PdfLayoutIn(BaseModel):
     # multi-MB base64 blob.
     back_image_hash: str | None = None
     back_image_includes_bleed: bool = False
+    # How much bleed (mm per side) the Selected Back carries when it
+    # declares some. With it, the renderer trims the file's own bleed to
+    # the project's, or tops it up — exact for any source. Without it
+    # (older clients) the flag alone means "fit the whole file to the
+    # bled box", the pre-0.3.3 behaviour.
+    back_image_bleed_mm: float | None = Field(default=None, ge=0, le=10)
     # Preview-only: render the Back Page of page 1 instead of its front,
     # mirrored exactly as the renderer would. Ignored by the render routes.
     preview_back_page: bool = False
@@ -563,6 +569,7 @@ class ExportZipIn(BaseModel):
     # Back already carries its own bleed, so with_bleed cover-fits it to
     # the bled size instead of edge-extending a second border.
     back_image_includes_bleed: bool = False
+    back_image_bleed_mm: float | None = Field(default=None, ge=0, le=10)
 
 
 class ExportZipPreviewOut(BaseModel):
@@ -745,6 +752,11 @@ class CustomImageOut(BaseModel):
     # client shows, never a block — and unlike a Back Image, the user has
     # a real remedy beyond finding a better file: upscale it.
     low_resolution: bool = False
+    # The bleed (mm per side) the stored PNG was cropped to carry, by the
+    # client's declaration at upload. 0.0 for a plain card-aspect upload.
+    # The client compares this with its own declaration on every sync and
+    # re-uploads on a mismatch.
+    bleed_mm: float = 0.0
 
 
 class DeleteCustomOut(BaseModel):

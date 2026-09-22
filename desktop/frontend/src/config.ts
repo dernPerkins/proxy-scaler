@@ -212,6 +212,16 @@ export const CUTTER_MARKS_MIN_SERVER_VERSION = "0.3.0";
 // it.
 export const EXPORT_OPTIONS_MIN_SERVER_VERSION = "0.3.1";
 
+// A Custom Image declared to include bleed is uploaded with
+// ?bleed_mm= and the server crops it to the bled box; a server without
+// that query parameter ignores it and crops the file to plain card
+// aspect, so the print would be a shrunken card with its own bleed baked
+// in — the silent kind of failure. Rust also refuses to sync such an
+// image to a server whose status carries no bleed_mm, but the version
+// floor gives the clear message first. 0.3.3 because that is the release
+// it ships in; packaging/set-version.py must never rewrite it.
+export const CUSTOM_BLEED_MIN_SERVER_VERSION = "0.3.3";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -273,6 +283,16 @@ export function serverSupportsOriginals(serverVersion: string | null): boolean {
 export function serverSupportsCustomImages(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, CUSTOM_IMAGES_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server honour a Custom Image's declared bleed
+ *  (POST /api/customs/{hash}?bleed_mm=)? Same null/unparseable semantics
+ *  as serverSupportsBackPrinting. Only matters when some custom card in
+ *  play is flagged; unflagged images keep working against older servers. */
+export function serverSupportsCustomBleed(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, CUSTOM_BLEED_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

@@ -324,6 +324,11 @@ export const projectApi = {
   setBackImageIncludesBleed: (id: number, includesBleed: boolean) =>
     invokeCommand<void>("set_back_image_includes_bleed", { id, includesBleed }),
 
+  /** The declaration with its amount: how much bleed the file carries,
+   *  per side, when it carries some. */
+  setBackImageBleed: (id: number, includesBleed: boolean, bleedMm: number) =>
+    invokeCommand<void>("set_back_image_bleed", { id, includesBleed, bleedMm }),
+
   /** How many projects have this back selected — the delete confirmation
    *  says so out loud, because those projects end up with NO back rather
    *  than inheriting a replacement. */
@@ -372,6 +377,12 @@ export const projectApi = {
 
   setCustomImageLabel: (id: number, label: string) =>
     invokeCommand<void>("set_custom_image_label", { id, label }),
+
+  /** Declare how much bleed the file already carries (mm per side). Takes
+   *  effect on the server at the next sync, which re-uploads under the new
+   *  amount and discards upscales made under the old one. */
+  setCustomImageBleed: (id: number, includesBleed: boolean, bleedMm: number) =>
+    invokeCommand<void>("set_custom_image_bleed", { id, includesBleed, bleedMm }),
 
   /** How many project cards use this image — the delete confirmation says
    *  so out loud, because those cards are deleted with it. Unlike a Back

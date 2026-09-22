@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from proxy_scaler import backs, db, pdf_jobs
+from proxy_scaler import backs, customs, db, pdf_jobs
 from proxy_scaler.api.routers import export as export_router
 from proxy_scaler.dpi import dpi_at_card_size, target_pixels
 from proxy_scaler.pdf_layout import _bled_pixels
@@ -62,27 +62,42 @@ def _seed_face(
     total_faces: int | None = None,
     image: Image.Image | None = None,
     suffix: str = ".png",
+    custom_hash: str | None = None,
+    custom_bleed_mm: float = 0.0,
 ) -> Path:
     """Fakes one completed face the way the worker would, with a
     distinctly-colored PNG so a ZIP entry's bytes identify their source.
     `image` replaces the flat fill; `suffix` picks the stored file type
-    (a custom upload can be a JPEG)."""
-    img_path = tmp_path / f"{scryfall_id}-{face_index}-{dpi}{suffix}"
+    (a custom upload can be a JPEG). With `custom_hash` the face is a
+    Custom Image instead of a printing, and `custom_bleed_mm` writes the
+    server-side sidecar that declares how much bleed its file carries
+    (cwd-relative customs/, so run after the fixture's chdir)."""
+    stem = custom_hash[:8] if custom_hash else scryfall_id
+    img_path = tmp_path / f"{stem}-{face_index}-{dpi}{suffix}"
     if image is None:
         image = Image.new("RGBA", (200, 280), color)
     if suffix == ".jpg":
         image = image.convert("RGB")
     image.save(img_path)
+    if custom_hash:
+        scryfall_id = None  # type: ignore[assignment]
+        set_code = collector_number = ""
+        png_url = ""
+        if custom_bleed_mm > 0:
+            customs.write_bleed_mm(custom_hash, custom_bleed_mm)
+    else:
+        png_url = f"https://example.com/{scryfall_id}.png"
     result = FaceResult(
         out_path=img_path,
         original_path=img_path,
         scryfall_id=scryfall_id,
+        custom_hash=custom_hash,
         face_index=face_index,
         face_name=name,
         card_name=name,
         set_code=set_code,
         collector_number=collector_number,
-        png_url=f"https://example.com/{scryfall_id}.png",
+        png_url=png_url,
         dpi=dpi,
         model="ultrasharp_v2",
         total_faces=total_faces,
@@ -92,13 +107,14 @@ def _seed_face(
         project_tag=project_tag,
         status="done",
         scryfall_id=scryfall_id,
+        custom_hash=custom_hash,
         face_index=face_index,
         face_label=None,
         face_name=name,
         card_name=name,
         set_code=set_code,
         collector_number=collector_number,
-        png_url=f"https://example.com/{scryfall_id}.png",
+        png_url=png_url,
         dpi=dpi,
         model="ultrasharp_v2",
         tile_size=0,
@@ -834,3 +850,83 @@ def test_export_job_cancel_unlinks_the_half_built_archive(
 
     assert client.post("/api/export/zip/jobs/nope/cancel").status_code == 404
     assert client.get("/api/export/zip/jobs/nope").status_code == 404
+
+
+# --- Pre-bled files: the declared bleed is used, never doubled ------------
+
+CUSTOM_HASH = "c" * 64
+
+
+def _pre_bled(size: tuple[int, int], image_bleed_mm: float) -> Image.Image:
+    """A file that already carries `image_bleed_mm` per side: green border
+    of exactly that width around a magenta trim area."""
+    img = Image.new("RGB", size, (0, 200, 0))
+    bx = round(size[0] / (63 + 2 * image_bleed_mm) * image_bleed_mm)
+    by = round(size[1] / (88 + 2 * image_bleed_mm) * image_bleed_mm)
+    img.paste((255, 0, 255), (bx, by, size[0] - bx, size[1] - by))
+    return img
+
+
+def test_pre_bled_custom_front_is_trimmed_to_the_requested_bleed(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """An MPC Fill custom front (3.175 mm of bleed in the file) exported
+    at 3 mm: the archive image is exactly the 3 mm bled box, its border is
+    the file's own, and the trim content is not shrunk — 12 px in at 800
+    DPI is still border, 120 px in is the design. Without bleed the same
+    face ships trim sized."""
+    db_path = tmp_path / "test.db"
+    # 218x296 is the 3.175 mm bled aspect ((63+6.35):(88+6.35)) — what
+    # the server stores for a declared upload.
+    _seed_face(
+        tmp_path,
+        db_path,
+        "tag-a",
+        name="My Alter",
+        image=_pre_bled((218, 296), 3.175),
+        custom_hash=CUSTOM_HASH,
+        custom_bleed_mm=3.175,
+    )
+    entry = {"quantity": 1, "name": "My Alter", "custom_hash": CUSTOM_HASH, "raw_line": "1 My Alter"}
+
+    resp = client.post(
+        "/api/export/zip", json=_body(entries=[entry], with_bleed=True, bleed_mm=3.0)
+    )
+    img = _decode(_open_zip(resp), "Deck/FRONT/001.png")
+    assert img.size == _bled_pixels(SEED_DPI, 3.0)
+    assert _close(img.getpixel((12, img.height // 2)), (0, 200, 0))
+    assert _close(img.getpixel((120, img.height // 2)), (255, 0, 255))
+
+    resp = client.post(
+        "/api/export/zip", json=_body(entries=[entry], with_bleed=False, image_format="jpg")
+    )
+    img = _decode(_open_zip(resp), "Deck/FRONT/001.jpg")
+    assert img.size == target_pixels(SEED_DPI)
+    assert _close(img.getpixel((4, img.height // 2)), (255, 0, 255))
+
+
+def test_with_bleed_back_with_an_amount_is_trimmed_not_shrunk(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The flag plus its amount: the back's 3.175 mm border is trimmed to
+    the requested 3 mm, so the design stays card sized (4 px in is border,
+    20 px in is the design at this back's ~81 DPI)."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    content_hash, _stored = _seed_back(_pre_bled((218, 296), 3.175))
+    back_dpi = round(dpi_at_card_size(218, 296))
+
+    resp = client.post(
+        "/api/export/zip",
+        json=_body(
+            with_bleed=True,
+            bleed_mm=3.0,
+            back_image_hash=content_hash,
+            back_image_includes_bleed=True,
+            back_image_bleed_mm=3.175,
+        ),
+    )
+    img = _decode(_open_zip(resp), "Deck/BACK/001.png")
+    assert img.size == _bled_pixels(back_dpi, 3.0)
+    assert _close(img.getpixel((4, img.height // 2)), (0, 200, 0))
+    assert _close(img.getpixel((20, img.height // 2)), (255, 0, 255))

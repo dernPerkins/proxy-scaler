@@ -37,12 +37,22 @@ const CUSTOMS_DIRNAME: &str = "customs";
 // server's protects it from any client at all.
 const MAX_BYTES: usize = 50 * 1024 * 1024;
 
+// Mirrors proxy_scaler/dpi.py::MAX_BLEED_MM. Past this a bleed is a typo,
+// not a print spec.
+pub(crate) const MAX_BLEED_MM: f64 = 10.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomImage {
     pub id: i64,
     pub content_hash: String,
     pub label: String,
     pub original_filename: String,
+    /// The user's declaration that the file already carries bleed, and
+    /// how much (mm per side). `bleed_mm` is meaningful only while
+    /// `includes_bleed` is set; it is kept otherwise so re-ticking the
+    /// box restores the typed amount.
+    pub includes_bleed: bool,
+    pub bleed_mm: f64,
     pub width: i64,
     pub height: i64,
     pub created_at: String,
@@ -65,11 +75,33 @@ fn customs_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// Print DPI this image achieves across a 63×88mm card, using its longer
 /// edge against the card's longer edge — the same measure the server
 /// reports (proxy_scaler/dpi.py::dpi_at_card_size), so the two never
-/// disagree about whether an image is low-res.
-fn dpi_at_card_size(width: i64, height: i64) -> f64 {
+/// disagree about whether an image is low-res. A file declared to carry
+/// `bleed_mm` of bleed spans (88 + 2*bleed) mm on its long edge, and is
+/// measured against that.
+pub(crate) fn dpi_at_card_size(width: i64, height: i64, bleed_mm: f64) -> f64 {
     const CARD_HEIGHT_MM: f64 = 88.0;
     const MM_PER_IN: f64 = 25.4;
-    (width.max(height) as f64) / (CARD_HEIGHT_MM / MM_PER_IN)
+    (width.max(height) as f64) / ((CARD_HEIGHT_MM + 2.0 * bleed_mm) / MM_PER_IN)
+}
+
+/// The bleed a declaration amounts to: the typed amount when the box is
+/// ticked, none otherwise. What the server is told, and what the DPI is
+/// measured against.
+pub(crate) fn effective_bleed_mm(includes_bleed: bool, bleed_mm: f64) -> f64 {
+    if includes_bleed {
+        bleed_mm
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn validate_bleed_mm(bleed_mm: f64) -> Result<f64, String> {
+    if !bleed_mm.is_finite() || bleed_mm < 0.0 || bleed_mm > MAX_BLEED_MM {
+        return Err(format!(
+            "Bleed must be between 0 and {MAX_BLEED_MM} mm per side."
+        ));
+    }
+    Ok(bleed_mm)
 }
 
 /// The card name a dropped file gets: its filename without the extension.
@@ -96,15 +128,19 @@ pub fn label_from_filename(original_filename: &str) -> String {
 fn row_to_custom_image(row: &rusqlite::Row) -> rusqlite::Result<CustomImage> {
     let width: i64 = row.get("width")?;
     let height: i64 = row.get("height")?;
+    let includes_bleed: bool = row.get("includes_bleed")?;
+    let bleed_mm: f64 = row.get("bleed_mm")?;
     Ok(CustomImage {
         id: row.get("id")?,
         content_hash: row.get("content_hash")?,
         label: row.get("label")?,
         original_filename: row.get("original_filename")?,
+        includes_bleed,
+        bleed_mm,
         width,
         height,
         created_at: row.get("created_at")?,
-        source_dpi: dpi_at_card_size(width, height),
+        source_dpi: dpi_at_card_size(width, height, effective_bleed_mm(includes_bleed, bleed_mm)),
     })
 }
 
@@ -226,6 +262,37 @@ pub fn set_custom_image_label(app: AppHandle, id: i64, label: String) -> Result<
     Ok(())
 }
 
+/// The database half of the bleed declaration, split out so it can be
+/// tested without an AppHandle.
+fn set_custom_image_bleed_row(
+    conn: &Connection,
+    id: i64,
+    includes_bleed: bool,
+    bleed_mm: f64,
+) -> Result<(), String> {
+    let bleed_mm = validate_bleed_mm(bleed_mm)?;
+    conn.execute(
+        "UPDATE custom_images SET includes_bleed = ?1, bleed_mm = ?2 WHERE id = ?3",
+        params![includes_bleed, bleed_mm, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Record the user's declaration about their own file. Takes effect on
+/// the server at the next sync (see sync_custom_image), which re-uploads
+/// under the new amount and discards the upscales made under the old one.
+#[tauri::command]
+pub fn set_custom_image_bleed(
+    app: AppHandle,
+    id: i64,
+    includes_bleed: bool,
+    bleed_mm: f64,
+) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    set_custom_image_bleed_row(&conn, id, includes_bleed, bleed_mm)
+}
+
 /// How many project cards use this image. The delete confirmation says so
 /// out loud, because those cards go with it.
 #[tauri::command]
@@ -331,17 +398,26 @@ pub async fn sync_custom_image(
     id: i64,
     server_base_url: String,
 ) -> Result<CustomSyncResult, String> {
-    let (content_hash, file_name) = {
+    let (content_hash, file_name, includes_bleed, bleed_mm) = {
         let conn = open_db(&app)?;
         conn.query_row(
-            "SELECT content_hash, file_name FROM custom_images WHERE id = ?1",
+            "SELECT content_hash, file_name, includes_bleed, bleed_mm
+             FROM custom_images WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "That custom image is no longer in the library.".to_string())?
     };
+    let declared = effective_bleed_mm(includes_bleed, bleed_mm);
     let base = server_base_url.trim_end_matches('/').to_string();
     let url = format!("{base}/api/customs/{content_hash}");
 
@@ -351,14 +427,33 @@ pub async fn sync_custom_image(
             // reqwest is built without its "json" feature here (see
             // Cargo.toml) — same as update.rs, the body is read as bytes
             // and handed to serde_json directly.
-            let present = resp
+            let status = resp
                 .bytes()
                 .await
                 .ok()
-                .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+                .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok());
+            let present = status
+                .as_ref()
                 .and_then(|v| v.get("present").and_then(|p| p.as_bool()))
                 .unwrap_or(false);
-            if present {
+            let server_bleed = status
+                .as_ref()
+                .and_then(|v| v.get("bleed_mm").and_then(|b| b.as_f64()));
+            // A server that does not report bleed_mm predates the
+            // declaration and would silently crop a bled file to card
+            // aspect; say so once rather than re-uploading every sync.
+            if declared > 0.0 && server_bleed.is_none() {
+                return Err(
+                    "This generation server is too old to accept custom images that \
+                     include bleed. Update the server, or untick \"includes bleed\" \
+                     for this image."
+                        .to_string(),
+                );
+            }
+            // Present AND stored under the same declared bleed: nothing to
+            // send. A different amount means the server's copy was cropped
+            // to the wrong box, so the POST below replaces it.
+            if present && (server_bleed.unwrap_or(0.0) - declared).abs() < 1e-6 {
                 return Ok(CustomSyncResult { content_hash, uploaded: false });
             }
         }
@@ -367,8 +462,13 @@ pub async fn sync_custom_image(
     let path = customs_dir(&app)?.join(file_name);
     let bytes =
         std::fs::read(&path).map_err(|e| format!("failed to read custom image: {e}"))?;
+    let post_url = if declared > 0.0 {
+        format!("{url}?bleed_mm={declared}")
+    } else {
+        url.clone()
+    };
     let resp = client
-        .post(&url)
+        .post(&post_url)
         .header("content-type", "application/octet-stream")
         .body(bytes)
         .send()
@@ -401,8 +501,54 @@ mod tests {
     #[test]
     fn dpi_matches_the_servers_measure() {
         // 745x1040 is Scryfall's own PNG size, ~300 DPI at card height.
-        assert!((dpi_at_card_size(745, 1040) - 300.0).abs() < 1.0);
+        assert!((dpi_at_card_size(745, 1040, 0.0) - 300.0).abs() < 1.0);
         // Orientation-independent: the longer edge is what's compared.
-        assert_eq!(dpi_at_card_size(1040, 745), dpi_at_card_size(745, 1040));
+        assert_eq!(dpi_at_card_size(1040, 745, 0.0), dpi_at_card_size(745, 1040, 0.0));
+        // An MPC file (3.175 mm of bleed) spans 94.35 mm on its long edge:
+        // 1114 px of it is ~300 DPI, not ~322.
+        assert!((dpi_at_card_size(818, 1114, 3.175) - 300.0).abs() < 1.0);
+        assert_eq!(effective_bleed_mm(false, 3.175), 0.0);
+        assert_eq!(effective_bleed_mm(true, 3.175), 3.175);
+    }
+
+    fn insert_custom(conn: &Connection, hash: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO custom_images
+                (content_hash, label, original_filename, file_name, thumb_name,
+                 width, height, created_at)
+             VALUES (?1, 'A card', 'a.png', ?2, ?3, 818, 1114, '1')",
+            params![hash, format!("{hash}.png"), format!("{hash}_thumb.jpg")],
+        )
+        .expect("insert custom");
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn bleed_declaration_round_trips_and_is_validated() {
+        use crate::project_store::test_support::test_conn;
+        let conn = test_conn();
+        let id = insert_custom(&conn, "c1");
+        // Fresh rows: unticked, MPC amount ready for when the box is ticked.
+        let row = find_by_id(&conn, id).expect("query").expect("row");
+        assert!(!row.includes_bleed);
+        assert!((row.bleed_mm - 3.175).abs() < 1e-9);
+        assert!((row.source_dpi - dpi_at_card_size(818, 1114, 0.0)).abs() < 1e-9);
+
+        set_custom_image_bleed_row(&conn, id, true, 3.175).expect("set");
+        let row = find_by_id(&conn, id).expect("query").expect("row");
+        assert!(row.includes_bleed);
+        // The DPI hint follows the declaration: the same pixels now span
+        // the bled box, so they are worth fewer DPI at card size.
+        assert!((row.source_dpi - 300.0).abs() < 1.0);
+
+        // Unticking keeps the typed amount for later.
+        set_custom_image_bleed_row(&conn, id, false, 2.0).expect("set");
+        let row = find_by_id(&conn, id).expect("query").expect("row");
+        assert!(!row.includes_bleed);
+        assert!((row.bleed_mm - 2.0).abs() < 1e-9);
+
+        assert!(set_custom_image_bleed_row(&conn, id, true, -1.0).is_err());
+        assert!(set_custom_image_bleed_row(&conn, id, true, 11.0).is_err());
+        assert!(set_custom_image_bleed_row(&conn, id, true, f64::NAN).is_err());
     }
 }

@@ -254,6 +254,7 @@ export default function PdfPage() {
     hide_cutter_marks_back: settings.hide_cutter_marks_back,
     back_image_hash: selectedBack?.content_hash ?? null,
     back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
+    back_image_bleed_mm: selectedBack?.includes_bleed ? selectedBack.bleed_mm : null,
   };
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);

@@ -47,6 +47,7 @@ from proxy_scaler.pdf_layout import (
     back_pages_are_rotated,
     add_bleed,
     back_page_cells,
+    fit_bled_image,
     build_pdf,
     build_print_slots,
     match_quantities,
@@ -57,6 +58,7 @@ from proxy_scaler.pdf_layout import (
     resolve_page_layout,
     unique_image_count,
 )
+from proxy_scaler import customs
 from proxy_scaler.pipeline import FaceResult, ensure_original_thumbnail
 
 router = APIRouter(prefix="/api/pdf", tags=["pdf"])
@@ -173,6 +175,7 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     db_path = get_db_path()
     raw_items = db.list_gallery_items(body.project_tag, db_path=db_path)
     items = [FaceResult.from_dict(d) for d in raw_items]
+    customs.attach_bleed(items)
     entries = [_to_deck_entry(e) for e in body.entries]
     units, missing, missing_at_dpi = match_quantities(
         entries,
@@ -235,6 +238,7 @@ def _render_kwargs(body: PdfLayoutIn, prepared: PreparedRender) -> dict:
         back_layout=prepared.back_layout,
         back_image_path=prepared.back_image_path,
         back_image_includes_bleed=body.back_image_includes_bleed,
+        back_image_bleed_mm=body.back_image_bleed_mm,
         flip_edge=FlipEdge(body.flip_edge.value),
         page_order=PageOrder(body.page_order.value),
         reverse_fill=ReverseFill(body.reverse_fill.value),
@@ -293,7 +297,29 @@ def _preview_cell(
     return None, back_image_path is not None
 
 
-def _back_image_thumbnail(path: Path | None, *, bleed_mm: float) -> str | None:
+def _preview_bled(
+    thumb: Image.Image, *, bleed_mm: float, image_bleed_mm: float | None
+) -> Image.Image:
+    """The bleed step of a preview thumbnail, mirroring the renderer: a
+    plain card thumbnail is edge-extended, a thumbnail of a file declared
+    to carry `image_bleed_mm` of bleed is trimmed or topped up to the
+    sheet's bleed (fit_bled_image), so the preview never shows a doubled
+    border the print would not have. The synthetic preview DPI is the
+    thumbnail's long edge over the long edge of whatever the file spans."""
+    carried = image_bleed_mm or 0.0
+    preview_dpi = max(thumb.width, thumb.height) / (
+        (max(CARD_WIDTH_MM, CARD_HEIGHT_MM) + 2 * carried) / MM_PER_IN
+    )
+    if carried > 0:
+        return fit_bled_image(
+            thumb, image_bleed_mm=carried, export_dpi=preview_dpi, bleed_mm=bleed_mm
+        )
+    return add_bleed(thumb, dpi=preview_dpi, bleed_mm=bleed_mm)
+
+
+def _back_image_thumbnail(
+    path: Path | None, *, bleed_mm: float, image_bleed_mm: float | None
+) -> str | None:
     """A small preview of the Back Image, built on the fly.
 
     Unlike a card, a Back Image has no cached original thumbnail to reuse
@@ -308,10 +334,7 @@ def _back_image_thumbnail(path: Path | None, *, bleed_mm: float) -> str | None:
         with Image.open(path) as raw:
             thumb = raw.convert("RGB")
             thumb.thumbnail((220, 220), Image.Resampling.LANCZOS)
-            preview_dpi = max(thumb.width, thumb.height) / (
-                max(CARD_WIDTH_MM, CARD_HEIGHT_MM) / MM_PER_IN
-            )
-            bled = add_bleed(thumb, dpi=preview_dpi, bleed_mm=bleed_mm)
+            bled = _preview_bled(thumb, bleed_mm=bleed_mm, image_bleed_mm=image_bleed_mm)
         buf = io.BytesIO()
         bled.save(buf, format="JPEG", quality=85)
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
@@ -386,7 +409,16 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
                     model="",
                     dpi=0,
                     thumbnail_data_url=_back_image_thumbnail(
-                        prepared.back_image_path, bleed_mm=body.bleed_mm
+                        prepared.back_image_path,
+                        bleed_mm=body.bleed_mm,
+                        # Only a declared-and-quantified back is trimmed;
+                        # a bare flag (old clients) previews edge-extended
+                        # like the render's fit-to-box does, near enough.
+                        image_bleed_mm=(
+                            body.back_image_bleed_mm
+                            if body.back_image_includes_bleed
+                            else None
+                        ),
                     ),
                     is_back_image=True,
                 )
@@ -403,10 +435,11 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
             # an already-small (~220px) thumbnail, at most cols*rows of
             # them per request.
             with Image.open(thumb_path) as thumb:
-                preview_dpi = max(thumb.width, thumb.height) / (
-                    max(CARD_WIDTH_MM, CARD_HEIGHT_MM) / MM_PER_IN
+                bled = _preview_bled(
+                    thumb.convert("RGB"),
+                    bleed_mm=body.bleed_mm,
+                    image_bleed_mm=face.custom_bleed_mm or None,
                 )
-                bled = add_bleed(thumb, dpi=preview_dpi, bleed_mm=body.bleed_mm)
             buf = io.BytesIO()
             bled.save(buf, format="JPEG", quality=85)
             data_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")

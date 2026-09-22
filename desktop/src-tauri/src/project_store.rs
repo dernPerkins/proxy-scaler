@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS custom_images (
     original_filename TEXT NOT NULL,
     file_name TEXT NOT NULL,
     thumb_name TEXT NOT NULL,
+    -- The user's declaration that the file already carries bleed, and how
+    -- much (mm per side; 3.175 is MakePlayingCards'). The server crops the
+    -- upload and sizes its upscales to that box, and the renderer trims it
+    -- to the sheet's bleed — see custom_images.rs::sync_custom_image.
+    -- bleed_mm is kept while includes_bleed is off, so re-ticking the box
+    -- restores the amount the user typed.
+    includes_bleed INTEGER NOT NULL DEFAULT 0,
+    bleed_mm REAL NOT NULL DEFAULT 3.175,
     width INTEGER NOT NULL DEFAULT 0,
     height INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
@@ -120,9 +128,13 @@ CREATE TABLE IF NOT EXISTS back_images (
     original_filename TEXT NOT NULL,
     file_name TEXT NOT NULL,
     thumb_name TEXT NOT NULL,
-    -- The user's declaration that their art already carries bleed, so the
-    -- renderer fits it to the bled size instead of edge-extending it.
+    -- The user's declaration that their art already carries bleed, and how
+    -- much (mm per side). With the amount the renderer trims the file's
+    -- bleed to the sheet's (or tops it up) so the trim content stays card
+    -- sized; it rides on every PDF/export request, since the server never
+    -- alters a back's bytes.
     includes_bleed INTEGER NOT NULL DEFAULT 0,
+    bleed_mm REAL NOT NULL DEFAULT 3.175,
     width INTEGER NOT NULL DEFAULT 0,
     height INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
@@ -232,6 +244,17 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("custom_image_id", "INTEGER"),
 ];
 
+// Columns added to the two image libraries after their initial release.
+// Same rule as above: CREATE TABLE IF NOT EXISTS won't reach a table that
+// already exists, so open_db adds these explicitly.
+pub(crate) const CUSTOM_IMAGES_ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("includes_bleed", "INTEGER NOT NULL DEFAULT 0"),
+    ("bleed_mm", "REAL NOT NULL DEFAULT 3.175"),
+];
+
+pub(crate) const BACK_IMAGES_ADDED_COLUMNS: &[(&str, &str)] =
+    &[("bleed_mm", "REAL NOT NULL DEFAULT 3.175")];
+
 fn add_missing_columns(
     conn: &Connection,
     table: &str,
@@ -325,6 +348,8 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)?;
+    add_missing_columns(&conn, "custom_images", CUSTOM_IMAGES_ADDED_COLUMNS)?;
+    add_missing_columns(&conn, "back_images", BACK_IMAGES_ADDED_COLUMNS)?;
     migrate_guide_flags(&conn)?;
     migrate_page_order_naming(&conn)?;
     Ok(conn)
@@ -2217,6 +2242,10 @@ pub(crate) mod test_support {
         add_missing_columns(&conn, "projects", PROJECTS_ADDED_COLUMNS).expect("projects columns");
         add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)
             .expect("project_cards columns");
+        add_missing_columns(&conn, "custom_images", CUSTOM_IMAGES_ADDED_COLUMNS)
+            .expect("custom_images columns");
+        add_missing_columns(&conn, "back_images", BACK_IMAGES_ADDED_COLUMNS)
+            .expect("back_images columns");
         conn
     }
 }
@@ -2974,6 +3003,69 @@ mod tests {
 
         set_card_quantity_in(&conn, card_id, -3).expect("clamp negative");
         assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(1));
+    }
+
+    #[test]
+    fn image_library_bleed_columns_are_added_to_a_legacy_db() {
+        // Libraries from before the bleed declarations: both tables exist
+        // without includes_bleed/bleed_mm (custom_images) and bleed_mm
+        // (back_images). The additive migrator must fill them in with the
+        // defaults every existing row is meant to read as.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE custom_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                thumb_name TEXT NOT NULL,
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE back_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                thumb_name TEXT NOT NULL,
+                includes_bleed INTEGER NOT NULL DEFAULT 0,
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO custom_images
+                (content_hash, label, original_filename, file_name, thumb_name, created_at)
+             VALUES ('c1', 'A card', 'a.png', 'c1.png', 'c1_thumb.jpg', '1');
+            INSERT INTO back_images
+                (content_hash, label, original_filename, file_name, thumb_name, created_at)
+             VALUES ('b1', 'A back', 'b.png', 'b1.png', 'b1_thumb.jpg', '1');",
+        )
+        .expect("legacy libraries");
+        conn.execute_batch(SCHEMA).expect("current schema over the legacy one");
+        add_missing_columns(&conn, "custom_images", CUSTOM_IMAGES_ADDED_COLUMNS).expect("customs");
+        add_missing_columns(&conn, "back_images", BACK_IMAGES_ADDED_COLUMNS).expect("backs");
+        add_missing_columns(&conn, "custom_images", CUSTOM_IMAGES_ADDED_COLUMNS).expect("re-run");
+
+        let (flag, amount): (bool, f64) = conn
+            .query_row(
+                "SELECT includes_bleed, bleed_mm FROM custom_images WHERE content_hash = 'c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("custom row");
+        assert!(!flag);
+        assert!((amount - 3.175).abs() < 1e-9);
+        let back_amount: f64 = conn
+            .query_row(
+                "SELECT bleed_mm FROM back_images WHERE content_hash = 'b1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("back row");
+        assert!((back_amount - 3.175).abs() < 1e-9);
     }
 
     #[test]

@@ -15,12 +15,14 @@ import {
   setServerStarting,
   setServerVersion,
   serverSupportsCustomImages,
+  serverSupportsCustomBleed,
 } from "./config";
 import {
   getProjectSnapshot,
   hasCustomCards,
   probeMissingCustoms,
   registerCustomCards,
+  declaredBleedByImageId,
 } from "./syncCustoms";
 import { invokeStartLocalServer, invokeStopLocalServer, isTauri } from "./tauri";
 import { runCustomUploads, UploadCanceled } from "./uploadProgress";
@@ -402,6 +404,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             `server${targetVersion ? ` (it reports v${targetVersion})` : ""}. ` +
             "Update the server, or remove the custom cards."
           );
+        }
+        // Same idea one contract later: a custom declared to include
+        // bleed needs a server that honours the declaration, or its
+        // upload lands cropped to the wrong box.
+        if (!serverSupportsCustomBleed(targetVersion)) {
+          const declared = await declaredBleedByImageId();
+          const flagged = snapshot.cards.some(
+            (c) => c.custom_image_id != null && (declared.get(c.custom_image_id) ?? 0) > 0,
+          );
+          if (flagged) {
+            return (
+              "This project has custom card images marked as including bleed, which " +
+              `need a newer generation server${targetVersion ? ` (it reports v${targetVersion})` : ""}. ` +
+              'Update the server, or untick "includes bleed" on those images.'
+            );
+          }
         }
         const missing = await probeMissingCustoms(snapshot.cards, url);
         if (missing.length > 0) {

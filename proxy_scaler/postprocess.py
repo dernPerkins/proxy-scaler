@@ -22,9 +22,10 @@ cards.bleed-samples.txt for the test corpus):
 Every one of these lives within ~0.25mm of the edge, on the trim line. So
 rather than a colour-signature scrub per defect, this module applies ONE
 geometric fixup (edge_extend.extend_edges in ``mirror`` mode): the RGB of
-every pixel outside a rounded rectangle inset 3px from the true edge — the
-transparent corners, the anti-aliased rim, and the outer 3px strip — is
-replaced by the border texture mirrored across that inset boundary. No
+every pixel outside a rounded rectangle pulled 1px in along the straight
+edges and 3px in around the arcs — the transparent corners, the
+anti-aliased rim, and that outer strip — is replaced by the border texture
+mirrored across the inset boundary. No
 colour test means no dependence on whether a defect is dark, light or
 grey. Mirroring (rather than the print-style nearest-point rays) is
 deliberate: the upscaler sees the RGB under the corners and sharpens rays
@@ -62,10 +63,15 @@ from PIL import Image
 from .edge_extend import corner_radius_px, extend_edges
 
 # How far inside the true edge the mirror boundary sits, at Scryfall's
-# ~300dpi render scale: 3px ≈ 0.25mm, past the deepest measured defect
-# (the phantom rows are 1px, the gold template's rim + highlight line are
-# 2px) and far inside anything genuine (collector bars are ~70px).
-RIM_INSET_PX = 3
+# ~300dpi render scale. Straight edges: 1px, the depth of every measured
+# straight-edge defect (phantom rows, the phantom column, lone white
+# pixels) — and no deeper, because on borderless art the mirrored strip is
+# a visible reflection band, so it is kept as thin as the defects allow.
+# Corner arcs: 3px ≈ 0.25mm, past the gold template's rim + highlight line
+# (2px) with room for the upscaler's smear. Both are far inside anything
+# genuine (collector bars are ~70px).
+EDGE_INSET_PX = 1
+CORNER_INSET_PX = 3
 # Skip the re-encode when no channel of any pixel moves more than this —
 # keeps black-border cards over a black underlay byte-identical instead of
 # re-encoding them for an invisible change.
@@ -84,7 +90,8 @@ class CleanResult(NamedTuple):
 
 def _extend_rim(img: Image.Image) -> Image.Image | None:
     """Mirror the border texture into the transparent corners, the
-    anti-aliased rim and the outer RIM_INSET_PX strip. Alpha untouched.
+    anti-aliased rim and the outer strip (EDGE_INSET_PX along the straight
+    edges, CORNER_INSET_PX around the arcs). Alpha untouched.
     None when the result is visually identical to the input."""
     arr = np.asarray(img.convert("RGBA"))
     rgb = arr[..., :3]
@@ -92,7 +99,8 @@ def _extend_rim(img: Image.Image) -> Image.Image | None:
     extended = extend_edges(
         rgb,
         radius_px=radius,
-        inset_px=RIM_INSET_PX,
+        inset_px=EDGE_INSET_PX,
+        corner_inset_px=CORNER_INSET_PX,
         bleed_px=0,
         mode="mirror",
         alpha=arr[..., 3],

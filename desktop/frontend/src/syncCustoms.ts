@@ -12,7 +12,12 @@
 import { generationApi } from "./api/generation";
 import { projectApi } from "./api/project";
 import type { CardRow } from "./api/project";
-import { getApiBaseUrl, getConnectionMode, serverSupportsCustomImages } from "./config";
+import {
+  getApiBaseUrl,
+  getConnectionMode,
+  serverSupportsCustomBleed,
+  serverSupportsCustomImages,
+} from "./config";
 import { DEFAULT_GEN_PATHS } from "./constants";
 import { cardToEntry } from "./deckEntries";
 import { runCustomUploads, type UploadItem } from "./uploadProgress";
@@ -55,6 +60,14 @@ function distinctCustoms(cards: CardRow[]): Array<{ id: number; hash: string | n
   return [...seen.values()];
 }
 
+/** The bleed (mm per side) each library image is declared to carry —
+ *  the typed amount when its box is ticked, 0 otherwise. What Rust tells
+ *  the server on sync, and what the server's stored copy must match. */
+export async function declaredBleedByImageId(): Promise<Map<number, number>> {
+  const library = await projectApi.listCustomImages();
+  return new Map(library.map((i) => [i.id, i.includes_bleed ? i.bleed_mm : 0]));
+}
+
 /**
  * Which of these Custom Images the server at `baseUrl` does NOT hold —
  * the honest denominator for the upload-progress dialog, and the
@@ -73,13 +86,19 @@ export async function probeMissingCustoms(
   baseUrl: string,
 ): Promise<UploadItem[]> {
   const customs = distinctCustoms(cards);
+  const declared = await declaredBleedByImageId();
   const missing = await Promise.all(
-    customs.map(async ({ hash }) => {
+    customs.map(async ({ id, hash }) => {
       if (hash == null) return true;
       try {
         const resp = await fetch(`${baseUrl}/api/customs/${hash}`);
         if (!resp.ok) return true;
-        return !((await resp.json()) as { present: boolean }).present;
+        const status = (await resp.json()) as { present: boolean; bleed_mm?: number };
+        // Held under a different declared bleed is as good as missing:
+        // the server's copy was cropped to the wrong box and the Rust
+        // sync will re-upload it.
+        const want = declared.get(id) ?? 0;
+        return !status.present || Math.abs((status.bleed_mm ?? 0) - want) > 1e-6;
       } catch {
         return true;
       }
@@ -140,6 +159,20 @@ export async function syncCustomImages(
         `server${serverVersion ? ` (it reports v${serverVersion})` : ""}. ` +
         "Update the server, or remove the custom cards.",
     );
+  }
+  // The bleed declaration is a newer wire contract than customs
+  // themselves (see CUSTOM_BLEED_MIN_SERVER_VERSION); gated only when a
+  // custom in play actually declares bleed, so unflagged images keep
+  // working against a server that merely has customs.
+  if (serverVersion !== undefined && !serverSupportsCustomBleed(serverVersion)) {
+    const declared = await declaredBleedByImageId();
+    if (customs.some(({ id }) => (declared.get(id) ?? 0) > 0)) {
+      throw new Error(
+        "This project has custom card images marked as including bleed, which " +
+          `need a newer generation server${serverVersion ? ` (it reports v${serverVersion})` : ""}. ` +
+          'Update the server, or untick "includes bleed" on those images.',
+      );
+    }
   }
   const baseUrl = opts?.baseUrl ?? getApiBaseUrl();
   const showDialog = !opts?.silent && (opts?.remote ?? getConnectionMode() === "remote");

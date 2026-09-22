@@ -25,6 +25,7 @@ from .dpi import (
     DEFAULT_DPI,
     ORIGINAL_DPI,
     ORIGINAL_MODEL,
+    bled_target_pixels,
     native_scale_for_dpi,
     resolve_dpi_targets,
     target_pixels,
@@ -152,6 +153,12 @@ class FaceResult:
     total_faces: int | None = None
     # sha256 of a user-uploaded card front (proxy_scaler/customs.py).
     custom_hash: str | None = None
+    # Bleed (mm per side) a Custom Image was declared to carry, so its
+    # stored PNG and every variant are bled-box sized rather than trim
+    # sized. Not persisted in the registry: it is a property of the
+    # stored file, attached at the render boundary from the sidecar
+    # (customs.attach_bleed). Always 0.0 for Scryfall faces.
+    custom_bleed_mm: float = 0.0
 
     def __post_init__(self) -> None:
         # "" and None both mean "no Scryfall id" to every reader here, but
@@ -212,6 +219,7 @@ class FaceResult:
             total_faces=data.get("total_faces"),
             lang=data.get("lang") or "en",
             custom_hash=data.get("custom_hash"),
+            custom_bleed_mm=float(data.get("custom_bleed_mm") or 0.0),
         )
 
 
@@ -353,8 +361,9 @@ def _read_custom_png(custom_hash: str, *, describe: str = "") -> bytes:
     black RGB hiding under transparent corners — and inferring them from
     arbitrary user art would corrupt legitimate images that happen to have
     a dark edge. The uploaded file is already normalised and cropped to
-    card aspect at the point it was stored, which is the only conditioning
-    a custom front gets.
+    card aspect (or to the bled aspect it was declared with — see
+    customs.read_bleed_mm) at the point it was stored, which is the only
+    conditioning a custom front gets.
     """
     from proxy_scaler import customs
 
@@ -445,11 +454,25 @@ def ensure_original_thumbnail(original_path: Path) -> Path | None:
     return thumb_path
 
 
-def _resize_to_dpi(image: Image.Image, dpi: int) -> Image.Image:
-    target = target_pixels(dpi)
+def _resize_to_size(image: Image.Image, target: tuple[int, int]) -> Image.Image:
     if image.size == target:
         return image
     return image.resize(target, Image.Resampling.LANCZOS)
+
+
+def _resize_to_dpi(image: Image.Image, dpi: int) -> Image.Image:
+    return _resize_to_size(image, target_pixels(dpi))
+
+
+def custom_bleed_mm(custom_hash: str | None) -> float:
+    """The declared bleed of a Custom Image on this server, 0.0 for
+    anything else. Local import: customs.py is a storage module and
+    pipeline is the heavyweight."""
+    if not custom_hash:
+        return 0.0
+    from proxy_scaler import customs
+
+    return customs.read_bleed_mm(custom_hash)
 
 
 def _write_dpi_variant(
@@ -462,6 +485,7 @@ def _write_dpi_variant(
     dpi: int,
     native_scale: int,
     device: str = "unknown",
+    bleed_mm: float = 0.0,
 ) -> FaceResult:
     out_name = output_filename(
         face.face_name,
@@ -484,7 +508,11 @@ def _write_dpi_variant(
     # pdf_layout.flatten_corner_alpha/add_bleed. Doing it here once baked
     # a visible replicated-pixel smear into every corner of the saved file
     # -- irreversible, and wrong for anyone downloading the PNG directly.
-    sized = _resize_to_dpi(raw, dpi)
+    # A Custom Image declared to carry bleed was stored (and upscaled) at
+    # the bled aspect, so its variant is the bled box at this DPI — the
+    # renderer trims that to the project's bleed later. Everything else is
+    # exactly trim-sized.
+    sized = _resize_to_size(raw, bled_target_pixels(dpi, bleed_mm))
     atomic_save_png(sized, out_path)
     return FaceResult(
         out_path=out_path,
@@ -504,6 +532,7 @@ def _write_dpi_variant(
         device=device,
         lang=face.lang,
         custom_hash=face.custom_hash,
+        custom_bleed_mm=bleed_mm,
     )
 
 
@@ -688,6 +717,7 @@ def _regenerate_face_from_card(
                     device_by_scale[native],
                 )
         results: list[FaceResult] = []
+        declared_bleed = custom_bleed_mm(face.custom_hash)
         for target_dpi in targets:
             native = scale_for[target_dpi]
             with _phase(timings, "encode"):
@@ -698,6 +728,7 @@ def _regenerate_face_from_card(
                     output_dir=output_dir,
                     model_id=model_id,
                     dpi=target_dpi,
+                    bleed_mm=declared_bleed,
                     native_scale=native,
                     device=device_by_scale[native],
                 )
@@ -789,20 +820,8 @@ def process_download_task(
         # The x4 upscale cache is likewise derived from the original, and
         # first-generation tasks (force=False) trust it — so a re-fetch
         # must invalidate every model/scale variant for this face, or a
-        # later generation would upscale the OLD art. Enumerating the enum
-        # beats globbing: filenames are deterministic and this can never
-        # touch another face's files.
-        for cached_model in UpscaleModel:
-            for scale in cached_model.supported_scales:
-                stale = cache_path(
-                    Path(task.cache_dir),
-                    task.scryfall_id,
-                    task.face_index,
-                    scale,
-                    cached_model,
-                )
-                stale.unlink(missing_ok=True)
-                cache_device_path(stale).unlink(missing_ok=True)
+        # later generation would upscale the OLD art.
+        invalidate_upscale_cache(Path(task.cache_dir), task.scryfall_id, task.face_index)
     return FaceResult(
         out_path=original_path,
         original_path=original_path,
@@ -820,6 +839,62 @@ def process_download_task(
         total_faces=task.total_faces,
         lang=task.lang,
     )
+
+
+def invalidate_upscale_cache(
+    cache_dir: Path,
+    scryfall_id: str | None,
+    face_index: int | None,
+    *,
+    custom_hash: str | None = None,
+) -> None:
+    """Drop every cached model/scale upscale of one face. Enumerating the
+    enum beats globbing: filenames are deterministic and this can never
+    touch another face's files."""
+    for cached_model in UpscaleModel:
+        for scale in cached_model.supported_scales:
+            stale = cache_path(
+                cache_dir, scryfall_id, face_index, scale, cached_model, custom_hash=custom_hash
+            )
+            stale.unlink(missing_ok=True)
+            cache_device_path(stale).unlink(missing_ok=True)
+
+
+def invalidate_custom_derivatives(
+    custom_hash: str,
+    *,
+    db_path: Path | str | None = None,
+    default_cache_dir: Path | str | None = None,
+) -> int:
+    """Everything this server derived from one Custom Image's stored PNG
+    is now wrong (its declared bleed changed, so the PNG was re-cropped):
+    delete the registry rows and finished tasks, the upscaled outputs
+    they name, the cached original and its thumbnail, and the upscale
+    cache — in every cache dir a row points at, plus `default_cache_dir`
+    for a hash that was cached but never registered. Returns the number
+    of registry rows removed. The stored PNG itself is left alone; it is
+    the new source."""
+    from proxy_scaler import db
+
+    rows = db.delete_custom_records(custom_hash, db_path=db_path)
+    cache_dirs: set[Path] = set()
+    if default_cache_dir is not None:
+        cache_dirs.add(Path(default_cache_dir))
+    for row in rows:
+        out_path = Path(row["out_path"])
+        original = Path(row["original_path"])
+        if out_path != original:
+            out_path.unlink(missing_ok=True)
+        # originals live at <cache_dir>/originals/<stem>.png
+        if original.parent.name == "originals":
+            cache_dirs.add(original.parent.parent)
+    for cache_dir in cache_dirs:
+        for face_index in {row["face_index"] for row in rows} | {None}:
+            original = original_cache_path(cache_dir, None, face_index, custom_hash=custom_hash)
+            original_thumb_path(original).unlink(missing_ok=True)
+            original.unlink(missing_ok=True)
+            invalidate_upscale_cache(cache_dir, None, face_index, custom_hash=custom_hash)
+    return len(rows)
 
 
 def process_custom_source_task(

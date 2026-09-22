@@ -2057,6 +2057,42 @@ def clear_project_generation_records(
         conn.commit()
 
 
+def delete_custom_records(
+    custom_hash: str, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """Forget everything generated from one Custom Image: its registry
+    rows (the membership cascade clears every project's gallery) and its
+    finished task records. Returns the deleted registry rows as gallery
+    dicts so the caller can remove the files they name — the DB is the
+    only place that knows which output files belong to the hash.
+
+    Done/failed/canceled tasks go with the rows for the same reason
+    clear_project_generation_records gives: a completed task alone still
+    reads as "done" in the client's status merge. Pending/running tasks are
+    left alone; they re-read the stored PNG when they run.
+
+    Called when the client re-uploads the same bytes under a different
+    declared bleed (see api/routers/customs.py): the stored PNG's geometry
+    changed, so every upscale derived from the old one is wrong."""
+    if not custom_hash:
+        return []
+    with connect(db_path) as conn:
+        rows = [
+            _gallery_row_to_dict(g)
+            for g in conn.execute(
+                "SELECT * FROM generated_images WHERE custom_hash = ?", (custom_hash,)
+            )
+        ]
+        conn.execute("DELETE FROM generated_images WHERE custom_hash = ?", (custom_hash,))
+        conn.execute(
+            "DELETE FROM generation_tasks WHERE custom_hash = ? "
+            "AND status NOT IN ('pending', 'running')",
+            (custom_hash,),
+        )
+        conn.commit()
+    return rows
+
+
 def prune_registry_under_dir(
     output_dir: Path | str, db_path: Path | str | None = None
 ) -> int:

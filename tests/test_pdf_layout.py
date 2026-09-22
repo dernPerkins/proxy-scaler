@@ -19,6 +19,7 @@ from proxy_scaler.pdf_layout import (
     PrintUnit,
     _card_trim_edges,
     add_bleed,
+    fit_bled_image,
     build_pdf,
     FlipEdge,
     GuideVisibility,
@@ -31,6 +32,8 @@ from proxy_scaler.pdf_layout import (
     fit_cover,
     mirror_page_index,
     render_back_image,
+    _bled_card,
+    _corner_inset_px,
     _inset_px,
     flatten_corner_alpha,
     match_quantities,
@@ -306,7 +309,7 @@ def _halo_card(halo: tuple[int, int, int]) -> tuple[Image.Image, int]:
     directions — the way an upscaled card actually arrives (the RGB-only
     upscaler smears whatever sat under the transparent corner into the
     rim). Proportions matter: a real 4x upscale is ~3000px wide with a
-    ~3px halo against a 12px (0.25mm) inset; at 1000px the inset is 4px."""
+    ~3px halo against a 12px (0.25mm) corner inset; at 1000px it is 4px."""
     w = h = 1000
     radius = 64
     light = (230, 225, 210)
@@ -344,7 +347,7 @@ def test_flatten_corner_fill_removes_halo_of_any_colour() -> None:
         img, radius = _halo_card(halo)
         w, h = img.size
         px = img.load()
-        inset = _inset_px(w, h)
+        inset = _corner_inset_px(w, h)
         # A genuine art pixel just past the re-sourced strip must survive:
         # 3px inside the inset arc, on the 45° diagonal (the strip is
         # radial, so "past it" is measured toward the arc's centre, not
@@ -360,14 +363,20 @@ def test_flatten_corner_fill_removes_halo_of_any_colour() -> None:
         )
         # The whole corner region — filled arc, the arc line itself, and
         # both spots where the rounding starts — must be opaque and free of
-        # the halo colour.
+        # the halo colour. The corner inset ramps in from the edge inset at
+        # each tangent point (edge_extend._CORNER_RAMP_DEG), so the last
+        # few arc pixels at each end may keep the halo's second pixel;
+        # anything beyond a handful is the scrub not reaching the arc.
+        remnants = []
         for y in range(radius + 4):
             for x in range(radius + 4):
                 if (x, y) == (art_x, art_y):
                     continue
                 p = flattened.getpixel((x, y))
                 assert p[3] == 255, f"({x},{y}) still transparent"
-                assert is_clean(p), f"({x},{y}) kept the halo: {p[:3]}"
+                if not is_clean(p):
+                    remnants.append((x, y))
+        assert len(remnants) <= 12, f"halo survived at {remnants}"
 
         # And the bleed built from it is halo-free at the corner too.
         bled = add_bleed(img, dpi=300)
@@ -487,7 +496,7 @@ def test_add_bleed_fans_out_of_rounded_corners() -> None:
     w, h, radius = 300, 300, 40
     img = _rounded_rect_rgba(w, h, radius)
     px = img.load()
-    inset = _inset_px(w, h)
+    inset = _corner_inset_px(w, h)
     src_r = radius - 2 * inset
     # Marker at 45° from the top-left arc's centre, 2*inset inside the arc.
     mx = my = round(radius - src_r / 2**0.5)
@@ -521,8 +530,11 @@ def test_add_bleed_scrubs_phantom_dark_bottom_row() -> None:
     img = Image.new("RGBA", (w, h), (*light, 255))
     for x in range(w):
         img.putpixel((x, h - 1), (19, 12, 12, 255))
+    # The strip is mirrored: row h-1 takes row h-1-2*inset. The marker sits
+    # one row past that source, where nothing may touch it.
     marker = (200, 60, 60)
-    img.putpixel((w // 2, h - 1 - _inset_px(w, h) - 1), (*marker, 255))
+    marker_y = h - 1 - 2 * _inset_px(w, h) - 1
+    img.putpixel((w // 2, marker_y), (*marker, 255))
 
     dpi = 300
     bleed_px = round(dpi / MM_PER_IN * BLEED_MM)
@@ -537,8 +549,9 @@ def test_add_bleed_scrubs_phantom_dark_bottom_row() -> None:
     assert lum(bled.getpixel((bled.size[0] - 2, bled.size[1] - 2))) > 150
     # The artifact row on the trim line is gone from the card face too…
     assert lum(bled.getpixel((bleed_px + w // 2, bleed_px + h - 1))) > 150
-    # …and the first pixel past the inset strip is exactly what was there.
-    assert bled.getpixel((bleed_px + w // 2, bleed_px + h - 1 - _inset_px(w, h) - 1)) == marker
+    # …and the first pixel past the mirrored strip's source is exactly
+    # what was there.
+    assert bled.getpixel((bleed_px + w // 2, bleed_px + marker_y)) == marker
 
 
 def test_add_bleed_keeps_genuine_black_bottom_strip() -> None:
@@ -1460,6 +1473,94 @@ def test_render_back_image_respects_the_includes_bleed_declaration(tmp_path: Pat
     # Larger than the trim box on both axes: bleed really was added.
     trim_w, trim_h = target_pixels(600)
     assert needs_bleed.width > trim_w and needs_bleed.height > trim_h
+
+
+def _pre_bled_image(size: tuple[int, int] = (700, 950), image_bleed_mm: float = 3.175) -> Image.Image:
+    """A file that already carries `image_bleed_mm` of bleed per side: a
+    green border of exactly that width around a magenta trim area."""
+    img = Image.new("RGB", size, (0, 200, 0))
+    bx = round(size[0] / (63 + 2 * image_bleed_mm) * image_bleed_mm)
+    by = round(size[1] / (88 + 2 * image_bleed_mm) * image_bleed_mm)
+    img.paste((255, 0, 255), (bx, by, size[0] - bx, size[1] - by))
+    return img
+
+
+def test_fit_bled_image_uses_the_files_bleed_up_to_the_requested_amount() -> None:
+    """The declared bleed is trimmed to the sheet's (a 3.175 mm MPC file at
+    1 mm keeps 1 mm of its border), used whole when they match, topped up
+    with generated bleed when the sheet asks for more, and cropped to the
+    trim box at 0 — the trim content is card sized in every case."""
+    src = _pre_bled_image()
+    mm_px = 300 / MM_PER_IN
+    magenta = (255, 0, 255)
+    green = (0, 200, 0)
+
+    same = fit_bled_image(src, image_bleed_mm=3.175, export_dpi=300, bleed_mm=3.175)
+    assert same.size == _bled_pixels(300, 3.175)
+    assert same.getpixel((round(1.5 * mm_px), same.height // 2)) == green
+    assert same.getpixel((round(4.5 * mm_px), same.height // 2)) == magenta
+
+    less = fit_bled_image(src, image_bleed_mm=3.175, export_dpi=300, bleed_mm=1.0)
+    assert less.size == _bled_pixels(300, 1.0)
+    assert less.getpixel((round(0.4 * mm_px), less.height // 2)) == green
+    assert less.getpixel((round(1.6 * mm_px), less.height // 2)) == magenta
+
+    none = fit_bled_image(src, image_bleed_mm=3.175, export_dpi=300, bleed_mm=0.0)
+    assert none.size == target_pixels(300)
+    assert none.getpixel((2, none.height // 2)) == magenta
+
+    more = fit_bled_image(src, image_bleed_mm=3.175, export_dpi=300, bleed_mm=5.0)
+    assert more.size == _bled_pixels(300, 5.0)
+    # The extra 1.825 mm is edge-extended from the file's own border.
+    assert more.getpixel((2, more.height // 2)) == green
+    assert more.getpixel((round(4.5 * mm_px), more.height // 2)) == green
+    assert more.getpixel((round(5.6 * mm_px), more.height // 2)) == magenta
+
+
+def test_bled_card_trims_a_pre_bled_custom_front(tmp_path: Path) -> None:
+    path = tmp_path / "custom.png"
+    _pre_bled_image().save(path, format="PNG")
+    face = FaceResult(
+        out_path=path,
+        original_path=path,
+        scryfall_id=None,
+        custom_hash="c" * 64,
+        custom_bleed_mm=3.175,
+        face_index=None,
+        face_name="My Alter",
+        card_name="My Alter",
+        set_code="",
+        collector_number="",
+        png_url="",
+        dpi=300,
+    )
+    bled = _bled_card(face, export_dpi=300, bleed_mm=1.0)
+    assert bled.size == _bled_pixels(300, 1.0)
+    mm_px = 300 / MM_PER_IN
+    assert bled.getpixel((round(0.4 * mm_px), bled.height // 2)) == (0, 200, 0)
+    assert bled.getpixel((round(1.6 * mm_px), bled.height // 2)) == (255, 0, 255)
+
+
+def test_render_back_image_with_an_amount_keeps_the_trim_content_card_sized(
+    tmp_path: Path,
+) -> None:
+    """The flag alone fits the whole file to the bled box (older clients);
+    with the amount, the file's bleed is trimmed to the sheet's instead,
+    so 1 mm in is still border and 2 mm in is already the design."""
+    path = tmp_path / "back.png"
+    _pre_bled_image().save(path, format="PNG")
+    mm_px = 600 / MM_PER_IN
+    exact = render_back_image(
+        path, export_dpi=600, bleed_mm=1.0, includes_bleed=True, image_bleed_mm=3.175
+    )
+    assert exact.size == _bled_pixels(600, 1.0)
+    assert exact.getpixel((round(0.5 * mm_px), exact.height // 2)) == (0, 200, 0)
+    assert exact.getpixel((round(2.0 * mm_px), exact.height // 2)) == (255, 0, 255)
+    legacy = render_back_image(path, export_dpi=600, bleed_mm=1.0, includes_bleed=True)
+    assert legacy.size == _bled_pixels(600, 1.0)
+    # Fit-to-box scales the 3.175 mm border down to ~2.9 mm, so 2 mm in
+    # is still border — the shrink the amount exists to avoid.
+    assert legacy.getpixel((round(2.0 * mm_px), legacy.height // 2)) == (0, 200, 0)
 
 
 def test_blank_reverse_fill_still_emits_the_back_page(tmp_path: Path) -> None:

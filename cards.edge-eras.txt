@@ -1,0 +1,101 @@
+# Edge-type coverage across eras (2026-09): 45 cards = five 3x3 pages.
+# Every kind of card edge the bleed and corner extension has to get right,
+# roughly one print per couple of years since 1993. Verified on Scryfall;
+# the comment is why the print is here. Print a sheet and check the bleed
+# band and all four corners of every card.
+
+# --- page 1 ---
+# 1993 Alpha: black border, rounder die cut
+1 Lightning Bolt (lea) 161
+# 1993 Collectors' Edition: square corners
+1 Serra Angel (cei) 40
+# 1994 Antiquities: early black-border scan
+1 Mishra's Factory (atq) 80d
+# 1995 4th Edition: white border
+1 Serra Angel (4ed) 50
+# 1995 Ice Age: black border
+1 Brainstorm (ice) 61
+# 1996 Alliances: black border
+1 Force of Will (all) 28
+# 1996 Pro Tour Collector Set: gold border, older template
+1 Aeolipile (ptc) pp81
+# 1999 Starter: white border, beginner set
+1 Grizzly Bears (s99) 129
+# 1997 World Championship: gold border
+1 Abeyance (wc97) jk1
+# --- page 2 ---
+# 1998 Unglued: silver border
+1 Chaos Confetti (ugl) 72
+# 1999 6th Edition: white border
+1 Wrath of God (6ed) 54
+# 1999 World Championship: gold border
+1 Albino Troll (wc99) ml231
+# 2000 Invasion: black border
+1 Fact or Fiction (inv) 57
+# 2001 7th Edition: white border
+1 Wrath of God (7ed) 57
+# 2001 Odyssey: black border
+1 Upheaval (ody) 113
+# 2002 World Championship: gold border
+1 Anurid Brushhopper (wc02) bk137
+# 2003 8th Edition: white border, modern frame
+1 Wrath of God (8ed) 58
+# 2003 Mirrodin: black border
+1 Chrome Mox (mrd) 152
+# --- page 3 ---
+# 2004 Unhinged: silver border
+1 Blast from the Past (unh) 72
+# 2004 World Championship: gold border, newer template
+1 Akroma's Vengeance (wc04) jn2
+# 2005 9th Edition: last white-border core set
+1 Serra Angel (9ed) 43
+# 2006 Time Spiral timeshifted: purple border
+1 Psionic Blast (tsb) 30
+# 2007 10th Edition: first black-border core set
+1 Serra Angel (10e) 39
+# 2009 Zendikar: full-art basic land
+1 Forest (zen) 249a
+# 2011 Innistrad: transform double-faced card
+1 Delver of Secrets // Insectile Aberration (isd) 51
+# 2014 M15: current frame, holofoil stamp
+1 Chord of Calling (m15) 172
+# 2016 Kaladesh Inventions: masterpiece frame
+1 Sol Ring (mps) 24
+# --- page 4 ---
+# 2017 Amonkhet Invocations: masterpiece frame
+1 Force of Will (mp2) 14
+# 2017 Unstable: silver border
+1 Adorable Kitten (ust) 1
+# 2019 War of the Spark: Japanese alternate art
+1 Liliana, Dreadhorde General (war) 97★
+# 2019 Throne of Eldraine: borderless
+1 The Royal Scions (eld) 272
+# 2020 Zendikar Rising: showcase frame
+1 Scute Swarm (znr) 308
+# 2020 Commander Legends: extended art
+1 Jeska's Will (cmr) 668
+# 2021 Mystical Archive: Japanese alternate frame
+1 Counterspell (sta) 78
+# 2021 Modern Horizons 2: retro frame
+1 Sanctum Prelate (mh2) 491
+# 2021 SLZ: phantom near-black bottom row on a bone-white card
+1 Chromatic Orrery (slz) 97
+# --- page 5 ---
+# 2022 Neon Dynasty: borderless
+1 Boseiju, Who Endures (neo) 412
+# 2022 30th Anniversary: black border reprint frame
+1 Black Lotus (30a) 525
+# 2023 Phyrexia: oil-slick raised foil frame
+1 Elesh Norn, Mother of Machines (one) 416
+# 2024 Bloomburrow: borderless art to the edge
+1 Dawn's Truce (blb) 295
+# 2024 Secret Lair: phantom near-white left column
+1 Fellwar Stone (sld) 7062
+# 2024 Foundations: white border with black collector bar
+1 Progenitus (fdn) 441
+# 2025 Final Fantasy: borderless dark
+1 Aettir and Priwen (fin) 350
+# 2025 Edge of Eternities: white border with black collector bar
+1 Secluded Starforge (eoe) 392
+# 2026 Lorwyn Eclipsed: white border with black collector bar
+1 Selfless Safewright (ecl) 401

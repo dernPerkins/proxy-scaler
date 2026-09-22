@@ -23,6 +23,7 @@ from .dpi import (
     CUSTOM_SOURCE_MODEL,
     MM_PER_IN,
     ORIGINAL_MODEL,
+    bled_target_pixels,
     target_pixels,
 )
 from .pipeline import FaceResult, _resize_to_dpi, group_by_face
@@ -585,17 +586,31 @@ def _draw_cut_marks(
 
 
 # How far inside the true edge the export-time extension samples from, in
-# mm: the outermost 0.25mm of every card is re-sourced from the pixels just
-# inside it. That strip sits on the trim line and carries every edge defect
-# Scryfall's renders are known for (see postprocess.py) plus whatever the
-# upscaler smeared into the corner rims — and 0.25mm is far inside anything
-# genuine (the modern collector-info bar is ~6mm deep).
-_EDGE_INSET_MM = 0.25
+# mm. Straight edges: 0.085mm, one pixel at Scryfall's render scale — the
+# depth of every measured straight-edge defect, and as thin as possible
+# because on borderless art the re-sourced strip is a visible band. Corner
+# arcs: 0.25mm, past the gold template's rim and highlight line plus
+# whatever the upscaler smeared across the alpha boundary. Both strips sit
+# on the trim line and far inside anything genuine (the modern
+# collector-info bar is ~6mm deep). See postprocess.py for the same split
+# at download time.
+_EDGE_INSET_MM = 0.085
+_CORNER_INSET_MM = 0.25
+
+
+def _mm_px(width: int, height: int, mm: float) -> int:
+    """`mm` in pixels for an image that is a whole card wide."""
+    return max(1, round(min(width, height) / CARD_WIDTH_MM * mm))
 
 
 def _inset_px(width: int, height: int) -> int:
-    """_EDGE_INSET_MM in pixels for an image that is a whole card wide."""
-    return max(1, round(min(width, height) / CARD_WIDTH_MM * _EDGE_INSET_MM))
+    """_EDGE_INSET_MM in pixels (straight edges)."""
+    return _mm_px(width, height, _EDGE_INSET_MM)
+
+
+def _corner_inset_px(width: int, height: int) -> int:
+    """_CORNER_INSET_MM in pixels (the arcs)."""
+    return _mm_px(width, height, _CORNER_INSET_MM)
 
 
 def flatten_corner_alpha(image: Image.Image) -> Image.Image:
@@ -629,11 +644,12 @@ def _extend_card(
     """Two passes of edge_extend.extend_edges, so the visible card edge is
     the trim line.
 
-    1. Mirror the border into the outer _EDGE_INSET_MM strip (rim,
-       transparent corners and the trim-line strip). That strip is where
-       every known edge defect lives; mirroring replaces it with more of
-       the border's own texture instead of a streak, so on a textured
-       border nothing visibly changes at the inset boundary.
+    1. Mirror the border into the outer strip (_EDGE_INSET_MM along the
+       straight edges, _CORNER_INSET_MM around the arcs: rim, transparent
+       corners and the trim-line strip). That strip is where every known
+       edge defect lives; mirroring replaces it with more of the border's
+       own texture instead of a streak, so on a textured border nothing
+       visibly changes at the inset boundary.
     2. Fan the bleed out from the TRUE edge (inset 0) of that result. The
        rays start exactly on the trim line — which is where the cut guides
        put their inner edge — rather than 0.25mm inside it. Mirror first
@@ -641,9 +657,14 @@ def _extend_card(
        again after the export resize (add_bleed) changes nothing.
     """
     h, w = rgb.shape[:2]
-    inset = _inset_px(w, h)
     face = extend_edges(
-        rgb, radius_px=radius_px, inset_px=inset, bleed_px=0, mode="mirror", alpha=alpha
+        rgb,
+        radius_px=radius_px,
+        inset_px=_inset_px(w, h),
+        corner_inset_px=_corner_inset_px(w, h),
+        bleed_px=0,
+        mode="mirror",
+        alpha=alpha,
     )
     return extend_edges(face, radius_px=radius_px, inset_px=0, bleed_px=bleed_px, mode="nearest")
 
@@ -1172,29 +1193,78 @@ def fit_cover(image: Image.Image, target: tuple[int, int]) -> Image.Image:
     return scaled.crop((left, top, left + tw, top + th))
 
 
-def _bled_pixels(dpi: int, bleed_mm: float) -> tuple[int, int]:
-    """Pixel size of one card *including* its bleed border on all sides."""
-    return (
-        round((CARD_WIDTH_MM + 2 * bleed_mm) / MM_PER_IN * dpi),
-        round((CARD_HEIGHT_MM + 2 * bleed_mm) / MM_PER_IN * dpi),
-    )
+# Kept as a name: tests and the export router import it from here.
+_bled_pixels = bled_target_pixels
+
+
+def fit_bled_image(
+    image: Image.Image,
+    *,
+    image_bleed_mm: float,
+    export_dpi: float,
+    bleed_mm: float,
+) -> Image.Image:
+    """Prepare a file that already carries `image_bleed_mm` of bleed per
+    side as the bled card the sheet wants, with `bleed_mm` per side.
+
+    The file's own bleed is used up to the requested amount: the surplus
+    is cropped away proportionally (a 3.175 mm MPC file printed at 1 mm
+    keeps 1 mm of its border and its trim content stays exactly card
+    sized), and if the sheet asks for more than the file has, the
+    difference is edge-extended from the file's outer pixels with square
+    corners — a pre-bled file has no transparent arcs. `bleed_mm=0`
+    yields the trim-sized card.
+
+    Exactly what fitting the whole file to the bled box gets wrong: that
+    scales the trim content by (63+2b)/(63+2i) whenever the two bleeds
+    differ.
+    """
+    img = image.convert("RGB")
+    keep = max(0.0, min(image_bleed_mm, bleed_mm))
+    w, h = img.size
+    scale_x = w / (CARD_WIDTH_MM + 2 * image_bleed_mm)
+    scale_y = h / (CARD_HEIGHT_MM + 2 * image_bleed_mm)
+    surplus = image_bleed_mm - keep
+    cx = round(surplus * scale_x)
+    cy = round(surplus * scale_y)
+    if cx or cy:
+        img = img.crop((cx, cy, w - cx, h - cy))
+    img = fit_cover(img, bled_target_pixels(export_dpi, keep))
+    if bleed_mm - keep > 1e-6:
+        img = add_bleed(img, dpi=export_dpi, bleed_mm=bleed_mm - keep, radius_px=0)
+    target = bled_target_pixels(export_dpi, bleed_mm)
+    if img.size != target:
+        # add_bleed rounds its own pixel count; absorb the ±1px so the
+        # result is exactly the bled box the sheet lays out.
+        img = fit_cover(img, target)
+    return img
 
 
 def render_back_image(
-    path: Path, *, export_dpi: int, bleed_mm: float, includes_bleed: bool
+    path: Path,
+    *,
+    export_dpi: int,
+    bleed_mm: float,
+    includes_bleed: bool,
+    image_bleed_mm: float | None = None,
 ) -> Image.Image:
     """Prepare a Back Image for placement, as an opaque bled RGB image the
     same size add_bleed would produce for a card.
 
-    Two paths, per the user's declaration about their own file. When the
-    art does NOT include bleed, it is cover-fitted to the trim size and
-    then edge-extended exactly like card art. When it DOES, edge-extending
-    would add a duplicate ~1mm border and shrink the visible design, so it
-    is cover-fitted straight to the bled size instead and the outer border
-    it already carries becomes the bleed.
+    Per the user's declaration about their own file. When the art does
+    NOT include bleed, it is cover-fitted to the trim size and then
+    edge-extended exactly like card art. When it DOES and the client said
+    how much (`image_bleed_mm`), fit_bled_image trims that bleed to the
+    sheet's or tops it up, so the trim content stays card sized. A
+    declaration with no amount (clients before 0.3.3) keeps the original
+    behaviour: the whole file cover-fitted to the bled box.
     """
     with Image.open(path) as raw:
         img = raw.convert("RGB")
+        if includes_bleed and image_bleed_mm is not None:
+            return fit_bled_image(
+                img, image_bleed_mm=image_bleed_mm, export_dpi=export_dpi, bleed_mm=bleed_mm
+            )
         if includes_bleed:
             return fit_cover(img, _bled_pixels(export_dpi, bleed_mm))
         trimmed = fit_cover(img, target_pixels(export_dpi))
@@ -1205,6 +1275,17 @@ def _bled_card(face: FaceResult, *, export_dpi: int, bleed_mm: float) -> Image.I
     """One card image, corner-flattened, resized and bled, ready for
     placement. Encoding is the caller's job — it also owns the optional
     180° rotation, and rotating after encoding would mean a decode."""
+    if face.custom_bleed_mm > 0:
+        # A Custom Image declared to carry bleed: its file (and every
+        # upscaled variant) is the bled box, square-cornered and opaque, so
+        # there is no arc to flatten — trim its bleed to the sheet's.
+        with Image.open(face.out_path) as raw:
+            return fit_bled_image(
+                raw.convert("RGB"),
+                image_bleed_mm=face.custom_bleed_mm,
+                export_dpi=export_dpi,
+                bleed_mm=bleed_mm,
+            )
     with Image.open(face.out_path) as raw:
         rgba = raw.convert("RGBA")
         # Measured before flattening: once the corners are opaque the alpha
@@ -1234,6 +1315,7 @@ def build_pdf(
     back_layout: PageLayout | None = None,
     back_image_path: Path | None = None,
     back_image_includes_bleed: bool = False,
+    back_image_bleed_mm: float | None = None,
     reverse_fill: ReverseFill = ReverseFill.BACK_IMAGE,
     flip_edge: FlipEdge = FlipEdge.LONG,
     page_order: PageOrder = PageOrder.DUPLEX,
@@ -1318,6 +1400,7 @@ def build_pdf(
                 export_dpi=export_dpi,
                 bleed_mm=layout.bleed_mm,
                 includes_bleed=back_image_includes_bleed,
+                image_bleed_mm=back_image_bleed_mm,
             )
         if rotate:
             image = image.transpose(Image.Transpose.ROTATE_180)

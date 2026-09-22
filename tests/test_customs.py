@@ -19,7 +19,7 @@ from PIL import Image
 from proxy_scaler import customs, db as db_module
 from proxy_scaler.db import enqueue_task, init_db, list_gallery_items, parse_output_filename
 from proxy_scaler.decklist import DeckEntry
-from proxy_scaler.dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, CUSTOM_SOURCE_MODEL, ORIGINAL_MODEL
+from proxy_scaler.dpi import target_pixels, CARD_HEIGHT_MM, CARD_WIDTH_MM, CUSTOM_SOURCE_MODEL, ORIGINAL_MODEL
 from proxy_scaler.pdf_layout import match_quantities
 from proxy_scaler.pipeline import FaceResult, face_group_key, output_filename
 from proxy_scaler.upscale import cache_path, original_cache_path
@@ -116,6 +116,119 @@ def test_store_original_cover_crops_to_card_aspect(tmp_path: Path, size) -> None
     # Cover, not contain: the crop never scales past the source, so the
     # limiting axis keeps its full resolution.
     assert w <= size[0] and h <= size[1]
+
+
+def test_store_original_with_bleed_crops_to_the_bled_aspect_and_records_it(
+    tmp_path: Path,
+) -> None:
+    """An MPC Fill file is 63x88 plus 3.175 mm per side: declared as such,
+    it is cropped to THAT aspect and the amount is written beside it, so
+    the upscaler and the renderer know the outer 3.175 mm is bleed."""
+    data = _png_bytes(1000, 1000)
+    content_hash, path = customs.store_original(data, root=tmp_path, bleed_mm=3.175)
+    with Image.open(path) as img:
+        w, h = img.size
+    assert w / h == pytest.approx((63 + 6.35) / (88 + 6.35), rel=1e-3)
+    assert customs.read_bleed_mm(content_hash, root=tmp_path) == 3.175
+    assert customs.sidecar_path(content_hash, root=tmp_path).is_file()
+    # Same bytes, same declaration: the no-op the client relies on.
+    assert customs.store_original(data, root=tmp_path, bleed_mm=3.175) == (content_hash, path)
+    # Same bytes, a different declaration: re-cropped and re-recorded.
+    customs.store_original(data, root=tmp_path, bleed_mm=0.0)
+    with Image.open(path) as img:
+        w, h = img.size
+    assert w / h == pytest.approx(CARD_WIDTH_MM / CARD_HEIGHT_MM, rel=1e-3)
+    assert customs.read_bleed_mm(content_hash, root=tmp_path) == 0.0
+
+
+def test_bleed_declaration_is_validated_and_survives_delete(tmp_path: Path) -> None:
+    for bad in (-0.1, 10.5, float("nan"), float("inf"), "three"):
+        with pytest.raises(customs.CustomImageError):
+            customs.validate_bleed_mm(bad)  # type: ignore[arg-type]
+    with pytest.raises(customs.CustomImageError):
+        customs.store_original(_png_bytes(100, 140), root=tmp_path, bleed_mm=11)
+    # A missing or unreadable sidecar reads as "plain card aspect", which
+    # is exactly what every upload made before sidecars existed was.
+    assert customs.read_bleed_mm(HASH_B, root=tmp_path) == 0.0
+    customs.sidecar_path(HASH_B, root=tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    customs.sidecar_path(HASH_B, root=tmp_path).write_text("not json")
+    assert customs.read_bleed_mm(HASH_B, root=tmp_path) == 0.0
+
+    content_hash, _ = customs.store_original(_png_bytes(300, 400), root=tmp_path, bleed_mm=2.0)
+    assert customs.delete_custom(content_hash, root=tmp_path) == 1
+    assert not customs.sidecar_path(content_hash, root=tmp_path).exists()
+    assert customs.read_bleed_mm(content_hash, root=tmp_path) == 0.0
+
+
+def test_source_dpi_is_measured_against_the_declared_bled_size(tmp_path: Path) -> None:
+    # 1114 px over 94.35 mm (88 + 2 x 3.175) is ~300 DPI; over 88 mm the
+    # same pixels would claim ~322.
+    content_hash, _ = customs.store_original(
+        _png_bytes(818, 1114), root=tmp_path, bleed_mm=3.175
+    )
+    assert customs.source_dpi(content_hash, root=tmp_path) == pytest.approx(300, abs=2)
+
+
+def test_attach_bleed_stamps_custom_faces_from_the_sidecar(tmp_path: Path) -> None:
+    content_hash, _ = customs.store_original(
+        _png_bytes(818, 1114), root=tmp_path, bleed_mm=3.175
+    )
+    bled = _custom_result(content_hash, dpi=600, model="ultrasharp_v2")
+    plain = _custom_result(HASH_B, dpi=600, model="ultrasharp_v2")
+    scryfall = FaceResult(
+        out_path=Path("/out/sf.png"),
+        original_path=Path("/cache/originals/sf.png"),
+        scryfall_id="uuid",
+        face_index=None,
+        face_name="Sol Ring",
+        card_name="Sol Ring",
+        set_code="c21",
+        collector_number="263",
+        png_url="",
+        dpi=600,
+    )
+    customs.attach_bleed([bled, plain, scryfall], root=tmp_path)
+    assert bled.custom_bleed_mm == 3.175
+    assert plain.custom_bleed_mm == 0.0
+    assert scryfall.custom_bleed_mm == 0.0
+
+
+def test_write_dpi_variant_sizes_a_bled_custom_to_the_bled_box(tmp_path: Path) -> None:
+    """The stored PNG of a bled custom is the bled box, so its upscaled
+    variant must be too — resizing it to trim pixels would squash 69 mm
+    of art into 63 mm and the renderer's later trim would cut real
+    content."""
+    from proxy_scaler import pipeline
+    from proxy_scaler.dpi import bled_target_pixels
+    from proxy_scaler.services import generation as gen
+    from proxy_scaler.upscale import UpscaleModel
+
+    face = gen.custom_face(DeckEntry(quantity=1, name="My Alter", custom_hash=HASH_A))
+    raw = Image.new("RGB", (1638 * 2, 2229 * 2), (10, 20, 30))
+    result = pipeline._write_dpi_variant(
+        face=face,
+        raw=raw,
+        original_path=tmp_path / "orig.png",
+        output_dir=tmp_path / "out",
+        model_id=UpscaleModel.ULTRASHARP_V2,
+        dpi=600,
+        native_scale=4,
+        bleed_mm=3.175,
+    )
+    with Image.open(result.out_path) as img:
+        assert img.size == bled_target_pixels(600, 3.175)
+    assert result.custom_bleed_mm == 3.175
+    plain = pipeline._write_dpi_variant(
+        face=face,
+        raw=raw,
+        original_path=tmp_path / "orig.png",
+        output_dir=tmp_path / "out2",
+        model_id=UpscaleModel.ULTRASHARP_V2,
+        dpi=600,
+        native_scale=4,
+    )
+    with Image.open(plain.out_path) as img:
+        assert img.size == target_pixels(600)
 
 
 def test_store_original_never_upscales_a_small_image(tmp_path: Path) -> None:

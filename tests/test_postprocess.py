@@ -15,7 +15,8 @@ from PIL import Image
 
 from proxy_scaler.postprocess import (
     FIXUP_NAME,
-    RIM_INSET_PX,
+    CORNER_INSET_PX,
+    EDGE_INSET_PX,
     clean_original_png,
 )
 
@@ -112,16 +113,35 @@ def test_phantom_rows_scrubbed_on_every_edge() -> None:
 
 def test_phantom_run_up_to_inset_fully_scrubbed() -> None:
     # The whole outer strip is re-sourced from just inside it, so any run
-    # up to RIM_INSET_PX deep disappears — no per-row colour test involved.
+    # up to EDGE_INSET_PX deep disappears — no per-row colour test
+    # involved — and the first row past it is left exactly as it was.
     raw = _png(
-        _card(phantom_edges=("bottom",), phantom_px=RIM_INSET_PX, underlay=_BORDER)
+        _card(phantom_edges=("bottom",), phantom_px=EDGE_INSET_PX, underlay=_BORDER)
     )
     result = clean_original_png(raw)
     assert result.applied == (FIXUP_NAME,)
     px = _decode(result.png_bytes).load()
     w, h = 100, 140
-    for k in range(RIM_INSET_PX):
+    for k in range(EDGE_INSET_PX):
         assert px[w // 2, h - 1 - k][:3] == _BORDER, k
+
+
+def test_straight_edge_strip_is_shallow_on_art() -> None:
+    # Borderless art: a 1px reflection is invisible, a 3px one is a band.
+    # Only the outermost EDGE_INSET_PX pixels of a straight edge may change.
+    img = _card(border=(90, 60, 40), underlay=(90, 60, 40), radius=12)
+    px = img.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            if px[x, y][3] == 255:
+                px[x, y] = ((x * 7) % 256, (y * 5) % 256, (x + y) % 256, 255)
+    result = clean_original_png(_png(img))
+    before, after = _decode(_png(img)).load(), _decode(result.png_bytes).load()
+    for y in range(20, h - 20):
+        for k in range(EDGE_INSET_PX, CORNER_INSET_PX + 1):
+            assert after[k, y] == before[k, y], (k, y)
+            assert after[w - 1 - k, y] == before[w - 1 - k, y], (k, y)
 
 
 def test_phantom_white_column_on_dark_card_scrubbed() -> None:
@@ -154,7 +174,7 @@ def test_genuine_collector_bar_keeps_its_black_edge() -> None:
     assert _alpha_bytes(result.png_bytes) == _alpha_bytes(raw)
     px = _decode(result.png_bytes).load()
     w, h = 100, 140
-    for k in range(RIM_INSET_PX + 1):
+    for k in range(CORNER_INSET_PX + 1):
         assert px[w // 2, h - 1 - k][:3] == (10, 10, 10), k
     assert px[w // 2, h - 30][:3] == _BORDER
 

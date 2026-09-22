@@ -135,3 +135,19 @@ def test_rejects_bad_mode_and_shapes() -> None:
     else:
         raise AssertionError("2-D input accepted")
     assert OPAQUE_MIN == 250
+
+
+def test_corner_inset_can_be_deeper_than_the_edge_inset() -> None:
+    # Straight edges re-source a 1px strip, the arcs a 4px one: a pixel
+    # 2px in from a straight edge is untouched, a pixel 2px inside the arc
+    # (on the 45° diagonal) is not.
+    w, h, r = 200, 260, 32
+    rgb = _gradient_rgb(w, h)
+    out = extend_edges(rgb, radius_px=r, inset_px=1, corner_inset_px=4, bleed_px=0, mode="nearest")
+    assert np.array_equal(out[h // 2, 1 : w - 1], rgb[h // 2, 1 : w - 1])
+    assert np.array_equal(out[h // 2, 0], rgb[h // 2, 1])
+    assert np.array_equal(out[h // 2, w - 1], rgb[h // 2, w - 2])
+    k = round(r - (r - 2) / 2**0.5)
+    assert not np.array_equal(out[k, k], rgb[k, k])
+    k_in = round(r - (r - 6) / 2**0.5)
+    assert np.array_equal(out[k_in, k_in], rgb[k_in, k_in])

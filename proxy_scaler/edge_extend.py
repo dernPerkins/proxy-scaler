@@ -57,6 +57,14 @@ OPAQUE_MIN = 250
 # cut (52px) is still well under this.
 _MAX_RADIUS_FRAC = 0.25
 
+# The corner inset ramps from the edge inset to its full depth over this
+# much arc from each tangent point — deep enough, quickly enough, that the
+# rim/highlight/halo defects (which run the whole arc) are covered except
+# for the last couple of pixels, with no visible step where the arc meets
+# the straight edge.
+_CORNER_RAMP_DEG = 10.0
+_CORNER_RAMP_SIN = float(np.sin(np.radians(2 * _CORNER_RAMP_DEG)))
+
 
 def corner_radius_px(image: Image.Image) -> int:
     """Corner radius of a card image, from its alpha channel.
@@ -89,29 +97,64 @@ def _source_indices(
     *,
     w: int,
     h: int,
-    core: int,
-    rr: float,
+    r: int,
+    edge_inset: int,
+    corner_inset: int,
     mode: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """For canvas pixels at card coordinates (xs, ys) — which may be
     negative or past the edge — the (row, col) of the card pixel each one
-    takes its colour from."""
+    takes its colour from.
+
+    The sampling boundary is the card's rounded rectangle pulled inward:
+    by `edge_inset` along the straight edges, and by up to `corner_inset`
+    around each arc (the arc keeps its centre and shrinks its radius,
+    ramping in from the tangent points — see _CORNER_RAMP_DEG). The two
+    may differ because the defects differ — straight edges carry 1px
+    phantom rows, the arcs carry a rim, a highlight line and whatever the
+    upscaler smeared across the alpha boundary.
+    """
     xs = xs.astype(np.float32)
     ys = ys.astype(np.float32)
-    cx = np.clip(xs, core, w - 1 - core)
-    cy = np.clip(ys, core, h - 1 - core)
-    dx = xs - cx
-    dy = ys - cy
-    d = np.hypot(dx, dy)
-    outside = d > rr
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ux = np.where(d > 0, dx / d, 0.0)
-        uy = np.where(d > 0, dy / d, 0.0)
-    # Nearest point on the inset boundary.
-    bx = cx + ux * rr
-    by = cy + uy * rr
+    e = float(edge_inset)
+    if r <= 0:
+        # Square corners: the boundary is a plain inset rectangle and the
+        # nearest point is the clamp; the corner squares of the bleed
+        # clamp to the rectangle's corner pixel.
+        bx = np.clip(xs, e, w - 1 - e)
+        by = np.clip(ys, e, h - 1 - e)
+        outside = (xs != bx) | (ys != by)
+    else:
+        # Arc-centre rectangle: [r, w-1-r] x [r, h-1-r].
+        cx = np.clip(xs, r, w - 1 - r)
+        cy = np.clip(ys, r, h - 1 - r)
+        dx = xs - cx
+        dy = ys - cy
+        in_corner = (dx != 0) & (dy != 0)
+        d = np.hypot(dx, dy)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ux = np.where(d > 0, dx / d, 0.0)
+            uy = np.where(d > 0, dy / d, 0.0)
+        # Corner zones: an arc about the centre whose depth below the true
+        # arc ramps from `edge_inset` at each tangent point (so it meets
+        # the straight-edge line with no step) up to `corner_inset` within
+        # _CORNER_RAMP_DEG of arc, and holds there through the middle.
+        # 2|ux*uy| is |sin 2θ|: 0 at the tangents, 1 at 45°.
+        ramp = np.minimum(1.0, 2.0 * np.abs(ux * uy) / _CORNER_RAMP_SIN)
+        depth = e + (corner_inset - e) * ramp
+        rc = np.maximum(r - depth, 0.0)
+        bx_c = cx + ux * rc
+        by_c = cy + uy * rc
+        outside_c = in_corner & (d > rc)
+        # Straight zones: the inset line, `edge_inset` in from the edge.
+        bx_s = np.clip(xs, e, w - 1 - e)
+        by_s = np.clip(ys, e, h - 1 - e)
+        outside_s = ~in_corner & ((xs != bx_s) | (ys != by_s))
+        bx = np.where(in_corner, bx_c, bx_s)
+        by = np.where(in_corner, by_c, by_s)
+        outside = outside_c | outside_s
     if mode == "mirror":
-        # Reflect through that boundary point.
+        # Reflect through the boundary point.
         bx = 2 * bx - xs
         by = 2 * by - ys
     sx = np.where(outside, bx, xs)
@@ -156,15 +199,20 @@ def extend_edges(
     bleed_px: int = 0,
     mode: str = "nearest",
     alpha: np.ndarray | None = None,
+    corner_inset_px: int | None = None,
 ) -> np.ndarray:
     """Return an (H + 2*bleed) x (W + 2*bleed) x 3 array: `rgb` with every
     pixel outside the inset rounded rectangle re-sourced from that
     rectangle's boundary. Pixels inside it are copied verbatim.
 
-    `radius_px` is the card's corner radius (0 for square corners) and
-    `inset_px` how far inside the true edge the sampling boundary sits.
-    When the radius is smaller than the inset the inset rectangle simply has
-    square corners.
+    `radius_px` is the card's corner radius (0 for square corners).
+    `inset_px` is how far inside the true edge the sampling boundary sits
+    along the straight edges; `corner_inset_px` (default: the same) how far
+    the arcs shrink at their deepest. The arc depth ramps smoothly from the
+    edge inset at each tangent point to the corner inset, so there is no
+    step where an arc meets its straight edge. When the radius is smaller
+    than the corner inset the arc collapses to its centre and the corner is
+    square.
 
     `alpha` (HxW, same size as `rgb`) makes the sampling alpha-aware: a
     source pixel that is itself transparent — the alpha shape was not the
@@ -182,23 +230,24 @@ def extend_edges(
         raise ValueError("alpha must match rgb's height and width")
     r = max(0, int(radius_px))
     inset = max(0, int(inset_px))
+    corner_inset = inset if corner_inset_px is None else max(0, int(corner_inset_px))
     b = max(0, int(bleed_px))
-
-    # Core rectangle: the inset rounded rect minus its arcs. Its corners
-    # are the arcs' centres of curvature; rr is the arc radius after inset.
-    core = max(r, inset)
-    rr = float(max(r - inset, 0))
     opaque = None if alpha is None else alpha >= OPAQUE_MIN
 
     out_h, out_w = h + 2 * b, w + 2 * b
     out = np.empty((out_h, out_w, 3), dtype=rgb.dtype)
-    ring = b + core  # canvas pixels within this of an edge may be re-sourced
+    # Canvas pixels within this of an edge may be re-sourced; everything
+    # deeper clamps to itself.
+    core = max(r, inset, corner_inset)
+    ring = b + core
 
     def fill(y0: int, y1: int, x0: int, x1: int) -> None:
         if y1 <= y0 or x1 <= x0:
             return
         ys, xs = np.mgrid[y0 - b : y1 - b, x0 - b : x1 - b]
-        sy, sx = _source_indices(xs, ys, w=w, h=h, core=core, rr=rr, mode=mode)
+        sy, sx = _source_indices(
+            xs, ys, w=w, h=h, r=r, edge_inset=inset, corner_inset=corner_inset, mode=mode
+        )
         if opaque is not None:
             sx = _opaque_fallback(sy, sx, opaque=opaque, inset=inset)
         out[y0:y1, x0:x1] = rgb[sy, sx]

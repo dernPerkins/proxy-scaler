@@ -349,6 +349,10 @@ export interface PdfLayoutRequest {
    *  (sync_back_image), so this stays a short string on preview calls. */
   back_image_hash?: string | null;
   back_image_includes_bleed?: boolean;
+  /** How much bleed (mm per side) the Selected Back carries when it
+   *  declares some. Servers before 0.3.3 ignore it and fit the whole file
+   *  to the bled box instead. */
+  back_image_bleed_mm?: number | null;
   /** Preview only: render page 1's Back Page, mirrored. */
   preview_back_page?: boolean;
 }
@@ -534,6 +538,10 @@ export interface ExportZipRequest {
   /** The Selected Back already carries bleed (its Back Library flag), so
    *  with_bleed cover-fits it rather than adding a second border. */
   back_image_includes_bleed?: boolean;
+  /** How much bleed (mm per side) the Selected Back carries when it
+   *  declares some. Servers before 0.3.3 ignore it and fit the whole file
+   *  to the bled box instead. */
+  back_image_bleed_mm?: number | null;
 }
 
 /** The export job routes reuse the PDF job shapes — same registry
@@ -566,7 +574,12 @@ export interface BackImage {
   content_hash: string;
   label: string;
   original_filename: string;
+  /** The user's declaration that the file already carries bleed, and how
+   *  much (mm per side). The amount is sent with every PDF/export request
+   *  so the server can trim the file's bleed to the sheet's; it is kept
+   *  while the box is unticked so re-ticking restores it. */
   includes_bleed: boolean;
+  bleed_mm: number;
   width: number;
   height: number;
   created_at: string;
@@ -602,11 +615,19 @@ export interface CustomImage {
   /** The card's name. Defaults to the filename stem; editable. */
   label: string;
   original_filename: string;
+  /** The user's declaration that the file already carries bleed, and how
+   *  much (mm per side; 3.175 is MakePlayingCards'). Rust sends the
+   *  effective amount to the server on sync, which crops and upscales to
+   *  that box; the renderer trims it to the sheet's bleed. `bleed_mm` is
+   *  kept while the box is unticked so re-ticking restores it. */
+  includes_bleed: boolean;
+  bleed_mm: number;
   width: number;
   height: number;
   created_at: string;
-  /** Effective print DPI at card size. Warned about below ~300, never
-   *  blocked — and unlike a Back Image, upscaling is a real remedy. */
+  /** Effective print DPI at card size (bleed-aware: a bled file spans
+   *  more than 88 mm). Warned about below ~300, never blocked — and
+   *  unlike a Back Image, upscaling is a real remedy. */
   source_dpi: number;
 }
 

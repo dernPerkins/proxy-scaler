@@ -10,6 +10,12 @@
 // Deleting therefore removes cards, not just a preference. That asymmetry
 // with the Backs tab (where deleting merely leaves a project with no back)
 // is why the confirmation counts cards rather than projects.
+//
+// Like the Backs tab, per-image settings live in a sidebar for the
+// selected tile: the name, the declaration that the file already carries
+// bleed (and how much), and the Remove button. Selection is local to this
+// page — unlike a back, a custom image is not something a project
+// "selects", so there is no project setting to key it off.
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
@@ -17,7 +23,7 @@ import type { CustomImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useServerVersion } from "../config";
 import { useProject } from "../context/ProjectContext";
-import { registerCustomCards } from "../syncCustoms";
+import { getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
   ACCEPTED_IMAGE_TYPES,
   MAX_UPLOAD_MB,
@@ -27,6 +33,8 @@ import {
 // Matches proxy_scaler/customs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation.
 const LOW_DPI = 300;
+// Mirrors proxy_scaler/dpi.py::MAX_BLEED_MM.
+const MAX_BLEED_MM = 10;
 
 function UploadIcon() {
   return (
@@ -52,13 +60,15 @@ function UploadIcon() {
 function CustomTile({
   image,
   inProject,
+  selected,
+  onSelect,
   onAdd,
-  onDelete,
 }: {
   image: CustomImage;
   inProject: boolean;
+  selected: boolean;
+  onSelect: () => void;
   onAdd: () => void;
-  onDelete: () => void;
 }) {
   const thumbQuery = useQuery({
     queryKey: ["custom-thumb", image.id],
@@ -67,7 +77,26 @@ function CustomTile({
   });
   const lowRes = image.source_dpi < LOW_DPI;
   return (
-    <div className="thumb">
+    <div
+      className="thumb"
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      style={{
+        padding: 6,
+        borderRadius: 10,
+        borderColor: selected ? "var(--accent)" : "transparent",
+        borderWidth: 2,
+        borderStyle: "solid",
+        cursor: "pointer",
+      }}
+    >
       <div
         style={{
           aspectRatio: "63 / 88",
@@ -88,17 +117,23 @@ function CustomTile({
       <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{image.label}</div>
       <div className="hint" style={{ fontSize: 12 }}>
         {Math.round(image.source_dpi)} DPI
-        {/* A warning, never a block. Same remedy as a Back Image — a
-            sharper file — since Custom Images are never upscaled
-            (services/generation.py routes them to download-only). */}
+        {/* A warning, never a block: a sharper file or an upscale are
+            both real remedies. */}
         {lowRes ? " — low for print" : null}
+        {image.includes_bleed ? " · bleed included" : null}
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-        <button type="button" onClick={onAdd} disabled={inProject}>
+        <button
+          type="button"
+          onClick={(e) => {
+            // The tile itself selects; the button must not also toggle
+            // the sidebar to some other image mid-click.
+            e.stopPropagation();
+            onAdd();
+          }}
+          disabled={inProject}
+        >
           {inProject ? "In project" : "Add to project"}
-        </button>
-        <button type="button" className="ghost" onClick={onDelete}>
-          Remove
         </button>
       </div>
     </div>
@@ -112,7 +147,9 @@ export default function CustomsPage() {
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     image: CustomImage;
     uses: number;
@@ -132,6 +169,7 @@ export default function CustomsPage() {
     () => new Set(cards.map((c) => c.custom_image_id).filter((id): id is number => id != null)),
     [cards],
   );
+  const selected = images.find((i) => i.id === selectedId) ?? null;
 
   const addMutation = useMutation({
     mutationFn: async (files: File[]) => {
@@ -162,7 +200,34 @@ export default function CustomsPage() {
       // project's card list is now stale.
       await reloadCards();
       setPendingDelete(null);
+      setSelectedId(null);
     },
+  });
+
+  // The declaration about the file. Recorded locally, then pushed to the
+  // connected server right away for any card already using the image:
+  // the sync re-uploads under the new amount and the server discards the
+  // upscales it made under the old one, so the next PDF is right rather
+  // than the one after. Best-effort — with no server reachable the
+  // PDF/ZIP paths re-run the same registration later.
+  const bleedMutation = useMutation({
+    mutationFn: async (args: { id: number; includesBleed: boolean; bleedMm: number }) => {
+      await projectApi.setCustomImageBleed(args.id, args.includesBleed, args.bleedMm);
+      await queryClient.invalidateQueries({ queryKey: ["custom-images"] });
+      const { projectTag } = getProjectSnapshot();
+      const using = cards.filter((c) => c.custom_image_id === args.id);
+      if (using.length && projectTag != null) {
+        try {
+          await registerCustomCards(using, projectTag, serverVersion);
+          await queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
+        } catch {
+          // Deferred to the next generate or export, which runs the same
+          // sync and reports any real problem then.
+        }
+      }
+    },
+    onSuccess: () => setSettingsError(null),
+    onError: (err: unknown) => setSettingsError(err instanceof Error ? err.message : String(err)),
   });
 
   const handleFiles = (list: FileList | null) => {
@@ -170,119 +235,222 @@ export default function CustomsPage() {
     if (files.length) addMutation.mutate(files);
   };
 
+  async function confirmDelete(image: CustomImage) {
+    const uses = await projectApi.countCardsUsingCustomImage(image.id);
+    setPendingDelete({ image, uses });
+  }
+
   return (
-    <main
-      className="content"
-      onDragEnter={(e) => {
-        e.preventDefault();
-        setDragDepth((d) => d + 1);
-      }}
-      onDragOver={(e) => {
-        // Without preventDefault here the browser treats the drop as
-        // navigation and opens the image instead.
-        e.preventDefault();
-      }}
-      onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragDepth(0);
-        handleFiles(e.dataTransfer.files);
-      }}
-    >
-      <h2>Custom cards</h2>
-      <p className="hint" style={{ marginTop: 8 }}>
-        Your own art, used as card fronts. The library is shared across every project on
-        this machine; each image becomes a card named after its file. Images stay on this
-        machine until something actually needs them — upscaling, or exporting.
-      </p>
+    <div className="layout">
+      <aside className="sidebar panel">
+        <h3 style={{ marginBottom: 14 }}>Custom card</h3>
+        {selected == null ? (
+          <p className="hint">
+            Select an image to rename it, say whether it already includes bleed, or remove
+            it from the library.
+          </p>
+        ) : (
+          <div className="field-group">
+            <label className="field">
+              <span>Name</span>
+              <input
+                defaultValue={selected.label}
+                key={selected.id}
+                onBlur={(e) => {
+                  const next = e.target.value.trim();
+                  if (next && next !== selected.label) {
+                    void projectApi
+                      .setCustomImageLabel(selected.id, next)
+                      .then(() =>
+                        queryClient.invalidateQueries({ queryKey: ["custom-images"] }),
+                      );
+                  }
+                }}
+              />
+            </label>
 
-      {uploadError ? (
-        <p className="error" style={{ marginTop: 12 }}>
-          {uploadError}
-        </p>
-      ) : null}
+            {/* The user's declaration about their own file. An image that
+                already carries bleed (an MPC Fill download, say) is
+                cropped and upscaled to its bled size on the server, and
+                the print trims that bleed to the project's — rather than
+                cropping the file to card size and extending a second
+                border around what was already bleed. */}
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={selected.includes_bleed}
+                onChange={(e) =>
+                  bleedMutation.mutate({
+                    id: selected.id,
+                    includesBleed: e.target.checked,
+                    bleedMm: selected.bleed_mm,
+                  })
+                }
+              />
+              This image already includes bleed
+            </label>
+            {selected.includes_bleed && (
+              <label className="field">
+                <span>Bleed in the file (mm per side)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_BLEED_MM}
+                  step={0.001}
+                  key={`bleed-${selected.id}`}
+                  defaultValue={selected.bleed_mm}
+                  onBlur={(e) => {
+                    const next = Number(e.target.value);
+                    if (
+                      Number.isFinite(next) &&
+                      next >= 0 &&
+                      next <= MAX_BLEED_MM &&
+                      next !== selected.bleed_mm
+                    ) {
+                      bleedMutation.mutate({ id: selected.id, includesBleed: true, bleedMm: next });
+                    }
+                  }}
+                />
+              </label>
+            )}
+            <p className="hint" style={{ marginTop: -4 }}>
+              MakePlayingCards images carry 3.175 mm (1/8 in) per side. Printing trims this
+              down to the project&apos;s bleed, or extends it if the project asks for more.
+              Changing it discards any upscales of this image on the server; generate again
+              afterwards.
+            </p>
+            {settingsError ? <p className="error-text">{settingsError}</p> : null}
 
-      <div
-        style={{
-          marginTop: 16,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
-          gap: 12,
+            {selected.source_dpi < LOW_DPI && (
+              <p className="hint">
+                This image works out to about {Math.round(selected.source_dpi)} DPI across a
+                card, which will look soft in print. Upscaling it is a real remedy here, or
+                replace it with a larger source image.
+              </p>
+            )}
+
+            <button
+              className="btn-sm"
+              style={{ marginTop: 18 }}
+              onClick={() => void confirmDelete(selected)}
+            >
+              Remove this image
+            </button>
+          </div>
+        )}
+      </aside>
+
+      <main
+        className="content"
+        onDragEnter={(e) => {
+          e.preventDefault();
+          setDragDepth((d) => d + 1);
+        }}
+        onDragOver={(e) => {
+          // Without preventDefault here the browser treats the drop as
+          // navigation and opens the image instead.
+          e.preventDefault();
+        }}
+        onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragDepth(0);
+          handleFiles(e.dataTransfer.files);
         }}
       >
-        <button
-          type="button"
-          className={`dropzone${dragging ? " is-dragging" : ""}`}
-          onClick={() => fileInput.current?.click()}
-          disabled={addMutation.isPending}
-        >
-          <UploadIcon />
-          <span className="dropzone-title">
-            {addMutation.isPending && progress ? (
-              `Adding ${progress.done + 1} of ${progress.total}…`
-            ) : (
-              <>
-                Drag and drop
-                <br />
-                or
-                <br />
-                click here
-              </>
-            )}
-          </span>
-          <span className="dropzone-hint">
-            PNG, JPEG or WebP
-            <br />
-            up to {MAX_UPLOAD_MB}MB each
-          </span>
-        </button>
+        <h2>Custom cards</h2>
+        <p className="hint" style={{ marginTop: 8 }}>
+          Your own art, used as card fronts. The library is shared across every project on
+          this machine; each image becomes a card named after its file. Images stay on this
+          machine until something actually needs them — upscaling, or exporting.
+        </p>
 
-        {/* Inside the grid so it can never be orphaned from the button
-            that clicks it — moving it out once silently made the whole
-            tile do nothing (see BacksPage). */}
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          accept={ACCEPTED_IMAGE_TYPES}
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const files = e.target.files;
-            // Reset first: picking the same file twice in a row fires no
-            // change event otherwise, which reads as a broken control.
-            const copy = files ? Array.from(files) : [];
-            e.target.value = "";
-            if (copy.length) addMutation.mutate(copy);
+        {uploadError ? (
+          <p className="error" style={{ marginTop: 12 }}>
+            {uploadError}
+          </p>
+        ) : null}
+
+        <div
+          style={{
+            marginTop: 16,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
+            gap: 12,
           }}
-        />
+        >
+          <button
+            type="button"
+            className={`dropzone${dragging ? " is-dragging" : ""}`}
+            onClick={() => fileInput.current?.click()}
+            disabled={addMutation.isPending}
+          >
+            <UploadIcon />
+            <span className="dropzone-title">
+              {addMutation.isPending && progress ? (
+                `Adding ${progress.done + 1} of ${progress.total}…`
+              ) : (
+                <>
+                  Drag and drop
+                  <br />
+                  or
+                  <br />
+                  click here
+                </>
+              )}
+            </span>
+            <span className="dropzone-hint">
+              PNG, JPEG or WebP
+              <br />
+              up to {MAX_UPLOAD_MB}MB each
+            </span>
+          </button>
 
-        {images.map((image) => (
-          <CustomTile
-            key={image.id}
-            image={image}
-            inProject={idsInProject.has(image.id)}
-            onAdd={() =>
-              void addCustomCards([image.id]).then((added) =>
-                // "Added it, it's ready to print" — same best-effort
-                // sync + register as the Decklist dropzone. Quietly a
-                // no-op with no server reachable; the PDF/ZIP export
-                // paths re-run it then.
-                registerCustomCards(added.cards, added.projectTag, serverVersion)
-                  .then(() =>
-                    queryClient.invalidateQueries({
-                      queryKey: ["generation-status", added.projectTag],
-                    }),
-                  )
-                  .catch(() => {}),
-              )
-            }
-            onDelete={async () => {
-              const uses = await projectApi.countCardsUsingCustomImage(image.id);
-              setPendingDelete({ image, uses });
+          {/* Inside the grid so it can never be orphaned from the button
+              that clicks it — moving it out once silently made the whole
+              tile do nothing (see BacksPage). */}
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            accept={ACCEPTED_IMAGE_TYPES}
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const files = e.target.files;
+              // Reset first: picking the same file twice in a row fires no
+              // change event otherwise, which reads as a broken control.
+              const copy = files ? Array.from(files) : [];
+              e.target.value = "";
+              if (copy.length) addMutation.mutate(copy);
             }}
           />
-        ))}
-      </div>
+
+          {images.map((image) => (
+            <CustomTile
+              key={image.id}
+              image={image}
+              inProject={idsInProject.has(image.id)}
+              selected={image.id === selectedId}
+              onSelect={() => setSelectedId(image.id)}
+              onAdd={() =>
+                void addCustomCards([image.id]).then((added) =>
+                  // "Added it, it's ready to print" — same best-effort
+                  // sync + register as the Decklist dropzone. Quietly a
+                  // no-op with no server reachable; the PDF/ZIP export
+                  // paths re-run it then.
+                  registerCustomCards(added.cards, added.projectTag, serverVersion)
+                    .then(() =>
+                      queryClient.invalidateQueries({
+                        queryKey: ["generation-status", added.projectTag],
+                      }),
+                    )
+                    .catch(() => {}),
+                )
+              }
+            />
+          ))}
+        </div>
+      </main>
 
       {pendingDelete ? (
         <ConfirmDialog
@@ -296,6 +464,6 @@ export default function CustomsPage() {
             : "This removes the image from your library on this machine."}
         </ConfirmDialog>
       ) : null}
-    </main>
+    </div>
   );
 }

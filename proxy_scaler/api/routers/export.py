@@ -72,10 +72,12 @@ from proxy_scaler.pdf_layout import (
     PrintSlot,
     _bled_card,
     build_print_slots,
+    fit_bled_image,
     flatten_corner_alpha,
     match_quantities,
     render_back_image,
 )
+from proxy_scaler import customs
 from proxy_scaler.pipeline import FaceResult
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -103,6 +105,7 @@ def _prepare_slots(body: ExportZipIn) -> tuple[list[PrintSlot], list[PrintSlot],
     db_path = get_db_path()
     raw_items = db.list_gallery_items(body.project_tag, db_path=db_path)
     items = [FaceResult.from_dict(d) for d in raw_items]
+    customs.attach_bleed(items)
     entries = [_to_deck_entry(e) for e in body.entries]
     units, missing, missing_at_dpi = match_quantities(
         entries,
@@ -224,8 +227,18 @@ def _render_entry(source: Path, face: FaceResult | None, *, body: ExportZipIn) -
             export_dpi=back_dpi,
             bleed_mm=body.bleed_mm,
             includes_bleed=body.back_image_includes_bleed,
+            image_bleed_mm=body.back_image_bleed_mm,
         )
     with Image.open(source) as raw:
+        if face is not None and face.custom_bleed_mm > 0:
+            # A pre-bled Custom Image without bleed asked for: hand over
+            # the trim-sized card, not the whole bled file.
+            return fit_bled_image(
+                raw.convert("RGB"),
+                image_bleed_mm=face.custom_bleed_mm,
+                export_dpi=face.dpi,
+                bleed_mm=0.0,
+            )
         if face is not None:
             return flatten_corner_alpha(raw.convert("RGBA")).convert("RGB")
         return raw.convert("RGB")

@@ -43,7 +43,12 @@ pub struct BackImage {
     pub content_hash: String,
     pub label: String,
     pub original_filename: String,
+    /// The user's declaration that the art already carries bleed, and how
+    /// much (mm per side). The amount rides on every PDF/export request so
+    /// the renderer can trim the file's bleed to the sheet's; it is kept
+    /// while the box is unticked so re-ticking restores it.
     pub includes_bleed: bool,
+    pub bleed_mm: f64,
     pub width: i64,
     pub height: i64,
     pub created_at: String,
@@ -63,28 +68,33 @@ fn backs_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Print DPI this image achieves across a 63×88mm card, using its longer
-/// edge against the card's longer edge — the same measure the server
-/// reports, so the two never disagree about whether a back is low-res.
-fn dpi_at_card_size(width: i64, height: i64) -> f64 {
-    const CARD_HEIGHT_MM: f64 = 88.0;
-    const MM_PER_IN: f64 = 25.4;
-    (width.max(height) as f64) / (CARD_HEIGHT_MM / MM_PER_IN)
+/// Print DPI this image achieves across a 63×88mm card (plus its declared
+/// bleed) — the same measure the server reports, so the two never
+/// disagree about whether a back is low-res. Shared with custom_images.rs.
+fn dpi_at_card_size(width: i64, height: i64, bleed_mm: f64) -> f64 {
+    crate::custom_images::dpi_at_card_size(width, height, bleed_mm)
 }
 
 fn row_to_back_image(row: &rusqlite::Row) -> rusqlite::Result<BackImage> {
     let width: i64 = row.get("width")?;
     let height: i64 = row.get("height")?;
+    let includes_bleed: bool = row.get("includes_bleed")?;
+    let bleed_mm: f64 = row.get("bleed_mm")?;
     Ok(BackImage {
         id: row.get("id")?,
         content_hash: row.get("content_hash")?,
         label: row.get("label")?,
         original_filename: row.get("original_filename")?,
-        includes_bleed: row.get("includes_bleed")?,
+        includes_bleed,
+        bleed_mm,
         width,
         height,
         created_at: row.get("created_at")?,
-        source_dpi: dpi_at_card_size(width, height),
+        source_dpi: dpi_at_card_size(
+            width,
+            height,
+            crate::custom_images::effective_bleed_mm(includes_bleed, bleed_mm),
+        ),
     })
 }
 
@@ -218,6 +228,26 @@ pub fn set_back_image_includes_bleed(
     conn.execute(
         "UPDATE back_images SET includes_bleed = ?1 WHERE id = ?2",
         params![includes_bleed, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The declaration with its amount — the flag alone is kept above for
+/// older callers. Nothing to sync: a back's bytes never change on the
+/// server, the amount travels with each render request.
+#[tauri::command]
+pub fn set_back_image_bleed(
+    app: AppHandle,
+    id: i64,
+    includes_bleed: bool,
+    bleed_mm: f64,
+) -> Result<(), String> {
+    let bleed_mm = crate::custom_images::validate_bleed_mm(bleed_mm)?;
+    let conn = open_db(&app)?;
+    conn.execute(
+        "UPDATE back_images SET includes_bleed = ?1, bleed_mm = ?2 WHERE id = ?3",
+        params![includes_bleed, bleed_mm, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -549,10 +579,10 @@ mod tests {
     fn dpi_is_measured_across_the_cards_long_edge() {
         // A 1040px-tall image over 88mm is ~300 DPI — the floor the
         // low-resolution warning uses.
-        let dpi = dpi_at_card_size(745, 1040);
+        let dpi = dpi_at_card_size(745, 1040, 0.0);
         assert!((dpi - 300.0).abs() < 1.0, "got {dpi}");
         // Orientation must not change the answer: the longer edge is the
         // one that spans the card's longer edge either way.
-        assert_eq!(dpi_at_card_size(745, 1040), dpi_at_card_size(1040, 745));
+        assert_eq!(dpi_at_card_size(745, 1040, 0.0), dpi_at_card_size(1040, 745, 0.0));
     }
 }

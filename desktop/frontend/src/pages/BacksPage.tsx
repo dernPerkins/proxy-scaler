@@ -256,16 +256,17 @@ export default function BacksPage() {
             </label>
 
             {/* The user's declaration about their own file. Art that
-                already carries bleed gets fitted to the bled size instead
-                of edge-extended — extending it would add a duplicate ~1mm
-                border and shrink the visible design. */}
+                already carries bleed is not edge-extended a second time:
+                with the amount, the server trims the file's own bleed to
+                the sheet's (or tops it up), so the trim content stays
+                exactly card sized whatever bleed the project uses. */}
             <label className="check">
               <input
                 type="checkbox"
                 checked={selected.includes_bleed}
                 onChange={(e) => {
                   void projectApi
-                    .setBackImageIncludesBleed(selected.id, e.target.checked)
+                    .setBackImageBleed(selected.id, e.target.checked, selected.bleed_mm)
                     .then(() =>
                       queryClient.invalidateQueries({ queryKey: ["back-images"] }),
                     );
@@ -273,6 +274,36 @@ export default function BacksPage() {
               />
               This image already includes bleed
             </label>
+            {selected.includes_bleed && (
+              <label className="field">
+                <span>Bleed in the file (mm per side)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.001}
+                  key={`bleed-${selected.id}`}
+                  defaultValue={selected.bleed_mm}
+                  onBlur={(e) => {
+                    const next = Number(e.target.value);
+                    if (Number.isFinite(next) && next >= 0 && next <= 10 && next !== selected.bleed_mm) {
+                      void projectApi
+                        .setBackImageBleed(selected.id, true, next)
+                        .then(() =>
+                          queryClient.invalidateQueries({ queryKey: ["back-images"] }),
+                        );
+                    }
+                  }}
+                />
+              </label>
+            )}
+            {selected.includes_bleed && (
+              <p className="hint" style={{ marginTop: -4 }}>
+                MakePlayingCards images carry 3.175 mm (1/8 in) per side. Printing trims
+                this down to the project&apos;s bleed, or extends it if the project asks
+                for more.
+              </p>
+            )}
 
             <label className="check">
               <input
