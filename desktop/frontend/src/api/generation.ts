@@ -186,7 +186,10 @@ export const generationApi = {
       method: "POST",
       body: JSON.stringify({ scryfall_ids: scryfallIds, model, dpis }),
     }),
-  imageUrl: (galleryItemId: number, variant: "full" | "original") =>
+  // "thumb" is a downscaled WebP for gallery tiles; "full" is the real
+  // file (downloads, compare). Feeding /full into <img> tiles meant the
+  // webview decoded and composited a ~50 MB bitmap per 1200 DPI card.
+  imageUrl: (galleryItemId: number, variant: "full" | "original" | "thumb") =>
     `${getApiBaseUrl()}/api/gallery/${galleryItemId}/${variant}`,
 
   pdfPreview: (body: PdfLayoutRequest) =>

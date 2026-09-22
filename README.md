@@ -335,6 +335,7 @@ stopped with Ctrl+C / SIGTERM.
 | `--no-stdin-shutdown` | — | off | Don't treat stdin EOF as "stop" |
 | — | `PROXY_SCALER_DB_PATH` | inside data dir | Database file |
 | — | `PROXY_SCALER_WORKER_LOCK_PATH` | inside data dir | Worker lock file |
+| — | `PROXY_SCALER_DTYPE` | `auto` | `fp32` forces full-precision inference (bisect knob for a GPU whose bf16 output comes back black/garbled); a bf16 pass that returns NaN switches the worker to fp32 by itself |
 
 Flags win over env vars where both are set.
 

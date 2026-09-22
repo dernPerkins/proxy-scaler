@@ -1275,7 +1275,7 @@ function CardRowView(props: {
                     )}
                   </div>
                   <img
-                    src={generationApi.imageUrl(v.galleryItemId, "full")}
+                    src={generationApi.imageUrl(v.galleryItemId, "thumb")}
                     alt={card.name}
                     loading="lazy"
                   />

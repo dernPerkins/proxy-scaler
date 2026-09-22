@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import functools
+import io
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from PIL import Image
+
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 
 from proxy_scaler import db
@@ -146,6 +150,50 @@ def get_full(gallery_item_id: int) -> FileResponse:
     item = _find_item(gallery_item_id)
     path = _resolve_existing(item["out_path"])
     return FileResponse(path, media_type="image/png", filename=item["image_filename"])
+
+
+# The gallery tile is ~300 CSS px tall; 2x covers HiDPI. A 1200 DPI card
+# is ~3000x4200 px, ~50 MB decoded — the webview was compositing dozens
+# of those to draw thumbnails, which on GPU-accelerated WebKit means
+# dozens of 50 MB textures. Reported alongside display-engine faults on
+# AMD/Linux (RX 7600 XT); a real thumbnail is the right shape regardless.
+THUMB_MAX_PX = 640
+# WebP keeps the cards' real alpha (transparent rounded corners) at a
+# fraction of PNG's size; WebKitGTK/WebView2/WKWebView all decode it.
+_THUMB_FORMAT = "WEBP"
+_THUMB_MEDIA_TYPE = "image/webp"
+
+
+@functools.lru_cache(maxsize=512)
+def _thumbnail_bytes(path_str: str, mtime_ns: int, size: int, max_px: int) -> bytes:
+    """Encoded thumbnail for one on-disk file. mtime/size are in the key
+    only so a regenerated file (same path, new content) misses the cache."""
+    with Image.open(path_str) as im:
+        im.load()
+        mode = "RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB"
+        im = im.convert(mode)
+        im.thumbnail((max_px, max_px), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format=_THUMB_FORMAT, quality=85, method=4)
+    return buf.getvalue()
+
+
+@router.get("/{gallery_item_id}/thumb")
+def get_thumb(gallery_item_id: int, request: Request) -> Response:
+    """Downscaled preview of the generated image for gallery tiles; the
+    /full route stays the download/compare source."""
+    item = _find_item(gallery_item_id)
+    path = _resolve_existing(item["out_path"])
+    st = path.stat()
+    etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}-{THUMB_MAX_PX}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    body = _thumbnail_bytes(str(path), st.st_mtime_ns, st.st_size, THUMB_MAX_PX)
+    return Response(
+        content=body,
+        media_type=_THUMB_MEDIA_TYPE,
+        headers={"ETag": etag, "Cache-Control": "no-cache"},
+    )
 
 
 @router.post("/{gallery_item_id}/regenerate", response_model=GenerateOut)

@@ -567,7 +567,69 @@ async fn check_update_notice() -> Result<Option<UpdateNotice>, String> {
     }))
 }
 
+/// WebKitGTK's DMA-BUF renderer (2.42+) hands the web process's GPU
+/// surfaces to the compositor via the kernel driver's dmabuf path. On
+/// AMD/Linux that path sits right next to the display engine that was
+/// faulting in a user's dmesg (RX 7600 XT: DCN "CRB Config Warning" and
+/// compbuf REG_WAIT timeouts while this app was open, corrupting the whole
+/// screen until reboot). Setting WEBKIT_DISABLE_DMABUF_RENDERER=1 is
+/// WebKitGTK's own switch back to its older renderer — the same knob
+/// Tauri documents for blank/garbled windows on Linux. Only applied when
+/// a listed GPU is present, and never over an explicit user setting either
+/// way. Must run before GTK/WebKit initialize, i.e. first thing in main.
+/// Scoped to the exact GPU(s) in WEBKIT_WORKAROUND_GPUS for now.
+#[cfg(target_os = "linux")]
+fn apply_linux_webkit_workarounds() {
+    const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if std::env::var_os(VAR).is_some() {
+        return;
+    }
+    if linux_has_amd_gpu() {
+        std::env::set_var(VAR, "1");
+    }
+}
+
+/// PCI (vendor, device) pairs the workaround applies to. Deliberately a
+/// list of exact devices rather than "any AMD": this is a test-build
+/// scope for the one reported machine. Widen to a vendor check
+/// (vendor == 0x1002) once it's confirmed to help.
+///   0x1002:0x7480 — Navi 33: RX 7600 XT / RX 7600 (the reported card,
+///                   from its dmesg "Add GPU node [0x1002:0x7480]")
+#[cfg(target_os = "linux")]
+const WEBKIT_WORKAROUND_GPUS: &[(&str, &str)] = &[("0x1002", "0x7480")];
+
+/// True when any DRM card's PCI vendor:device is in the list above.
+/// Reads sysfs only; a missing or unreadable tree just means "no".
+#[cfg(target_os = "linux")]
+fn linux_has_amd_gpu() -> bool {
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return false;
+    };
+    let read = |p: std::path::PathBuf| {
+        std::fs::read_to_string(p)
+            .map(|v| v.trim().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // "card0", not the "card0-DP-1" connector nodes.
+        if !name.starts_with("card") || name.contains('-') {
+            return false;
+        }
+        let dev = entry.path().join("device");
+        let vendor = read(dev.join("vendor"));
+        let device = read(dev.join("device"));
+        WEBKIT_WORKAROUND_GPUS
+            .iter()
+            .any(|(v, d)| vendor == *v && device == *d)
+    })
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    apply_linux_webkit_workarounds();
+
     tauri::Builder::default()
         // First, before any other plugin, per the plugin's own docs — the
         // whole point is to bail out of a duplicate process as early as

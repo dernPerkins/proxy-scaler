@@ -942,3 +942,111 @@ def test_fallback_hook_errors_never_break_relocation() -> None:
     with patch("proxy_scaler.upscale._clear_device_cache"):
         up._relocate_to_cpu()  # must not raise
     assert up._dtype == torch.float32
+
+
+# --- bf16 that returns NaN falls back to fp32 (ROCm gfx1102 report) --------
+
+
+def test_dtype_policy_env_override(monkeypatch) -> None:
+    from proxy_scaler import upscale as up
+
+    assert up.dtype_policy({}) == "auto"
+    assert up.dtype_policy({up.DTYPE_ENV: " FP32 "}) == "fp32"
+    assert up.dtype_policy({up.DTYPE_ENV: "bf16"}) == "bf16"
+    assert up.dtype_policy({up.DTYPE_ENV: "nonsense"}) == "auto"
+
+    dev = torch.device("cuda")
+    yes = MagicMock(supports_bfloat16=True)
+    monkeypatch.setattr(up, "_BF16_DISABLED_REASON", None)
+    with patch("proxy_scaler.upscale._bf16_supported", return_value=True):
+        monkeypatch.setenv(up.DTYPE_ENV, "fp32")
+        assert resolve_dtype(yes, dev) == torch.float32
+        monkeypatch.setenv(up.DTYPE_ENV, "bf16")
+        assert resolve_dtype(yes, dev) == torch.bfloat16
+        monkeypatch.delenv(up.DTYPE_ENV)
+        assert resolve_dtype(yes, dev) == torch.bfloat16
+
+
+def test_resolve_dtype_sticks_to_fp32_after_disable(monkeypatch) -> None:
+    from proxy_scaler import upscale as up
+
+    monkeypatch.setattr(up, "_BF16_DISABLED_REASON", None)
+    yes = MagicMock(supports_bfloat16=True)
+    with patch("proxy_scaler.upscale._bf16_supported", return_value=True):
+        assert resolve_dtype(yes, torch.device("cuda")) == torch.bfloat16
+        up.disable_bf16("test")
+        assert resolve_dtype(yes, torch.device("cuda")) == torch.float32
+
+
+def test_is_finite_output() -> None:
+    from proxy_scaler.upscale import _is_finite_output
+
+    assert _is_finite_output(torch.zeros(2, 2))
+    assert not _is_finite_output(torch.tensor([1.0, float("nan")]))
+    assert not _is_finite_output(torch.tensor([1.0, float("inf")]))
+
+
+def test_upscale_nonfinite_bf16_retries_in_fp32(tmp_path, monkeypatch) -> None:
+    """A bf16 pass that comes back NaN (the all-black-card signature) is
+    redone in fp32 on the same device, the weights are converted in
+    place, and bf16 stays off for the rest of the process."""
+    from proxy_scaler import upscale as up
+
+    monkeypatch.setattr(up, "_BF16_DISABLED_REASON", None)
+    upsc = Upscaler(model=UpscaleModel.ULTRASHARP_V2_LITE, scale=4, weights_dir=tmp_path, tile=0)
+    descriptor = MagicMock()
+    descriptor.to.return_value.eval.return_value = descriptor
+    upsc._descriptor = descriptor
+    upsc._device = torch.device("cpu")
+    upsc._dtype = torch.bfloat16
+    seen: list[torch.dtype] = []
+
+    def fake_inference(_descriptor, tensor):
+        seen.append(tensor.dtype)
+        _, _, h, w = tensor.shape
+        if tensor.dtype == torch.bfloat16:
+            return torch.full((1, 3, h * 4, w * 4), float("nan"), dtype=torch.bfloat16)
+        return torch.full((1, 3, h * 4, w * 4), 0.5)
+
+    src = Image.new("RGB", (16, 16), color=(10, 20, 30))
+    with (
+        patch.object(upsc, "_ensure_model", return_value=descriptor),
+        patch.object(upsc, "_run_inference", side_effect=fake_inference),
+        patch("proxy_scaler.upscale._clear_device_cache"),
+    ):
+        result = upsc.upscale(src)
+
+    assert seen == [torch.bfloat16, torch.float32]
+    assert result.dtype == "fp32"
+    assert result.image.getpixel((0, 0)) != (0, 0, 0)
+    descriptor.to.assert_called_with(torch.float32)
+    assert up._BF16_DISABLED_REASON is not None
+    yes = MagicMock(supports_bfloat16=True)
+    with patch("proxy_scaler.upscale._bf16_supported", return_value=True):
+        assert resolve_dtype(yes, torch.device("cuda")) == torch.float32
+
+
+def test_upscale_finite_bf16_is_left_alone(tmp_path, monkeypatch) -> None:
+    from proxy_scaler import upscale as up
+
+    monkeypatch.setattr(up, "_BF16_DISABLED_REASON", None)
+    upsc = Upscaler(model=UpscaleModel.ULTRASHARP_V2_LITE, scale=4, weights_dir=tmp_path, tile=0)
+    upsc._descriptor = MagicMock()
+    upsc._device = torch.device("cpu")
+    upsc._dtype = torch.bfloat16
+    calls = 0
+
+    def fake_inference(_descriptor, tensor):
+        nonlocal calls
+        calls += 1
+        _, _, h, w = tensor.shape
+        return torch.full((1, 3, h * 4, w * 4), 0.25, dtype=torch.bfloat16)
+
+    with (
+        patch.object(upsc, "_ensure_model", return_value=upsc._descriptor),
+        patch.object(upsc, "_run_inference", side_effect=fake_inference),
+    ):
+        result = upsc.upscale(Image.new("RGB", (8, 8)))
+    assert calls == 1
+    assert result.dtype == "bf16"
+    assert up._BF16_DISABLED_REASON is None

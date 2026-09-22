@@ -274,8 +274,55 @@ def _bf16_supported(device: torch.device | None) -> bool:
     return False
 
 
+# PROXY_SCALER_DTYPE overrides the bf16/fp32 choice for every model:
+#   auto   (default) bf16 when the model and device both support it
+#   fp32   never bf16 — the bisect knob for a GPU whose bf16 kernels are
+#          suspect (first case: an RX 7600 XT / gfx1102 on ROCm producing
+#          all-black UltraSharpV2 Lite output while REAF looked fine)
+#   bf16   same as auto (bf16 can't be forced onto a model or device that
+#          lacks it); accepted so a user can spell the default out loud
+DTYPE_ENV = "PROXY_SCALER_DTYPE"
+DTYPE_POLICIES = ("auto", "fp32", "bf16")
+
+
+def dtype_policy(environ: "os._Environ[str] | dict[str, str] | None" = None) -> str:
+    """The configured policy, "auto" for an unset or unrecognized value."""
+    env = os.environ if environ is None else environ
+    value = (env.get(DTYPE_ENV) or "").strip().lower()
+    return value if value in DTYPE_POLICIES else "auto"
+
+
+# Set (to a human-readable reason) the first time a bf16 forward pass
+# returns NaN/inf in this process; every later dtype decision then lands
+# on fp32. bf16 that produces garbage does so deterministically for a
+# given model + kernel stack, so re-trying it per image would just cost a
+# wasted pass each time. Single-thread ownership as _MODEL_CACHE.
+_BF16_DISABLED_REASON: str | None = None
+
+
+def disable_bf16(reason: str) -> None:
+    global _BF16_DISABLED_REASON
+    _BF16_DISABLED_REASON = reason
+
+
+def _is_finite_output(tensor: "torch.Tensor") -> bool:
+    """False when a forward pass produced NaN/inf anywhere — the signature
+    of a broken reduced-precision kernel (clamp() then turns the NaNs into
+    zeros and the image saves as solid black). Errs on the side of "fine"
+    if the backend can't even run isfinite, so it never blocks a result."""
+    import torch
+
+    try:
+        return bool(torch.isfinite(tensor).all().item())
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def resolve_dtype(descriptor: ImageModelDescriptor, device: torch.device) -> torch.dtype:
     """bf16 when both the model and the device support it, else fp32.
+
+    PROXY_SCALER_DTYPE=fp32 and a process-wide disable_bf16() (a bf16 pass
+    that came back non-finite) both force fp32 regardless of the gates.
 
     Model-agnostic on purpose: the gate is spandrel's per-descriptor
     supports_bfloat16 flag, never the model's identity, so any model added
@@ -287,9 +334,32 @@ def resolve_dtype(descriptor: ImageModelDescriptor, device: torch.device) -> tor
     """
     import torch
 
+    if dtype_policy() == "fp32" or _BF16_DISABLED_REASON is not None:
+        return torch.float32
     if getattr(descriptor, "supports_bfloat16", False) and _bf16_supported(device):
         return torch.bfloat16
     return torch.float32
+
+
+def describe_device(device: "torch.device") -> str:
+    """One line a bug report can carry: the GPU's marketing name plus, on
+    ROCm, the gfx target the HIP runtime actually chose (the thing that
+    decides which kernels run — "gfx1102" for an RX 7600 XT, or the
+    gfx1100 an HSA_OVERRIDE_GFX_VERSION forces). Never raises."""
+    import torch
+
+    try:
+        if device.type != "cuda":
+            return str(device)
+        props = torch.cuda.get_device_properties(device)
+        name = getattr(props, "name", None) or torch.cuda.get_device_name(device)
+        if getattr(torch.version, "hip", None):
+            # gcnArchName is only meaningful on HIP (CUDA builds echo the name).
+            arch = getattr(props, "gcnArchName", None)
+            return f"{name} [{arch}] via ROCm" if arch else f"{name} via ROCm"
+        return f"{name} via CUDA"
+    except Exception:  # noqa: BLE001
+        return str(device)
 
 
 def _dtype_label(dtype: "torch.dtype | None") -> str:
@@ -986,6 +1056,8 @@ class Upscaler:
             device = apply_directml_prelu_policy(descriptor.model, device)
         print(f"Loading {self.model_id.value} x{self.scale} on {device} ({weights.name})...")
         if device.type != "cpu":
+            print(f"  device: {describe_device(device)}")
+        if device.type != "cpu":
             print(
                 "note: PyTorch may print its own "
                 "'[W...] memory allocation failed with OOM' lines below while "
@@ -1040,6 +1112,25 @@ class Upscaler:
         # bf16 on CPU is emulated/slow — fall all the way back to fp32.
         self._dtype = torch.float32
         self._descriptor = self._descriptor.to(self._device).to(torch.float32).eval()
+        return self._descriptor
+
+    def _demote_to_fp32(self, reason: str) -> ImageModelDescriptor:
+        """A bf16 forward pass came back non-finite: convert the loaded
+        weights to fp32 in place (the one-slot cache shares the descriptor
+        object, so later tasks inherit the change) and switch this process
+        off bf16 for good. Stays on the same device — this is a precision
+        problem, not a memory one."""
+        import torch
+
+        assert self._descriptor is not None
+        disable_bf16(reason)
+        print(
+            f"bf16 output from {self.model_id.value} on {self._device} was not "
+            f"finite (NaN/inf); switching to fp32 for the rest of this session…"
+        )
+        self._descriptor = self._descriptor.to(torch.float32).eval()
+        self._dtype = torch.float32
+        _clear_device_cache(self._device)
         return self._descriptor
 
     def _return_to_gpu(
@@ -1162,29 +1253,53 @@ class Upscaler:
                     # to the CPU. Verified live: an untiled OOM with 5 GiB
                     # still free walked the whole ladder into CPU inference
                     # when retried from inside the handler.
-                    out_gpu = self._try_gpu_inference(descriptor, tensor)
-                    if out_gpu is None:
-                        # The VRAM-probed tile turned out not to fit after
-                        # all (something else grabbed VRAM, or the estimate
-                        # was off) — retry on the SAME device at whatever
-                        # rung the re-probe says fits before resorting to
-                        # the catastrophic CPU path. _next_oom_rung owns
-                        # the policy (heavy ladder / light single retry /
-                        # manual never second-guessed).
-                        while True:
-                            rung = self._next_oom_rung(width, height)
-                            if rung is None:
-                                break
-                            print(
-                                f"Upscale OOM on {self._device} at tile "
-                                f"{self.tile or 'off'}; retrying at tile {rung}…"
-                            )
-                            self.tile = rung
-                            _clear_device_cache(self._device)
-                            self._cap_allocator_to_free()
-                            out_gpu = self._try_gpu_inference(descriptor, tensor)
-                            if out_gpu is not None:
-                                break
+                    def run_gpu_ladder(t: torch.Tensor) -> "torch.Tensor | None":
+                        out = self._try_gpu_inference(descriptor, t)
+                        if out is None:
+                            # The VRAM-probed tile turned out not to fit
+                            # after all (something else grabbed VRAM, or
+                            # the estimate was off) — retry on the SAME
+                            # device at whatever rung the re-probe says
+                            # fits before resorting to the catastrophic
+                            # CPU path. _next_oom_rung owns the policy
+                            # (heavy ladder / light single retry / manual
+                            # never second-guessed).
+                            while True:
+                                rung = self._next_oom_rung(width, height)
+                                if rung is None:
+                                    break
+                                print(
+                                    f"Upscale OOM on {self._device} at tile "
+                                    f"{self.tile or 'off'}; retrying at tile {rung}…"
+                                )
+                                self.tile = rung
+                                _clear_device_cache(self._device)
+                                self._cap_allocator_to_free()
+                                out = self._try_gpu_inference(descriptor, t)
+                                if out is not None:
+                                    break
+                        return out
+
+                    out_gpu = run_gpu_ladder(tensor)
+                    if (
+                        out_gpu is not None
+                        and self._dtype == torch.bfloat16
+                        and not _is_finite_output(out_gpu)
+                    ):
+                        # Broken bf16 kernels (seen on ROCm gfx1102) return
+                        # NaN, which clamp() would turn into a solid black
+                        # image. Redo the pass in fp32 on the same device;
+                        # fp32 activations are ~2x bf16's, so re-probe the
+                        # tile before re-running the OOM ladder.
+                        del out_gpu
+                        del tensor
+                        descriptor = self._demote_to_fp32(
+                            f"{self.model_id.value} on {self._device} returned NaN/inf in bf16"
+                        )
+                        self._cap_allocator_to_free()
+                        self._apply_auto_tile(width, height)
+                        tensor = to_tensor(rgb).unsqueeze(0).to(self._device, torch.float32)
+                        out_gpu = run_gpu_ladder(tensor)
                     if out_gpu is None:
                         print(
                             f"Upscale OOM on {self._device}; clearing cache and retrying on CPU…"
