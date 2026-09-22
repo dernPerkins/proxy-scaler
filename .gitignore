@@ -20,7 +20,7 @@ data/*.log
 data/*.lock
 *.pyc
 __pycache__/
-.venv/
+.venv*/
 venv/
 *.egg-info/
 dist/
