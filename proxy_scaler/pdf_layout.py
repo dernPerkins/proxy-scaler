@@ -619,16 +619,33 @@ def flatten_corner_alpha(image: Image.Image) -> Image.Image:
     rgba = image.convert("RGBA")
     radius = corner_radius_px(rgba)
     arr = np.asarray(rgba)
-    w, h = rgba.size
-    extended = extend_edges(
-        arr[..., :3],
-        radius_px=radius,
-        inset_px=_inset_px(w, h),
-        bleed_px=0,
-        mode="nearest",
-        alpha=arr[..., 3],
-    )
+    extended = _extend_card(arr[..., :3], alpha=arr[..., 3], radius_px=radius, bleed_px=0)
     return Image.fromarray(extended, "RGB").convert("RGBA")
+
+
+def _extend_card(
+    rgb: np.ndarray, *, alpha: np.ndarray, radius_px: int, bleed_px: int
+) -> np.ndarray:
+    """Two passes of edge_extend.extend_edges, so the visible card edge is
+    the trim line.
+
+    1. Mirror the border into the outer _EDGE_INSET_MM strip (rim,
+       transparent corners and the trim-line strip). That strip is where
+       every known edge defect lives; mirroring replaces it with more of
+       the border's own texture instead of a streak, so on a textured
+       border nothing visibly changes at the inset boundary.
+    2. Fan the bleed out from the TRUE edge (inset 0) of that result. The
+       rays start exactly on the trim line — which is where the cut guides
+       put their inner edge — rather than 0.25mm inside it. Mirror first
+       is idempotent, so running this at native resolution (flatten) and
+       again after the export resize (add_bleed) changes nothing.
+    """
+    h, w = rgb.shape[:2]
+    inset = _inset_px(w, h)
+    face = extend_edges(
+        rgb, radius_px=radius_px, inset_px=inset, bleed_px=0, mode="mirror", alpha=alpha
+    )
+    return extend_edges(face, radius_px=radius_px, inset_px=0, bleed_px=bleed_px, mode="nearest")
 
 
 def add_bleed(
@@ -656,15 +673,9 @@ def add_bleed(
     if radius_px is None:
         radius_px = corner_radius_px(rgba)
     arr = np.asarray(rgba)
-    w, h = rgba.size
     bleed_px = max(1, round(dpi / MM_PER_IN * bleed_mm))
-    extended = extend_edges(
-        arr[..., :3],
-        radius_px=radius_px,
-        inset_px=_inset_px(w, h),
-        bleed_px=bleed_px,
-        mode="nearest",
-        alpha=arr[..., 3],
+    extended = _extend_card(
+        arr[..., :3], alpha=arr[..., 3], radius_px=radius_px, bleed_px=bleed_px
     )
     return Image.fromarray(extended, "RGB")
 

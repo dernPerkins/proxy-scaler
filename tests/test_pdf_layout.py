@@ -479,17 +479,18 @@ def test_add_bleed_square_corners_clamp_to_the_corner_pixel() -> None:
 
 def test_add_bleed_fans_out_of_rounded_corners() -> None:
     """The bleed outside a rounded corner is sourced radially from the arc
-    (nearest boundary point), not clamped to a square corner: a marker on
-    the arc at 45° must appear along the corner's diagonal in the bleed,
-    and the corner square must not be one flat colour."""
+    (nearest boundary point), not clamped to a square corner: a marker
+    that ends up on the arc at 45° must appear along the corner's diagonal
+    in the bleed, and the corner square must not be one flat colour. The
+    outer inset strip is mirrored first, so the pixel that lands ON the
+    arc is the one 2*inset further in; the marker goes there."""
     w, h, radius = 300, 300, 40
     img = _rounded_rect_rgba(w, h, radius)
     px = img.load()
     inset = _inset_px(w, h)
-    rr = radius - inset
-    # Marker on the inset boundary at 45° from the top-left arc's centre.
-    mx = round(radius - rr / 2**0.5)
-    my = round(radius - rr / 2**0.5)
+    src_r = radius - 2 * inset
+    # Marker at 45° from the top-left arc's centre, 2*inset inside the arc.
+    mx = my = round(radius - src_r / 2**0.5)
     for dx in range(-2, 3):
         for dy in range(-2, 3):
             px[mx + dx, my + dy] = (250, 20, 20, 255)
@@ -497,9 +498,11 @@ def test_add_bleed_fans_out_of_rounded_corners() -> None:
     dpi = 300
     bleed_px = round(dpi / MM_PER_IN * BLEED_MM)
     bled = add_bleed(img, dpi=dpi)
-    # Every pixel on the diagonal from the sheet corner to the marker maps
-    # back to the marker.
-    for k in range(0, bleed_px + radius - int(rr / 2**0.5) - 3):
+    # The marker itself is untouched…
+    assert bled.getpixel((bleed_px + mx, bleed_px + my)) == (250, 20, 20)
+    # …and every pixel on the diagonal from the sheet corner in to the arc
+    # maps back to it.
+    for k in range(0, bleed_px + radius - int(radius / 2**0.5) - 2):
         assert bled.getpixel((k, k)) == (250, 20, 20), k
     # Off the diagonal the fan carries the plain card colour.
     assert bled.getpixel((bleed_px + 2, 0)) == (10, 20, 30)
