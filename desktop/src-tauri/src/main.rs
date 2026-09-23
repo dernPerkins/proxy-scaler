@@ -891,6 +891,7 @@ fn main() {
             custom_images::count_cards_using_custom_image,
             custom_images::delete_custom_image,
             custom_images::custom_image_thumbnail,
+            custom_images::custom_image_full,
             custom_images::sync_custom_image,
             project_store::add_custom_cards
         ])

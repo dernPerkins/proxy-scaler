@@ -374,6 +374,46 @@ pub fn custom_image_thumbnail(app: AppHandle, id: i64) -> Result<Option<String>,
     )))
 }
 
+/// The original file as a data URL, for the full-image viewer. Unlike the
+/// thumbnail this is the whole upload — up to MAX_BYTES, base64-encoded —
+/// so it crosses IPC only when the viewer opens for one image, never for
+/// the grid. Still the cheapest honest option: an asset protocol would
+/// need a CSP and scope change for one dialog, and decoding to a smaller
+/// render would need the image crate this build deliberately avoids.
+#[tauri::command]
+pub fn custom_image_full(app: AppHandle, id: i64) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    let file_name: Option<String> = conn
+        .query_row(
+            "SELECT file_name FROM custom_images WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+    let path = customs_dir(&app)?.join(&file_name);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(None);
+    };
+    let mime = match Path::new(&file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    };
+    Ok(Some(format!(
+        "data:{mime};base64,{}",
+        crate::back_images::base64_encode(&bytes)
+    )))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CustomSyncResult {
     pub content_hash: String,

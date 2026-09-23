@@ -1432,3 +1432,86 @@ tbody tr:last-child td {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* --- Customs tab: full-image viewer -------------------------------- */
+
+/* The "+" over a custom tile's thumbnail: a tight white ring that fills
+   white on hover. Absolute inside the thumbnail box, which the tile makes
+   position: relative. */
+.thumb-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.thumb-zoom:hover:not(:disabled),
+.thumb-zoom:focus-visible {
+  background: #fff;
+  color: #111;
+}
+
+.viewer-modal {
+  width: auto;
+  max-width: 96vw;
+}
+.viewer-body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  min-height: 0;
+}
+.viewer-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  overflow: auto;
+}
+/* Wraps the image tightly (inline-block, zero line-height) so overlays
+   given in percentages of the frame are percentages of the image. */
+.viewer-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  overflow: hidden;
+  background: repeating-conic-gradient(#808080 0 25%, #a0a0a0 0 50%) 0 0 / 16px 16px;
+}
+.viewer-frame img {
+  display: block;
+  max-width: min(70vw, 960px);
+  max-height: 78vh;
+  width: auto;
+  height: auto;
+}
+/* What the server keeps after cropping to card (or bled) aspect; the
+   spread shadow darkens everything the crop discards. */
+.viewer-crop {
+  position: absolute;
+  box-shadow: 0 0 0 200vmax rgba(0, 0, 0, 0.55);
+  outline: 1px solid rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+/* The trim line: where the cut lands. Two-tone dashes so it reads on both
+   light and dark art. */
+.viewer-trim {
+  position: absolute;
+  border: 2px dashed #fff;
+  outline: 2px dashed rgba(0, 0, 0, 0.65);
+  outline-offset: -2px;
+  pointer-events: none;
+}
+.viewer-settings {
+  flex: 0 0 260px;
+  max-width: 260px;
+}

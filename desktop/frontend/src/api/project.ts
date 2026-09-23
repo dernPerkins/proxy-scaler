@@ -396,6 +396,11 @@ export const projectApi = {
   customImageThumbnail: (id: number) =>
     invokeCommand<string | null>("custom_image_thumbnail", { id }),
 
+  /** The original file as a data URL, for the full-image viewer. The
+   *  whole upload crosses IPC, so only call it when the viewer opens. */
+  customImageFull: (id: number) =>
+    invokeCommand<string | null>("custom_image_full", { id }),
+
   /** Add one card per image to a project, appended at the end. Not
    *  resolve-gated, unlike every other import path — there is nothing to
    *  resolve, which is what lets this work with no server reachable. */

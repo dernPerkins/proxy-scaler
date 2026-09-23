@@ -16,11 +16,18 @@
 // bleed (and how much), and the Remove button. Selection is local to this
 // page — unlike a back, a custom image is not something a project
 // "selects", so there is no project setting to key it off.
-import { useMemo, useRef, useState } from "react";
+//
+// The "+" on a tile opens the full image with the trim line drawn over it
+// from the same declaration, because a 168px thumbnail cannot show whether
+// a file already carries bleed — and that is exactly the question the
+// checkbox asks. The viewer carries the same settings so the answer can
+// be given while looking at the evidence.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
 import type { CustomImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ModalOverlay from "../components/ModalOverlay";
 import { useServerVersion } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { getProjectSnapshot, registerCustomCards } from "../syncCustoms";
@@ -35,6 +42,9 @@ import {
 const LOW_DPI = 300;
 // Mirrors proxy_scaler/dpi.py::MAX_BLEED_MM.
 const MAX_BLEED_MM = 10;
+// Card trim size, mm — proxy_scaler/dpi.py::CARD_WIDTH_MM / CARD_HEIGHT_MM.
+const CARD_W_MM = 63;
+const CARD_H_MM = 88;
 
 function UploadIcon() {
   return (
@@ -57,18 +67,245 @@ function UploadIcon() {
   );
 }
 
+function PlusIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+type BleedChange = { id: number; includesBleed: boolean; bleedMm: number };
+
+/** The per-image settings, shared by the sidebar and the viewer so the two
+ *  can never disagree about what a custom image can be told. */
+function CustomSettingsFields({
+  image,
+  onBleed,
+  error,
+}: {
+  image: CustomImage;
+  onBleed: (change: BleedChange) => void;
+  error: string | null;
+}) {
+  const queryClient = useQueryClient();
+  return (
+    <div className="field-group">
+      <label className="field">
+        <span>Name</span>
+        <input
+          defaultValue={image.label}
+          key={image.id}
+          onBlur={(e) => {
+            const next = e.target.value.trim();
+            if (next && next !== image.label) {
+              void projectApi
+                .setCustomImageLabel(image.id, next)
+                .then(() => queryClient.invalidateQueries({ queryKey: ["custom-images"] }));
+            }
+          }}
+        />
+      </label>
+
+      {/* The user's declaration about their own file. An image that
+          already carries bleed (an MPC Fill download, say) is cropped and
+          upscaled to its bled size on the server, and the print trims
+          that bleed to the project's — rather than cropping the file to
+          card size and extending a second border around what was already
+          bleed. */}
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={image.includes_bleed}
+          onChange={(e) =>
+            onBleed({ id: image.id, includesBleed: e.target.checked, bleedMm: image.bleed_mm })
+          }
+        />
+        This image already includes bleed
+      </label>
+      {image.includes_bleed && (
+        <label className="field">
+          <span>Bleed in the file (mm per side)</span>
+          <input
+            type="number"
+            min={0}
+            max={MAX_BLEED_MM}
+            step={0.001}
+            key={`bleed-${image.id}`}
+            defaultValue={image.bleed_mm}
+            onBlur={(e) => {
+              const next = Number(e.target.value);
+              if (
+                Number.isFinite(next) &&
+                next >= 0 &&
+                next <= MAX_BLEED_MM &&
+                next !== image.bleed_mm
+              ) {
+                onBleed({ id: image.id, includesBleed: true, bleedMm: next });
+              }
+            }}
+          />
+        </label>
+      )}
+      <p className="hint" style={{ marginTop: -4 }}>
+        MakePlayingCards images carry 3.175 mm (1/8 in) per side. Printing trims this down
+        to the project&apos;s bleed, or extends it if the project asks for more. Changing it
+        discards any upscales of this image on the server; generate again afterwards.
+      </p>
+      {error ? <p className="error-text">{error}</p> : null}
+
+      {image.source_dpi < LOW_DPI && (
+        <p className="hint">
+          This image works out to about {Math.round(image.source_dpi)} DPI across a card,
+          which will look soft in print. Upscaling it is a real remedy here, or replace it
+          with a larger source image.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The full upload with the trim line drawn over it from the image's
+ *  declaration, plus the same settings so the declaration can be changed
+ *  while looking at the file. */
+function CustomImageViewer({
+  image,
+  onClose,
+  onBleed,
+  error,
+}: {
+  image: CustomImage;
+  onClose: () => void;
+  onBleed: (change: BleedChange) => void;
+  error: string | null;
+}) {
+  const fullQuery = useQuery({
+    queryKey: ["custom-full", image.id],
+    queryFn: () => projectApi.customImageFull(image.id),
+    staleTime: Infinity,
+  });
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  // Geometry, in percent of the displayed image so it survives any
+  // resize. The server cover-crops the upload to the bled aspect
+  // ((63+2b):(88+2b)) about its centre — that box is the crop outline;
+  // inset by the declared bleed on each side it is the trim line. With
+  // no declaration b is 0 and the two coincide: the file's edge is the
+  // card's edge and bleed will be generated outside it.
+  const b = image.includes_bleed ? image.bleed_mm : 0;
+  const boxAspect = (CARD_W_MM + 2 * b) / (CARD_H_MM + 2 * b);
+  let box = { left: 0, top: 0, width: 100, height: 100 };
+  if (natural) {
+    const a = natural.w / natural.h;
+    if (a > boxAspect) {
+      const width = (boxAspect / a) * 100;
+      box = { left: (100 - width) / 2, top: 0, width, height: 100 };
+    } else {
+      const height = (a / boxAspect) * 100;
+      box = { left: 0, top: (100 - height) / 2, width: 100, height };
+    }
+  }
+  const insetX = (b / (CARD_W_MM + 2 * b)) * box.width;
+  const insetY = (b / (CARD_H_MM + 2 * b)) * box.height;
+  const trim = {
+    left: box.left + insetX,
+    top: box.top + insetY,
+    width: box.width - 2 * insetX,
+    height: box.height - 2 * insetY,
+  };
+  const pct = (r: { left: number; top: number; width: number; height: number }) => ({
+    left: `${r.left}%`,
+    top: `${r.top}%`,
+    width: `${r.width}%`,
+    height: `${r.height}%`,
+  });
+  const cropped =
+    natural != null && (Math.abs(box.width - 100) > 0.05 || Math.abs(box.height - 100) > 0.05);
+
+  return (
+    <ModalOverlay onClick={onClose}>
+      <div className="modal viewer-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">{image.label}</span>
+          <button type="button" className="ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="viewer-body">
+          <div className="viewer-stage">
+            {fullQuery.data ? (
+              <div className="viewer-frame">
+                <img
+                  src={fullQuery.data}
+                  alt={image.label}
+                  onLoad={(e) =>
+                    setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
+                  }
+                />
+                {natural ? (
+                  <>
+                    {cropped ? <div className="viewer-crop" style={pct(box)} /> : null}
+                    <div className="viewer-trim" style={pct(trim)} />
+                  </>
+                ) : null}
+              </div>
+            ) : (
+              <p className="hint" style={{ padding: 24 }}>
+                {fullQuery.isError ? "Couldn't load this image." : "Loading…"}
+              </p>
+            )}
+          </div>
+          <aside className="viewer-settings">
+            <p className="hint" style={{ marginBottom: 12 }}>
+              {image.includes_bleed
+                ? `Dashed line: the trim edge, ${image.bleed_mm} mm inside the file's edge. Everything outside it is the bleed the file already carries.`
+                : "Dashed line: the card's edge. Bleed is generated outside it when printing."}
+              {cropped
+                ? " Shaded: cropped off to fit the card's proportions."
+                : null}
+            </p>
+            <p className="hint" style={{ marginBottom: 12 }}>
+              {image.width}×{image.height} px · {Math.round(image.source_dpi)} DPI at card size
+            </p>
+            <CustomSettingsFields image={image} onBleed={onBleed} error={error} />
+          </aside>
+        </div>
+      </div>
+    </ModalOverlay>
+  );
+}
+
 function CustomTile({
   image,
   inProject,
   selected,
   onSelect,
   onAdd,
+  onView,
 }: {
   image: CustomImage;
   inProject: boolean;
   selected: boolean;
   onSelect: () => void;
   onAdd: () => void;
+  onView: () => void;
 }) {
   const thumbQuery = useQuery({
     queryKey: ["custom-thumb", image.id],
@@ -99,6 +336,7 @@ function CustomTile({
     >
       <div
         style={{
+          position: "relative",
           aspectRatio: "63 / 88",
           borderRadius: 8,
           border: "1px solid var(--border)",
@@ -113,6 +351,18 @@ function CustomTile({
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
           />
         ) : null}
+        <button
+          type="button"
+          className="thumb-zoom"
+          title="View full image"
+          aria-label="View full image"
+          onClick={(e) => {
+            e.stopPropagation();
+            onView();
+          }}
+        >
+          <PlusIcon />
+        </button>
       </div>
       <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{image.label}</div>
       <div className="hint" style={{ fontSize: 12 }}>
@@ -150,6 +400,7 @@ export default function CustomsPage() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [viewingId, setViewingId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     image: CustomImage;
     uses: number;
@@ -170,6 +421,7 @@ export default function CustomsPage() {
     [cards],
   );
   const selected = images.find((i) => i.id === selectedId) ?? null;
+  const viewing = images.find((i) => i.id === viewingId) ?? null;
 
   const addMutation = useMutation({
     mutationFn: async (files: File[]) => {
@@ -201,6 +453,7 @@ export default function CustomsPage() {
       await reloadCards();
       setPendingDelete(null);
       setSelectedId(null);
+      setViewingId(null);
     },
   });
 
@@ -211,7 +464,7 @@ export default function CustomsPage() {
   // than the one after. Best-effort — with no server reachable the
   // PDF/ZIP paths re-run the same registration later.
   const bleedMutation = useMutation({
-    mutationFn: async (args: { id: number; includesBleed: boolean; bleedMm: number }) => {
+    mutationFn: async (args: BleedChange) => {
       await projectApi.setCustomImageBleed(args.id, args.includesBleed, args.bleedMm);
       await queryClient.invalidateQueries({ queryKey: ["custom-images"] });
       const { projectTag } = getProjectSnapshot();
@@ -247,88 +500,16 @@ export default function CustomsPage() {
         {selected == null ? (
           <p className="hint">
             Select an image to rename it, say whether it already includes bleed, or remove
-            it from the library.
+            it from the library. The + on a tile opens the full image with the trim line
+            drawn on it.
           </p>
         ) : (
-          <div className="field-group">
-            <label className="field">
-              <span>Name</span>
-              <input
-                defaultValue={selected.label}
-                key={selected.id}
-                onBlur={(e) => {
-                  const next = e.target.value.trim();
-                  if (next && next !== selected.label) {
-                    void projectApi
-                      .setCustomImageLabel(selected.id, next)
-                      .then(() =>
-                        queryClient.invalidateQueries({ queryKey: ["custom-images"] }),
-                      );
-                  }
-                }}
-              />
-            </label>
-
-            {/* The user's declaration about their own file. An image that
-                already carries bleed (an MPC Fill download, say) is
-                cropped and upscaled to its bled size on the server, and
-                the print trims that bleed to the project's — rather than
-                cropping the file to card size and extending a second
-                border around what was already bleed. */}
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={selected.includes_bleed}
-                onChange={(e) =>
-                  bleedMutation.mutate({
-                    id: selected.id,
-                    includesBleed: e.target.checked,
-                    bleedMm: selected.bleed_mm,
-                  })
-                }
-              />
-              This image already includes bleed
-            </label>
-            {selected.includes_bleed && (
-              <label className="field">
-                <span>Bleed in the file (mm per side)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={MAX_BLEED_MM}
-                  step={0.001}
-                  key={`bleed-${selected.id}`}
-                  defaultValue={selected.bleed_mm}
-                  onBlur={(e) => {
-                    const next = Number(e.target.value);
-                    if (
-                      Number.isFinite(next) &&
-                      next >= 0 &&
-                      next <= MAX_BLEED_MM &&
-                      next !== selected.bleed_mm
-                    ) {
-                      bleedMutation.mutate({ id: selected.id, includesBleed: true, bleedMm: next });
-                    }
-                  }}
-                />
-              </label>
-            )}
-            <p className="hint" style={{ marginTop: -4 }}>
-              MakePlayingCards images carry 3.175 mm (1/8 in) per side. Printing trims this
-              down to the project&apos;s bleed, or extends it if the project asks for more.
-              Changing it discards any upscales of this image on the server; generate again
-              afterwards.
-            </p>
-            {settingsError ? <p className="error-text">{settingsError}</p> : null}
-
-            {selected.source_dpi < LOW_DPI && (
-              <p className="hint">
-                This image works out to about {Math.round(selected.source_dpi)} DPI across a
-                card, which will look soft in print. Upscaling it is a real remedy here, or
-                replace it with a larger source image.
-              </p>
-            )}
-
+          <>
+            <CustomSettingsFields
+              image={selected}
+              onBleed={(change) => bleedMutation.mutate(change)}
+              error={settingsError}
+            />
             <button
               className="btn-sm"
               style={{ marginTop: 18 }}
@@ -336,7 +517,7 @@ export default function CustomsPage() {
             >
               Remove this image
             </button>
-          </div>
+          </>
         )}
       </aside>
 
@@ -432,6 +613,10 @@ export default function CustomsPage() {
               inProject={idsInProject.has(image.id)}
               selected={image.id === selectedId}
               onSelect={() => setSelectedId(image.id)}
+              onView={() => {
+                setSelectedId(image.id);
+                setViewingId(image.id);
+              }}
               onAdd={() =>
                 void addCustomCards([image.id]).then((added) =>
                   // "Added it, it's ready to print" — same best-effort
@@ -451,6 +636,15 @@ export default function CustomsPage() {
           ))}
         </div>
       </main>
+
+      {viewing ? (
+        <CustomImageViewer
+          image={viewing}
+          onClose={() => setViewingId(null)}
+          onBleed={(change) => bleedMutation.mutate(change)}
+          error={settingsError}
+        />
+      ) : null}
 
       {pendingDelete ? (
         <ConfirmDialog
