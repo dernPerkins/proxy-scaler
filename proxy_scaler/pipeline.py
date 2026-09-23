@@ -37,7 +37,9 @@ from .scryfall import (
     download_png,
     expand_faces,
 )
+from .ncnn_backend import NcnnUpscaler
 from .upscale import (
+    Backend,
     UpscaleModel,
     Upscaler,
     atomic_save_png,
@@ -554,7 +556,7 @@ def _upscalers_for_targets(
     timings: object | None = None,
     on_cpu_fallback: object | None = None,
 ) -> dict[int, Upscaler]:
-    """Build unique Upscaler instances keyed by native scale.
+    """Build unique Upscaler/NcnnUpscaler instances keyed by native scale.
 
     tile_size is the raw client value (0 = "auto") — resolved here via
     effective_tile_size() rather than passed straight through, so a
@@ -565,8 +567,12 @@ def _upscalers_for_targets(
     through, so resolving it here covers all of them."""
     needed = {native_scale_for_dpi(d, model_id) for d in dpi_targets}
     tile = effective_tile_size(model_id, tile_size)
+    # Backend dispatch lives here, on the model's own data, so the rest of
+    # the pipeline never learns which runtime ran. Both names stay
+    # module-level attributes (tests monkeypatch pipeline.Upscaler).
+    factory = Upscaler if model_id.backend is Backend.TORCH else NcnnUpscaler
     return {
-        scale: Upscaler(
+        scale: factory(
             model=model_id,
             scale=scale,
             weights_dir=weights_dir,

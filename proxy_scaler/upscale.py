@@ -28,6 +28,24 @@ if TYPE_CHECKING:
     from spandrel import ImageModelDescriptor
 
 
+class Backend(str, Enum):
+    """Which inference runtime a model runs on. Data on the model, never a
+    class: pipeline.py picks the Upscaler implementation from this, so a
+    model can move between runtimes (a DAT2 that later converts to ncnn,
+    say) by editing one dict entry."""
+
+    TORCH = "torch"  # PyTorch + spandrel: CUDA / ROCm / MPS / DirectML / CPU
+    NCNN = "ncnn"  # ncnn under Vulkan (any vendor's GPU), see ncnn_backend.py
+
+
+# Dropdown headers, per backend. Served by GET /api/models so every client
+# dropdown groups the same way.
+MODEL_GROUPS: dict[Backend, str] = {
+    Backend.TORCH: "Models",
+    Backend.NCNN: "Vulkan Models",
+}
+
+
 class UpscaleModel(str, Enum):
     REALESRGAN_ANIME_FAST = "realesrgan_anime_fast"
     ILLUSTRATIONJANAI = "illustrationjanai"
@@ -36,6 +54,41 @@ class UpscaleModel(str, Enum):
     # values longest-first, which is the only thing making a value that
     # prefixes another (like this one vs ultrasharp_v2) safe.
     ULTRASHARP_V2_LITE = "ultrasharp_v2_lite"
+    # --- ncnn (Vulkan) models. Ids end in _vk; the same longest-first
+    # slug rule keeps realesrgan_anime_fast_vk apart from its torch twin.
+    # Weights are ncnn .param/.bin pairs (see _WEIGHTS), the runtime is
+    # ncnn_backend.NcnnUpscaler, tiling comes from NCNN_TILE_PRESETS.
+    REALESRGAN_ANIME_FAST_VK = "realesrgan_anime_fast_vk"
+    ULTRASHARP_V1_VK = "ultrasharp_v1_vk"
+    CLEARREALITY_V1_VK = "clearreality_v1_vk"
+    ANIMESHARP_VK = "animesharp_vk"
+    NOMOS8KSC_VK = "nomos8ksc_vk"
+    NOMOSUNI_SPAN_VK = "nomosuni_span_vk"
+    HFA2K_VK = "hfa2k_vk"
+    REALESRGAN_ANIME6B_VK = "realesrgan_anime6b_vk"
+
+    @property
+    def backend(self) -> Backend:
+        """Same all-members-dict style as label: a member missing here is a
+        KeyError at first use, never a silent default runtime."""
+        return {
+            UpscaleModel.REALESRGAN_ANIME_FAST: Backend.TORCH,
+            UpscaleModel.ILLUSTRATIONJANAI: Backend.TORCH,
+            UpscaleModel.ULTRASHARP_V2: Backend.TORCH,
+            UpscaleModel.ULTRASHARP_V2_LITE: Backend.TORCH,
+            UpscaleModel.REALESRGAN_ANIME_FAST_VK: Backend.NCNN,
+            UpscaleModel.ULTRASHARP_V1_VK: Backend.NCNN,
+            UpscaleModel.CLEARREALITY_V1_VK: Backend.NCNN,
+            UpscaleModel.ANIMESHARP_VK: Backend.NCNN,
+            UpscaleModel.NOMOS8KSC_VK: Backend.NCNN,
+            UpscaleModel.NOMOSUNI_SPAN_VK: Backend.NCNN,
+            UpscaleModel.HFA2K_VK: Backend.NCNN,
+            UpscaleModel.REALESRGAN_ANIME6B_VK: Backend.NCNN,
+        }[self]
+
+    @property
+    def group(self) -> str:
+        return MODEL_GROUPS[self.backend]
 
     @property
     def label(self) -> str:
@@ -52,6 +105,16 @@ class UpscaleModel(str, Enum):
             UpscaleModel.ULTRASHARP_V2_LITE: (
                 "UltraSharpV2 Lite (general-purpose, faster sibling of UltraSharpV2)"
             ),
+            UpscaleModel.REALESRGAN_ANIME_FAST_VK: (
+                "Real-ESRGAN Anime Fast (Vulkan) (the same compact model, run through ncnn on any GPU)"
+            ),
+            UpscaleModel.ULTRASHARP_V1_VK: "UltraSharp v1 (Vulkan) (ESRGAN, general-purpose; the predecessor of UltraSharpV2)",
+            UpscaleModel.CLEARREALITY_V1_VK: "ClearRealityV1 (Vulkan) (SPAN, natural look with few artifacts; trained on the UltraSharpV2 data)",
+            UpscaleModel.ANIMESHARP_VK: "AnimeSharp (Vulkan) (ESRGAN, anime and line art, strong on text)",
+            UpscaleModel.NOMOS8KSC_VK: "Nomos8kSC (Vulkan) (ESRGAN, photo-realistic detail, compression cleanup)",
+            UpscaleModel.NOMOSUNI_SPAN_VK: "NomosUni (Vulkan) (SPAN, universal, JPEG-robust)",
+            UpscaleModel.HFA2K_VK: "HFA2k (Vulkan) (ESRGAN, high-fidelity anime with degradation handling)",
+            UpscaleModel.REALESRGAN_ANIME6B_VK: "Real-ESRGAN x4plus anime 6B (Vulkan) (ESRGAN, the official anime model)",
         }[self]
 
     @property
@@ -64,6 +127,14 @@ class UpscaleModel(str, Enum):
             UpscaleModel.ILLUSTRATIONJANAI: "Best for illustrations — slowest",
             UpscaleModel.ULTRASHARP_V2: "Best quality — slowest",
             UpscaleModel.ULTRASHARP_V2_LITE: "Balanced",
+            UpscaleModel.REALESRGAN_ANIME_FAST_VK: "Fastest",
+            UpscaleModel.ULTRASHARP_V1_VK: "Balanced",
+            UpscaleModel.CLEARREALITY_V1_VK: "Fastest",
+            UpscaleModel.ANIMESHARP_VK: "Balanced",
+            UpscaleModel.NOMOS8KSC_VK: "Balanced",
+            UpscaleModel.NOMOSUNI_SPAN_VK: "Fastest",
+            UpscaleModel.HFA2K_VK: "Balanced",
+            UpscaleModel.REALESRGAN_ANIME6B_VK: "Balanced",
         }[self]
 
     @property
@@ -89,23 +160,117 @@ DEFAULT_TILE_SIZE = 384
 def effective_tile_size(model: UpscaleModel, tile_size_setting: int) -> int:
     """0 (not manually set) auto-falls-back to DEFAULT_TILE_SIZE for heavy
     models only, leaving already-working lighter models untouched. An
-    explicit non-zero setting always wins, regardless of model."""
+    explicit non-zero setting always wins, regardless of model.
+
+    ncnn models are never in HEAVY_MODELS: the torch VRAM ladder can't see
+    a Vulkan device, so their 0 is resolved by NcnnUpscaler itself from
+    NCNN_TILE_PRESETS (the medium preset), never an untiled pass."""
     if tile_size_setting > 0:
         return tile_size_setting
     return DEFAULT_TILE_SIZE if model in HEAVY_MODELS else 0
 
 
+NCNN_MODELS = frozenset(m for m in UpscaleModel if m.backend is Backend.NCNN)
+
+
 @dataclass(frozen=True)
-class _WeightSpec:
+class TilePreset:
+    """One entry of the Vulkan models' "GPU VRAM" dropdown."""
+
+    key: str
+    label: str
+    tile: int
+
+
+# The "GPU VRAM" dropdown every model shows instead of a raw tile number.
+# The tiers are shared: the number behind each is the tile that fits an
+# x4 pass on a card of that size with headroom. The client writes the
+# chosen tile straight into the existing tile_size setting, so nothing
+# new travels through the API or the DB.
+#
+# torch models get an extra "Auto" tier (tile 0): the torch path probes
+# free CUDA memory per task and picks the tile itself (_apply_auto_tile),
+# which is what tile_size 0 has always meant there. ncnn's Python binding
+# exposes no VRAM figure, so Vulkan models have no Auto: their default is
+# the medium tier, and a failed pass steps down the tiers (largest first)
+# before falling to the CPU. Tile numbers are provisional until the bake-off.
+VRAM_TIERS: tuple[TilePreset, ...] = (
+    TilePreset("low", "Low VRAM (4 GB or less)", 128),
+    TilePreset("medium", "Medium VRAM (6–8 GB)", 256),
+    TilePreset("high", "High VRAM (12 GB+)", 384),
+    TilePreset("max", "Max VRAM (16 GB+)", 512),
+)
+AUTO_TILE_PRESET = TilePreset("auto", "Auto (measure free VRAM)", 0)
+TORCH_TILE_PRESETS: tuple[TilePreset, ...] = (AUTO_TILE_PRESET,) + VRAM_TIERS
+NCNN_TILE_PRESETS: tuple[TilePreset, ...] = VRAM_TIERS
+TORCH_DEFAULT_PRESET = "auto"
+NCNN_DEFAULT_PRESET = "medium"
+
+
+def tile_presets_for(model: UpscaleModel) -> tuple[TilePreset, ...]:
+    """The tiers a model's dropdown offers, per backend."""
+    return NCNN_TILE_PRESETS if model.backend is Backend.NCNN else TORCH_TILE_PRESETS
+
+
+def default_tile_preset(model: UpscaleModel) -> TilePreset | None:
+    key = NCNN_DEFAULT_PRESET if model.backend is Backend.NCNN else TORCH_DEFAULT_PRESET
+    for preset in tile_presets_for(model):
+        if preset.key == key:
+            return preset
+    return None
+
+
+@dataclass(frozen=True)
+class WeightFile:
     filename: str
     url: str
+    # Hex SHA-256, verified after download and on every later load. None
+    # only for the original torch entries, whose upstream hosts we don't
+    # control; everything we host ourselves carries one.
+    sha256: str | None = None
 
 
-# Official release weights loadable by Spandrel
+@dataclass(frozen=True)
+class _WeightSpec:
+    """Every file a model needs on disk. One for the torch models (a .pth
+    or .safetensors), a .param + .bin pair for ncnn."""
+
+    files: tuple[WeightFile, ...]
+
+    @property
+    def primary(self) -> WeightFile:
+        return self.files[0]
+
+    @property
+    def filename(self) -> str:
+        return self.primary.filename
+
+
+def _single(filename: str, url: str) -> _WeightSpec:
+    return _WeightSpec((WeightFile(filename, url),))
+
+
+# Where our own conversions and mirrors of ncnn model files live. The
+# on-disk name is <model.value>.param / .bin so the two always pair up
+# and the id alone names the model. Versioned prefix: a re-conversion goes
+# to v2/, never silently changes a hash under an installed client.
+NCNN_WEIGHTS_BASE_URL = "https://dl.proxy-scaler.com/models/ncnn/v1/"
+
+
+def _ncnn_pair(model: UpscaleModel, param_sha256: str, bin_sha256: str) -> _WeightSpec:
+    return _WeightSpec(
+        (
+            WeightFile(f"{model.value}.param", f"{NCNN_WEIGHTS_BASE_URL}{model.value}.param", param_sha256),
+            WeightFile(f"{model.value}.bin", f"{NCNN_WEIGHTS_BASE_URL}{model.value}.bin", bin_sha256),
+        )
+    )
+
+
+# Official release weights loadable by Spandrel, plus the ncnn pairs.
 _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
     # Official release — the "Compact" (SRVGGNetCompact) architecture,
     # much smaller/faster than the RRDBNet-based anime models.
-    (UpscaleModel.REALESRGAN_ANIME_FAST, 4): _WeightSpec(
+    (UpscaleModel.REALESRGAN_ANIME_FAST, 4): _single(
         "realesr-animevideov3.pth",
         "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
     ),
@@ -114,12 +279,12 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
     # files this size — using a third-party HuggingFace mirror instead.
     # If this mirror ever disappears, search for
     # "4x_IllustrationJaNai_V1_DAT2" on huggingface.co for a replacement.
-    (UpscaleModel.ILLUSTRATIONJANAI, 4): _WeightSpec(
+    (UpscaleModel.ILLUSTRATIONJANAI, 4): _single(
         "4x_IllustrationJaNai_V1_DAT2_190k.pth",
         "https://huggingface.co/tomjackson2023/upscale_models/resolve/main/4x_IllustrationJaNai_V1_DAT2_190k.pth",
     ),
     # CC-BY-NC-SA-4.0 (non-commercial). Officially hosted by the creator.
-    (UpscaleModel.ULTRASHARP_V2, 4): _WeightSpec(
+    (UpscaleModel.ULTRASHARP_V2, 4): _single(
         "4x-UltraSharpV2.safetensors",
         "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors",
     ),
@@ -128,9 +293,59 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
     # a small CNN (~30MB weights vs 140MB) that sits between the compact
     # video model and the DAT2 transformers on both speed and quality —
     # light enough to run untiled (not in HEAVY_MODELS).
-    (UpscaleModel.ULTRASHARP_V2_LITE, 4): _WeightSpec(
+    (UpscaleModel.ULTRASHARP_V2_LITE, 4): _single(
         "4x-UltraSharpV2_Lite.safetensors",
         "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2_Lite.safetensors",
+    ),
+    # The official ncnn conversion of realesr-animevideov3 (x4), byte-for-
+    # byte from Real-ESRGAN's realesrgan-ncnn-vulkan-20220424 release
+    # (BSD-3), re-hosted under our name so the id alone finds it.
+    (UpscaleModel.REALESRGAN_ANIME_FAST_VK, 4): _ncnn_pair(
+        UpscaleModel.REALESRGAN_ANIME_FAST_VK,
+        "850a248e7c14c27e5bd8cf7265113a9441036a7db63963bb8aa5169d788a435e",
+        "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
+    ),
+    # Kim2091's own ncnn release of 4x-UltraSharp (CC-BY-NC-SA-4.0), re-hosted.
+    (UpscaleModel.ULTRASHARP_V1_VK, 4): _ncnn_pair(
+        UpscaleModel.ULTRASHARP_V1_VK,
+        "2840758a28fc7be705bbc480f3205dcf6616089ff233546109f71a1e381fe6fe",
+        "713ce69a8642b1907cc24da7573560dcc933faf0c74e48ab0b3b379245618701",
+    ),
+    # Our pnnx conversion of Kim2091's 4x-ClearRealityV1, SPAN (CC-BY-NC-SA-4.0).
+    (UpscaleModel.CLEARREALITY_V1_VK, 4): _ncnn_pair(
+        UpscaleModel.CLEARREALITY_V1_VK,
+        "1f943e893438abbe3450dc19319de2cbce5557611363b0495c5d638ac474d4ee",
+        "7a1d09560c14e3eb110b3751e85c92b09fcca1b00f2b29f4dccdd98c82966bec",
+    ),
+    # Our esrgan2ncnn conversion of Kim2091's 4x-AnimeSharp (CC-BY-NC-SA-4.0).
+    (UpscaleModel.ANIMESHARP_VK, 4): _ncnn_pair(
+        UpscaleModel.ANIMESHARP_VK,
+        "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
+        "7e63c002ad4a410fd7e81c539f81915a1046fbfea63fc4d5a3500a101ca0f6c1",
+    ),
+    # Our esrgan2ncnn conversion of Phhofm's 4xNomos8kSC (CC-BY-4.0).
+    (UpscaleModel.NOMOS8KSC_VK, 4): _ncnn_pair(
+        UpscaleModel.NOMOS8KSC_VK,
+        "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
+        "da16e3880d87b177b7c6b659bbd880f8a101b868eb9ebc08d69eaa6d3edc4517",
+    ),
+    # Our pnnx conversion of Phhofm's 4xNomosUni_span_multijpg, SPAN (CC-BY-4.0).
+    (UpscaleModel.NOMOSUNI_SPAN_VK, 4): _ncnn_pair(
+        UpscaleModel.NOMOSUNI_SPAN_VK,
+        "1f943e893438abbe3450dc19319de2cbce5557611363b0495c5d638ac474d4ee",
+        "5c86281a44477970c165488fc27f5005118e327ef606a2fbef016ca0ac83b92f",
+    ),
+    # Our esrgan2ncnn conversion of Phhofm's 4xHFA2k (CC-BY-4.0).
+    (UpscaleModel.HFA2K_VK, 4): _ncnn_pair(
+        UpscaleModel.HFA2K_VK,
+        "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
+        "8a135402b4f39286121b76abb47601a6b7b7e8d4f3e999a5aaa45ed277824fb4",
+    ),
+    # The official ncnn conversion of RealESRGAN_x4plus_anime_6B (BSD-3), re-hosted.
+    (UpscaleModel.REALESRGAN_ANIME6B_VK, 4): _ncnn_pair(
+        UpscaleModel.REALESRGAN_ANIME6B_VK,
+        "38d0970d37aa3c391ebb36c44ad198944b1f276778f3ccafd0e16dcc2ee77bc2",
+        "fe01c269cfd10cdef8e018ab66ebe750cf79c7af4d1f9c16c737e1295229bacc",
     ),
 }
 
@@ -211,15 +426,16 @@ def device_kind(device: torch.device | str | None) -> str:
         return "cpu"
     # "privateuseone" is torch-directml's (AMD-on-Windows) backend name;
     # "directml" is a defensive alias in case that ever changes upstream.
-    if name in ("cuda", "mps", "gpu", "privateuseone", "directml"):
+    # "vulkan" is what the ncnn backend reports (ncnn_backend.py).
+    if name in ("cuda", "mps", "gpu", "privateuseone", "directml", "vulkan"):
         return "gpu"
     return name or "unknown"
 
 
 def device_backend(device: torch.device | str | None) -> str:
-    """The *actual* torch backend name — "cuda" | "mps" | "privateuseone" |
-    "cpu" | "unknown" — as opposed to device_kind()'s deliberately coarse
-    gpu/cpu answer.
+    """The *actual* backend name — "cuda" | "mps" | "privateuseone" |
+    "vulkan" (ncnn) | "cpu" | "unknown" — as opposed to device_kind()'s
+    deliberately coarse gpu/cpu answer.
 
     Two distinct consumers, hence two functions rather than one:
 
@@ -516,7 +732,7 @@ class UpscaleResult:
 
     image: Image.Image
     device: str  # "gpu" | "cpu"
-    dtype: str = "fp32"  # "bf16" | "fp32"
+    dtype: str = "fp32"  # "bf16" | "fp32" | "fp16" (ncnn)
     # True when the image came from the x4 cache PNG instead of a fresh
     # model pass — the caller then knows there is nothing to write back.
     from_cache: bool = False
@@ -527,27 +743,83 @@ def ensure_weights(
     scale: int,
     weights_dir: Path,
 ) -> Path:
+    """The model's primary weight file, downloaded if missing. Torch
+    callers only ever need the one file; ncnn callers use
+    ensure_weight_files for the whole .param/.bin pair."""
+    paths, _ = ensure_weight_files(model, scale, weights_dir)
+    return paths[0]
+
+
+def ensure_weight_files(
+    model: UpscaleModel,
+    scale: int,
+    weights_dir: Path,
+) -> tuple[list[Path], bool]:
+    """Every file in the model's _WeightSpec, on disk and verified.
+    Returns (paths in spec order, whether anything was downloaded) — the
+    flag lets a caller attribute model_load time to a real fetch.
+
+    A file with a known hash is re-hashed on every call (the ncnn files
+    are a few MB; the torch entries carry no hash and skip this) so a
+    truncated or tampered copy is re-fetched once instead of loading as
+    garbage. A fresh download that fails its hash is deleted and raised:
+    either the transfer broke or the hosted file changed, and neither
+    should quietly become the model users run."""
     if scale not in model.supported_scales:
         raise ValueError(
             f"{model.value} supports scales {model.supported_scales}, not x{scale}"
         )
     spec = _WEIGHTS[(model, scale)]
+    weights_dir = Path(weights_dir)
     weights_dir.mkdir(parents=True, exist_ok=True)
-    path = weights_dir / spec.filename
-    if path.exists() and path.stat().st_size > 0:
-        return path
+    paths: list[Path] = []
+    downloaded = False
+    for wf in spec.files:
+        path = weights_dir / wf.filename
+        if path.exists() and path.stat().st_size > 0:
+            if wf.sha256 is None or _sha256_of(path) == wf.sha256:
+                paths.append(path)
+                continue
+            print(f"{wf.filename} failed its checksum; re-downloading …")
+            path.unlink()
+        _download_weight_file(wf, path)
+        downloaded = True
+        paths.append(path)
+    return paths, downloaded
 
-    print(f"Downloading {spec.filename} …")
-    resp = requests.get(spec.url, timeout=120, stream=True)
+
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fp:
+        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_weight_file(wf: WeightFile, path: Path) -> None:
+    import hashlib
+
+    print(f"Downloading {wf.filename} …")
+    resp = requests.get(wf.url, timeout=120, stream=True)
     resp.raise_for_status()
     tmp = path.with_suffix(path.suffix + ".part")
+    digest = hashlib.sha256()
     with tmp.open("wb") as fp:
         for chunk in resp.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 fp.write(chunk)
+                digest.update(chunk)
+    if wf.sha256 is not None and digest.hexdigest() != wf.sha256:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"{wf.filename}: checksum mismatch after download "
+            f"(expected {wf.sha256[:12]}…, got {digest.hexdigest()[:12]}…) — "
+            "the transfer was corrupted or the hosted file changed"
+        )
     tmp.replace(path)
     print(f"Saved weights to {path}")
-    return path
 
 
 # ---- DirectML: channel-wise PReLU workaround ------------------------
@@ -772,8 +1044,22 @@ def _cache_put(key: tuple, descriptor: "ImageModelDescriptor") -> None:
     _MODEL_CACHE[key] = descriptor
 
 
+def make_upscaler(model: UpscaleModel | str, **kwargs):
+    """The right Upscaler implementation for a model's backend, same
+    constructor kwargs either way. pipeline._upscalers_for_targets does
+    this dispatch inline (so its Upscaler/NcnnUpscaler names stay
+    monkeypatchable); this is for the CLI and direct callers."""
+    model_id = parse_model(model)
+    if model_id.backend is Backend.NCNN:
+        from .ncnn_backend import NcnnUpscaler
+
+        return NcnnUpscaler(model_id, **kwargs)
+    return Upscaler(model_id, **kwargs)
+
+
 class Upscaler:
-    """Lazy-loaded Spandrel upscaler for a chosen model + scale."""
+    """Lazy-loaded Spandrel upscaler for a chosen model + scale (torch
+    backend only — see make_upscaler / ncnn_backend.NcnnUpscaler)."""
 
     def __init__(
         self,
@@ -787,6 +1073,11 @@ class Upscaler:
         on_cpu_fallback: object | None = None,
     ) -> None:
         self.model_id = parse_model(model)
+        if self.model_id.backend is not Backend.TORCH:
+            raise TypeError(
+                f"{self.model_id.value} runs on the {self.model_id.backend.value} "
+                "backend; construct it via make_upscaler() (or NcnnUpscaler)"
+            )
         if scale not in self.model_id.supported_scales:
             raise ValueError(
                 f"{self.model_id.value} supports scales "

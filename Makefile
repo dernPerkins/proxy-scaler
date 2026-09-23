@@ -396,7 +396,53 @@ cp -al desktop/pyinstaller/dist/proxy-scaler-serve $(1) \
 		|| { rm -rf $(1); cp -RL desktop/pyinstaller/dist/proxy-scaler-serve $(1); }
 endef
 
-_sidecar-freeze: sidecar-clean
+# MoltenVK for the macOS bundle (see the spec's darwin block and
+# ncnn_backend._preload_moltenvk). Pinned release + sha256 in
+# packaging/ncnn/molten-vk.env / molten-vk-sha256.txt; lands in the
+# gitignored tools/molten-vk/. A no-op everywhere but Darwin so the one
+# freeze target can depend on it unconditionally.
+MOLTENVK_DIR := tools/molten-vk
+MOLTENVK_DYLIB := $(MOLTENVK_DIR)/libMoltenVK.dylib
+MOLTENVK_VERSION := $(shell sed -n 's/^MOLTENVK_VERSION=//p' packaging/ncnn/molten-vk.env)
+MOLTENVK_URL := https://github.com/KhronosGroup/MoltenVK/releases/download/$(MOLTENVK_VERSION)/MoltenVK-macos.tar
+
+.PHONY: molten-vk
+ifeq ($(UNAME_S),Darwin)
+molten-vk: $(MOLTENVK_DYLIB)
+$(MOLTENVK_DYLIB):
+	@echo "==> fetching MoltenVK $(MOLTENVK_VERSION)"
+	mkdir -p $(MOLTENVK_DIR)
+	curl -fL -o $(MOLTENVK_DIR)/MoltenVK-macos.tar "$(MOLTENVK_URL)"
+	cd $(MOLTENVK_DIR) && tar xf MoltenVK-macos.tar
+	cp "$$(find $(MOLTENVK_DIR)/MoltenVK -path '*/dylib/macOS/libMoltenVK.dylib' | head -1)" $(MOLTENVK_DYLIB)
+	cp "$$(find $(MOLTENVK_DIR)/MoltenVK -maxdepth 1 -iname 'LICENSE*' | head -1)" $(MOLTENVK_DIR)/LICENSE-MoltenVK.txt || true
+	# Verify against the pinned digest: a silently different MoltenVK is a
+	# silently different GPU path for every Mac user.
+	@expected="$$(cut -d' ' -f1 packaging/ncnn/molten-vk-sha256.txt)"; \
+	actual="$$(shasum -a 256 $(MOLTENVK_DYLIB) | cut -d' ' -f1)"; \
+	[ "$$expected" = "$$actual" ] || { echo "ERROR: $(MOLTENVK_DYLIB) sha256 $$actual != pinned $$expected (packaging/ncnn/molten-vk-sha256.txt)"; rm -f $(MOLTENVK_DYLIB); exit 1; }
+	rm -rf $(MOLTENVK_DIR)/MoltenVK $(MOLTENVK_DIR)/MoltenVK-macos.tar
+	@echo "MoltenVK ready: $(MOLTENVK_DYLIB)"
+else
+molten-vk:
+	@echo "molten-vk: nothing to do on $(UNAME_S) (macOS only)"
+endif
+
+# Vulkan model files: convert (see packaging/ncnn/convert-models.py) and
+# publish to the bucket the app downloads them from. Conversion runs in
+# its own venv (packaging/ncnn/requirements-convert.txt); upload uses the
+# same aws profile/endpoint as the release artifacts.
+NCNN_MODELS_PREFIX := models/ncnn/v1
+NCNN_UPLOAD_ENDPOINT := https://f45b92a3e8145f49f59887b06acf42a3.r2.cloudflarestorage.com
+.PHONY: ncnn-convert ncnn-upload
+ncnn-convert:
+	PYTHONUNBUFFERED=1 $(PYTHON) packaging/ncnn/convert-models.py convert $(MODELS)
+ncnn-upload:
+	@test -d dist/ncnn-models || { echo "nothing in dist/ncnn-models -- run make ncnn-convert first"; exit 1; }
+	aws s3 cp dist/ncnn-models/ s3://proxy-scaler-site/$(NCNN_MODELS_PREFIX)/ --recursive \
+		--exclude "manifest.json" --profile r2 --endpoint-url $(NCNN_UPLOAD_ENDPOINT)
+
+_sidecar-freeze: sidecar-clean molten-vk
 	$(PIP) install pyinstaller pyinstaller-hooks-contrib
 	$(PYTHON) -m PyInstaller desktop/pyinstaller/proxy-scaler-serve.spec \
 		--distpath desktop/pyinstaller/dist \
@@ -411,6 +457,14 @@ _sidecar-freeze: sidecar-clean
 	# glob spans the old and new names and every platform's suffix.
 	@ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/torchvision/_C* >/dev/null 2>&1 \
 		|| { echo "ERROR: frozen bundle has no torchvision C++ extension (_internal/torchvision/_C*) -- every upscale would fail; see proxy-scaler-serve.spec"; exit 1; }
+	# Same guard for the Vulkan backend's extension module (the whole of
+	# ncnn's runtime) and, on macOS, the bundled MoltenVK it dlopens.
+	@ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn/ncnn.* >/dev/null 2>&1 \
+		|| { echo "ERROR: frozen bundle has no ncnn extension (_internal/ncnn/ncnn.*) -- every Vulkan model would fail; see proxy-scaler-serve.spec"; exit 1; }
+ifeq ($(UNAME_S),Darwin)
+	@test -f desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn-vulkan/libMoltenVK.dylib \
+		|| { echo "ERROR: frozen bundle has no _internal/ncnn-vulkan/libMoltenVK.dylib -- Vulkan models would run on the CPU; run make molten-vk"; exit 1; }
+endif
 	# The variant marker rides inside the onedir bundle, so every staged
 	# copy (client, server-app, .app Resources, deb) carries it for free —
 	# update.rs reads it to pick this install's artifact out of the update

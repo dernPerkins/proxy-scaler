@@ -5,12 +5,28 @@
 // FastAPI's OpenAPI schema (openapi-typescript) so the two sides can't
 // silently drift.
 
+export interface TilePreset {
+  key: string;
+  label: string;
+  tile: number;
+}
+
 export interface ModelOption {
   value: string;
   label: string;
   // Relative-speed wording from the server ("Best quality — slowest" /
   // "Balanced" / "Fastest"), appended to dropdown labels.
   speed: string;
+  // Runtime ("torch" | "ncnn") and the dropdown header ("Models" /
+  // "Vulkan Models"). Optional: an older server omits them, and
+  // ModelSelect then renders a single ungrouped list.
+  backend?: string;
+  group?: string;
+  // Vulkan models tile by "GPU VRAM" tier instead of a free number; the
+  // chosen tier's `tile` is written into settings.tile_size. Empty/absent
+  // for torch models.
+  tile_presets?: TilePreset[];
+  default_tile_preset?: string | null;
 }
 
 // Mirrors DeviceOut — whether the connected server has a real GPU (CUDA
@@ -28,6 +44,10 @@ export interface Device {
   // backend names we don't know about, so consumers must always have a
   // sane branch for "something else."
   backend?: "cuda" | "mps" | "privateuseone" | "cpu" | "unknown" | (string & {});
+  // A real Vulkan GPU is usable for the "Vulkan Models" (a separate axis
+  // from `kind`/`backend`, which describe torch's device). Absent on an
+  // older server: unknown, not false.
+  vulkan?: boolean;
 }
 
 // What both /api/resolve, /api/generate, and /api/pdf take as their card

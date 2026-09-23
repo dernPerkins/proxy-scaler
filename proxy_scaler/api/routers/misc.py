@@ -14,14 +14,18 @@ from proxy_scaler.api.schemas import (
     DiscardTagOut,
     GenPathsOut,
     ModelOptionOut,
+    TilePresetOut,
     VersionOut,
 )
+from proxy_scaler.ncnn_backend import vulkan_available
 from proxy_scaler.pipeline import clear_generated_data
 from proxy_scaler.upscale import (
     UpscaleModel,
+    default_tile_preset,
     device_backend,
     device_kind,
     resolve_device,
+    tile_presets_for,
 )
 
 router = APIRouter(prefix="/api", tags=["misc"])
@@ -57,7 +61,20 @@ def list_models() -> list[ModelOptionOut]:
     enum is the only source of truth, structurally, not just by
     convention."""
     return [
-        ModelOptionOut(value=m.value, label=m.label, speed=m.speed)
+        ModelOptionOut(
+            value=m.value,
+            label=m.label,
+            speed=m.speed,
+            backend=m.backend.value,
+            group=m.group,
+            tile_presets=[
+                TilePresetOut(key=p.key, label=p.label, tile=p.tile)
+                for p in tile_presets_for(m)
+            ],
+            default_tile_preset=(
+                default_tile_preset(m).key if default_tile_preset(m) else None
+            ),
+        )
         for m in UpscaleModel
     ]
 
@@ -79,7 +96,12 @@ def get_device() -> DeviceOut:
     different default models (see ProjectContext.tsx's
     recommendedDefaultModel)."""
     device = resolve_device()
-    return DeviceOut(kind=device_kind(device), backend=device_backend(device))
+    return DeviceOut(
+        kind=device_kind(device),
+        backend=device_backend(device),
+        # Separate axis: the Vulkan models don't go through torch at all.
+        vulkan=vulkan_available(),
+    )
 
 
 # Must match DEFAULT_GEN_PATHS in desktop/frontend/src/pages/DecklistPage.tsx —

@@ -32,6 +32,7 @@
 # pyinstaller-hooks-contrib or anywhere else), so it's collected
 # explicitly below when present.
 import importlib.util
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
@@ -94,6 +95,38 @@ if importlib.util.find_spec("torch_directml") is not None:
 BINARIES += collect_dynamic_libs(
     "torchvision", search_patterns=["*.so", "*.pyd", "*.dll", "*.dylib"]
 )
+
+# ncnn: the Vulkan inference backend (proxy_scaler/ncnn_backend.py), a
+# declared dependency on every variant. Like torch_directml it has no
+# contrib hook, and its whole runtime is one extension module
+# (ncnn/ncnn.cpython-*.so / ncnn.*.pyd) plus, on Linux and Windows, the
+# wheel's vendored libgomp / msvcp140+vcomp140 that the dependency scan
+# reaches through it. collect_all sweeps the package; the explicit-pattern
+# collect_dynamic_libs is the same belt-and-braces the torchvision fix
+# needed, since the module's name matches none of the default globs.
+# Unguarded on purpose: a build without ncnn must fail here, not ship a
+# "Vulkan Models" group that can't run. _sidecar-freeze double-checks.
+ncnn_datas, ncnn_binaries, ncnn_hiddenimports = collect_all("ncnn")
+DATAS += ncnn_datas
+BINARIES += ncnn_binaries
+HIDDEN_IMPORTS += ncnn_hiddenimports
+BINARIES += collect_dynamic_libs("ncnn", search_patterns=["*.so", "*.pyd", "*.dll", "*.dylib"])
+
+# macOS: ncnn dlopens libMoltenVK.dylib by bare name and the wheel doesn't
+# ship it, so the Vulkan models would silently run on the CPU. We bundle
+# the pinned MoltenVK release (Apache-2.0; `make molten-vk` fetches it into
+# tools/molten-vk/) as a plain data file under _internal/ncnn-vulkan/,
+# where ncnn_backend._preload_moltenvk() loads it by absolute path before
+# ncnn's own lookup. A data file, not a binary: PyInstaller must not
+# rewrite its install name or chase its (system-only) dependencies.
+if sys.platform == "darwin":
+    MOLTENVK = ROOT / "tools" / "molten-vk" / "libMoltenVK.dylib"
+    if not MOLTENVK.is_file():
+        raise SystemExit(
+            f"{MOLTENVK} is missing -- run `make molten-vk` first (the Vulkan "
+            "models need MoltenVK bundled on macOS; see docs/releasing.md)"
+        )
+    DATAS += [(str(MOLTENVK), "ncnn-vulkan")]
 
 a = Analysis(
     [str(ENTRY_SCRIPT)],

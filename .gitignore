@@ -11,6 +11,8 @@ imgcache/
 output/
 output_smoke/
 weights/
+# Fetched build inputs (make molten-vk): pinned by hash in packaging/ncnn/.
+tools/
 data/*.db
 data/*.db-shm
 data/*.db-wal

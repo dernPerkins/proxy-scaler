@@ -1,0 +1,14 @@
+# Conversion-only toolchain for packaging/ncnn/convert-models.py — kept out
+# of pyproject.toml on purpose: the app never converts models, and pnnx's
+# TorchScript tracing wants a plain CPU torch. Use a scratch venv:
+#   python3 -m venv .venv-convert && .venv-convert/bin/pip install -r packaging/ncnn/requirements-convert.txt
+torch>=2.1,<3
+torchvision>=0.16
+spandrel>=0.4
+safetensors>=0.4
+ncnn>=1.0.20260526
+pnnx>=20260526
+numpy>=1.24
+Pillow>=10
+requests>=2.31
+tomli>=2; python_version < "3.11"

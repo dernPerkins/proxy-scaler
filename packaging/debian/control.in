@@ -4,7 +4,7 @@ Section: graphics
 Priority: optional
 Architecture: @ARCH@
 Maintainer: proxy-scaler maintainers <noreply@example.com>
-Depends: adduser
+Depends: adduser, libvulkan1
 Description: MTG proxy card upscaling server
  Runs the proxy-scaler API and its generation worker as a managed pair,
  so the proxy-scaler desktop app (or any HTTP client) can queue card
@@ -12,7 +12,9 @@ Description: MTG proxy card upscaling server
  .
  The bundled runtime is self-contained — Python, PyTorch and the model
  loader are frozen into /opt/proxy-scaler, so no system Python or pip
- packages are required.
+ packages are required. The "Vulkan Models" run through ncnn on any
+ Vulkan-capable GPU via the system Vulkan loader (libvulkan1) and the
+ GPU's own ICD (mesa-vulkan-drivers or the NVIDIA driver).
  .
  The API is UNAUTHENTICATED. The service ships bound to all interfaces
  so it is reachable from other machines; restrict it to a trusted

@@ -128,6 +128,15 @@ def test_parse_output_filename() -> None:
     assert anime_fast["model"] == "realesrgan_anime_fast"
     assert anime_fast["dpi"] == 800
 
+    # A Vulkan twin's slug is its torch sibling's plus _vk: the longest-
+    # first alternation must take the whole thing, never stop at the
+    # shorter prefix and leave "_vk" dangling.
+    anime_fast_vk = parse_output_filename(
+        "Sol_Ring-C21-263-realesrgan_anime_fast_vk-800dpi.png"
+    )
+    assert anime_fast_vk is not None
+    assert anime_fast_vk["model"] == "realesrgan_anime_fast_vk"
+
     janai = parse_output_filename("Sol_Ring-C21-263-illustrationjanai-1200dpi.png")
     assert janai is not None
     assert janai["model"] == "illustrationjanai"

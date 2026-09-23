@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import torch
 from PIL import Image
 
@@ -942,3 +944,77 @@ def test_fallback_hook_errors_never_break_relocation() -> None:
     with patch("proxy_scaler.upscale._clear_device_cache"):
         up._relocate_to_cpu()  # must not raise
     assert up._dtype == torch.float32
+
+
+# --- vulkan (ncnn) device labels + checksummed weight files ---------------
+
+
+def test_device_labels_for_vulkan() -> None:
+    """The ncnn backend reports the string "vulkan": provenance stays in
+    the persisted gpu/cpu vocabulary, the live backend name is passed
+    through untouched."""
+    assert device_kind("vulkan") == "gpu"
+    assert device_backend("vulkan") == "vulkan"
+
+
+def _fake_response(payload: bytes):
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.iter_content = lambda chunk_size: iter([payload])
+    return resp
+
+
+def test_ensure_weight_files_verifies_and_reuses(tmp_path, monkeypatch) -> None:
+    import hashlib
+
+    from proxy_scaler import upscale as up
+
+    good = b"param-bytes"
+    spec = up._WeightSpec(
+        (
+            up.WeightFile("m.param", "https://x/m.param", hashlib.sha256(good).hexdigest()),
+            up.WeightFile("m.bin", "https://x/m.bin", None),
+        )
+    )
+    monkeypatch.setitem(up._WEIGHTS, (UpscaleModel.ULTRASHARP_V2, 4), spec)
+    calls: list[str] = []
+
+    def fake_get(url, timeout, stream):
+        calls.append(url)
+        return _fake_response(good if url.endswith(".param") else b"bin-bytes")
+
+    monkeypatch.setattr(up.requests, "get", fake_get)
+    paths, downloaded = up.ensure_weight_files(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
+    assert downloaded and [p.name for p in paths] == ["m.param", "m.bin"]
+    assert len(calls) == 2
+    assert not list(tmp_path.glob("*.part"))
+
+    # Second call: both present and the hashed one verifies -> no fetch.
+    paths, downloaded = up.ensure_weight_files(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
+    assert not downloaded and len(calls) == 2
+
+    # Corrupt the hashed file on disk: re-fetched once, silently.
+    (tmp_path / "m.param").write_bytes(b"truncated")
+    paths, downloaded = up.ensure_weight_files(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
+    assert downloaded and len(calls) == 3
+    assert (tmp_path / "m.param").read_bytes() == good
+
+    # ensure_weights keeps its single-path contract (the primary file).
+    assert up.ensure_weights(UpscaleModel.ULTRASHARP_V2, 4, tmp_path) == tmp_path / "m.param"
+
+
+def test_ensure_weight_files_rejects_bad_download(tmp_path, monkeypatch) -> None:
+    from proxy_scaler import upscale as up
+
+    spec = up._WeightSpec((up.WeightFile("m.param", "https://x/m.param", "0" * 64),))
+    monkeypatch.setitem(up._WEIGHTS, (UpscaleModel.ULTRASHARP_V2, 4), spec)
+    monkeypatch.setattr(up.requests, "get", lambda url, timeout, stream: _fake_response(b"whatever"))
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        up.ensure_weight_files(UpscaleModel.ULTRASHARP_V2, 4, tmp_path)
+    assert not (tmp_path / "m.param").exists()
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_upscaler_refuses_ncnn_models() -> None:
+    with pytest.raises(TypeError, match="ncnn"):
+        Upscaler(model=UpscaleModel.REALESRGAN_ANIME_FAST_VK, scale=4, weights_dir="w")

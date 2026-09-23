@@ -5,6 +5,7 @@ import { projectApi } from "../api/project";
 import type { CardRow } from "../api/project";
 import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
+import ModelSelect, { reconcileTileForModel } from "../components/ModelSelect";
 import CompareDialog from "../components/CompareDialog";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
@@ -229,6 +230,8 @@ export default function DecklistPage() {
     queryKey: ["gen-paths"],
     queryFn: () => generationApi.getPaths(),
   });
+  const selectedModel = modelsQuery.data?.find((m) => m.value === settings.model);
+  const vramPresets = selectedModel?.tile_presets ?? [];
 
   // Local card data (decklist text -> CardRow[]) is invoke-based and only
   // changes on an explicit mutation — no polling needed, it can't go
@@ -621,17 +624,22 @@ export default function DecklistPage() {
         <div className="field-group">
           <label className="field">
             <span>Upscale model</span>
-            <select
+            <ModelSelect
               value={settings.model}
-              onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
+              models={modelsQuery.data}
               disabled={modelsQuery.isLoading || modelsQuery.isError}
-            >
-              {(modelsQuery.data ?? []).map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label} — {m.speed}
-                </option>
-              ))}
-            </select>
+              onChange={(value) =>
+                setSettings((s) => ({
+                  ...s,
+                  model: value,
+                  tile_size: reconcileTileForModel(
+                    modelsQuery.data?.find((m) => m.value === value),
+                    modelsQuery.data?.find((m) => m.value === s.model),
+                    s.tile_size,
+                  ),
+                }))
+              }
+            />
           </label>
           {/* Without this, a stuck/failed local-server start (or any other
               listModels() failure) rendered as a silently empty dropdown —
@@ -678,16 +686,46 @@ export default function DecklistPage() {
             Skip existing output files
           </label>
 
-          <label className="field">
-            <span>Tile size (0 = auto)</span>
-            <input
-              type="number"
-              min={0}
-              step={32}
-              value={settings.tile_size}
-              onChange={(e) => setSettings((s) => ({ ...s, tile_size: Number(e.target.value) }))}
-            />
-          </label>
+          {/* One "GPU VRAM" control for every model: the server's tiers
+              (upscale.py::VRAM_TIERS), whose tile number rides the existing
+              tile_size setting. torch models also offer Auto (tile 0: the
+              worker measures free VRAM per task); Vulkan models can't
+              probe VRAM, so they default to Medium instead. The raw number
+              input remains only for a server older than the tiers. */}
+          {vramPresets.length > 0 ? (
+            <label className="field">
+              <span>GPU VRAM</span>
+              <select
+                value={
+                  vramPresets.find((p) => p.tile === settings.tile_size)?.key ?? "custom"
+                }
+                onChange={(e) => {
+                  const preset = vramPresets.find((p) => p.key === e.target.value);
+                  if (preset) setSettings((s) => ({ ...s, tile_size: preset.tile }));
+                }}
+              >
+                {vramPresets.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+                {!vramPresets.some((p) => p.tile === settings.tile_size) && (
+                  <option value="custom">Custom ({settings.tile_size} px tile)</option>
+                )}
+              </select>
+            </label>
+          ) : (
+            <label className="field">
+              <span>Tile size (0 = auto)</span>
+              <input
+                type="number"
+                min={0}
+                step={32}
+                value={settings.tile_size}
+                onChange={(e) => setSettings((s) => ({ ...s, tile_size: Number(e.target.value) }))}
+              />
+            </label>
+          )}
 
           <div className="field divided">
             <span>Directories</span>

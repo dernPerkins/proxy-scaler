@@ -1,0 +1,104 @@
+# Source models for the "Vulkan Models" group — everything convert-models.py
+# needs to turn a PyTorch release into the ncnn .param/.bin pair the app
+# downloads from dl.proxy-scaler.com/models/ncnn/v1/<id>.{param,bin}.
+#
+# Keys are the UpscaleModel ids (upscale.py). Per model:
+#   arch          spandrel architecture, for the record
+#   source_url    the author's PyTorch release (.pth/.safetensors)
+#   source_sha256 pin; a changed upstream file must be a deliberate bump
+#   official_ncnn optional: {param = url, bin = url} when the author ships
+#                 ncnn files -- taken as-is (blob names checked), not re-converted
+#   license / author / homepage   attribution for README + THIRD_PARTY.md
+#
+# Candidate set for the bake-off (packaging/ncnn/bakeoff.md); the ones that
+# ship are whichever _WEIGHTS lists. Sha pins for sources not yet fetched
+# are left empty and filled in by `convert-models.py pin <id>`.
+
+[realesrgan_anime_fast_vk]
+arch = "Compact (SRVGGNetCompact)"
+author = "Xintao Wang et al. (Real-ESRGAN)"
+license = "BSD-3-Clause"
+homepage = "https://github.com/xinntao/Real-ESRGAN"
+source_url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth"
+source_sha256 = "b8a8376811077954d82ca3fcf476f1ac3da3e8a68a4f4d71363008000a18b75d"
+[realesrgan_anime_fast_vk.official_ncnn]
+archive = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip"
+param = "models/realesr-animevideov3-x4.param"
+bin = "models/realesr-animevideov3-x4.bin"
+
+[realesrgan_anime6b_vk]
+arch = "ESRGAN (RRDBNet, 6 blocks)"
+author = "Xintao Wang et al. (Real-ESRGAN)"
+license = "BSD-3-Clause"
+homepage = "https://github.com/xinntao/Real-ESRGAN"
+source_url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
+source_sha256 = "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da"
+[realesrgan_anime6b_vk.official_ncnn]
+archive = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip"
+param = "models/realesrgan-x4plus-anime.param"
+bin = "models/realesrgan-x4plus-anime.bin"
+
+[ultrasharp_v1_vk]
+arch = "ESRGAN (RRDBNet)"
+author = "Kim2091"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://huggingface.co/Kim2091/UltraSharp"
+source_url = "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth"
+source_sha256 = "a5812231fc936b42af08a5edba784195495d303d5b3248c24489ef0c4021fe01"
+[ultrasharp_v1_vk.official_ncnn]
+param = "https://huggingface.co/Kim2091/UltraSharp/resolve/main/NCNN/4x-UltraSharp-fp16.param"
+bin = "https://huggingface.co/Kim2091/UltraSharp/resolve/main/NCNN/4x-UltraSharp-fp16.bin"
+
+[animesharp_vk]
+arch = "ESRGAN (RRDBNet)"
+converter = "esrgan"
+author = "Kim2091"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://openmodeldb.info/models/4x-AnimeSharp"
+source_url = "https://huggingface.co/Kim2091/AnimeSharp/resolve/main/4x-AnimeSharp.pth"
+source_sha256 = "e7a7de2dafd7331c1992862bbbcd9e9712a9f9f8e6303f0aaa59b4341d359bab"
+
+[clearreality_v1_vk]
+arch = "SPAN"
+author = "Kim2091"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://openmodeldb.info/models/4x-ClearRealityV1"
+source_url = "https://huggingface.co/Kim2091/ClearRealityV1/resolve/main/4x-ClearRealityV1.pth"
+source_sha256 = "a4cd3a25b00e0be949d4302fc774eb4d7f2ed5f47cdb51551e2d75fa6562e51e"
+
+[nomos8ksc_vk]
+arch = "ESRGAN (RRDBNet)"
+converter = "esrgan"
+author = "Philip Hofmann (Phhofm)"
+license = "CC-BY-4.0"
+homepage = "https://openmodeldb.info/models/4x-Nomos8kSC"
+source_url = "https://github.com/Phhofm/models/raw/main/4xNomos8kSC/4xNomos8kSC.pth"
+source_sha256 = "07a7ccd6443d012d528999cd77e40c7d265aaf1f656c499b37936e49603a0b1d"
+
+[nomosuni_span_vk]
+arch = "SPAN"
+author = "Philip Hofmann (Phhofm)"
+license = "CC-BY-4.0"
+homepage = "https://openmodeldb.info/models/4x-NomosUni-span-multijpg"
+source_url = "https://github.com/Phhofm/models/releases/download/4xNomosUni_span_multijpg/4xNomosUni_span_multijpg.pth"
+source_sha256 = "3a9037c36de90e7825c030176c8e193dfd7897ef4b5df91b8bdc59ffb6ab65ca"
+
+[hfa2k_vk]
+arch = "ESRGAN (RRDBNet)"
+converter = "esrgan"
+author = "Philip Hofmann (Phhofm)"
+license = "CC-BY-4.0"
+homepage = "https://openmodeldb.info/models/4x-HFA2k"
+source_url = "https://github.com/Phhofm/models/raw/main/4xHFA2k/4xHFA2k.pth"
+source_sha256 = "35dfd9f6e9d2d264f0e79c6a054798a5e71b1c752bd8b668786c01ebd62fe2b0"
+
+# Stretch: the RealPLKSR sibling of our headline model. Tried 2026-09-23:
+# pnnx emits a `torch.repeat_interleave` layer ncnn has no implementation
+# for, so it does not ship. Kept for the record / a future ncnn.
+[ultrasharp_v2_lite_vk]
+arch = "RealPLKSR"
+author = "Kim2091"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://huggingface.co/Kim2091/UltraSharpV2"
+source_url = "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2_Lite.safetensors"
+source_sha256 = "7a330ef6b7c632477d311ac03499c91c350e35c5986d4a6c295f0628cb871a09"

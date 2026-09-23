@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import ModelSelect from "../components/ModelSelect";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -527,18 +528,13 @@ export default function PdfPage() {
             <div className="field-group">
               <label className="field">
                 <span>Preferred model</span>
-                <select
+                <ModelSelect
                   value={layout.preferred_model ?? ""}
+                  models={modelsQuery.data}
                   disabled={modelsQuery.isLoading || modelsQuery.isError || useOriginals}
-                  onChange={(e) => updateLayout("preferred_model", e.target.value || null)}
-                >
-                  <option value="">Any (highest DPI available)</option>
-                  {(modelsQuery.data ?? []).map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label} — {m.speed}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(value) => updateLayout("preferred_model", value || null)}
+                  anyOption="Any (highest DPI available)"
+                />
               </label>
 
               <label className="field">

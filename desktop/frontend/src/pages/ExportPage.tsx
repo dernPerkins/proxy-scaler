@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ModelSelect from "../components/ModelSelect";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -248,20 +249,13 @@ export default function ExportPage() {
         <div className="field-group">
           <label className="field">
             <span>Preferred model</span>
-            <select
+            <ModelSelect
               value={settings.preferred_model ?? ""}
+              models={modelsQuery.data}
               disabled={modelsQuery.isLoading || modelsQuery.isError || useOriginals}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, preferred_model: e.target.value || null }))
-              }
-            >
-              <option value="">Any (highest DPI available)</option>
-              {(modelsQuery.data ?? []).map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label} — {m.speed}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => setSettings((s) => ({ ...s, preferred_model: value || null }))}
+              anyOption="Any (highest DPI available)"
+            />
           </label>
 
           <label className="field">

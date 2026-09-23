@@ -10,6 +10,16 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+class TilePresetOut(BaseModel):
+    """One "GPU VRAM" tier of a Vulkan model (upscale.NCNN_TILE_PRESETS).
+    The client writes `tile` into the existing tile_size setting; nothing
+    else about the request changes."""
+
+    key: str
+    label: str
+    tile: int
+
+
 class ModelOptionOut(BaseModel):
     value: str
     label: str
@@ -17,6 +27,16 @@ class ModelOptionOut(BaseModel):
     # "Fastest") — served with the model so every dropdown labels the
     # trade-off consistently instead of each screen inventing its own.
     speed: str
+    # Which runtime runs it ("torch" | "ncnn") and the dropdown header it
+    # sits under ("Models" | "Vulkan Models"). Defaulted so an older
+    # client ignoring them and an older server omitting them both work.
+    backend: str = "torch"
+    group: str = "Models"
+    # The "GPU VRAM" tiers this model's dropdown offers (torch models also
+    # get "auto", tile 0; Vulkan ones can't), plus which tier is the
+    # default. Empty only from a server older than this field.
+    tile_presets: list[TilePresetOut] = []
+    default_tile_preset: str | None = None
 
 
 class VersionOut(BaseModel):
@@ -40,6 +60,11 @@ class DeviceOut(BaseModel):
     # re-reading them is how the gallery reports provenance. Defaulted so
     # an older server answering a newer client still validates.
     backend: str = "unknown"
+    # Whether a real (non-software) Vulkan GPU is usable for the "Vulkan
+    # Models" — independent of `kind`/`backend`, which describe torch's
+    # device. False on an older server, so the client must treat absence
+    # as "unknown", never as "no".
+    vulkan: bool = False
 
 
 class DeckEntryIn(BaseModel):

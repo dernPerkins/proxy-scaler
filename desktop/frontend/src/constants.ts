@@ -31,6 +31,15 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   illustrationjanai: "IJ",
   ultrasharp_v2: "USV2",
   ultrasharp_v2_lite: "USV2 Lite",
+  // Vulkan (ncnn) models: the torch twin's acronym plus -VK.
+  realesrgan_anime_fast_vk: "REAF-VK",
+  ultrasharp_v1_vk: "US1-VK",
+  clearreality_v1_vk: "CR-VK",
+  animesharp_vk: "AS-VK",
+  nomos8ksc_vk: "N8K-VK",
+  nomosuni_span_vk: "NU-VK",
+  hfa2k_vk: "HFA-VK",
+  realesrgan_anime6b_vk: "RA6B-VK",
   [ORIGINAL_MODEL]: "Original",
   [CUSTOM_SOURCE_MODEL]: "Source",
 };

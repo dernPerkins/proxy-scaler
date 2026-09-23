@@ -177,6 +177,48 @@ AMD-on-Windows via DirectML pins `torch==2.4.1`, which has no wheels for
 the newest Python releases — see [Windows](#windows) for the interpreter
 pin that needs.
 
+### Vulkan (ncnn) — in every variant
+
+The "Vulkan Models" group runs on [ncnn](https://github.com/Tencent/ncnn),
+a plain dependency (`ncnn` on PyPI, Vulkan compiled in on all three
+OSes) that rides along with whatever torch variant the venv holds — no
+`GPU_VARIANT`, no extra pass. Two things to know per OS:
+
+- **macOS** needs MoltenVK bundled: ncnn dlopens `libMoltenVK.dylib` by
+  name and the wheel doesn't ship it. `make sidecar` depends on
+  `make molten-vk`, which fetches the release pinned in
+  `packaging/ncnn/molten-vk.env`, checks it against
+  `packaging/ncnn/molten-vk-sha256.txt`, and leaves it in
+  `tools/molten-vk/` for the spec to bundle at
+  `_internal/ncnn-vulkan/libMoltenVK.dylib`. `packaging/sign-macos.sh`
+  signs it through its `*.dylib` glob like every other library.
+- **Linux/Windows** need nothing at build time; at run time the user's
+  Vulkan loader + ICD do the work (the `.deb` depends on `libvulkan1`).
+
+`make sidecar` fails if the ncnn extension (or, on macOS, MoltenVK) is
+missing from the freeze. Still, **after every `make sidecar` on every OS**:
+
+```bash
+# CHECKPOINT: the Vulkan backend's whole runtime is this one extension.
+ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn/ncnn.*
+# macOS only:
+ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn-vulkan/libMoltenVK.dylib
+```
+
+and once per release machine, run the frozen sidecar and confirm it sees
+the GPU through Vulkan (`"vulkan": true`; `false` on a Mac means the
+MoltenVK preload in `ncnn_backend.py` isn't finding the bundled dylib):
+
+```bash
+PROXY_SCALER_DATA_DIR=/tmp/ps-verify PROXY_SCALER_SERVER_PORT=13299 \
+  desktop/pyinstaller/dist/proxy-scaler-serve/proxy-scaler-serve &
+sleep 5; curl -s http://127.0.0.1:13299/api/device; echo; kill %1
+```
+
+Model files for this group are not part of the build: they live on the
+bucket under `models/ncnn/v1/` and are produced by
+`make ncnn-convert` / `make ncnn-upload` (see `packaging/ncnn/`).
+
 ---
 
 ## Linux
@@ -243,7 +285,7 @@ make release-status   # progress, or exit code once finished
 
 ```bash
 make install          # once
-make sidecar-release  # if Python changed since the last freeze
+make sidecar-release  # if Python changed since the last freeze (fetches MoltenVK on first run)
 make macos-release
 ```
 
@@ -300,6 +342,8 @@ hdiutil attach dist/proxy-scaler-client_${VER}_macos-$(uname -m).dmg \
 ls /tmp/psdmg                                     # app + Applications symlink
 ls /tmp/psdmg/"Proxy Scaler.app"/Contents/Resources/  # sidecar dir
 codesign --verify --strict /tmp/psdmg/"Proxy Scaler.app"
+# The Vulkan backend's MoltenVK must be there and carry the same signature:
+codesign -dv /tmp/psdmg/"Proxy Scaler.app"/Contents/Resources/proxy-scaler-serve/_internal/ncnn-vulkan/libMoltenVK.dylib
 hdiutil detach /tmp/psdmg
 ```
 
@@ -613,6 +657,8 @@ make sidecar
 # this happened. If it's missing, fix the collection in
 # desktop/pyinstaller/proxy-scaler-serve.spec before building installers.
 ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/torch_directml/DirectML.dll
+# CHECKPOINT (every pass): the Vulkan backend's extension, see "Vulkan (ncnn)".
+ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn/ncnn.*
 
 cd desktop/src-tauri && cargo tauri build && cd ../..
 cd desktop/server-app && cargo tauri build && cd ../..
@@ -708,7 +754,10 @@ macOS-oriented `["dmg", "app"]`), and Tauri places it — no equivalent of
 5. Build: `make release` (Linux) / `make macos-release` (macOS) /
    the per-variant passes in [Windows](#windows).
 6. Verify the artifact actually contains the sidecar — on macOS this is
-   the mount-and-`ls` above; elsewhere, check the archive listing.
+   the mount-and-`ls` above; elsewhere, check the archive listing. Also
+   the [Vulkan checkpoint](#vulkan-ncnn--in-every-variant): the ncnn
+   extension is in the bundle (plus MoltenVK on macOS), and the frozen
+   sidecar's `/api/device` reports `"vulkan": true` on a machine with a GPU.
 7. Install from the artifact on a clean machine and confirm the server
    starts (Local mode reaching the Decklist tab without the "Couldn't
    start the local server" toast).

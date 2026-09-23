@@ -264,6 +264,31 @@ def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
         assert m["speed"]
 
 
+def test_list_models_carries_backend_group_and_vram_presets(client: TestClient) -> None:
+    """The dropdown groups on the server's word: torch models under
+    "Models" with no presets, Vulkan (ncnn) models under "Vulkan Models"
+    with the VRAM tiers and the medium default."""
+    from proxy_scaler.upscale import NCNN_DEFAULT_PRESET, NCNN_MODELS, NCNN_TILE_PRESETS
+
+    models = {m["value"]: m for m in client.get("/api/models").json()}
+    ncnn_ids = {m.value for m in NCNN_MODELS}
+    for value, m in models.items():
+        if value in ncnn_ids:
+            assert m["backend"] == "ncnn" and m["group"] == "Vulkan Models"
+            assert [p["key"] for p in m["tile_presets"]] == [p.key for p in NCNN_TILE_PRESETS]
+            assert [p["tile"] for p in m["tile_presets"]] == [p.tile for p in NCNN_TILE_PRESETS]
+            assert m["default_tile_preset"] == NCNN_DEFAULT_PRESET
+        else:
+            assert m["backend"] == "torch" and m["group"] == "Models"
+            assert [p["key"] for p in m["tile_presets"]] == ["auto"] + [p.key for p in NCNN_TILE_PRESETS]
+            assert m["tile_presets"][0]["tile"] == 0
+            assert m["default_tile_preset"] == "auto"
+    assert "realesrgan_anime_fast_vk" in ncnn_ids
+    # Torch ids come first so the "Models" group leads the dropdown.
+    order = [m["group"] for m in client.get("/api/models").json()]
+    assert order.index("Vulkan Models") > order.index("Models")
+
+
 def test_device_reports_gpu_when_cuda_available(client: TestClient) -> None:
     # Patched at torch's own module, not proxy_scaler.upscale.torch...:
     # resolve_device() imports torch locally inside its function body
@@ -276,7 +301,9 @@ def test_device_reports_gpu_when_cuda_available(client: TestClient) -> None:
     # `kind` stays exactly "gpu" for every GPU backend — its values are
     # persisted into on-disk cache sidecars, so they can't be widened.
     # `backend` is the additive field the client uses to tell them apart.
-    assert resp.json() == {"kind": "gpu", "backend": "cuda"}
+    body = resp.json()
+    assert {"kind": body["kind"], "backend": body["backend"]} == {"kind": "gpu", "backend": "cuda"}
+    assert isinstance(body["vulkan"], bool)  # separate axis, see test_device_reports_vulkan
 
 
 def test_device_reports_mps_backend_on_apple_silicon(client: TestClient) -> None:
@@ -289,7 +316,9 @@ def test_device_reports_mps_backend_on_apple_silicon(client: TestClient) -> None
     ):
         resp = client.get("/api/device")
     assert resp.status_code == 200
-    assert resp.json() == {"kind": "gpu", "backend": "mps"}
+    body = resp.json()
+    assert {"kind": body["kind"], "backend": body["backend"]} == {"kind": "gpu", "backend": "mps"}
+    assert isinstance(body["vulkan"], bool)  # separate axis, see test_device_reports_vulkan
 
 
 def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
@@ -318,7 +347,9 @@ def test_device_reports_cpu_when_no_gpu_available(client: TestClient) -> None:
         ):
             resp = client.get("/api/device")
     assert resp.status_code == 200
-    assert resp.json() == {"kind": "cpu", "backend": "cpu"}
+    body = resp.json()
+    assert {"kind": body["kind"], "backend": body["backend"]} == {"kind": "cpu", "backend": "cpu"}
+    assert isinstance(body["vulkan"], bool)  # separate axis, see test_device_reports_vulkan
 
 
 def test_get_paths_resolves_against_server_cwd(
@@ -2007,3 +2038,16 @@ def test_gallery_list_reports_device(client: TestClient, tmp_path: Path) -> None
     _write_gallery_item(tmp_path, db_path, "tag-dev")
     [item] = client.get("/api/gallery?project_tag=tag-dev").json()
     assert item["device"] in ("gpu", "cpu", "unknown")
+
+
+def test_device_reports_vulkan(client: TestClient) -> None:
+    """`vulkan` is its own axis: it says whether the Vulkan Models have a
+    real GPU, independent of what torch found."""
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        patch("proxy_scaler.api.routers.misc.vulkan_available", return_value=True),
+    ):
+        body = client.get("/api/device").json()
+    assert body["kind"] == "cpu" and body["vulkan"] is True
+    with patch("proxy_scaler.api.routers.misc.vulkan_available", return_value=False):
+        assert client.get("/api/device").json()["vulkan"] is False

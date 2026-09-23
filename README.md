@@ -119,6 +119,14 @@ models' loader are all bundled. What you need beyond the download:
   Nvidia just needs its regular [driver](https://www.nvidia.com/en-us/drivers/)
   (no CUDA toolkit); make sure you grabbed the right build for your GPU
   per the [table above](#which-build).
+- **Vulkan models** (the second group in the model dropdown) run on any
+  GPU through Vulkan, in every build, independent of the torch variant
+  you picked. Windows: nothing beyond the GPU driver (`vulkan-1.dll`
+  ships with it). macOS: nothing — MoltenVK is bundled. Linux: the
+  Vulkan loader and your GPU's ICD, `sudo apt install libvulkan1
+  mesa-vulkan-drivers` (the `.deb` depends on `libvulkan1`; Nvidia's
+  driver brings its own ICD). Without them the Vulkan models still work,
+  on the CPU.
 
 ## Desktop app
 
@@ -289,6 +297,38 @@ Skips blank lines, `#` comments, and headers like `Deck` / `Sideboard`.
 
 All of them are trained on illustrated rather than photographic material — and all are x4-native.
 
+### Vulkan models
+
+A second group in the same dropdown, run by [ncnn](https://github.com/Tencent/ncnn)
+under Vulkan instead of PyTorch. They exist for GPUs the torch path can't
+use reliably (first case: an RX 7600 XT on Linux, where ROCm corrupted the
+display and returned black images while Vulkan on the same machine was
+fine), and they work everywhere: Nvidia, AMD, Intel, Apple (via MoltenVK),
+in every build. Older-generation architectures than UltraSharpV2 — ncnn
+runs convolutional models (ESRGAN, SPAN, Compact), not the DAT
+transformers — so expect a small step down on fine detail. Every model's
+tile size is picked from the same **GPU VRAM** dropdown (Low / Medium /
+High / Max); the torch models also offer **Auto**, which measures free
+VRAM per card, and default to it. Vulkan models can't measure VRAM, so
+they default to Medium, and a pass that fails at one tier retries at the
+next lower one, then on the CPU.
+
+| Model id | Speed | Notes |
+|-------|-------|--------|
+| `realesrgan_anime_fast_vk` | Fastest | The same compact Real-ESRGAN model as `realesrgan_anime_fast`, from the authors' own ncnn release — a like-for-like way to compare the two runtimes (BSD-3-Clause) |
+| `ultrasharp_v1_vk` | Balanced | UltraSharp v1, the ESRGAN predecessor of UltraSharpV2, from the author's own ncnn release (CC-BY-NC-SA-4.0) |
+| `clearreality_v1_vk` | Fastest | ClearRealityV1 — SPAN, a natural, low-artifact look; trained on the UltraSharpV2 dataset (CC-BY-NC-SA-4.0) |
+| `animesharp_vk` | Balanced | AnimeSharp — ESRGAN tuned for anime and line art, strong on text (CC-BY-NC-SA-4.0) |
+| `nomos8ksc_vk` | Balanced | Nomos8kSC — ESRGAN for photo-realistic detail with compression cleanup (CC-BY-4.0) |
+| `nomosuni_span_vk` | Fastest | NomosUni — SPAN, universal and JPEG-robust (CC-BY-4.0) |
+| `hfa2k_vk` | Balanced | HFA2k — ESRGAN for high-fidelity anime with degradation handling (CC-BY-4.0) |
+| `realesrgan_anime6b_vk` | Balanced | Real-ESRGAN x4plus anime 6B, the official anime model, from the authors' own ncnn release (BSD-3-Clause) |
+
+Model files are ncnn `.param`/`.bin` pairs downloaded on first use from
+`dl.proxy-scaler.com/models/ncnn/` and verified by SHA-256. Sources,
+hashes and the conversion recipe live in [`packaging/ncnn/`](packaging/ncnn/);
+licenses and attribution in [`THIRD_PARTY.md`](THIRD_PARTY.md).
+
 ## Target DPI
 
 At standard card size (63×88mm):
@@ -448,6 +488,7 @@ package alongside the client and server app in one go; see
 | Apple | macOS | Metal (MPS) — built in, works out of the box | none |
 | AMD | Linux | ROCm — a different torch wheel, not a different code path (ROCm reports through the same CUDA APIs) | build-time only |
 | AMD | Windows | DirectML — the only realistic path, since AMD doesn't ship ROCm for Windows | handled in `resolve_device()`/`device_kind()` already |
+| any | any | Vulkan (ncnn) — the "Vulkan models" only; in-process, no torch involved, present in every build. `ncnn_backend.py` | none (the `ncnn` package is a plain dependency) |
 
 Building for AMD needs a variant-specific install, since ROCm/DirectML
 replace `torch` with an incompatible build rather than adding to it:
