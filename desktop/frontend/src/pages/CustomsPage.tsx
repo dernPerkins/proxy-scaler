@@ -72,19 +72,23 @@ function UploadIcon() {
   );
 }
 
-function PlusIcon() {
+/** A magnifier with a plus: "zoom in / view at full size". Not a bare
+ *  plus, which on a tile that also has "Add to project" would read as add. */
+function MagnifierIcon() {
   return (
     <svg
-      width="14"
-      height="14"
+      width="15"
+      height="15"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2.5"
+      strokeWidth="2.2"
       strokeLinecap="round"
+      strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M12 5v14M5 12h14" />
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.3-4.3M11 8v6M8 11h6" />
     </svg>
   );
 }
@@ -369,7 +373,7 @@ function CustomTile({
             onView();
           }}
         >
-          <PlusIcon />
+          <MagnifierIcon />
         </button>
       </div>
       <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{image.label}</div>
