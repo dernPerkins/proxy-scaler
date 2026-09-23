@@ -1499,16 +1499,15 @@ tbody tr:last-child td {
 .viewer-crop {
   position: absolute;
   box-shadow: 0 0 0 200vmax rgba(0, 0, 0, 0.55);
-  outline: 1px solid rgba(255, 255, 255, 0.5);
+  outline: 1px solid #fff;
   pointer-events: none;
 }
-/* The trim line: where the cut lands. Two-tone dashes so it reads on both
-   light and dark art. */
+/* The trim line: where the cut lands. Its corners are rounded to the
+   card's real corner radius (set inline, in percent of the trim box, so
+   they stay circular at any size) — that is the shape the user cuts. */
 .viewer-trim {
   position: absolute;
   border: 2px dashed #fff;
-  outline: 2px dashed rgba(0, 0, 0, 0.65);
-  outline-offset: -2px;
   pointer-events: none;
 }
 .viewer-settings {

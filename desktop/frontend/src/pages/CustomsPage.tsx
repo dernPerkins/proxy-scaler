@@ -45,6 +45,11 @@ const MAX_BLEED_MM = 10;
 // Card trim size, mm — proxy_scaler/dpi.py::CARD_WIDTH_MM / CARD_HEIGHT_MM.
 const CARD_W_MM = 63;
 const CARD_H_MM = 88;
+// The die-cut corner radius Scryfall renders (and a corner punch makes):
+// 2.7 mm. Drawn on the trim line as a horizontal/vertical percentage pair
+// of the 63:88 trim box, which comes out circular at any display size.
+const CORNER_RADIUS_MM = 2.7;
+const TRIM_CORNER_RADIUS = `${(CORNER_RADIUS_MM / CARD_W_MM) * 100}% / ${(CORNER_RADIUS_MM / CARD_H_MM) * 100}%`;
 
 function UploadIcon() {
   return (
@@ -262,7 +267,10 @@ function CustomImageViewer({
                 {natural ? (
                   <>
                     {cropped ? <div className="viewer-crop" style={pct(box)} /> : null}
-                    <div className="viewer-trim" style={pct(trim)} />
+                    <div
+                      className="viewer-trim"
+                      style={{ ...pct(trim), borderRadius: TRIM_CORNER_RADIUS }}
+                    />
                   </>
                 ) : null}
               </div>
