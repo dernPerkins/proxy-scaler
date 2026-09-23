@@ -10,9 +10,15 @@
 #                 ncnn files -- taken as-is (blob names checked), not re-converted
 #   license / author / homepage   attribution for README + THIRD_PARTY.md
 #
-# Candidate set for the bake-off (packaging/ncnn/bakeoff.md); the ones that
-# ship are whichever _WEIGHTS lists. Sha pins for sources not yet fetched
-# are left empty and filled in by `convert-models.py pin <id>`.
+# Candidate set for the bake-off; the ones that ship are whichever
+# upscale.py::_WEIGHTS lists. Sha pins are filled in by
+# `convert-models.py pin <id>`. Bake-off outcome (2026-09-23, six real
+# cards vs UltraSharpV2): realesrgan_anime_fast_vk and animesharp_vk ship —
+# the only two that held fine detail and left the card's colours alone.
+# ultrasharp_v1_vk, clearreality_v1_vk, nomos8ksc_vk, nomosuni_span_vk,
+# hfa2k_vk and realesrgan_anime6b_vk converted and gated fine but were
+# judged not good enough, so they stay here only as recipes (their files
+# remain on the bucket, unreferenced).
 
 [realesrgan_anime_fast_vk]
 arch = "Compact (SRVGGNetCompact)"
@@ -102,3 +108,38 @@ license = "CC-BY-NC-SA-4.0"
 homepage = "https://huggingface.co/Kim2091/UltraSharpV2"
 source_url = "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2_Lite.safetensors"
 source_sha256 = "7a330ef6b7c632477d311ac03499c91c350e35c5986d4a6c295f0628cb871a09"
+
+# --- Round two candidates (2026-09-23), picked from OpenModelDB after the
+# first bake-off: illustration/2D-art models in the ESRGAN and Compact
+# families. Outcome: illustrationjanai_esrgan_vk ships (smallest colour
+# shift of anything tested); yandereneo_xl_vk and realesrgan_general_vk
+# were converted and gated fine but not kept.
+
+[illustrationjanai_esrgan_vk]
+arch = "ESRGAN (RRDBNet)"
+converter = "esrgan"
+author = "the-database (IllustrationJaNai)"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://openmodeldb.info/models/4x-IllustrationJaNai-V1-ESRGAN"
+# Author hosts on Google Drive only; same HuggingFace mirror as the DAT2
+# version we already download.
+source_url = "https://huggingface.co/tomjackson2023/upscale_models/resolve/main/4x_IllustrationJaNai_V1_ESRGAN_135k.pth"
+source_sha256 = "c67e76c4b5f0474d5116e5f3885202d1bee68187e1389f82bb90baace24152f8"
+
+[yandereneo_xl_vk]
+arch = "ESRGAN (RRDBNet)"
+converter = "esrgan"
+author = "NMKD"
+license = "WTFPL"
+homepage = "https://openmodeldb.info/models/4x-NMKD-YandereNeo-XL"
+# Author hosts on Icedrive; HuggingFace mirror (byte size matches OpenModelDB's 66961958).
+source_url = "https://huggingface.co/subby2006/NMKD-YandereNeoXL/resolve/main/4x_NMKD-YandereNeoXL_200k.pth"
+source_sha256 = "ddcb5856b948654b6298fd50ed90a461eff8442d298779c23724a8c0e7bbbab1"
+
+[realesrgan_general_vk]
+arch = "Compact (SRVGGNetCompact)"
+author = "Xintao Wang et al. (Real-ESRGAN)"
+license = "BSD-3-Clause"
+homepage = "https://github.com/xinntao/Real-ESRGAN"
+source_url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth"
+source_sha256 = "8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292"

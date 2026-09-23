@@ -316,13 +316,8 @@ next lower one, then on the CPU.
 | Model id | Speed | Notes |
 |-------|-------|--------|
 | `realesrgan_anime_fast_vk` | Fastest | The same compact Real-ESRGAN model as `realesrgan_anime_fast`, from the authors' own ncnn release — a like-for-like way to compare the two runtimes (BSD-3-Clause) |
-| `ultrasharp_v1_vk` | Balanced | UltraSharp v1, the ESRGAN predecessor of UltraSharpV2, from the author's own ncnn release (CC-BY-NC-SA-4.0) |
-| `clearreality_v1_vk` | Fastest | ClearRealityV1 — SPAN, a natural, low-artifact look; trained on the UltraSharpV2 dataset (CC-BY-NC-SA-4.0) |
 | `animesharp_vk` | Balanced | AnimeSharp — ESRGAN tuned for anime and line art, strong on text (CC-BY-NC-SA-4.0) |
-| `nomos8ksc_vk` | Balanced | Nomos8kSC — ESRGAN for photo-realistic detail with compression cleanup (CC-BY-4.0) |
-| `nomosuni_span_vk` | Fastest | NomosUni — SPAN, universal and JPEG-robust (CC-BY-4.0) |
-| `hfa2k_vk` | Balanced | HFA2k — ESRGAN for high-fidelity anime with degradation handling (CC-BY-4.0) |
-| `realesrgan_anime6b_vk` | Balanced | Real-ESRGAN x4plus anime 6B, the official anime model, from the authors' own ncnn release (BSD-3-Clause) |
+| `illustrationjanai_esrgan_vk` | Balanced | The ESRGAN sibling of IllustrationJaNai — same author and illustration/digital-art dataset as the DAT model above; the smallest colour shift of any Vulkan model tested (CC-BY-NC-SA-4.0) |
 
 Model files are ncnn `.param`/`.bin` pairs downloaded on first use from
 `dl.proxy-scaler.com/models/ncnn/` and verified by SHA-256. Sources,

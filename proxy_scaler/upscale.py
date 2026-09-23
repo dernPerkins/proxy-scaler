@@ -59,13 +59,8 @@ class UpscaleModel(str, Enum):
     # Weights are ncnn .param/.bin pairs (see _WEIGHTS), the runtime is
     # ncnn_backend.NcnnUpscaler, tiling comes from NCNN_TILE_PRESETS.
     REALESRGAN_ANIME_FAST_VK = "realesrgan_anime_fast_vk"
-    ULTRASHARP_V1_VK = "ultrasharp_v1_vk"
-    CLEARREALITY_V1_VK = "clearreality_v1_vk"
     ANIMESHARP_VK = "animesharp_vk"
-    NOMOS8KSC_VK = "nomos8ksc_vk"
-    NOMOSUNI_SPAN_VK = "nomosuni_span_vk"
-    HFA2K_VK = "hfa2k_vk"
-    REALESRGAN_ANIME6B_VK = "realesrgan_anime6b_vk"
+    ILLUSTRATIONJANAI_ESRGAN_VK = "illustrationjanai_esrgan_vk"
 
     @property
     def backend(self) -> Backend:
@@ -77,13 +72,8 @@ class UpscaleModel(str, Enum):
             UpscaleModel.ULTRASHARP_V2: Backend.TORCH,
             UpscaleModel.ULTRASHARP_V2_LITE: Backend.TORCH,
             UpscaleModel.REALESRGAN_ANIME_FAST_VK: Backend.NCNN,
-            UpscaleModel.ULTRASHARP_V1_VK: Backend.NCNN,
-            UpscaleModel.CLEARREALITY_V1_VK: Backend.NCNN,
             UpscaleModel.ANIMESHARP_VK: Backend.NCNN,
-            UpscaleModel.NOMOS8KSC_VK: Backend.NCNN,
-            UpscaleModel.NOMOSUNI_SPAN_VK: Backend.NCNN,
-            UpscaleModel.HFA2K_VK: Backend.NCNN,
-            UpscaleModel.REALESRGAN_ANIME6B_VK: Backend.NCNN,
+            UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: Backend.NCNN,
         }[self]
 
     @property
@@ -108,13 +98,10 @@ class UpscaleModel(str, Enum):
             UpscaleModel.REALESRGAN_ANIME_FAST_VK: (
                 "Real-ESRGAN Anime Fast (Vulkan) (the same compact model, run through ncnn on any GPU)"
             ),
-            UpscaleModel.ULTRASHARP_V1_VK: "UltraSharp v1 (Vulkan) (ESRGAN, general-purpose; the predecessor of UltraSharpV2)",
-            UpscaleModel.CLEARREALITY_V1_VK: "ClearRealityV1 (Vulkan) (SPAN, natural look with few artifacts; trained on the UltraSharpV2 data)",
             UpscaleModel.ANIMESHARP_VK: "AnimeSharp (Vulkan) (ESRGAN, anime and line art, strong on text)",
-            UpscaleModel.NOMOS8KSC_VK: "Nomos8kSC (Vulkan) (ESRGAN, photo-realistic detail, compression cleanup)",
-            UpscaleModel.NOMOSUNI_SPAN_VK: "NomosUni (Vulkan) (SPAN, universal, JPEG-robust)",
-            UpscaleModel.HFA2K_VK: "HFA2k (Vulkan) (ESRGAN, high-fidelity anime with degradation handling)",
-            UpscaleModel.REALESRGAN_ANIME6B_VK: "Real-ESRGAN x4plus anime 6B (Vulkan) (ESRGAN, the official anime model)",
+            UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: (
+                "IllustrationJaNai ESRGAN (Vulkan) (the ESRGAN sibling of IllustrationJaNai: illustrations, digital art, manga covers)"
+            ),
         }[self]
 
     @property
@@ -128,13 +115,8 @@ class UpscaleModel(str, Enum):
             UpscaleModel.ULTRASHARP_V2: "Best quality — slowest",
             UpscaleModel.ULTRASHARP_V2_LITE: "Balanced",
             UpscaleModel.REALESRGAN_ANIME_FAST_VK: "Fastest",
-            UpscaleModel.ULTRASHARP_V1_VK: "Balanced",
-            UpscaleModel.CLEARREALITY_V1_VK: "Fastest",
             UpscaleModel.ANIMESHARP_VK: "Balanced",
-            UpscaleModel.NOMOS8KSC_VK: "Balanced",
-            UpscaleModel.NOMOSUNI_SPAN_VK: "Fastest",
-            UpscaleModel.HFA2K_VK: "Balanced",
-            UpscaleModel.REALESRGAN_ANIME6B_VK: "Balanced",
+            UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: "Balanced",
         }[self]
 
     @property
@@ -305,47 +287,18 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
         "850a248e7c14c27e5bd8cf7265113a9441036a7db63963bb8aa5169d788a435e",
         "548a36f9c3f4ab8da56cd3b13badf23968bee207b396dad14d04b830e5f2ab2d",
     ),
-    # Kim2091's own ncnn release of 4x-UltraSharp (CC-BY-NC-SA-4.0), re-hosted.
-    (UpscaleModel.ULTRASHARP_V1_VK, 4): _ncnn_pair(
-        UpscaleModel.ULTRASHARP_V1_VK,
-        "2840758a28fc7be705bbc480f3205dcf6616089ff233546109f71a1e381fe6fe",
-        "713ce69a8642b1907cc24da7573560dcc933faf0c74e48ab0b3b379245618701",
-    ),
-    # Our pnnx conversion of Kim2091's 4x-ClearRealityV1, SPAN (CC-BY-NC-SA-4.0).
-    (UpscaleModel.CLEARREALITY_V1_VK, 4): _ncnn_pair(
-        UpscaleModel.CLEARREALITY_V1_VK,
-        "1f943e893438abbe3450dc19319de2cbce5557611363b0495c5d638ac474d4ee",
-        "7a1d09560c14e3eb110b3751e85c92b09fcca1b00f2b29f4dccdd98c82966bec",
-    ),
     # Our esrgan2ncnn conversion of Kim2091's 4x-AnimeSharp (CC-BY-NC-SA-4.0).
     (UpscaleModel.ANIMESHARP_VK, 4): _ncnn_pair(
         UpscaleModel.ANIMESHARP_VK,
         "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
         "7e63c002ad4a410fd7e81c539f81915a1046fbfea63fc4d5a3500a101ca0f6c1",
     ),
-    # Our esrgan2ncnn conversion of Phhofm's 4xNomos8kSC (CC-BY-4.0).
-    (UpscaleModel.NOMOS8KSC_VK, 4): _ncnn_pair(
-        UpscaleModel.NOMOS8KSC_VK,
+    # Our esrgan2ncnn conversion of the-database's 4x_IllustrationJaNai_V1_ESRGAN_135k
+    # (CC-BY-NC-SA-4.0) — same author and dataset as the DAT2 model above.
+    (UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK, 4): _ncnn_pair(
+        UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK,
         "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
-        "da16e3880d87b177b7c6b659bbd880f8a101b868eb9ebc08d69eaa6d3edc4517",
-    ),
-    # Our pnnx conversion of Phhofm's 4xNomosUni_span_multijpg, SPAN (CC-BY-4.0).
-    (UpscaleModel.NOMOSUNI_SPAN_VK, 4): _ncnn_pair(
-        UpscaleModel.NOMOSUNI_SPAN_VK,
-        "1f943e893438abbe3450dc19319de2cbce5557611363b0495c5d638ac474d4ee",
-        "5c86281a44477970c165488fc27f5005118e327ef606a2fbef016ca0ac83b92f",
-    ),
-    # Our esrgan2ncnn conversion of Phhofm's 4xHFA2k (CC-BY-4.0).
-    (UpscaleModel.HFA2K_VK, 4): _ncnn_pair(
-        UpscaleModel.HFA2K_VK,
-        "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
-        "8a135402b4f39286121b76abb47601a6b7b7e8d4f3e999a5aaa45ed277824fb4",
-    ),
-    # The official ncnn conversion of RealESRGAN_x4plus_anime_6B (BSD-3), re-hosted.
-    (UpscaleModel.REALESRGAN_ANIME6B_VK, 4): _ncnn_pair(
-        UpscaleModel.REALESRGAN_ANIME6B_VK,
-        "38d0970d37aa3c391ebb36c44ad198944b1f276778f3ccafd0e16dcc2ee77bc2",
-        "fe01c269cfd10cdef8e018ab66ebe750cf79c7af4d1f9c16c737e1295229bacc",
+        "1d5f792cd58cf31213193467b0ab5f2ff9a2e3de63d3bf8caa8abe8eebe95df5",
     ),
 }
 
@@ -1039,8 +992,14 @@ def clear_model_cache() -> None:
 def _cache_put(key: tuple, descriptor: "ImageModelDescriptor") -> None:
     if key not in _MODEL_CACHE:
         # One slot: switching models evicts the previous descriptor and
-        # frees its VRAM before the new one settles in.
+        # frees its VRAM before the new one settles in. The slot spans
+        # both runtimes — a Vulkan net loaded earlier goes too (small,
+        # but the symmetry keeps the accounting simple; ncnn_backend does
+        # the same to us before it loads).
         clear_model_cache()
+        from .ncnn_backend import clear_ncnn_cache
+
+        clear_ncnn_cache()
     _MODEL_CACHE[key] = descriptor
 
 

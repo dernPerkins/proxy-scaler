@@ -34,10 +34,5 @@ the original model's license.
 | Model id | Author | License |
 |---|---|---|
 | `realesrgan_anime_fast_vk` | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (Xintao Wang et al.), official ncnn release | BSD-3-Clause |
-| `realesrgan_anime6b_vk` | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (Xintao Wang et al.), official ncnn release | BSD-3-Clause |
-| `ultrasharp_v1_vk` | [Kim2091](https://huggingface.co/Kim2091/UltraSharp), author's own ncnn release | CC-BY-NC-SA-4.0 |
-| `clearreality_v1_vk` | [Kim2091](https://openmodeldb.info/models/4x-ClearRealityV1), our conversion (pnnx) | CC-BY-NC-SA-4.0 |
 | `animesharp_vk` | [Kim2091](https://openmodeldb.info/models/4x-AnimeSharp), our conversion (esrgan2ncnn) | CC-BY-NC-SA-4.0 |
-| `nomos8ksc_vk` | [Philip Hofmann](https://openmodeldb.info/models/4x-Nomos8kSC), our conversion (esrgan2ncnn) | CC-BY-4.0 |
-| `nomosuni_span_vk` | [Philip Hofmann](https://openmodeldb.info/models/4x-NomosUni-span-multijpg), our conversion (pnnx) | CC-BY-4.0 |
-| `hfa2k_vk` | [Philip Hofmann](https://openmodeldb.info/models/4x-HFA2k), our conversion (esrgan2ncnn) | CC-BY-4.0 |
+| `illustrationjanai_esrgan_vk` | [the-database](https://openmodeldb.info/models/4x-IllustrationJaNai-V1-ESRGAN), our conversion (esrgan2ncnn) | CC-BY-NC-SA-4.0 |

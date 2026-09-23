@@ -81,6 +81,14 @@ OUTPUT_BLOB = "output"
 # See module docstring: a genuine 4x upscale box-downsampled back to the
 # input resolution sits ~30 dB above it; black/garbage sits at ~10-11 dB.
 PLAUSIBILITY_MIN_PSNR_DB = 20.0
+# ...and the ceiling for "the output is just the input blown up" (see
+# identity_psnr): real model outputs sit far below this.
+IDENTITY_MAX_PSNR_DB = 50.0
+# ncnn reports Vulkan failures on stderr and carries on with whatever
+# buffers it has; these are the lines that mean the pass can't be trusted.
+import re as _re
+
+_VK_ERROR_RE = _re.compile(r"\bvk\w*\s+failed\b|out of (device )?memory|VK_ERROR", _re.IGNORECASE)
 
 # The rung below the smallest preset is the CPU. A pass there is retried
 # once before giving up, because the failure mode observed on the CPU
@@ -316,12 +324,84 @@ def consistency_psnr(output: np.ndarray, source: np.ndarray, scale: int) -> floa
     return float(10.0 * np.log10(1.0 / mse))
 
 
+def _nearest_upscale(source: np.ndarray, scale: int) -> np.ndarray:
+    return np.repeat(np.repeat(source, scale, axis=1), scale, axis=2)
+
+
+def identity_psnr(output: np.ndarray, source: np.ndarray, scale: int) -> float:
+    """PSNR between the output and a plain nearest-neighbour blow-up of the
+    source. A working model always departs from that (typically 20-35 dB
+    on a card); a result that *matches* it did no work at all."""
+    nn = _nearest_upscale(source, scale)
+    mse = float(np.mean((np.clip(output, 0.0, 1.0) - nn) ** 2))
+    if mse <= 0.0:
+        return 99.0
+    return float(10.0 * np.log10(1.0 / mse))
+
+
 def _plausible(output: np.ndarray, source: np.ndarray, scale: int) -> bool:
     if output.shape != (source.shape[0], source.shape[1] * scale, source.shape[2] * scale):
         return False
     if not np.isfinite(output).all():
         return False
-    return consistency_psnr(output, source, scale) >= PLAUSIBILITY_MIN_PSNR_DB
+    if consistency_psnr(output, source, scale) < PLAUSIBILITY_MIN_PSNR_DB:
+        return False
+    # Seen live on a GPU with ~1 GB of VRAM left: every vkAllocateMemory
+    # failed, the convolution branch silently produced zeros, and the
+    # model's bypass path handed back the input nearest-neighbour
+    # upscaled — finite, "consistent" with the input to 99 dB, and
+    # useless. That is what an unchanged image looks like, so treat it
+    # as a failed pass.
+    if identity_psnr(output, source, scale) > IDENTITY_MAX_PSNR_DB:
+        return False
+    return True
+
+
+class _StderrCapture:
+    """Temporarily divert fd 2 into a file so ncnn's C++-side errors
+    (NCNN_LOGE -> stderr: "vkAllocateMemory failed -2", "vkQueueSubmit
+    failed", ...) can be read back after a pass. Python-level redirection
+    can't see them; only the descriptor can. Everything captured is
+    re-emitted to the real stderr afterwards so the worker log stays
+    complete. Best-effort: with no usable fd 2 (a windowless frozen
+    process) capture is skipped and `text` stays empty."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self._saved: int | None = None
+        self._tmp = None
+
+    def __enter__(self) -> "_StderrCapture":
+        import tempfile
+
+        try:
+            sys.stderr.flush()
+            self._tmp = tempfile.TemporaryFile(mode="w+b")
+            self._saved = os.dup(2)
+            os.dup2(self._tmp.fileno(), 2)
+        except Exception:  # noqa: BLE001
+            self._saved = None
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._saved is None:
+            return
+        try:
+            sys.stderr.flush()
+            os.dup2(self._saved, 2)
+            os.close(self._saved)
+            self._tmp.seek(0)
+            self.text = self._tmp.read().decode("utf-8", "replace")
+            self._tmp.close()
+            if self.text:
+                sys.stderr.write(self.text)
+                sys.stderr.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _vulkan_error_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if _VK_ERROR_RE.search(line)]
 
 
 # --- the upscaler -----------------------------------------------------------
@@ -416,6 +496,15 @@ class NcnnUpscaler:
         if net is not None:
             return net
         with self._phase("model_load"):
+            # One slot across both runtimes: a torch model left warm in
+            # this process keeps its allocator arena (11 GB observed for
+            # an idle UltraSharpV2) and starves Vulkan of device memory —
+            # ncnn then fails every allocation and returns the input
+            # unchanged. Same eviction the torch models apply to each
+            # other (upscale._cache_put), mirrored here.
+            from . import upscale as _upscale
+
+            _upscale.clear_model_cache()
             paths, _ = ensure_weight_files(self.model_id, self.scale, self.weights_dir)
             param, weights = paths[0], paths[1]
             where = "cpu" if gpu is None else f"vulkan:{gpu}"
@@ -459,15 +548,25 @@ class NcnnUpscaler:
     def _attempt(self, gpu: int | None, fp16: bool, tile: int, img: np.ndarray) -> np.ndarray | None:
         """One pass; None when it raised or produced implausible output."""
         where = "cpu" if gpu is None else f"vulkan:{gpu}"
+        precision = "fp16" if fp16 else "fp32"
         try:
-            out = self._run_tiled(self._net(gpu, fp16), img, tile)
+            with _StderrCapture() as captured:
+                out = self._run_tiled(self._net(gpu, fp16), img, tile)
         except Exception as exc:  # noqa: BLE001
-            print(f"vulkan pass failed on {where} at tile {tile} ({'fp16' if fp16 else 'fp32'}): {exc}")
+            print(f"vulkan pass failed on {where} at tile {tile} ({precision}): {exc}")
+            return None
+        errors = _vulkan_error_lines(captured.text)
+        if errors:
+            print(
+                f"vulkan pass on {where} at tile {tile} ({precision}) reported "
+                f"{len(errors)} Vulkan error(s), e.g. {errors[0].strip()!r}; discarding its output"
+            )
             return None
         if not _plausible(out, img, self.scale):
             print(
-                f"vulkan pass on {where} at tile {tile} ({'fp16' if fp16 else 'fp32'}) "
-                f"returned implausible output (consistency {consistency_psnr(out, img, self.scale):.1f} dB)"
+                f"vulkan pass on {where} at tile {tile} ({precision}) returned implausible "
+                f"output (consistency {consistency_psnr(out, img, self.scale):.1f} dB, "
+                f"identity {identity_psnr(out, img, self.scale):.1f} dB)"
             )
             return None
         return out
