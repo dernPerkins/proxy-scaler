@@ -1119,10 +1119,16 @@ button:disabled {
 }
 .compare-stage {
   position: relative;
+  /* Keeps the labels' z-index local to the dialog. */
+  isolation: isolate;
 }
 .compare-side-label {
   position: absolute;
   top: 8px;
+  /* Above react-compare-slider's own layers: it puts the left image (and
+     the handle) at z-index 1 and clips it as the slider moves, which
+     otherwise covered and revealed the labels while dragging. */
+  z-index: 2;
   padding: 2px 8px;
   font-size: 12px;
   border-radius: var(--radius);
