@@ -370,6 +370,7 @@ stopped with Ctrl+C / SIGTERM.
 | `--no-stdin-shutdown` | — | off | Don't treat stdin EOF as "stop" |
 | — | `PROXY_SCALER_DB_PATH` | inside data dir | Database file |
 | — | `PROXY_SCALER_WORKER_LOCK_PATH` | inside data dir | Worker lock file |
+| — | `PROXY_SCALER_DIRECTML_TILED_RESOURCES` | unset | `off` switches torch-directml from its default paged ("tiled resources") GPU memory to plain allocations — a diagnostic for DirectML builds only |
 
 Flags win over env vars where both are set.
 

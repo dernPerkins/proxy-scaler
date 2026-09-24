@@ -337,8 +337,34 @@ def resolve_device() -> torch.device:
         pass
     else:
         if torch_directml.is_available():
+            _apply_directml_tiled_resources_policy(torch_directml)
             return torch_directml.device()
     return torch.device("cpu")
+
+
+# PROXY_SCALER_DIRECTML_TILED_RESOURCES=off makes torch-directml back
+# tensors with plain committed D3D12 resources instead of its default
+# "tiled resources" (memory mapped in pages). Diagnostic knob, default
+# unchanged: on an RX 9070 XT, tiles cut from sub-regions of a larger
+# image read/wrote the wrong memory, and a page-mapping fault is one
+# candidate. Undocumented plugin API, so every failure here is ignored.
+DIRECTML_TILED_RESOURCES_ENV = "PROXY_SCALER_DIRECTML_TILED_RESOURCES"
+_DIRECTML_TILED_RESOURCES_APPLIED = False
+
+
+def _apply_directml_tiled_resources_policy(torch_directml) -> None:
+    global _DIRECTML_TILED_RESOURCES_APPLIED
+    if _DIRECTML_TILED_RESOURCES_APPLIED:
+        return
+    _DIRECTML_TILED_RESOURCES_APPLIED = True
+    value = (os.environ.get(DIRECTML_TILED_RESOURCES_ENV) or "").strip().lower()
+    if value not in ("off", "0", "false", "disable", "disabled"):
+        return
+    try:
+        torch_directml.disable_tiled_resources(True)
+        print(f"  directml: tiled resources disabled ({DIRECTML_TILED_RESOURCES_ENV}={value})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: could not disable DirectML tiled resources: {exc}", file=sys.stderr)
 
 
 def _is_oom_error(exc: BaseException) -> bool:
@@ -348,7 +374,16 @@ def _is_oom_error(exc: BaseException) -> bool:
         return True
     # MPS / older torch sometimes raise RuntimeError with this message
     msg = str(exc).lower()
-    return "out of memory" in msg or "oom" in msg
+    if "out of memory" in msg or "oom" in msg:
+        return True
+    # torch-directml words it differently — "There is not enough GPU video
+    # memory available" (seen on an RX 9070 XT asking for an untiled
+    # UltraSharpV2 pass) — or surfaces the raw HRESULT E_OUTOFMEMORY.
+    # Missed, it failed the task outright instead of walking the tile
+    # ladder / falling back to the CPU like every other backend does.
+    if "not enough" in msg and "memory" in msg:
+        return True
+    return "e_outofmemory" in msg or "0x8007000e" in msg
 
 
 def _clear_device_cache(device: torch.device | None) -> None:
@@ -363,9 +398,16 @@ def _clear_device_cache(device: torch.device | None) -> None:
             torch.mps.empty_cache()
         except Exception:  # noqa: BLE001
             pass
-    # device.type == "privateuseone" (DirectML) intentionally falls
-    # through and does nothing — torch-directml's public API has no
-    # empty_cache()-equivalent to call.
+    elif _is_directml_device(device):
+        # torch-directml has no empty_cache()-equivalent. The best we can
+        # do is make sure nothing on the Python side still references the
+        # failed pass's tensors — reference cycles (tracebacks, frames)
+        # otherwise keep them, and their device memory, alive until some
+        # later collection, which is how a failed task left VRAM held
+        # until the app was restarted.
+        import gc
+
+        gc.collect()
 
 
 def device_kind(device: torch.device | str | None) -> str:
@@ -928,6 +970,32 @@ def apply_directml_prelu_policy(model, device: "torch.device", *, policy: str | 
 # its own interpreter and thus its own cache.
 _MODEL_CACHE: dict[tuple, "ImageModelDescriptor"] = {}
 
+
+# A real x4 pass box-downscaled back to the input size sits ~30 dB from
+# it; the black and noise tiles DirectML produced sit near 10 dB. Low on
+# purpose so strong sharpening never trips it.
+DIRECTML_TILE_MIN_PSNR_DB = 18.0
+
+
+def _directml_tile_problem(out: "torch.Tensor", tile_in: "torch.Tensor", scale: int) -> str | None:
+    """None when a DirectML tile output looks like an upscale of its
+    input, else a short reason for the log. Both CPU float32, NCHW."""
+    import torch
+    import torch.nn.functional as F
+
+    _, c, h, w = tile_in.shape
+    if tuple(out.shape) != (1, c, h * scale, w * scale):
+        return f"with shape {tuple(out.shape)}"
+    if not bool(torch.isfinite(out).all()):
+        return "non-finite (NaN/inf)"
+    down = F.avg_pool2d(out.clamp(0.0, 1.0), scale)
+    mse = float(torch.mean((down - tile_in) ** 2))
+    if mse > 0.0:
+        psnr = 10.0 * float(torch.log10(torch.tensor(1.0 / mse)))
+        if psnr < DIRECTML_TILE_MIN_PSNR_DB:
+            return f"implausible ({psnr:.1f} dB from its input)"
+    return None
+
 # Allocator headroom learned from the first successful GPU pass of this
 # process (reserved/allocated ratio, see Upscaler._record_allocator_headroom).
 # None until then, which means _VRAM_HEADROOM_FIRST_TASK. Same
@@ -1088,9 +1156,15 @@ class Upscaler:
             # A cached descriptor on the CPU is (almost always) one that
             # _relocate_to_cpu() parked there after an OOM in an earlier
             # task. That was the right call then; it shouldn't be forever.
-            # CUDA only: it's the one backend with a free-VRAM probe.
+            # CUDA: only once the free-VRAM probe says it fits. DirectML
+            # has no probe, so it always tries again: without this, one
+            # oversized tile early in a session parked the model on the
+            # CPU for every later card until the app was restarted. A task
+            # that still doesn't fit just falls back again.
             target = resolve_device()
-            if target.type == "cuda" and _should_return_to_gpu(_free_cuda_vram()):
+            if (target.type == "cuda" and _should_return_to_gpu(_free_cuda_vram())) or (
+                _is_directml_device(target)
+            ):
                 descriptor = self._return_to_gpu(descriptor, target)
                 param = next(descriptor.model.parameters())
         # Per-instance state is derived from the descriptor's own weights,
@@ -1335,6 +1409,10 @@ class Upscaler:
         descriptor: ImageModelDescriptor,
         tensor: torch.Tensor,
     ) -> torch.Tensor:
+        if _is_directml_device(self._device):
+            # DirectML gets its own path (see _directml_tiled_inference):
+            # host-side tiling, and every pass checked before it's kept.
+            return self._directml_tiled_inference(descriptor, tensor)
         if self.tile and min(tensor.shape[-2:]) > self.tile:
             return self._tiled_inference(descriptor, tensor)
         return descriptor(tensor)
@@ -1474,6 +1552,96 @@ class Upscaler:
                     del tensor
                 except NameError:
                     pass
+
+    def _directml_tiled_inference(
+        self,
+        descriptor: ImageModelDescriptor,
+        img: torch.Tensor,
+    ) -> torch.Tensor:
+        """DirectML twin of _tiled_inference, with the same tile geometry,
+        doing every slice and every stitch in system memory.
+
+        Why: on an RX 9070 XT (torch-directml 0.2.5) tiles cut from a
+        larger image on the device came back black or as noise — the
+        left-column tiles below the first row, every model, every tile
+        size — while each tile's position math is identical to the CUDA/
+        MPS/CPU path that produces correct cards. DirectML mishandled
+        reads/writes of sub-regions of a larger device buffer. Here the
+        device only ever sees standalone contiguous tiles, copied in whole
+        and copied straight back out. The untiled case goes through the
+        same checked call. Returns a CPU tensor; upscale() handles that."""
+        import torch
+
+        src = img.detach().to("cpu", torch.float32)
+        _, _, height, width = src.shape
+        tile = self.tile if self.tile and min(height, width) > self.tile else 0
+        if not tile:
+            return self._checked_directml_pass(descriptor, src.contiguous(), where=(0, 0))
+        scale = self.scale
+        pad = self.tile_pad
+        output = torch.zeros((1, 3, height * scale, width * scale), dtype=torch.float32)
+        weights = torch.zeros((1, 1, height * scale, width * scale), dtype=torch.float32)
+        for y in range(0, height, tile):
+            for x in range(0, width, tile):
+                y0, x0 = max(y - pad, 0), max(x - pad, 0)
+                y1, x1 = min(y + tile + pad, height), min(x + tile + pad, width)
+                tile_in = src[:, :, y0:y1, x0:x1].contiguous()
+                tile_out = self._checked_directml_pass(descriptor, tile_in, where=(x0, y0))
+
+                oy0, ox0 = (y - y0) * scale, (x - x0) * scale
+                oy1 = oy0 + min(tile, height - y) * scale
+                ox1 = ox0 + min(tile, width - x) * scale
+                out_y0, out_x0 = y * scale, x * scale
+                out_y1 = out_y0 + (oy1 - oy0)
+                out_x1 = out_x0 + (ox1 - ox0)
+                output[:, :, out_y0:out_y1, out_x0:out_x1] += tile_out[:, :, oy0:oy1, ox0:ox1]
+                weights[:, :, out_y0:out_y1, out_x0:out_x1] += 1.0
+        return output / weights.clamp_min(1.0)
+
+    def _checked_directml_pass(
+        self,
+        descriptor: ImageModelDescriptor,
+        tile_cpu: torch.Tensor,
+        *,
+        where: tuple[int, int],
+    ) -> torch.Tensor:
+        """One DirectML pass over a standalone CPU tile, checked before
+        it's kept: non-finite or implausible output (see
+        _directml_tile_problem) is retried once on the device. If the
+        retry is bad too, the tile is kept exactly as it came back and a
+        loud log line says so. Deliberately no CPU fallback: a visibly
+        broken tile gets reported and leads to the real fault (it's how
+        this very path was found), while a silent CPU detour would only
+        make the app look slow. OOMs propagate untouched — the caller's
+        tile ladder owns those. Returns a CPU float32 tensor."""
+        import torch
+
+        _, _, h, w = tile_cpu.shape
+        for attempt in (1, 2):
+            # The model's own precision on the way in (always fp32 on real
+            # DirectML, but the path mustn't assume it); fp32 on the way
+            # out, so the check and the stitch never see a reduced dtype.
+            tile_dev = tile_cpu.to(self._device, self._dtype or torch.float32)
+            out = descriptor(tile_dev).to("cpu", torch.float32)
+            del tile_dev
+            reason = _directml_tile_problem(out, tile_cpu, self.scale)
+            if reason is None:
+                if attempt == 2:
+                    print(f"  directml: tile at x={where[0]} y={where[1]} ({w}x{h}) came back fine on retry")
+                return out
+            if attempt == 1:
+                print(
+                    f"  directml: tile at x={where[0]} y={where[1]} ({w}x{h}) came back "
+                    f"{reason}; retrying once on the GPU"
+                )
+                del out
+                _clear_device_cache(self._device)
+        print(
+            f"WARNING directml: tile at x={where[0]} y={where[1]} ({w}x{h}) came back "
+            f"{reason} twice; keeping it as-is. The card will show this tile broken — "
+            "please report it with this log line."
+        )
+        return out
 
     def _tiled_inference(
         self,
