@@ -7,6 +7,7 @@ import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import ModelSelect, { reconcileTileForModel } from "../components/ModelSelect";
 import CompareDialog from "../components/CompareDialog";
+import CompareMenu, { type CompareSide } from "../components/CompareMenu";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
@@ -1055,10 +1056,15 @@ async function handleDownloadImage(url: string, filename: string): Promise<void>
   await runDownload(filename, { url });
 }
 
+// A compare is always within one face: the variant whose Compare was
+// clicked (`mine`, fixed on the right) against any other version of that
+// face (`against`, switchable in the dialog). `options` is every version
+// of the face except `mine` — the original plus every other model/DPI.
 interface CompareTarget {
-  originalUrl: string;
-  upscaledUrl: string;
-  label: string;
+  cardName: string;
+  mine: CompareSide;
+  against: CompareSide;
+  options: CompareSide[];
 }
 
 function CardRowView(props: {
@@ -1251,6 +1257,32 @@ function CardRowView(props: {
           const originalVariant = doneVariants.find((v) => sourceModels.includes(v.model));
           const upscaleVariants = doneVariants.filter((v) => !sourceModels.includes(v.model));
           const originalSource = originalVariant ?? upscaleVariants[0];
+          // Every comparable version of this face, in display order:
+          // the original, then each upscale (any model, any DPI).
+          const sides: CompareSide[] = [
+            ...(originalSource
+              ? [
+                  {
+                    key: "original",
+                    label: "Original",
+                    url: generationApi.imageUrl(originalSource.galleryItemId, "original"),
+                  },
+                ]
+              : []),
+            ...upscaleVariants.map((v) => ({
+              key: `${v.dpi}:${v.model}`,
+              label: `${v.dpi} DPI · ${modelDisplayName(v.model)}`,
+              url: generationApi.imageUrl(v.galleryItemId, "full"),
+            })),
+          ];
+          const openCompare = (mineKey: string, againstKey?: string) => {
+            const mine = sides.find((s) => s.key === mineKey);
+            if (!mine) return;
+            const options = sides.filter((s) => s.key !== mineKey);
+            const against = options.find((s) => s.key === againstKey) ?? options[0];
+            if (!against) return;
+            setCompareTarget({ cardName: card.name, mine, against, options });
+          };
           return (
             <div key={i} className="thumbs">
               {originalSource && (
@@ -1330,18 +1362,23 @@ function CardRowView(props: {
                     >
                       {downloadStatus ? "Downloading…" : "Download"}
                     </button>
-                    <button
-                      className="btn-sm"
-                      onClick={() =>
-                        setCompareTarget({
-                          originalUrl: generationApi.imageUrl(v.galleryItemId, "original"),
-                          upscaledUrl: generationApi.imageUrl(v.galleryItemId, "full"),
-                          label: `${card.name} — ${v.dpi} DPI · ${modelDisplayName(v.model)}`,
-                        })
-                      }
-                    >
-                      Compare
-                    </button>
+                    {/* Compare = against the Original, as it always was;
+                        the caret (only when there's more than one other
+                        version) picks any other model/DPI of this face. */}
+                    <span className="compare-split">
+                      <button
+                        className="btn-sm"
+                        onClick={() => openCompare(`${v.dpi}:${v.model}`)}
+                      >
+                        Compare
+                      </button>
+                      {sides.length > 2 && (
+                        <CompareMenu
+                          options={sides.filter((s) => s.key !== `${v.dpi}:${v.model}`)}
+                          onPick={(side) => openCompare(`${v.dpi}:${v.model}`, side.key)}
+                        />
+                      )}
+                    </span>
                     <button
                       className="btn-sm"
                       onClick={() => onRegenerate(v.galleryItemId)}
@@ -1369,9 +1406,13 @@ function CardRowView(props: {
 
       {compareTarget && (
         <CompareDialog
-          originalUrl={compareTarget.originalUrl}
-          upscaledUrl={compareTarget.upscaledUrl}
-          label={compareTarget.label}
+          cardName={compareTarget.cardName}
+          mine={compareTarget.mine}
+          against={compareTarget.against}
+          options={compareTarget.options}
+          onChangeAgainst={(side) =>
+            setCompareTarget((t) => (t ? { ...t, against: side } : t))
+          }
           onClose={() => setCompareTarget(null)}
         />
       )}
