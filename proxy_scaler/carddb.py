@@ -302,6 +302,19 @@ _NAME_MATCH_SQL = """(
 )"""
 
 
+# Layouts that aren't playable Magic cards: tokens, emblems, art-series
+# cards, Jumpstart front cards, and the oversized Planechase/Archenemy/
+# Vanguard cards. They share names with real cards (an art-series card is
+# named "X // X", so the DFC front-face match above catches it), and with
+# every other sort key tied they could win a name-only lookup by accident.
+# Name lookups rank them last rather than excluding them, so a name that
+# only exists as one of these still resolves.
+_NON_GAME_LAYOUT_SQL = """(layout IN (
+    'art_series', 'token', 'double_faced_token', 'emblem', 'front_card',
+    'vanguard', 'planar', 'scheme'
+))"""
+
+
 def find_row_by_set_collector(
     conn: sqlite3.Connection,
     set_code: str,
@@ -345,7 +358,8 @@ def find_row_by_name_and_collector(
     deck managers can export (see decklist._NAME_COLLECTOR_RE). Any set's
     printing of this name (English or printed) with that collector number
     qualifies; among those, the same preference order as find_row_by_name
-    — or exactly only_lang in strict import mode. None when the hint
+    (real cards before non-game layouts, then language, …) — or exactly
+    only_lang in strict import mode. None when the hint
     matches no printing — the caller falls back to the plain name lookup."""
     lang_clause = "AND lang = ?4" if only_lang is not None else ""
     params: tuple = (name, str(collector_number), prefer_lang)
@@ -357,7 +371,8 @@ def find_row_by_name_and_collector(
         WHERE {_NAME_MATCH_SQL}
           AND collector_number = ?2
           {lang_clause}
-        ORDER BY (lang = ?3) DESC, (lang = 'en') DESC,
+        ORDER BY {_NON_GAME_LAYOUT_SQL} ASC,
+                 (lang = ?3) DESC, (lang = 'en') DESC,
                  digital ASC, highres_image DESC,
                  released_at DESC
         LIMIT 1
@@ -375,8 +390,10 @@ def find_row_by_name(
 ) -> sqlite3.Row | None:
     """Exact-name lookup returning the best printing to show for a bare
     name (matched against the English name or a localized printed name):
-    preferred language, then English, then paper over digital, high-res
-    scans over placeholders, newest release first — or restricted to
+    real game cards before non-game layouts (_NON_GAME_LAYOUT_SQL — so a
+    same-named token or art card never beats the card itself, even in the
+    preferred language), then preferred language, then English, then paper
+    over digital, high-res scans over placeholders, newest release first — or restricted to
     exactly only_lang in strict import mode. Fuzzy matching stays a
     live-API concern on purpose."""
     lang_clause = "AND lang = ?3" if only_lang is not None else ""
@@ -388,7 +405,8 @@ def find_row_by_name(
         SELECT * FROM cards
         WHERE {_NAME_MATCH_SQL}
           {lang_clause}
-        ORDER BY (lang = ?2) DESC, (lang = 'en') DESC,
+        ORDER BY {_NON_GAME_LAYOUT_SQL} ASC,
+                 (lang = ?2) DESC, (lang = 'en') DESC,
                  digital ASC, highres_image DESC,
                  released_at DESC
         LIMIT 1

@@ -208,6 +208,69 @@ def test_name_lookup_prefers_requested_lang(conn) -> None:
     assert carddb.get_card_by_name(conn, "Lightning Bolt", "ja")["id"] == "id-ja"
 
 
+def test_name_lookup_ranks_art_series_below_the_real_card(conn) -> None:
+    # Art-series cards are named "X // X", so the DFC front-face match
+    # finds them too; with every other sort key tied (same set release,
+    # paper, high-res) the art card used to win "Dion, Bahamut's Dominant".
+    carddb.upsert_cards(
+        conn,
+        [
+            _card(
+                id="id-art",
+                oracle_id="oracle-art",
+                name="Dion, Bahamut's Dominant // Dion, Bahamut's Dominant",
+                set="afin",
+                collector_number="42",
+                layout="art_series",
+                released_at="2025-06-13",
+            ),
+            _card(
+                id="id-real",
+                name="Dion, Bahamut's Dominant // Bahamut, Warden of Light",
+                set="fin",
+                collector_number="16",
+                layout="transform",
+                released_at="2025-06-13",
+            ),
+        ],
+    )
+    assert carddb.get_card_by_name(conn, "Dion, Bahamut's Dominant")["id"] == "id-real"
+
+
+def test_name_lookup_prefers_real_card_over_token_in_preferred_lang(conn) -> None:
+    # Game-card-ness outranks language preference: an English card beats
+    # a same-named Japanese token when the import language is Japanese.
+    carddb.upsert_cards(
+        conn,
+        [
+            _card(id="id-token-ja", name="Treasure", lang="ja", layout="token"),
+            _card(id="id-card-en", name="Treasure", lang="en", set="xyz"),
+        ],
+    )
+    assert carddb.get_card_by_name(conn, "Treasure", "ja")["id"] == "id-card-en"
+
+
+def test_name_lookup_still_finds_non_game_only_names(conn) -> None:
+    carddb.upsert_cards(
+        conn, [_card(id="id-token", name="Clue", layout="token", set="tmkm")]
+    )
+    assert carddb.get_card_by_name(conn, "Clue")["id"] == "id-token"
+
+
+def test_name_and_collector_ranks_non_game_layouts_last(conn) -> None:
+    carddb.upsert_cards(
+        conn,
+        [
+            _card(id="id-art", name="Lightning Bolt // Lightning Bolt",
+                  set="art", collector_number="7", layout="art_series",
+                  released_at="2030-01-01"),
+            _card(id="id-real", set="sta", collector_number="7"),
+        ],
+    )
+    row = carddb.find_row_by_name_and_collector(conn, "Lightning Bolt", "7")
+    assert row is not None and row["id"] == "id-real"
+
+
 def test_name_and_collector_matches_across_sets(conn) -> None:
     carddb.upsert_cards(
         conn,
