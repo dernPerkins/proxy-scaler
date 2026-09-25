@@ -245,3 +245,109 @@ def test_non_directml_paths_are_untouched():
     assert result.image.size == (360, 480)
     # The original path hands the model views of the on-device image.
     assert not all(d.contiguous)
+
+
+# --- localized DirectML errors + worker recycle (Ofni, French Windows) -----
+
+
+def _french_oom() -> UnicodeDecodeError:
+    raw = "Il n’y a pas assez de mémoire vidéo".encode("cp1252")
+    return UnicodeDecodeError("utf-8", raw, 4, 5, "invalid start byte")
+
+
+def test_lost_directml_message_is_recovered():
+    exc = _french_oom()
+    assert "0x92" in str(exc)  # what the Tasks tab showed
+    assert up._lost_directml_message(exc) == "Il n’y a pas assez de mémoire vidéo"
+    assert up._lost_directml_message(RuntimeError("x")) is None
+
+
+def test_undecodable_error_counts_as_memory_error_on_directml_only(monkeypatch, capsys):
+    class _Dml:
+        type = "privateuseone"
+
+    assert up._is_device_memory_error(_french_oom(), _Dml())
+    assert "pas assez de mémoire" in capsys.readouterr().out
+    assert not up._is_device_memory_error(_french_oom(), torch.device("cpu"))
+    assert up._is_device_memory_error(RuntimeError("CUDA out of memory"), torch.device("cpu"))
+
+
+def test_failed_directml_task_requests_a_worker_recycle(directml, monkeypatch):
+    monkeypatch.setattr(up, "_WORKER_RECYCLE_REASON", None)
+
+    class Boom(FakeDescriptor):
+        def __call__(self, x):
+            raise _french_oom()
+
+    with pytest.raises(UnicodeDecodeError):
+        _run(_upscaler(0), Boom(), _card())
+    assert up.worker_recycle_reason() is not None
+    assert "mémoire" in up.worker_recycle_reason()
+
+
+def test_successful_directml_task_does_not_request_recycle(directml, monkeypatch):
+    monkeypatch.setattr(up, "_WORKER_RECYCLE_REASON", None)
+    _run(_upscaler(32), FakeDescriptor(), _card())
+    assert up.worker_recycle_reason() is None
+
+
+def test_directml_oom_on_the_ladder_requests_a_recycle(monkeypatch):
+    """The real _try_gpu_inference: a French DirectML OOM is recognised
+    (returns None, so the tile ladder steps down) and asks for a worker
+    recycle; a CUDA-side non-OOM error still propagates untouched."""
+    monkeypatch.setattr(up, "_WORKER_RECYCLE_REASON", None)
+
+    class _Dml:
+        type = "privateuseone"
+
+    u = Upscaler(model=UpscaleModel.ULTRASHARP_V2, scale=4, weights_dir="w", tile=384)
+    u._device = _Dml()
+
+    def raise_french(descriptor, tensor):
+        raise _french_oom()
+
+    monkeypatch.setattr(u, "_run_inference", raise_french)
+    assert u._try_gpu_inference(object(), torch.zeros(1)) is None
+    assert "out of memory on DirectML" in up.worker_recycle_reason()
+
+    monkeypatch.setattr(up, "_WORKER_RECYCLE_REASON", None)
+    u._device = torch.device("cuda")
+    monkeypatch.setattr(u, "_run_inference", lambda d, t: (_ for _ in ()).throw(ValueError("bad")))
+    with pytest.raises(ValueError):
+        u._try_gpu_inference(object(), torch.zeros(1))
+    assert up.worker_recycle_reason() is None
+
+
+def test_worker_exits_for_recycle_after_finishing_the_task(tmp_path, monkeypatch):
+    """The worker lets the task's finish land, then exits with the
+    recycle code so the supervisor starts a fresh process."""
+    from proxy_scaler import supervisor, worker
+
+    assert worker.WORKER_RECYCLE_EXIT_CODE == supervisor.WORKER_RECYCLE_EXIT_CODE
+    finished = []
+
+    class _Task:
+        id = 1
+        face_name = "Sol Ring"
+        dpi = 1200
+        model = "ultrasharp_v2"
+        scryfall_id = "x"
+        face_index = None
+
+    tasks = [_Task()]
+    monkeypatch.setattr(worker.db, "acquire_worker_lock", lambda lock_path: 99)
+    monkeypatch.setattr(worker.db, "release_worker_lock", lambda fd: None)
+    monkeypatch.setattr(worker, "_wait_while_held", lambda db_path: None)
+    monkeypatch.setattr(
+        worker.db, "reset_orphaned_running_tasks",
+        lambda db_path: type("R", (), {"requeued": 0, "failed": 0})(),
+    )
+    monkeypatch.setattr(worker.db, "clear_cpu_fallback", lambda db_path: None)
+    monkeypatch.setattr(worker.db, "claim_next_task", lambda db_path: tasks.pop() if tasks else None)
+    monkeypatch.setattr(worker, "_OriginalPrefetcher", lambda db_path: type("P", (), {"kick": lambda self, **k: None})())
+    monkeypatch.setattr(worker, "_start_one", lambda task, db_path: (lambda: finished.append(task.id)))
+    monkeypatch.setattr(up, "_WORKER_RECYCLE_REASON", "out of memory on DirectML (test)")
+    with pytest.raises(SystemExit) as info:
+        worker.main(db_path=tmp_path / "db", lock_path=tmp_path / "lock")
+    assert info.value.code == worker.WORKER_RECYCLE_EXIT_CODE
+    assert finished == [1]

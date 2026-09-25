@@ -66,6 +66,10 @@ POLL_INTERVAL_S = 1.0
 # either taking the whole server down on the first one or thrashing
 # through every remaining task in turn.
 WORKER_MAX_RESPAWNS = 3
+# The worker's "restart me" exit (worker.WORKER_RECYCLE_EXIT_CODE): not a
+# crash, respawned unconditionally. Duplicated rather than imported so the
+# supervisor never imports the worker's torch-heavy module graph.
+WORKER_RECYCLE_EXIT_CODE = 75
 WORKER_CRASH_ERROR = (
     "Worker process crashed (exit code {code}) while running this task"
 )
@@ -500,6 +504,17 @@ def main(
                 code = proc.poll()
                 if code is None:
                     continue
+                if name == "worker" and code == WORKER_RECYCLE_EXIT_CODE:
+                    # Deliberate: the worker finished its task and asked for
+                    # a fresh process to release GPU memory. Not a crash —
+                    # no task is failed and the crash budget is untouched.
+                    print("worker restarting to release GPU memory.", file=sys.stderr)
+                    worker_proc = _spawn(_child_command("worker"), env=worker_env or None)
+                    children[1] = worker_proc
+                    if job is not None:
+                        _assign_to_job(job, worker_proc)
+                    exited = True
+                    break
                 if name == "worker":
                     failed = _recover_from_worker_crash(
                         code,

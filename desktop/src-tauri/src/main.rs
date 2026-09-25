@@ -480,7 +480,13 @@ fn spawn_terminal(cmd: &[String]) -> Result<(), String> {
 fn spawn_terminal(cmd: &[String]) -> Result<(), String> {
     // Windows Terminal if installed, else a plain conhost window via
     // `cmd /c start`. Windows 10+ ships the OpenSSH client.
-    if std::process::Command::new("wt.exe").args(cmd).spawn().is_ok() {
+    //
+    // wt.exe treats a bare `;` anywhere in its arguments as "new tab
+    // command" and splits there, so the remote `cd '...'; exec "$SHELL" -l`
+    // became a second, nonexistent command ("file not found",
+    // 0x80070002). `\;` is wt's escape for a literal semicolon.
+    let wt_args: Vec<String> = cmd.iter().map(|a| a.replace(';', "\\;")).collect();
+    if std::process::Command::new("wt.exe").args(&wt_args).spawn().is_ok() {
         return Ok(());
     }
     std::process::Command::new("cmd")

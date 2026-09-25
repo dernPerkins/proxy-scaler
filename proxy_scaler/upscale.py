@@ -367,6 +367,62 @@ def _apply_directml_tiled_resources_policy(torch_directml) -> None:
         print(f"warning: could not disable DirectML tiled resources: {exc}", file=sys.stderr)
 
 
+# Set when a DirectML pass hit a device error (out of memory, or an error
+# whose message couldn't even be decoded). torch-directml has no way to
+# hand its memory pool back, so after one of those the worker process
+# keeps holding VRAM and later cards fail too; the worker checks this
+# after each task and exits with WORKER_RECYCLE_EXIT_CODE so the
+# supervisor starts a fresh one (the OS frees everything on exit).
+# Single-thread ownership as _MODEL_CACHE.
+_WORKER_RECYCLE_REASON: str | None = None
+
+
+def request_worker_recycle(reason: str) -> None:
+    global _WORKER_RECYCLE_REASON
+    if _WORKER_RECYCLE_REASON is None:
+        _WORKER_RECYCLE_REASON = reason
+
+
+def worker_recycle_reason() -> str | None:
+    return _WORKER_RECYCLE_REASON
+
+
+def _lost_directml_message(exc: BaseException) -> str | None:
+    """The original text of a DirectML error that arrived as a
+    UnicodeDecodeError, else None.
+
+    On a non-English Windows the driver's error text is in the system code
+    page (cp1252 on a French install: 0x92 is ’, 0xE9 is é), and
+    torch-directml decodes it as UTF-8 — so the out-of-memory error
+    surfaced as "'utf-8' codec can't decode byte 0x92 in position 1",
+    invisible to _is_oom_error. The undecodable bytes are still on the
+    exception; decode them the way Windows wrote them."""
+    if not isinstance(exc, UnicodeDecodeError):
+        return None
+    raw = exc.object if isinstance(exc.object, (bytes, bytearray)) else bytes(exc.object)
+    import locale
+
+    for encoding in (locale.getpreferredencoding(False), "cp1252", "latin-1"):
+        try:
+            return bytes(raw).decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return bytes(raw).decode("latin-1", "replace")
+
+
+def _is_device_memory_error(exc: BaseException, device: "torch.device | None") -> bool:
+    """_is_oom_error, plus DirectML's undecodable errors: the only DirectML
+    errors seen to arrive that way are out-of-memory ones in a non-English
+    locale, and treating one as OOM costs at worst a smaller tile or the
+    CPU fallback, never a lost task."""
+    if _is_oom_error(exc):
+        return True
+    if _is_directml_device(device) and isinstance(exc, UnicodeDecodeError):
+        print(f"  directml error (system-language message): {_lost_directml_message(exc)}")
+        return True
+    return False
+
+
 def _is_oom_error(exc: BaseException) -> bool:
     import torch
 
@@ -1327,7 +1383,9 @@ class Upscaler:
                 except Exception:  # noqa: BLE001 — any bf16 hiccup means fp32
                     pass  # weights stay fp32; _ensure_model derives that
         except Exception as exc:
-            if device.type != "cpu" and _is_oom_error(exc):
+            if device.type != "cpu" and _is_device_memory_error(exc, device):
+                if _is_directml_device(device):
+                    request_worker_recycle(f"out of memory loading {self.model_id.value} on DirectML")
                 print(
                     f"OOM loading model on {device}; clearing cache and falling back to CPU…"
                 )
@@ -1434,9 +1492,13 @@ class Upscaler:
             if (
                 self._device is None
                 or self._device.type == "cpu"
-                or not _is_oom_error(exc)
+                or not _is_device_memory_error(exc, self._device)
             ):
                 raise
+            if _is_directml_device(self._device):
+                request_worker_recycle(
+                    f"out of memory on DirectML at tile {self.tile or 'off'} ({self.model_id.value})"
+                )
         return None
 
     def upscale(self, image: Image.Image) -> UpscaleResult:
@@ -1542,6 +1604,16 @@ class Upscaler:
                     device=device_kind(self._device),
                     dtype=_dtype_label(self._dtype),
                 )
+            except Exception as exc:
+                # Any error escaping a DirectML task leaves the plugin's
+                # memory pool in whatever state the failure left it; start
+                # the next task in a fresh worker (see request_worker_recycle).
+                if _is_directml_device(self._device):
+                    lost = _lost_directml_message(exc)
+                    if lost is not None:
+                        print(f"  directml error (system-language message): {lost}")
+                    request_worker_recycle(f"DirectML task failed: {lost or exc}")
+                raise
             finally:
                 # Deliberately NO empty_cache() here: clearing per image
                 # forced the CUDA allocator to re-grow its arenas on every

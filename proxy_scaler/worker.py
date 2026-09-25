@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import db, pipeline, timing_db
+from . import upscale
 from .dpi import ORIGINAL_MODEL
 
 POLL_INTERVAL_S = 2.0
@@ -190,6 +191,11 @@ class _OriginalPrefetcher:
             print(f"prefetch: {exc}", file=sys.stderr)
 
 
+# Exit code for a deliberate restart (see upscale.request_worker_recycle):
+# EX_TEMPFAIL. The supervisor respawns on it without counting a crash.
+WORKER_RECYCLE_EXIT_CODE = 75
+
+
 def main(
     *,
     db_path: Path | str | None = None,
@@ -287,6 +293,15 @@ def main(
                 target=finish, name=f"finish-task-{task.id}", daemon=False
             )
             finish_thread.start()
+            recycle = upscale.worker_recycle_reason()
+            if recycle is not None:
+                # Let this task's result land first, then hand the process
+                # back: the supervisor starts a fresh worker, and exiting is
+                # the only way to return torch-directml's memory.
+                finish_thread.join()
+                finish_thread = None
+                print(f"Restarting the worker to release GPU memory ({recycle}).")
+                raise SystemExit(WORKER_RECYCLE_EXIT_CODE)
     finally:
         if finish_thread is not None:
             finish_thread.join(FINISH_JOIN_TIMEOUT_S)

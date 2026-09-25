@@ -538,16 +538,16 @@ export default function DecklistPage() {
     // server and cd'd to the directory — deliberately not an sftp:// URL
     // handed to the OS, whose scheme handler is a lottery (VLC commonly
     // claims sftp:// on Linux and "opens" the directory as a playlist).
-    const opening =
-      connection.mode === "remote"
-        ? invokeOpenRemoteTerminal(connection.host, path)
-        : invokeOpenDirectory(path);
+    // A "remote" server on this very machine (the server app + client
+    // pairing) has its directories on the local disk: open them locally
+    // rather than ssh-ing into ourselves.
+    const viaSsh = connection.mode === "remote" && !isLoopbackHost(connection.host);
+    const opening = viaSsh
+      ? invokeOpenRemoteTerminal(connection.host, path)
+      : invokeOpenDirectory(path);
     opening.catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      const hint =
-        connection.mode === "remote"
-          ? " — copy the path and ssh in manually instead."
-          : "";
+      const hint = viaSsh ? " — copy the path and ssh in manually instead." : "";
       setStatus(`Couldn't open ${label.toLowerCase()}: ${msg}${hint}`);
     });
   }
@@ -1054,6 +1054,15 @@ function slugify(name: string): string {
 
 async function handleDownloadImage(url: string, filename: string): Promise<void> {
   await runDownload(filename, { url });
+}
+
+// localhost / 127.x / ::1, with or without brackets or a port.
+function isLoopbackHost(host: string): boolean {
+  let h = host.trim().toLowerCase();
+  const bracketed = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (bracketed) h = bracketed[1];
+  else if ((h.match(/:/g) ?? []).length === 1) h = h.replace(/:\d+$/, "");
+  return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
 }
 
 // A compare is always within one face: the variant whose Compare was

@@ -1993,3 +1993,56 @@ def test_registration_marks_render_through_a_real_canvas(tmp_path: Path) -> None
     )
     assert marked.startswith(b"%PDF")
     assert len(marked) > len(plain)
+
+
+def test_card_trim_edges_with_spacing_use_the_card_not_the_cell() -> None:
+    # cell = 10mm bled card + 2mm gap; bleed 1. Card 0: 1..9, card 1:
+    # 13..21 — the trailing edge is the card's own, not next cell - bleed.
+    assert _card_trim_edges(2, 12, 1, 0, 10) == [1, 9, 13, 21]
+    # Without the extent it falls back to the stride (only right at 0 gap).
+    assert _card_trim_edges(2, 10, 1, 0) == [1, 9, 11, 19]
+
+
+@pytest.mark.parametrize("spacing", [(0.0, 0.0), (3.0, 2.0), (6.5, 0.0)])
+def test_card_guides_sit_on_each_placed_card_with_spacing(spacing) -> None:
+    """Ofni's report: with spacing, the bottom (and right) guides sat a full
+    gap outside the cards. Every card guide must sit on its own card's
+    trim corner, computed from where the image is actually placed."""
+    from proxy_scaler.pdf_layout import _MARK_COLOR, _draw_cut_marks
+
+    class _Recorder:
+        def __init__(self):
+            self.color = None
+            self.line_width = 0.0
+            self.green_vertical_x: set[float] = set()
+            self.green_horizontal_y: set[float] = set()
+
+        def set_line_width(self, w):
+            self.line_width = w
+
+        def set_draw_color(self, *rgb):
+            self.color = tuple(rgb)
+
+        def line(self, x1, y1, x2, y2):
+            if self.color != tuple(_MARK_COLOR):
+                return
+            if x1 == x2:
+                self.green_vertical_x.add(round(x1, 6))
+            elif y1 == y2:
+                self.green_horizontal_y.add(round(y1, 6))
+
+    layout = _a4_portrait_layout(spacing_x_mm=spacing[0], spacing_y_mm=spacing[1], rows=2)
+    rec = _Recorder()
+    _draw_cut_marks(rec, layout)  # type: ignore[arg-type]
+    half = layout.guide_width_pt / 72 * 25.4 / 2
+    want_x, want_y = set(), set()
+    for col in range(layout.cols):
+        img_x = layout.margin_x_mm + col * layout.cell_w_mm  # as draw_page places it
+        want_x.add(round(img_x + layout.bleed_mm - half, 6))
+        want_x.add(round(img_x + layout.bled_card_w_mm - layout.bleed_mm + half, 6))
+    for row in range(layout.rows):
+        img_y = layout.margin_y_mm + row * layout.cell_h_mm
+        want_y.add(round(img_y + layout.bleed_mm - half, 6))
+        want_y.add(round(img_y + layout.bled_card_h_mm - layout.bleed_mm + half, 6))
+    assert rec.green_vertical_x == want_x
+    assert rec.green_horizontal_y == want_y

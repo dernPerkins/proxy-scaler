@@ -479,20 +479,29 @@ def resolve_page_layout(
 
 
 def _card_trim_edges(
-    count: int, cell_mm: float, bleed_mm: float, origin_mm: float
+    count: int,
+    cell_mm: float,
+    bleed_mm: float,
+    origin_mm: float,
+    card_extent_mm: float | None = None,
 ) -> list[float]:
     """Each card's own pair of trim-edge coordinates along one axis: card i's
     leading edge is origin + i*cell_mm + bleed_mm, its trailing edge is
-    origin + (i+1)*cell_mm - bleed_mm. Two adjacent cards' facing edges are
-    2*bleed_mm apart, not coincident — each card's bleed independently
-    extends bleed_mm past its own trim edge, so the true cut line for card i
-    and the true cut line for card i+1 are two distinct points close
-    together, not one shared line down the middle of the gap. 2*count
-    coordinates total (vs. a naive count+1 shared-boundary model)."""
+    origin + i*cell_mm + card_extent_mm - bleed_mm, where card_extent_mm is
+    the bled card's size along the axis (the image's own extent, NOT the
+    cell stride, which also includes the spacing gap). Two adjacent cards'
+    facing edges are 2*bleed_mm + spacing apart, not coincident — each
+    card's bleed independently extends bleed_mm past its own trim edge.
+    2*count coordinates total (vs. a naive count+1 shared-boundary model).
+
+    card_extent_mm defaults to cell_mm, which is only right with zero
+    spacing: using the stride there put every right/bottom guide one full
+    gap outside its card once spacing was set."""
+    extent = cell_mm if card_extent_mm is None else card_extent_mm
     edges: list[float] = []
     for i in range(count):
         edges.append(origin_mm + i * cell_mm + bleed_mm)
-        edges.append(origin_mm + (i + 1) * cell_mm - bleed_mm)
+        edges.append(origin_mm + i * cell_mm + extent - bleed_mm)
     return edges
 
 
@@ -534,13 +543,19 @@ def _draw_cut_marks(
     xs = [
         x - half if i % 2 == 0 else x + half
         for i, x in enumerate(
-            _card_trim_edges(layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm)
+            _card_trim_edges(
+                layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm,
+                layout.bled_card_w_mm,
+            )
         )
     ]
     ys = [
         y - half if i % 2 == 0 else y + half
         for i, y in enumerate(
-            _card_trim_edges(layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm)
+            _card_trim_edges(
+                layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm,
+                layout.bled_card_h_mm,
+            )
         )
     ]
     grid_x0, grid_x1 = xs[0], xs[-1]
