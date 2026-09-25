@@ -4,7 +4,7 @@ Section: graphics
 Priority: optional
 Architecture: @ARCH@
 Maintainer: proxy-scaler maintainers <noreply@example.com>
-Depends: adduser, libvulkan1
+Depends: adduser, libvulkan1, libstdc++6
 Description: MTG proxy card upscaling server
  Runs the proxy-scaler API and its generation worker as a managed pair,
  so the proxy-scaler desktop app (or any HTTP client) can queue card

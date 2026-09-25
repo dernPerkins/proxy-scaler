@@ -112,7 +112,9 @@ models' loader are all bundled. What you need beyond the download:
 - **Linux (desktop app / server app)** — needs WebKitGTK and the tray
   library: `sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0
   libayatana-appindicator3-1`. Requires a distro at least as new as
-  Ubuntu 22.04 / Debian 12 (glibc ≥ 2.35).
+  Ubuntu 22.04 / Debian 12 (glibc ≥ 2.35). The C++ runtime
+  (`libstdc++`) comes from your system rather than the download, so it
+  always matches your GPU drivers.
 - **Linux (headless .deb)** — no extra packages; same Ubuntu 22.04 /
   Debian 12 floor.
 - **GPU acceleration** is optional — CPU-only works out of the box.

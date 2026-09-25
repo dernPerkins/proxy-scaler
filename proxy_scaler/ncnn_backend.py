@@ -187,6 +187,30 @@ def _is_real_gpu(dev: VulkanDevice) -> bool:
 _SELECTED_DEVICE: tuple[bool, int | None] = (False, None)
 
 
+def _enumerate_with_loader_errors() -> tuple[list[VulkanDevice], list[str]]:
+    """list_vulkan_devices(), with the Vulkan loader's own error lines
+    captured. The loader is silent about drivers it skips unless
+    VK_LOADER_DEBUG asks, so it's set to "error" for this first
+    enumeration only (ncnn creates its instance here, once per process)
+    and the captured lines are kept for the "none usable" message. A user
+    setting of VK_LOADER_DEBUG is left alone."""
+    had = "VK_LOADER_DEBUG" in os.environ
+    if not had:
+        os.environ["VK_LOADER_DEBUG"] = "error"
+    try:
+        with _StderrCapture(echo=False) as captured:
+            devices = list_vulkan_devices()
+    finally:
+        if not had:
+            os.environ.pop("VK_LOADER_DEBUG", None)
+    errors = [
+        " ".join(line.split())
+        for line in captured.text.splitlines()
+        if "ERROR" in line or "not found" in line
+    ]
+    return devices, errors
+
+
 def select_vulkan_device() -> int | None:
     """The device index Vulkan passes run on, or None for the CPU path.
     Env override first, else the first discrete GPU, else the first
@@ -195,7 +219,7 @@ def select_vulkan_device() -> int | None:
     if _SELECTED_DEVICE[0]:
         return _SELECTED_DEVICE[1]
     chosen: int | None = None
-    devices = list_vulkan_devices()
+    devices, loader_errors = _enumerate_with_loader_errors()
     override = (os.environ.get(VULKAN_GPU_ENV) or "").strip()
     if override:
         try:
@@ -220,6 +244,10 @@ def select_vulkan_device() -> int | None:
             chosen = real[0].index
     if chosen is None:
         print("  vulkan device: none usable — Vulkan models will run on the CPU")
+        # Say why, when the loader told us: a driver that exists but won't
+        # load (wrong libstdc++, missing dependency) is invisible otherwise.
+        for line in loader_errors[:6]:
+            print(f"  vulkan loader: {line}")
     else:
         dev = next(d for d in devices if d.index == chosen)
         print(f"  vulkan device: {dev.name} (index {dev.index}, type {dev.type})")
@@ -366,8 +394,9 @@ class _StderrCapture:
     complete. Best-effort: with no usable fd 2 (a windowless frozen
     process) capture is skipped and `text` stays empty."""
 
-    def __init__(self) -> None:
+    def __init__(self, echo: bool = True) -> None:
         self.text = ""
+        self._echo = echo
         self._saved: int | None = None
         self._tmp = None
 
@@ -393,7 +422,7 @@ class _StderrCapture:
             self._tmp.seek(0)
             self.text = self._tmp.read().decode("utf-8", "replace")
             self._tmp.close()
-            if self.text:
+            if self.text and self._echo:
                 sys.stderr.write(self.text)
                 sys.stderr.flush()
         except Exception:  # noqa: BLE001

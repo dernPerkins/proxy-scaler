@@ -194,6 +194,13 @@ OSes) that rides along with whatever torch variant the venv holds — no
   signs it through its `*.dylib` glob like every other library.
 - **Linux/Windows** need nothing at build time; at run time the user's
   Vulkan loader + ICD do the work (the `.deb` depends on `libvulkan1`).
+- **Linux never bundles `libstdc++` / `libgcc_s`** (filtered in the spec,
+  enforced by `_sidecar-freeze`). The frozen processes run with
+  `LD_LIBRARY_PATH` on `_internal/`, so a bundled copy shadows the
+  system's for the GPU driver too: on Arch the AMD driver needed
+  `GLIBCXX_3.4.32`, the bundled copy stopped at 3.4.30, and Vulkan models
+  silently ran on the CPU. If a Linux user reports Vulkan on the CPU, the
+  worker log's `vulkan loader:` lines say why.
 
 `make sidecar` fails if the ncnn extension (or, on macOS, MoltenVK) is
 missing from the freeze. Still, **after every `make sidecar` on every OS**:

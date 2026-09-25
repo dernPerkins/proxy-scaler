@@ -140,6 +140,24 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+# Linux: never bundle the C++ runtime (libstdc++ / libgcc_s). Every frozen
+# process runs with LD_LIBRARY_PATH pointed at _internal/, so a bundled
+# copy doesn't just serve our own libraries — it shadows the system's for
+# anything the process loads later, GPU drivers included. Arch's Mesa
+# (2026) needs GLIBCXX_3.4.32+; the copy this build box would bundle stops
+# at 3.4.30, so the Vulkan loader failed to load the AMD driver
+# ("version `GLIBCXX_3.4.32' not found (required by libSPIRV-Tools.so)")
+# and every Vulkan model silently ran on the CPU. Nothing we bundle needs
+# more than GLIBCXX_3.4.22, which every supported distro exceeds, so the
+# system's copy — always present, and exactly as new as its drivers —
+# serves everything. _sidecar-freeze double-checks it stayed out.
+if sys.platform.startswith("linux"):
+    _SYSTEM_ONLY = ("libstdc++.so", "libgcc_s.so")
+    a.binaries = [
+        entry for entry in a.binaries
+        if not Path(entry[0]).name.startswith(_SYSTEM_ONLY)
+    ]
 pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(

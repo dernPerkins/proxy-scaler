@@ -323,3 +323,40 @@ def test_real_ncnn_gpu_and_cpu_agree(tmp_path):
     assert a.shape == (256, 192, 3)
     mse = np.mean((a - b) ** 2)
     assert 10 * np.log10(255**2 / max(mse, 1e-9)) > 40
+
+
+def test_no_gpu_reports_the_loader_errors(monkeypatch, capsys):
+    """Torio's case: the loader found the AMD driver but couldn't load it
+    (bundled libstdc++ too old), so ncnn saw no GPU. The loader's own
+    error lines must reach the worker log, and VK_LOADER_DEBUG must be
+    set only while enumerating."""
+    seen_env = []
+
+    def fake_list():
+        seen_env.append(os.environ.get("VK_LOADER_DEBUG"))
+        os.write(2, b"[Vulkan Loader] ERROR:   /x/_internal/libstdc++.so.6: version `GLIBCXX_3.4.32' not found (required by /usr/lib/libSPIRV-Tools.so)\n")
+        os.write(2, b"[Vulkan Loader] ERROR | DRIVER: loader_icd_scan: Failed loading library associated with ICD JSON libvulkan_radeon.so. Ignoring this JSON\n")
+        os.write(2, b"harmless chatter\n")
+        return [nb.VulkanDevice(0, "llvmpipe (LLVM 19)", 3)]
+
+    monkeypatch.setattr(nb, "list_vulkan_devices", fake_list)
+    monkeypatch.setattr(nb, "_SELECTED_DEVICE", (False, None))
+    monkeypatch.delenv("VK_LOADER_DEBUG", raising=False)
+    monkeypatch.delenv(nb.VULKAN_GPU_ENV, raising=False)
+    assert nb.select_vulkan_device() is None
+    out = capsys.readouterr().out
+    assert "none usable" in out
+    assert "GLIBCXX_3.4.32' not found" in out
+    assert "libvulkan_radeon.so" in out
+    assert "harmless chatter" not in out
+    assert seen_env == ["error"]
+    assert "VK_LOADER_DEBUG" not in os.environ
+
+
+def test_user_vk_loader_debug_is_left_alone(monkeypatch):
+    seen_env = []
+    monkeypatch.setattr(nb, "list_vulkan_devices", lambda: seen_env.append(os.environ.get("VK_LOADER_DEBUG")) or [])
+    monkeypatch.setattr(nb, "_SELECTED_DEVICE", (False, None))
+    monkeypatch.setenv("VK_LOADER_DEBUG", "all")
+    nb.select_vulkan_device()
+    assert seen_env == ["all"] and os.environ["VK_LOADER_DEBUG"] == "all"

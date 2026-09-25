@@ -461,6 +461,12 @@ _sidecar-freeze: sidecar-clean molten-vk
 	# ncnn's runtime) and, on macOS, the bundled MoltenVK it dlopens.
 	@ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn/ncnn.* >/dev/null 2>&1 \
 		|| { echo "ERROR: frozen bundle has no ncnn extension (_internal/ncnn/ncnn.*) -- every Vulkan model would fail; see proxy-scaler-serve.spec"; exit 1; }
+ifeq ($(UNAME_S),Linux)
+	# The C++ runtime must come from the system on Linux (see the spec):
+	# a bundled copy shadows it for the GPU drivers and hides the GPU.
+	@! ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/libstdc++.so* desktop/pyinstaller/dist/proxy-scaler-serve/_internal/libgcc_s.so* >/dev/null 2>&1 \
+		|| { echo "ERROR: frozen bundle contains libstdc++/libgcc_s -- it would shadow the system copy the GPU drivers need; see proxy-scaler-serve.spec"; exit 1; }
+endif
 ifeq ($(UNAME_S),Darwin)
 	@test -f desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn-vulkan/libMoltenVK.dylib \
 		|| { echo "ERROR: frozen bundle has no _internal/ncnn-vulkan/libMoltenVK.dylib -- Vulkan models would run on the CPU; run make molten-vk"; exit 1; }
