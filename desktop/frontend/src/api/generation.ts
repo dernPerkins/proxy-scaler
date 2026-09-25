@@ -4,6 +4,7 @@
 // project_tag string the client mints per local project (see
 // project.ts), never a server-side project id — see ARCHITECTURE.md.
 import { getApiBaseUrl, waitForServerReady } from "../config";
+import { registerShortLabels } from "../constants";
 import type {
   CardDataset,
   CardDbStatus,
@@ -75,7 +76,11 @@ export const generationApi = {
   // The frontend must read this list, never hardcode it — a hand-typed
   // copy previously shipped here silently dropped two real models.
   // UpscaleModel (Python) is the only source of truth.
-  listModels: () => request<ModelOption[]>("/api/models"),
+  listModels: async () => {
+    const models = await request<ModelOption[]>("/api/models");
+    registerShortLabels(models);
+    return models;
+  },
 
   // Whether the connected server has a real GPU — see connection.tsx's
   // fire-and-forget probe, which is the only caller. Never call this

@@ -126,6 +126,60 @@ def test_tile_presets_shape():
             # Never in the torch HEAVY ladder: 0 stays 0 here and is
             # resolved to the medium preset by NcnnUpscaler itself.
             assert effective_tile_size(model, 0) == 0
+        elif model.backend is Backend.ONNX:
+            from proxy_scaler.upscale import ONNX_TILE_PRESETS
+
+            # Fixed-size exports: a subset of the tiers, no Auto, no Max
+            # (WebGPU's per-buffer limit), default medium.
+            assert presets == ONNX_TILE_PRESETS
+            assert default.key == NCNN_DEFAULT_PRESET and default.tile > 0
+            assert "max" not in {p.key for p in presets}
         else:
             assert presets == TORCH_TILE_PRESETS
             assert default.key == "auto" and default.tile == 0
+
+
+# --- ONNX Runtime (WebGPU) models -------------------------------------------
+
+
+def test_onnx_models_have_one_hashed_file_per_tier():
+    from proxy_scaler.upscale import _WEIGHTS, ONNX_TILE_PRESETS, onnx_filename, onnx_input_size
+
+    onnx = [m for m in UpscaleModel if m.backend is Backend.ONNX]
+    assert {m.value for m in onnx} == {"ultrasharp_v2_ort", "illustrationjanai_ort"}
+    for model in onnx:
+        spec = _WEIGHTS[(model, 4)]
+        assert [f.filename for f in spec.files] == [
+            onnx_filename(model, onnx_input_size(p.tile)) for p in ONNX_TILE_PRESETS
+        ]
+        for wf in spec.files:
+            assert wf.sha256 and len(wf.sha256) == 64
+            assert wf.url.endswith("/models/onnx/v1/" + wf.filename)
+        presets = tile_presets_for(model)
+        assert presets and all(p.tile > 0 for p in presets)
+        assert default_tile_preset(model).key == "medium"
+        assert effective_tile_size(model, 0) == 0
+
+
+def test_every_model_has_a_short_label():
+    for model in UpscaleModel:
+        assert model.short_label
+
+
+@pytest.mark.parametrize(
+    "platform, api, group, badge",
+    [("linux", "Vulkan", "Vulkan Models", "USV2-VK"), ("win32", "DirectX 12", "GPU-Universal Models", "USV2-DX")],
+)
+def test_onnx_labels_are_true_per_platform(monkeypatch, platform, api, group, badge):
+    """ONNX Runtime WebGPU runs on Vulkan on Linux but Direct3D 12 on
+    Windows: labels, the shared group header and badges must say so."""
+    import proxy_scaler.upscale as up
+
+    monkeypatch.setattr(up.sys, "platform", platform)
+    m = UpscaleModel.ULTRASHARP_V2_ORT
+    assert f"({api})" in m.label
+    assert m.group == group
+    assert m.short_label == badge
+    assert UpscaleModel.ANIMESHARP_VK.group == group  # one shared group
+    assert "(Vulkan)" in UpscaleModel.ANIMESHARP_VK.label  # ncnn is Vulkan everywhere
+    assert UpscaleModel.ULTRASHARP_V2.group == "Models"

@@ -36,14 +36,27 @@ class Backend(str, Enum):
 
     TORCH = "torch"  # PyTorch + spandrel: CUDA / ROCm / MPS / DirectML / CPU
     NCNN = "ncnn"  # ncnn under Vulkan (any vendor's GPU), see ncnn_backend.py
+    # ONNX Runtime's WebGPU provider (onnx_backend.py): Dawn under Vulkan
+    # on Linux, Direct3D 12 on Windows (never DirectML). Runs the DAT
+    # models ncnn can't (their attention needs 5-6 D tensors).
+    ONNX = "onnx"
 
 
-# Dropdown headers, per backend. Served by GET /api/models so every client
-# dropdown groups the same way.
-MODEL_GROUPS: dict[Backend, str] = {
-    Backend.TORCH: "Models",
-    Backend.NCNN: "Vulkan Models",
-}
+def gpu_api_label() -> str:
+    """The graphics API the any-GPU models run on here, for labels that
+    must be literally true: ONNX Runtime WebGPU's Windows build only has
+    Direct3D 12 compiled in, its Linux build only Vulkan (checked in the
+    shipped packages). ncnn is Vulkan everywhere (MoltenVK on macOS)."""
+    return "DirectX 12" if sys.platform == "win32" else "Vulkan"
+
+
+def model_group(backend: Backend) -> str:
+    """Dropdown header for a backend, served by GET /api/models so every
+    client groups the same way. The ncnn and ONNX models share one group;
+    on Windows it can't be called "Vulkan" because the ONNX ones aren't."""
+    if backend is Backend.TORCH:
+        return "Models"
+    return "GPU-Universal Models" if sys.platform == "win32" else "Vulkan Models"
 
 
 class UpscaleModel(str, Enum):
@@ -61,6 +74,11 @@ class UpscaleModel(str, Enum):
     REALESRGAN_ANIME_FAST_VK = "realesrgan_anime_fast_vk"
     ANIMESHARP_VK = "animesharp_vk"
     ILLUSTRATIONJANAI_ESRGAN_VK = "illustrationjanai_esrgan_vk"
+    # --- ONNX Runtime (WebGPU) models: the DAT pair on any GPU. Ids name
+    # the runtime, not a graphics API — they reach output filenames and
+    # the Tasks table, and the API differs by OS (see gpu_api_label).
+    ULTRASHARP_V2_ORT = "ultrasharp_v2_ort"
+    ILLUSTRATIONJANAI_ORT = "illustrationjanai_ort"
 
     @property
     def backend(self) -> Backend:
@@ -74,11 +92,31 @@ class UpscaleModel(str, Enum):
             UpscaleModel.REALESRGAN_ANIME_FAST_VK: Backend.NCNN,
             UpscaleModel.ANIMESHARP_VK: Backend.NCNN,
             UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: Backend.NCNN,
+            UpscaleModel.ULTRASHARP_V2_ORT: Backend.ONNX,
+            UpscaleModel.ILLUSTRATIONJANAI_ORT: Backend.ONNX,
         }[self]
 
     @property
     def group(self) -> str:
-        return MODEL_GROUPS[self.backend]
+        return model_group(self.backend)
+
+    @property
+    def short_label(self) -> str:
+        """Compact badge text (deck-list chips, thumbnail labels). Served by
+        GET /api/models so it can be per-OS; the frontend keeps its own
+        copy only as a fallback for older servers."""
+        api = "DX" if gpu_api_label() == "DirectX 12" else "VK"
+        return {
+            UpscaleModel.REALESRGAN_ANIME_FAST: "REAF",
+            UpscaleModel.ILLUSTRATIONJANAI: "IJ",
+            UpscaleModel.ULTRASHARP_V2: "USV2",
+            UpscaleModel.ULTRASHARP_V2_LITE: "USV2 Lite",
+            UpscaleModel.REALESRGAN_ANIME_FAST_VK: "REAF-VK",
+            UpscaleModel.ANIMESHARP_VK: "AS-VK",
+            UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: "IJE-VK",
+            UpscaleModel.ULTRASHARP_V2_ORT: f"USV2-{api}",
+            UpscaleModel.ILLUSTRATIONJANAI_ORT: f"IJ-{api}",
+        }[self]
 
     @property
     def label(self) -> str:
@@ -102,6 +140,12 @@ class UpscaleModel(str, Enum):
             UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: (
                 "IllustrationJaNai ESRGAN (Vulkan) (the ESRGAN sibling of IllustrationJaNai: illustrations, digital art, manga covers)"
             ),
+            UpscaleModel.ULTRASHARP_V2_ORT: (
+                f"UltraSharpV2 ({gpu_api_label()}) (the same model on any GPU, full precision)"
+            ),
+            UpscaleModel.ILLUSTRATIONJANAI_ORT: (
+                f"IllustrationJaNai ({gpu_api_label()}) (the same model on any GPU, full precision)"
+            ),
         }[self]
 
     @property
@@ -117,6 +161,8 @@ class UpscaleModel(str, Enum):
             UpscaleModel.REALESRGAN_ANIME_FAST_VK: "Fastest",
             UpscaleModel.ANIMESHARP_VK: "Balanced",
             UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: "Balanced",
+            UpscaleModel.ULTRASHARP_V2_ORT: "Best quality — slowest",
+            UpscaleModel.ILLUSTRATIONJANAI_ORT: "Best for illustrations — slowest",
         }[self]
 
     @property
@@ -189,13 +235,46 @@ TORCH_DEFAULT_PRESET = "auto"
 NCNN_DEFAULT_PRESET = "medium"
 
 
+# ONNX (DAT) exports are fixed-size: DAT's padding and attention masks are
+# computed from the input size at trace time, so a file only runs at the
+# size it was exported at (a 64 px export failed at 96 px). One file per
+# tier; the tile below is the content, the file's input is tile + 2x32 pad
+# (onnx_input_size). Same tier labels as ncnn; VRAM per tier measured on
+# the exported files (see packaging/onnx/).
+#
+# Measured on the exported UltraSharpV2 (WebGPU, 3080 Ti): input 192 ->
+# 2.4 GB / 0.66 s per tile, 256 -> 3.6 GB / 1.24 s, 384 -> 4.2 GB / 2.9 s.
+# No Max tier: at input 512 one attention buffer (~188 MB) exceeds
+# WebGPU's per-buffer binding limit (commonly 128 MiB) and the run fails
+# validation regardless of VRAM; 384 (~106 MB) is the largest that fits.
+ONNX_TILE_PAD = 32
+ONNX_TILE_PRESETS: tuple[TilePreset, ...] = (
+    TilePreset("low", "Low VRAM (4 GB or less)", 128),
+    TilePreset("medium", "Medium VRAM (6–8 GB)", 192),
+    TilePreset("high", "High VRAM (12 GB+)", 320),
+)
+ONNX_DEFAULT_PRESET = "medium"
+
+
+def onnx_input_size(tile: int) -> int:
+    return tile + 2 * ONNX_TILE_PAD
+
+
 def tile_presets_for(model: UpscaleModel) -> tuple[TilePreset, ...]:
     """The tiers a model's dropdown offers, per backend."""
-    return NCNN_TILE_PRESETS if model.backend is Backend.NCNN else TORCH_TILE_PRESETS
+    return {
+        Backend.TORCH: TORCH_TILE_PRESETS,
+        Backend.NCNN: NCNN_TILE_PRESETS,
+        Backend.ONNX: ONNX_TILE_PRESETS,
+    }[model.backend]
 
 
 def default_tile_preset(model: UpscaleModel) -> TilePreset | None:
-    key = NCNN_DEFAULT_PRESET if model.backend is Backend.NCNN else TORCH_DEFAULT_PRESET
+    key = {
+        Backend.TORCH: TORCH_DEFAULT_PRESET,
+        Backend.NCNN: NCNN_DEFAULT_PRESET,
+        Backend.ONNX: ONNX_DEFAULT_PRESET,
+    }[model.backend]
     for preset in tile_presets_for(model):
         if preset.key == key:
             return preset
@@ -237,6 +316,24 @@ def _single(filename: str, url: str) -> _WeightSpec:
 # and the id alone names the model. Versioned prefix: a re-conversion goes
 # to v2/, never silently changes a hash under an installed client.
 NCNN_WEIGHTS_BASE_URL = "https://dl.proxy-scaler.com/models/ncnn/v1/"
+
+
+ONNX_WEIGHTS_BASE_URL = "https://dl.proxy-scaler.com/models/onnx/v1/"
+
+
+def onnx_filename(model: UpscaleModel, input_size: int) -> str:
+    return f"{model.value}_{input_size}.onnx"
+
+
+def _onnx_tiers(model: UpscaleModel, sha256_by_input_size: dict[int, str]) -> _WeightSpec:
+    """One fixed-size .onnx per VRAM tier (see ONNX_TILE_PRESETS), in tier
+    order. A task downloads only the file for the tier it runs at."""
+    files = []
+    for preset in ONNX_TILE_PRESETS:
+        n = onnx_input_size(preset.tile)
+        name = onnx_filename(model, n)
+        files.append(WeightFile(name, f"{ONNX_WEIGHTS_BASE_URL}{name}", sha256_by_input_size[n]))
+    return _WeightSpec(tuple(files))
 
 
 def _ncnn_pair(model: UpscaleModel, param_sha256: str, bin_sha256: str) -> _WeightSpec:
@@ -299,6 +396,15 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
         UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK,
         "d501e5d13beda4ee579aad0bacd8b420ae0e3ab96f38f37e8c03655b99715bd8",
         "1d5f792cd58cf31213193467b0ab5f2ff9a2e3de63d3bf8caa8abe8eebe95df5",
+    ),
+    # ONNX (WebGPU) exports of the two DAT models, one fixed-size file per
+    # VRAM tier (packaging/onnx/export-models.py; gated at 84-89 dB against
+    # PyTorch fp32 on a real card). CC-BY-NC-SA-4.0, like their sources.
+    (UpscaleModel.ULTRASHARP_V2_ORT, 4): _onnx_tiers(
+        UpscaleModel.ULTRASHARP_V2_ORT, {192: "f98e744a5ac524bfeb6ca55fc281a60796cabd4f273c775c490e399595957fd8", 256: "d333d5aa58fb9b8b755194e15d81a24e390ed171123ed702f464ca2d34eafbb5", 384: "ec89000b3be646dd76b197527bbf0452d039b1c0703674fda5766a869ce0bd35"}
+    ),
+    (UpscaleModel.ILLUSTRATIONJANAI_ORT, 4): _onnx_tiers(
+        UpscaleModel.ILLUSTRATIONJANAI_ORT, {192: "5b2718c7d25f4e8fa04f0717fbd1078560cc3088af214a39b4474cd03d8f9bff", 256: "07a433548a1fcde26fcc2568726d197117d940b7aeccddb3020f3d0bc9dc5b2f", 384: "fd17652a4d21a1ccdfdbc61a441b56bc000f5914f6c6b0e785d731402446ee31"}
     ),
 }
 
@@ -477,8 +583,9 @@ def device_kind(device: torch.device | str | None) -> str:
         return "cpu"
     # "privateuseone" is torch-directml's (AMD-on-Windows) backend name;
     # "directml" is a defensive alias in case that ever changes upstream.
-    # "vulkan" is what the ncnn backend reports (ncnn_backend.py).
-    if name in ("cuda", "mps", "gpu", "privateuseone", "directml", "vulkan"):
+    # "vulkan" is what the ncnn backend reports (ncnn_backend.py),
+    # "webgpu" the ONNX Runtime one (onnx_backend.py).
+    if name in ("cuda", "mps", "gpu", "privateuseone", "directml", "vulkan", "webgpu"):
         return "gpu"
     return name or "unknown"
 
@@ -821,22 +928,41 @@ def ensure_weight_files(
             f"{model.value} supports scales {model.supported_scales}, not x{scale}"
         )
     spec = _WEIGHTS[(model, scale)]
-    weights_dir = Path(weights_dir)
-    weights_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     downloaded = False
     for wf in spec.files:
-        path = weights_dir / wf.filename
-        if path.exists() and path.stat().st_size > 0:
-            if wf.sha256 is None or _sha256_of(path) == wf.sha256:
-                paths.append(path)
-                continue
-            print(f"{wf.filename} failed its checksum; re-downloading …")
-            path.unlink()
-        _download_weight_file(wf, path)
-        downloaded = True
+        path, fetched = _ensure_one(wf, Path(weights_dir))
+        downloaded = downloaded or fetched
         paths.append(path)
     return paths, downloaded
+
+
+def ensure_weight_file(
+    model: UpscaleModel,
+    scale: int,
+    weights_dir: Path,
+    filename: str,
+) -> tuple[Path, bool]:
+    """One named file out of the model's _WeightSpec — the ONNX models keep
+    a file per VRAM tier and a task needs only the one it runs at (~53 MB
+    each). Same verify/re-fetch rules as ensure_weight_files."""
+    spec = _WEIGHTS[(model, scale)]
+    for wf in spec.files:
+        if wf.filename == filename:
+            return _ensure_one(wf, Path(weights_dir))
+    raise KeyError(f"{model.value} has no weight file {filename!r}")
+
+
+def _ensure_one(wf: WeightFile, weights_dir: Path) -> tuple[Path, bool]:
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    path = weights_dir / wf.filename
+    if path.exists() and path.stat().st_size > 0:
+        if wf.sha256 is None or _sha256_of(path) == wf.sha256:
+            return path, False
+        print(f"{wf.filename} failed its checksum; re-downloading …")
+        path.unlink()
+    _download_weight_file(wf, path)
+    return path, True
 
 
 def _sha256_of(path: Path) -> str:
@@ -1122,8 +1248,10 @@ def _cache_put(key: tuple, descriptor: "ImageModelDescriptor") -> None:
         # the same to us before it loads).
         clear_model_cache()
         from .ncnn_backend import clear_ncnn_cache
+        from .onnx_backend import clear_onnx_cache
 
         clear_ncnn_cache()
+        clear_onnx_cache()
     _MODEL_CACHE[key] = descriptor
 
 
@@ -1137,7 +1265,27 @@ def make_upscaler(model: UpscaleModel | str, **kwargs):
         from .ncnn_backend import NcnnUpscaler
 
         return NcnnUpscaler(model_id, **kwargs)
+    if model_id.backend is Backend.ONNX:
+        from .onnx_backend import OnnxUpscaler
+
+        return OnnxUpscaler(model_id, **kwargs)
     return Upscaler(model_id, **kwargs)
+
+
+def backend_available(backend: Backend) -> bool:
+    """Whether this build can run a backend at all. torch and ncnn ship in
+    every build; ONNX Runtime WebGPU exists for Linux and Windows only
+    (no macOS package), so its models are hidden where it's missing.
+    Cached per process by onnx_backend."""
+    if backend is Backend.ONNX:
+        from .onnx_backend import onnx_available
+
+        return onnx_available()
+    return True
+
+
+def model_available(model: UpscaleModel) -> bool:
+    return backend_available(model.backend)
 
 
 class Upscaler:

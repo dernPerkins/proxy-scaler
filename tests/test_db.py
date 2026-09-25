@@ -137,6 +137,11 @@ def test_parse_output_filename() -> None:
     assert anime_fast_vk is not None
     assert anime_fast_vk["model"] == "realesrgan_anime_fast_vk"
 
+    # The ONNX twins prefix-overlap their torch models the same way.
+    for slug in ("ultrasharp_v2_ort", "illustrationjanai_ort", "illustrationjanai_esrgan_vk"):
+        parsed = parse_output_filename(f"Sol_Ring-C21-263-{slug}-1200dpi.png")
+        assert parsed is not None and parsed["model"] == slug
+
     janai = parse_output_filename("Sol_Ring-C21-263-illustrationjanai-1200dpi.png")
     assert janai is not None
     assert janai["model"] == "illustrationjanai"

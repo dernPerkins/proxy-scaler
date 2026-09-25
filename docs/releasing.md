@@ -226,6 +226,26 @@ Model files for this group are not part of the build: they live on the
 bucket under `models/ncnn/v1/` and are produced by
 `make ncnn-convert` / `make ncnn-upload` (see `packaging/ncnn/`).
 
+### ONNX Runtime WebGPU — Linux and Windows
+
+`ultrasharp_v2_ort` / `illustrationjanai_ort` (in the same dropdown group)
+run on `onnxruntime-webgpu`, a plain dependency on Linux and Windows
+(pinned in `pyproject.toml`/`requirements.txt`; there's no macOS package,
+and the API hides both models when the runtime is missing). Its Linux
+build draws through Vulkan, its Windows build through Direct3D 12, which
+is why the labels differ per OS. Nothing to fetch at build time; the spec
+collects the package, including `dxcompiler.dll`/`dxil.dll` on Windows.
+`_sidecar-freeze` fails off macOS if the extension is missing. Checkpoint
+after `make sidecar` on Linux/Windows:
+
+```bash
+ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/onnxruntime/capi/onnxruntime_pybind11_state*
+```
+
+and in the `/api/device` check above, expect `"webgpu": true` on Linux and
+Windows. The model files live on the bucket under `models/onnx/v1/`, made
+by `make onnx-export` / `make onnx-upload` (see `packaging/onnx/`).
+
 ---
 
 ## Linux

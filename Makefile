@@ -434,7 +434,15 @@ endif
 # same aws profile/endpoint as the release artifacts.
 NCNN_MODELS_PREFIX := models/ncnn/v1
 NCNN_UPLOAD_ENDPOINT := https://f45b92a3e8145f49f59887b06acf42a3.r2.cloudflarestorage.com
-.PHONY: ncnn-convert ncnn-upload
+.PHONY: ncnn-convert ncnn-upload onnx-export onnx-upload
+# ONNX (DAT) models: fixed-size exports per VRAM tier, gated against
+# PyTorch, see packaging/onnx/export-models.py.
+onnx-export:
+	PYTHONUNBUFFERED=1 $(PYTHON) packaging/onnx/export-models.py export $(MODELS)
+onnx-upload:
+	@test -d dist/onnx-models || { echo "nothing in dist/onnx-models -- run make onnx-export first"; exit 1; }
+	aws s3 cp dist/onnx-models/ s3://proxy-scaler-site/models/onnx/v1/ --recursive \
+		--exclude "manifest.json" --exclude ".*" --profile r2 --endpoint-url $(NCNN_UPLOAD_ENDPOINT)
 ncnn-convert:
 	PYTHONUNBUFFERED=1 $(PYTHON) packaging/ncnn/convert-models.py convert $(MODELS)
 ncnn-upload:
@@ -461,6 +469,12 @@ _sidecar-freeze: sidecar-clean molten-vk
 	# ncnn's runtime) and, on macOS, the bundled MoltenVK it dlopens.
 	@ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/ncnn/ncnn.* >/dev/null 2>&1 \
 		|| { echo "ERROR: frozen bundle has no ncnn extension (_internal/ncnn/ncnn.*) -- every Vulkan model would fail; see proxy-scaler-serve.spec"; exit 1; }
+ifneq ($(UNAME_S),Darwin)
+	# ONNX Runtime WebGPU (UltraSharpV2/IllustrationJaNai on any GPU) ships
+	# in every Linux and Windows build; its Python extension is the runtime.
+	@ls desktop/pyinstaller/dist/proxy-scaler-serve/_internal/onnxruntime/capi/onnxruntime_pybind11_state* >/dev/null 2>&1 \
+		|| { echo "ERROR: frozen bundle has no onnxruntime extension -- the ONNX (any-GPU) models would be missing; see proxy-scaler-serve.spec"; exit 1; }
+endif
 ifeq ($(UNAME_S),Linux)
 	# The C++ runtime must come from the system on Linux (see the spec):
 	# a bundled copy shadows it for the GPU drivers and hides the GPU.

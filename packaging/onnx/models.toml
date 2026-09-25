@@ -1,0 +1,25 @@
+# Source models for the ONNX Runtime (WebGPU) backend: the DAT pair on any
+# GPU. export-models.py turns each into one fixed-size .onnx per VRAM tier
+# (upscale.ONNX_TILE_PRESETS; input = tile + 2x32) and the app downloads
+# the one it needs from dl.proxy-scaler.com/models/onnx/v1/<id>_<N>.onnx.
+#
+# Keys are the UpscaleModel ids. source_sha256 pins the upstream file; a
+# changed upstream file must be a deliberate bump (and a new v2/ prefix).
+
+[ultrasharp_v2_ort]
+arch = "DAT2"
+author = "Kim2091"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://huggingface.co/Kim2091/UltraSharpV2"
+source_url = "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors"
+source_sha256 = "2b5db674aa8f3864a696dccd1d07d7cc0500fbf220f35044cd30eee9a7f971a7"
+
+[illustrationjanai_ort]
+arch = "DAT2"
+author = "the-database (IllustrationJaNai)"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://openmodeldb.info/models/4x-IllustrationJaNai-V1-DAT2"
+# Author hosts on Google Drive only; the HuggingFace mirror the torch model
+# already downloads from.
+source_url = "https://huggingface.co/tomjackson2023/upscale_models/resolve/main/4x_IllustrationJaNai_V1_DAT2_190k.pth"
+source_sha256 = "a82f3a2d8d1c676171b86a00048b7a624e3c62c87ec701012f106a171c309fbe"

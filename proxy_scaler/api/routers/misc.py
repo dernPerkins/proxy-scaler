@@ -20,7 +20,10 @@ from proxy_scaler.api.schemas import (
 from proxy_scaler.ncnn_backend import vulkan_available
 from proxy_scaler.pipeline import clear_generated_data
 from proxy_scaler.upscale import (
+    Backend,
     UpscaleModel,
+    backend_available,
+    model_available,
     default_tile_preset,
     device_backend,
     device_kind,
@@ -67,6 +70,7 @@ def list_models() -> list[ModelOptionOut]:
             speed=m.speed,
             backend=m.backend.value,
             group=m.group,
+            short_label=m.short_label,
             tile_presets=[
                 TilePresetOut(key=p.key, label=p.label, tile=p.tile)
                 for p in tile_presets_for(m)
@@ -76,6 +80,9 @@ def list_models() -> list[ModelOptionOut]:
             ),
         )
         for m in UpscaleModel
+        # A model whose runtime isn't in this build (ONNX on macOS) is
+        # hidden rather than offered and failed.
+        if model_available(m)
     ]
 
 
@@ -101,6 +108,7 @@ def get_device() -> DeviceOut:
         backend=device_backend(device),
         # Separate axis: the Vulkan models don't go through torch at all.
         vulkan=vulkan_available(),
+        webgpu=backend_available(Backend.ONNX),
     )
 
 

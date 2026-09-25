@@ -22,6 +22,9 @@ export interface ModelOption {
   // ModelSelect then renders a single ungrouped list.
   backend?: string;
   group?: string;
+  // Compact badge text, per-OS where it differs (see constants.ts
+  // registerShortLabels). Absent from an older server.
+  short_label?: string;
   // Vulkan models tile by "GPU VRAM" tier instead of a free number; the
   // chosen tier's `tile` is written into settings.tile_size. Empty/absent
   // for torch models.
@@ -48,6 +51,8 @@ export interface Device {
   // from `kind`/`backend`, which describe torch's device). Absent on an
   // older server: unknown, not false.
   vulkan?: boolean;
+  // ONNX Runtime WebGPU present (UltraSharpV2/IllustrationJaNai on any GPU).
+  webgpu?: boolean;
 }
 
 // What both /api/resolve, /api/generate, and /api/pdf take as their card

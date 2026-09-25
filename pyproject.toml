@@ -18,6 +18,9 @@ dependencies = [
   # ncnn under Vulkan: the second inference backend (Vulkan Models). The
   # official wheel carries Vulkan on Linux/macOS/Windows; no GPU_VARIANT.
   "ncnn>=1.0.20260526",
+  # ONNX Runtime WebGPU: UltraSharpV2/IllustrationJaNai on any GPU (Vulkan on
+  # Linux, Direct3D 12 on Windows). No macOS package exists; needs 3.11+.
+  "onnxruntime-webgpu==1.27.0; sys_platform != 'darwin' and python_version >= '3.11'",
   "fpdf2>=2.7",
   "fastapi>=0.115",
   "uvicorn>=0.30",

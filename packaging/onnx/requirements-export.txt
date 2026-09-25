@@ -1,0 +1,3 @@
+# Export-only toolchain for packaging/onnx/export-models.py (on top of the
+# app venv, which already has torch, spandrel and onnxruntime-webgpu).
+onnx>=1.16

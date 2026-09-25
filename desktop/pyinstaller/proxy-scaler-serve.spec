@@ -112,6 +112,21 @@ BINARIES += ncnn_binaries
 HIDDEN_IMPORTS += ncnn_hiddenimports
 BINARIES += collect_dynamic_libs("ncnn", search_patterns=["*.so", "*.pyd", "*.dll", "*.dylib"])
 
+# onnxruntime (the onnxruntime-webgpu package): the WebGPU runtime behind
+# UltraSharpV2/IllustrationJaNai on any GPU. Linux + Windows only (no macOS
+# package), hence the find_spec guard. Its capi/ folder holds the runtime
+# library and, on Windows, dxcompiler.dll + dxil.dll (the D3D12 shader
+# compiler Dawn loads by path); collect_all + the explicit patterns make
+# sure none of them is left behind. _sidecar-freeze double-checks.
+if importlib.util.find_spec("onnxruntime") is not None:
+    ort_datas, ort_binaries, ort_hiddenimports = collect_all("onnxruntime")
+    DATAS += ort_datas
+    BINARIES += ort_binaries
+    HIDDEN_IMPORTS += ort_hiddenimports
+    BINARIES += collect_dynamic_libs(
+        "onnxruntime", search_patterns=["*.so", "*.so.*", "*.pyd", "*.dll"]
+    )
+
 # macOS: ncnn dlopens libMoltenVK.dylib by bare name and the wheel doesn't
 # ship it, so the Vulkan models would silently run on the CPU. We bundle
 # the pinned MoltenVK release (Apache-2.0; `make molten-vk` fetches it into

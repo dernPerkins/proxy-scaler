@@ -46,6 +46,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from PIL import Image
 
+from . import host_tiling
+from .host_tiling import consistency_psnr, identity_psnr
 from .upscale import (
     NCNN_TILE_PRESETS,
     Backend,
@@ -78,12 +80,6 @@ _DEVICE_TYPE_CPU = 3
 INPUT_BLOB = "data"
 OUTPUT_BLOB = "output"
 
-# See module docstring: a genuine 4x upscale box-downsampled back to the
-# input resolution sits ~30 dB above it; black/garbage sits at ~10-11 dB.
-PLAUSIBILITY_MIN_PSNR_DB = 20.0
-# ...and the ceiling for "the output is just the input blown up" (see
-# identity_psnr): real model outputs sit far below this.
-IDENTITY_MAX_PSNR_DB = 50.0
 # ncnn reports Vulkan failures on stderr and carries on with whatever
 # buffers it has; these are the lines that mean the pass can't be trusted.
 import re as _re
@@ -331,102 +327,13 @@ def _cache_key(model: UpscaleModel, scale: int, weights_dir: Path, gpu: int | No
     return (model, scale, str(Path(weights_dir).resolve()), gpu, fp16)
 
 
-# --- the plausibility gate --------------------------------------------------
-
-
-def _box_downscale(chw: np.ndarray, factor: int) -> np.ndarray:
-    c, h, w = chw.shape
-    h2, w2 = h // factor, w // factor
-    return chw[:, : h2 * factor, : w2 * factor].reshape(c, h2, factor, w2, factor).mean(axis=(2, 4))
-
-
-def consistency_psnr(output: np.ndarray, source: np.ndarray, scale: int) -> float:
-    """PSNR between the output box-downscaled by `scale` and the source.
-    Both float32 CHW in [0,1]; output must be exactly scale x source."""
-    down = _box_downscale(np.clip(output, 0.0, 1.0), scale)
-    h = min(down.shape[1], source.shape[1])
-    w = min(down.shape[2], source.shape[2])
-    mse = float(np.mean((down[:, :h, :w] - source[:, :h, :w]) ** 2))
-    if mse <= 0.0:
-        return 99.0
-    return float(10.0 * np.log10(1.0 / mse))
-
-
-def _nearest_upscale(source: np.ndarray, scale: int) -> np.ndarray:
-    return np.repeat(np.repeat(source, scale, axis=1), scale, axis=2)
-
-
-def identity_psnr(output: np.ndarray, source: np.ndarray, scale: int) -> float:
-    """PSNR between the output and a plain nearest-neighbour blow-up of the
-    source. A working model always departs from that (typically 20-35 dB
-    on a card); a result that *matches* it did no work at all."""
-    nn = _nearest_upscale(source, scale)
-    mse = float(np.mean((np.clip(output, 0.0, 1.0) - nn) ** 2))
-    if mse <= 0.0:
-        return 99.0
-    return float(10.0 * np.log10(1.0 / mse))
-
-
-def _plausible(output: np.ndarray, source: np.ndarray, scale: int) -> bool:
-    if output.shape != (source.shape[0], source.shape[1] * scale, source.shape[2] * scale):
-        return False
-    if not np.isfinite(output).all():
-        return False
-    if consistency_psnr(output, source, scale) < PLAUSIBILITY_MIN_PSNR_DB:
-        return False
-    # Seen live on a GPU with ~1 GB of VRAM left: every vkAllocateMemory
-    # failed, the convolution branch silently produced zeros, and the
-    # model's bypass path handed back the input nearest-neighbour
-    # upscaled — finite, "consistent" with the input to 99 dB, and
-    # useless. That is what an unchanged image looks like, so treat it
-    # as a failed pass.
-    if identity_psnr(output, source, scale) > IDENTITY_MAX_PSNR_DB:
-        return False
-    return True
-
-
-class _StderrCapture:
-    """Temporarily divert fd 2 into a file so ncnn's C++-side errors
-    (NCNN_LOGE -> stderr: "vkAllocateMemory failed -2", "vkQueueSubmit
-    failed", ...) can be read back after a pass. Python-level redirection
-    can't see them; only the descriptor can. Everything captured is
-    re-emitted to the real stderr afterwards so the worker log stays
-    complete. Best-effort: with no usable fd 2 (a windowless frozen
-    process) capture is skipped and `text` stays empty."""
-
-    def __init__(self, echo: bool = True) -> None:
-        self.text = ""
-        self._echo = echo
-        self._saved: int | None = None
-        self._tmp = None
-
-    def __enter__(self) -> "_StderrCapture":
-        import tempfile
-
-        try:
-            sys.stderr.flush()
-            self._tmp = tempfile.TemporaryFile(mode="w+b")
-            self._saved = os.dup(2)
-            os.dup2(self._tmp.fileno(), 2)
-        except Exception:  # noqa: BLE001
-            self._saved = None
-        return self
-
-    def __exit__(self, *exc) -> None:
-        if self._saved is None:
-            return
-        try:
-            sys.stderr.flush()
-            os.dup2(self._saved, 2)
-            os.close(self._saved)
-            self._tmp.seek(0)
-            self.text = self._tmp.read().decode("utf-8", "replace")
-            self._tmp.close()
-            if self.text and self._echo:
-                sys.stderr.write(self.text)
-                sys.stderr.flush()
-        except Exception:  # noqa: BLE001
-            pass
+# --- shared host-side helpers (host_tiling.py) -------------------------------
+# Re-exported under their original names: they lived here first, and the
+# tests (and anything else) that reach for nb._plausible etc. keep working.
+_box_downscale = host_tiling.box_downscale
+_nearest_upscale = host_tiling.nearest_upscale
+_plausible = host_tiling.plausible
+_StderrCapture = host_tiling.StderrCapture
 
 
 def _vulkan_error_lines(text: str) -> list[str]:
@@ -462,8 +369,7 @@ def resolve_ncnn_tile(tile_setting: int) -> int:
 
 def _tile_ladder(start: int) -> list[int]:
     """`start`, then every preset tile below it, largest first."""
-    rungs = [start] + [p.tile for p in NCNN_TILE_PRESETS if p.tile < start]
-    return sorted(set(rungs), reverse=True)
+    return host_tiling.tile_ladder(start, [p.tile for p in NCNN_TILE_PRESETS])
 
 
 class NcnnUpscaler:
@@ -534,6 +440,9 @@ class NcnnUpscaler:
             from . import upscale as _upscale
 
             _upscale.clear_model_cache()
+            from .onnx_backend import clear_onnx_cache
+
+            clear_onnx_cache()
             paths, _ = ensure_weight_files(self.model_id, self.scale, self.weights_dir)
             param, weights = paths[0], paths[1]
             where = "cpu" if gpu is None else f"vulkan:{gpu}"
@@ -550,29 +459,9 @@ class NcnnUpscaler:
     # -- inference --------------------------------------------------------
 
     def _run_tiled(self, net: _NcnnNet, img: np.ndarray, tile: int) -> np.ndarray:
-        """Overlapping-tile pass, same geometry as Upscaler._tiled_inference
-        (pad on every side, keep the unpadded core, average overlaps)."""
-        scale = self.scale
-        pad = self.tile_pad
-        _, height, width = img.shape
-        if tile >= max(height, width):
-            return net.run(img)
-        output = np.zeros((3, height * scale, width * scale), dtype=np.float32)
-        weights = np.zeros((1, height * scale, width * scale), dtype=np.float32)
-        for y in range(0, height, tile):
-            for x in range(0, width, tile):
-                y0, x0 = max(y - pad, 0), max(x - pad, 0)
-                y1, x1 = min(y + tile + pad, height), min(x + tile + pad, width)
-                tile_out = net.run(img[:, y0:y1, x0:x1])
-                oy0, ox0 = (y - y0) * scale, (x - x0) * scale
-                oy1 = oy0 + min(tile, height - y) * scale
-                ox1 = ox0 + min(tile, width - x) * scale
-                out_y0, out_x0 = y * scale, x * scale
-                out_y1 = out_y0 + (oy1 - oy0)
-                out_x1 = out_x0 + (ox1 - ox0)
-                output[:, out_y0:out_y1, out_x0:out_x1] += tile_out[:, oy0:oy1, ox0:ox1]
-                weights[:, out_y0:out_y1, out_x0:out_x1] += 1.0
-        return output / np.maximum(weights, 1.0)
+        """Overlapping-tile pass (host_tiling.run_tiled: same geometry as
+        Upscaler._tiled_inference)."""
+        return host_tiling.run_tiled(net.run, img, tile=tile, pad=self.tile_pad, scale=self.scale)
 
     def _attempt(self, gpu: int | None, fp16: bool, tile: int, img: np.ndarray) -> np.ndarray | None:
         """One pass; None when it raised or produced implausible output."""
@@ -643,19 +532,12 @@ class NcnnUpscaler:
         # Alpha handling is identical to Upscaler.upscale: the models are
         # RGB-only, so the card's real alpha (transparent rounded corners)
         # is split off and reattached to the output, resized to match.
-        alpha = image.getchannel("A") if image.mode in ("RGBA", "LA") else None
-        rgb = image.convert("RGB")
-        img = np.asarray(rgb, dtype=np.float32).transpose(2, 0, 1) / 255.0
+        img, alpha = host_tiling.split_image(image)
         self.tile = self._base_tile
         print(f"  inference config: vulkan, tile {self.tile}")
         with self._phase("inference"):
             out, device, dtype = self._infer(img)
-        out8 = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8).transpose(1, 2, 0)
-        out_image = Image.fromarray(np.ascontiguousarray(out8), mode="RGB")
-        if alpha is not None:
-            resized_alpha = alpha.resize(out_image.size, Image.Resampling.LANCZOS)
-            out_image.putalpha(resized_alpha)
-        return UpscaleResult(image=out_image, device=device, dtype=dtype)
+        return UpscaleResult(image=host_tiling.join_image(out, alpha), device=device, dtype=dtype)
 
 
 def _make_net(param: Path, weights: Path, gpu: int | None, fp16: bool) -> _NcnnNet:

@@ -38,8 +38,10 @@ from .scryfall import (
     expand_faces,
 )
 from .ncnn_backend import NcnnUpscaler
+from .onnx_backend import OnnxUpscaler
 from .upscale import (
     Backend,
+    model_available,
     UpscaleModel,
     Upscaler,
     atomic_save_png,
@@ -570,7 +572,18 @@ def _upscalers_for_targets(
     # Backend dispatch lives here, on the model's own data, so the rest of
     # the pipeline never learns which runtime ran. Both names stay
     # module-level attributes (tests monkeypatch pipeline.Upscaler).
-    factory = Upscaler if model_id.backend is Backend.TORCH else NcnnUpscaler
+    if not model_available(model_id):
+        # A project saved on Linux/Windows opened against a macOS server:
+        # ONNX Runtime has no macOS package, so these models don't exist here.
+        raise ValueError(
+            f"{model_id.value} isn't available in this build (its runtime isn't "
+            "packaged for this platform) — pick another model"
+        )
+    factory = {
+        Backend.TORCH: Upscaler,
+        Backend.NCNN: NcnnUpscaler,
+        Backend.ONNX: OnnxUpscaler,
+    }[model_id.backend]
     return {
         scale: factory(
             model=model_id,

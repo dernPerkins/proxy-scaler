@@ -34,13 +34,25 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   // Vulkan (ncnn) models: the torch twin's acronym plus -VK.
   realesrgan_anime_fast_vk: "REAF-VK",
   animesharp_vk: "AS-VK",
-  illustrationjanai_esrgan_vk: "IJ-VK",
+  illustrationjanai_esrgan_vk: "IJE-VK",
   [ORIGINAL_MODEL]: "Original",
   [CUSTOM_SOURCE_MODEL]: "Source",
 };
 
+// Badge text served by the server (GET /api/models short_label) wins over
+// the table above: it can differ by OS — the ONNX models read "USV2-VK" on
+// Linux but "USV2-DX" on Windows, where they run on Direct3D 12. Filled by
+// registerShortLabels() whenever the models query resolves.
+const SERVER_SHORT_LABELS = new Map<string, string>();
+
+export function registerShortLabels(models: { value: string; short_label?: string }[]): void {
+  for (const m of models) {
+    if (m.short_label) SERVER_SHORT_LABELS.set(m.value, m.short_label);
+  }
+}
+
 export function modelDisplayName(model: string): string {
-  return MODEL_DISPLAY_NAMES[model] ?? model;
+  return SERVER_SHORT_LABELS.get(model) ?? MODEL_DISPLAY_NAMES[model] ?? model;
 }
 
 // The generation-directory names every client request carries. Relative

@@ -32,6 +32,10 @@ class ModelOptionOut(BaseModel):
     # client ignoring them and an older server omitting them both work.
     backend: str = "torch"
     group: str = "Models"
+    # Compact badge text ("USV2", "REAF-VK", "USV2-DX"). Per-OS where the
+    # graphics API differs, which is why the server owns it. Empty from an
+    # older server; the client then falls back to its own table.
+    short_label: str = ""
     # The "GPU VRAM" tiers this model's dropdown offers (torch models also
     # get "auto", tile 0; Vulkan ones can't), plus which tier is the
     # default. Empty only from a server older than this field.
@@ -65,6 +69,9 @@ class DeviceOut(BaseModel):
     # device. False on an older server, so the client must treat absence
     # as "unknown", never as "no".
     vulkan: bool = False
+    # ONNX Runtime's WebGPU provider is present (the DAT models on any GPU:
+    # Vulkan on Linux, Direct3D 12 on Windows). False on macOS builds.
+    webgpu: bool = False
 
 
 class DeckEntryIn(BaseModel):

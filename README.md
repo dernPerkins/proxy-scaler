@@ -128,7 +128,9 @@ models' loader are all bundled. What you need beyond the download:
   Vulkan loader and your GPU's ICD, `sudo apt install libvulkan1
   mesa-vulkan-drivers` (the `.deb` depends on `libvulkan1`; Nvidia's
   driver brings its own ICD). Without them the Vulkan models still work,
-  on the CPU.
+  on the CPU. On Windows this group is called **GPU-Universal Models**,
+  because two of its entries run through DirectX 12 there (see
+  [below](#vulkan-models)).
 
 ## Desktop app
 
@@ -320,11 +322,32 @@ next lower one, then on the CPU.
 | `realesrgan_anime_fast_vk` | Fastest | The same compact Real-ESRGAN model as `realesrgan_anime_fast`, from the authors' own ncnn release — a like-for-like way to compare the two runtimes (BSD-3-Clause) |
 | `animesharp_vk` | Balanced | AnimeSharp — ESRGAN tuned for anime and line art, strong on text (CC-BY-NC-SA-4.0) |
 | `illustrationjanai_esrgan_vk` | Balanced | The ESRGAN sibling of IllustrationJaNai — same author and illustration/digital-art dataset as the DAT model above; the smallest colour shift of any Vulkan model tested (CC-BY-NC-SA-4.0) |
+| `ultrasharp_v2_ort` | Best quality — slowest | UltraSharpV2 itself, run by ONNX Runtime instead of PyTorch — see below (CC-BY-NC-SA-4.0) |
+| `illustrationjanai_ort` | Best for illustrations — slowest | IllustrationJaNai itself, run by ONNX Runtime — see below (CC-BY-NC-SA-4.0) |
 
 Model files are ncnn `.param`/`.bin` pairs downloaded on first use from
 `dl.proxy-scaler.com/models/ncnn/` and verified by SHA-256. Sources,
 hashes and the conversion recipe live in [`packaging/ncnn/`](packaging/ncnn/);
 licenses and attribution in [`THIRD_PARTY.md`](THIRD_PARTY.md).
+
+**UltraSharpV2 and IllustrationJaNai on any GPU.** The two DAT models
+can't run on ncnn (their attention layers need tensor shapes ncnn doesn't
+have), so their any-GPU entries run on [ONNX Runtime](https://onnxruntime.ai/)'s
+WebGPU provider instead. That talks to the GPU through **Vulkan on Linux**
+and **Direct3D 12 on Windows** (not DirectML), and the labels say which:
+"UltraSharpV2 (Vulkan)" on Linux, "UltraSharpV2 (DirectX 12)" on Windows,
+under a group header of "Vulkan Models" and "GPU-Universal Models"
+respectively. They are not in the macOS builds (there is no ONNX Runtime
+WebGPU package for macOS, and Macs already run both models on Metal).
+
+They compute the same model as the regular entries at full precision
+(fp32; within ~59 dB of PyTorch fp32 on a real card), which makes them
+slower: about 3x the time of the regular bf16 path on the same healthy
+GPU. Use them when the regular entries fail on your GPU, not as a
+default. The exported files are fixed-size, one per VRAM tier (Low /
+Medium / High; no Max, which exceeds WebGPU's buffer limits), ~53 MB
+each, downloaded on first use from `dl.proxy-scaler.com/models/onnx/`;
+sources and the export recipe live in [`packaging/onnx/`](packaging/onnx/).
 
 ## Target DPI
 
@@ -487,6 +510,7 @@ package alongside the client and server app in one go; see
 | AMD | Linux | ROCm — a different torch wheel, not a different code path (ROCm reports through the same CUDA APIs) | build-time only |
 | AMD | Windows | DirectML — the only realistic path, since AMD doesn't ship ROCm for Windows | handled in `resolve_device()`/`device_kind()` already |
 | any | any | Vulkan (ncnn) — the "Vulkan models" only; in-process, no torch involved, present in every build. `ncnn_backend.py` | none (the `ncnn` package is a plain dependency) |
+| any | Linux, Windows | ONNX Runtime WebGPU — only `ultrasharp_v2_ort` / `illustrationjanai_ort`; Vulkan on Linux, Direct3D 12 on Windows; in-process, no torch involved, present in every Linux/Windows build. `onnx_backend.py` | none (`onnxruntime-webgpu` is a plain dependency off macOS) |
 
 Building for AMD needs a variant-specific install, since ROCm/DirectML
 replace `torch` with an incompatible build rather than adding to it:

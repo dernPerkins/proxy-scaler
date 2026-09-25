@@ -254,11 +254,16 @@ def test_list_models_matches_upscale_model_enum(client: TestClient) -> None:
     lockstep with the enum itself, not a second hand-maintained list."""
     from proxy_scaler.upscale import UpscaleModel
 
+    from proxy_scaler.upscale import model_available
+
     resp = client.get("/api/models")
     assert resp.status_code == 200
     models = resp.json()
-    assert {m["value"] for m in models} == {m.value for m in UpscaleModel}
-    assert len(models) == len(list(UpscaleModel))
+    # Every model this build can run — a runtime missing from the build
+    # (ONNX Runtime on macOS) hides its models instead of failing them.
+    available = {m.value for m in UpscaleModel if model_available(m)}
+    assert {m["value"] for m in models} == available
+    assert len(models) == len(available)
     for m in models:
         assert m["label"]
         assert m["speed"]
@@ -278,6 +283,10 @@ def test_list_models_carries_backend_group_and_vram_presets(client: TestClient) 
             assert [p["key"] for p in m["tile_presets"]] == [p.key for p in NCNN_TILE_PRESETS]
             assert [p["tile"] for p in m["tile_presets"]] == [p.tile for p in NCNN_TILE_PRESETS]
             assert m["default_tile_preset"] == NCNN_DEFAULT_PRESET
+        elif m["backend"] == "onnx":
+            assert m["group"] in ("Vulkan Models", "GPU-Universal Models")
+            assert [p["key"] for p in m["tile_presets"]] == ["low", "medium", "high"]
+            assert m["default_tile_preset"] == "medium"
         else:
             assert m["backend"] == "torch" and m["group"] == "Models"
             assert [p["key"] for p in m["tile_presets"]] == ["auto"] + [p.key for p in NCNN_TILE_PRESETS]
@@ -2051,3 +2060,19 @@ def test_device_reports_vulkan(client: TestClient) -> None:
     assert body["kind"] == "cpu" and body["vulkan"] is True
     with patch("proxy_scaler.api.routers.misc.vulkan_available", return_value=False):
         assert client.get("/api/device").json()["vulkan"] is False
+
+
+def test_models_hidden_when_their_runtime_is_missing(client: TestClient) -> None:
+    """A macOS build has no ONNX Runtime: its two models must not be offered."""
+    with patch("proxy_scaler.api.routers.misc.model_available", lambda m: m.backend.value != "onnx"):
+        values = {m["value"] for m in client.get("/api/models").json()}
+    assert "ultrasharp_v2_ort" not in values and "ultrasharp_v2" in values
+    for m in client.get("/api/models").json():
+        assert m["short_label"]
+
+
+def test_device_reports_webgpu(client: TestClient) -> None:
+    with patch("proxy_scaler.api.routers.misc.backend_available", return_value=True):
+        assert client.get("/api/device").json()["webgpu"] is True
+    with patch("proxy_scaler.api.routers.misc.backend_available", return_value=False):
+        assert client.get("/api/device").json()["webgpu"] is False
