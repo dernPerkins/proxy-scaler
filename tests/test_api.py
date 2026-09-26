@@ -682,6 +682,50 @@ def test_gallery_list_and_fetch_images(client: TestClient, tmp_path: Path) -> No
     assert resp.status_code == 200
 
 
+def test_gallery_thumb_is_downscaled_and_tracks_file_changes(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The gallery tile route serves a bounded-size WebP, keeps alpha, and
+    a regenerated file (same path, new content) isn't served stale."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from proxy_scaler.api.routers.gallery import THUMB_MAX_PX
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+    out_path = Path(item["out_path"])
+    src = Image.new("RGBA", (1500, 2100), (200, 10, 10, 255))
+    src.paste((0, 0, 0, 0), (0, 0, 300, 300))  # transparent corner, like a real card
+    src.save(out_path)
+
+    resp = client.get(f"/api/gallery/{item['id']}/thumb")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/webp"
+    thumb = Image.open(BytesIO(resp.content))
+    assert max(thumb.size) == THUMB_MAX_PX
+    assert thumb.size == (457, 640)
+    thumb = thumb.convert("RGBA")
+    assert thumb.getpixel((5, 5))[3] == 0  # alpha kept through WebP
+    assert thumb.getpixel((300, 400))[3] == 255
+    etag = resp.headers["etag"]
+
+    resp = client.get(f"/api/gallery/{item['id']}/thumb", headers={"If-None-Match": etag})
+    assert resp.status_code == 304
+
+    # Regenerate: new content, same path. mtime may not tick at 1s
+    # resolution on every filesystem, so also change the size.
+    Image.new("RGB", (1500, 2101), (10, 10, 200)).save(out_path)
+    resp = client.get(f"/api/gallery/{item['id']}/thumb", headers={"If-None-Match": etag})
+    assert resp.status_code == 200
+    assert resp.headers["etag"] != etag
+    assert Image.open(BytesIO(resp.content)).getpixel((10, 10))[2] > 150
+
+    resp = client.get("/api/gallery/999/thumb")
+    assert resp.status_code == 404
+
+
 def test_gallery_image_not_found(client: TestClient) -> None:
     resp = client.get("/api/gallery/999/full")
     assert resp.status_code == 404
