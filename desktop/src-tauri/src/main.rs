@@ -65,12 +65,12 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project,
-    discard_unnamed_project, get_card_db_prompt_dismissed, get_cutter_inset_unit,
+    discard_unnamed_project, get_card_db_prompt_dismissed, get_completed_tutorials, get_cutter_inset_unit,
     get_last_project_id, get_registration_conflict_ignored,
     get_or_create_unnamed_project, get_patch_notes_seen_version, get_project,
     get_quit_prompt_suppressed, get_show_digital_printings, get_update_check_enabled,
     get_update_skipped_version,
-    import_decklist_text, import_resolved_cards, list_projects, list_recent_hosts, parse_decklist,
+    import_decklist_text, import_resolved_cards, list_projects, mark_tutorial_completed, list_recent_hosts, parse_decklist,
     remove_card, remove_recent_host, set_card_db_prompt_dismissed, set_card_printing,
     set_cutter_inset_unit, set_registration_conflict_ignored,
     set_card_quantity, set_cards_resolution, set_last_project_id, set_patch_notes_seen_version,
@@ -874,6 +874,8 @@ fn main() {
             set_update_skipped_version,
             get_patch_notes_seen_version,
             set_patch_notes_seen_version,
+            get_completed_tutorials,
+            mark_tutorial_completed,
             get_update_check_enabled,
             set_update_check_enabled,
             check_for_update,

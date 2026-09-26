@@ -3,6 +3,7 @@ import { generationApi } from "../api/generation";
 import StatusBadge from "../components/StatusBadge";
 import { ORIGINAL_DPI, ORIGINAL_MODEL } from "../constants";
 import { useProject } from "../context/ProjectContext";
+import { useTourOnFirstView } from "../tutorial/tutorialStore";
 import type { Task, TaskStatus } from "../api/types";
 
 const STATUS_ORDER: TaskStatus[] = ["running", "pending", "done", "failed", "canceled"];
@@ -10,6 +11,7 @@ const STATUS_ORDER: TaskStatus[] = ["running", "pending", "done", "failed", "can
 export default function TasksPage() {
   const queryClient = useQueryClient();
   const project = useProject();
+  useTourOnFirstView("tasks");
 
   // 2-3s refetchInterval replaces Streamlit's st.fragment(run_every=...)
   // autopolling — same cadence, no server push needed at this scale.
@@ -80,7 +82,7 @@ export default function TasksPage() {
     <div>
       <h2>Tasks</h2>
 
-      <div className="summary-row">
+      <div className="summary-row" data-tour="tasks-summary">
         <span className="chip">
           Worker:{" "}
           {workerQuery.isLoading
@@ -123,7 +125,7 @@ export default function TasksPage() {
       {tasksQuery.isLoading ? (
         <p className="hint">Loading…</p>
       ) : tasks.length > 0 ? (
-        <div className="table-wrap panel" style={{ padding: "12px 4px" }}>
+        <div className="table-wrap panel" style={{ padding: "12px 4px" }} data-tour="tasks-table">
           <table>
             <thead>
               <tr>

@@ -7,6 +7,7 @@ import PatchNotesPrompt from "./components/PatchNotesPrompt";
 import UpdatePrompt from "./components/UpdatePrompt";
 import ConnectGate from "./ConnectGate";
 import { ConnectionProvider } from "./connection";
+import TutorialOverlay from "./tutorial/TutorialOverlay";
 import "./styles.css";
 
 const queryClient = new QueryClient();
@@ -35,6 +36,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             it on purpose — portals stack in mount order, and the update
             offer outranks notes that installing it would make stale. */}
         <PatchNotesPrompt />
+        {/* The one overlay every first-view tutorial draws in — up here
+            so the connect screen's tour and the tabs' tours share it. */}
+        <TutorialOverlay />
         <ConnectGate>
           <BrowserRouter>
             <App />

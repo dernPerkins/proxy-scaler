@@ -257,3 +257,31 @@ export function setResumeTasksPromptOpen(open: boolean): void {
 export function getResumeTasksPromptOpen(): boolean {
   return resumeTasksPromptOpen;
 }
+
+// Fourth link: CardDbPrompt publishes these the same way, so the
+// first-view tutorials (tutorial/tutorialStore.ts) can queue behind the
+// whole chain. "Settled" means CardDbPrompt has decided — there was
+// nothing to offer (corpus present, import running, "Don't ask again"),
+// the status check failed, or the offer was answered.
+let cardDbSettled = false;
+let cardDbPromptOpen = false;
+
+export function setCardDbSettled(): void {
+  if (cardDbSettled) return;
+  cardDbSettled = true;
+  notifyUpdateStore();
+}
+
+export function getCardDbSettled(): boolean {
+  return cardDbSettled;
+}
+
+export function setCardDbPromptOpen(open: boolean): void {
+  if (cardDbPromptOpen === open) return;
+  cardDbPromptOpen = open;
+  notifyUpdateStore();
+}
+
+export function getCardDbPromptOpen(): boolean {
+  return cardDbPromptOpen;
+}

@@ -2095,6 +2095,45 @@ pub fn set_patch_notes_seen_version(app: AppHandle, version: String) -> Result<(
     write_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY, &version)
 }
 
+// --- First-view tutorials already finished or skipped ----------------------
+//
+// The ids of the walkthroughs (tutorial/tours.ts) the user has already been
+// through, stored as one JSON array. A tour auto-shows only while its id is
+// absent, so absent-key means "none seen" and every tour — including ones
+// added in a later release — runs exactly once. Skipping counts as done; the
+// tab bar's ? button replays a tour without consulting this list. A value
+// that fails to parse reads as empty: re-showing tours beats a broken prompt.
+
+const TUTORIALS_COMPLETED_KEY: &str = "tutorials_completed";
+
+fn read_completed_tutorials(conn: &Connection) -> Result<Vec<String>, String> {
+    Ok(read_app_setting(conn, TUTORIALS_COMPLETED_KEY)?
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default())
+}
+
+fn add_completed_tutorial(conn: &Connection, id: &str) -> Result<(), String> {
+    let mut ids = read_completed_tutorials(conn)?;
+    if ids.iter().any(|existing| existing == id) {
+        return Ok(());
+    }
+    ids.push(id.to_string());
+    let raw = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+    write_app_setting(conn, TUTORIALS_COMPLETED_KEY, &raw)
+}
+
+#[tauri::command]
+pub fn get_completed_tutorials(app: AppHandle) -> Result<Vec<String>, String> {
+    let conn = open_db(&app)?;
+    read_completed_tutorials(&conn)
+}
+
+#[tauri::command]
+pub fn mark_tutorial_completed(app: AppHandle, id: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    add_completed_tutorial(&conn, &id)
+}
+
 // Whether the boot-time update check runs at all (UpdatePrompt.tsx reads
 // this before calling check_for_update). Default ON — but the check is an
 // unauthenticated request to the release host on every launch, which some
@@ -2863,6 +2902,22 @@ mod tests {
             read_app_setting(&conn, PATCH_NOTES_SEEN_VERSION_KEY).expect("read").as_deref(),
             Some("0.3.0")
         );
+    }
+
+    #[test]
+    fn completed_tutorials_accumulate_without_duplicates() {
+        let conn = test_conn();
+        assert!(read_completed_tutorials(&conn).expect("default: none").is_empty());
+        add_completed_tutorial(&conn, "connect").expect("mark");
+        add_completed_tutorial(&conn, "decklist").expect("mark");
+        add_completed_tutorial(&conn, "connect").expect("re-mark is a no-op");
+        assert_eq!(
+            read_completed_tutorials(&conn).expect("read"),
+            vec!["connect".to_string(), "decklist".to_string()]
+        );
+        // A corrupt value reads as empty rather than erroring the prompt.
+        write_app_setting(&conn, TUTORIALS_COMPLETED_KEY, "not json").expect("corrupt");
+        assert!(read_completed_tutorials(&conn).expect("read").is_empty());
     }
 
     #[test]

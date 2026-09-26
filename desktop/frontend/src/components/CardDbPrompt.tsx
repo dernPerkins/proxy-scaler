@@ -10,7 +10,7 @@
 // dialogs never stack. "Not now" suppresses it for this launch; "Don't
 // ask again" persists (app_settings — see project_store.rs); the sidebar
 // panel remains the way in either way.
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -27,6 +27,8 @@ import {
   getResumeTasksPromptOpen,
   getResumeTasksSettled,
   getUpdatePromptOpen,
+  setCardDbPromptOpen,
+  setCardDbSettled,
   subscribeUpdateStore,
 } from "../update";
 
@@ -112,7 +114,24 @@ export default function CardDbPrompt() {
     status.local == null &&
     !status.import_running;
   if (!shownRef.current && eligible) shownRef.current = true;
-  if (!shownRef.current || dismissedThisLaunch) return null;
+
+  // Publish this link's settled/open pair for whatever queues behind it
+  // (the first-view tutorials). Settled once there is provably nothing to
+  // offer this launch, or the offer has been answered.
+  const open = shownRef.current && !dismissedThisLaunch;
+  const settled =
+    !isTauri() ||
+    dismissedThisLaunch ||
+    dismissedQuery.data === true ||
+    dismissedQuery.isError ||
+    statusQuery.isError ||
+    (status != null && (status.local != null || status.import_running));
+  useEffect(() => setCardDbPromptOpen(open), [open]);
+  useEffect(() => {
+    if (settled && !open) setCardDbSettled();
+  }, [settled, open]);
+
+  if (!open) return null;
 
   const dismiss = () => {
     setDismissedThisLaunch(true);

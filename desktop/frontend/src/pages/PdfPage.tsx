@@ -17,6 +17,7 @@ import {
   useServerVersion,
 } from "../config";
 import { useProject } from "../context/ProjectContext";
+import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
 import { hasCustomCards, registerCustomCards, waitForTasks } from "../syncCustoms";
@@ -345,6 +346,10 @@ export default function PdfPage() {
   // by picking a landscape preset while keeping a tall grid: 3×3 is 270mm
   // of cards, which fits portrait A4 and runs off landscape A4.
   const preview = pagePreviewQuery.data;
+  // With no project the page is just a placeholder, and the preview's
+  // walkthrough waits for a page that has actually rendered.
+  useTourOnFirstView("pdf", { present: projectId != null });
+  useTourWhenPresent("pdf-preview", preview != null && preview.slots.length > 0, "pdf");
   const gridOverflows =
     preview != null &&
     (preview.grid_w_mm > preview.page_w_mm || preview.grid_h_mm > preview.page_h_mm);
@@ -525,7 +530,7 @@ export default function PdfPage() {
                 another resolution. Within that DPI the preferred model wins,
                 else the most recently generated image (see
                 pdf_layout.py::_pick_dpi_variant). */}
-            <div className="field-group">
+            <div className="field-group" data-tour="pdf-source">
               <label className="field">
                 <span>Preferred model</span>
                 <ModelSelect
@@ -588,7 +593,7 @@ export default function PdfPage() {
 
             <h3 style={{ margin: "18px 0 14px" }}>Layout</h3>
 
-            <div className="field-group">
+            <div className="field-group" data-tour="pdf-layout">
               <label className="field">
                 <span>Page size</span>
                 <select
@@ -758,7 +763,7 @@ export default function PdfPage() {
                 download button, where it read as a one-off. */}
             <h3 style={{ margin: "18px 0 14px" }}>Deck list</h3>
 
-            <div className="field-group">
+            <div className="field-group" data-tour="pdf-decklist">
               <label className="field">
                 <span>Card sorting</span>
                 <SortSelect label={null} />
@@ -785,7 +790,7 @@ export default function PdfPage() {
               </span>
             </h3>
 
-            <div className="field-group">
+            <div className="field-group" data-tour="pdf-guides">
               <label className="check">
                 <input
                   type="checkbox"
@@ -827,7 +832,7 @@ export default function PdfPage() {
 
             <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
 
-            <div className="field-group">
+            <div className="field-group" data-tour="pdf-backs">
               <label className="check">
                 <input
                   type="checkbox"
@@ -970,7 +975,7 @@ export default function PdfPage() {
               </span>
             </h3>
 
-            <div className="field-group">
+            <div className="field-group" data-tour="pdf-cutter">
               <label
                 className="field"
                 title={
@@ -1185,7 +1190,7 @@ export default function PdfPage() {
             {previewQuery.error instanceof Error ? previewQuery.error.message : String(previewQuery.error)}
           </p>
         ) : previewQuery.data ? (
-          <div className="panel" style={{ padding: 14, marginTop: 10 }}>
+          <div className="panel" style={{ padding: 14, marginTop: 10 }} data-tour="pdf-summary">
             <p>
               <strong>{previewQuery.data.units}</strong> card(s) across{" "}
               <strong>{previewQuery.data.page_count}</strong> sheet(s)
@@ -1274,7 +1279,7 @@ export default function PdfPage() {
             {/* Checking the flip edge here costs nothing; checking it on
                 the printer costs a sheet of cardstock. */}
             {layout.back_printing && (
-              <div className="summary-row" style={{ marginBottom: 8 }}>
+              <div className="summary-row" style={{ marginBottom: 8 }} data-tour="pdf-preview-side">
                 <button
                   className={previewSide === "front" ? "btn-primary" : "btn-sm"}
                   onClick={() => setPreviewSideChoice("front")}
@@ -1348,13 +1353,15 @@ export default function PdfPage() {
                     </button>
                   </div>
                 )}
-                <PdfPagePreview preview={pagePreviewQuery.data} />
+                <div data-tour="pdf-page-preview">
+                  <PdfPagePreview preview={pagePreviewQuery.data} />
+                </div>
               </>
             ) : null}
           </div>
         )}
 
-        <div className="summary-row">
+        <div className="summary-row" data-tour="pdf-download">
           <button
             className="btn-primary"
             onClick={() => handleDownload()}
@@ -1379,6 +1386,7 @@ export default function PdfPage() {
           </button>
           {cutterSupported && (
             <button
+              data-tour="pdf-cut-file"
               onClick={() => handleCutFileDownload()}
               disabled={downloading || serverUnavailable || serverTooOld}
               title={

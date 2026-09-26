@@ -24,6 +24,7 @@ import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
+import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 
 // Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation — below this, a back is being asked to cover a
@@ -77,6 +78,7 @@ function BackTile({
     <button
       type="button"
       onClick={onSelect}
+      data-tour={selected ? "back-tile" : undefined}
       className="panel"
       style={{
         padding: 8,
@@ -165,6 +167,9 @@ export default function BacksPage() {
   });
   const backs = useMemo(() => libraryQuery.data ?? [], [libraryQuery.data]);
   const selected = backs.find((b) => b.id === settings.back_image_id) ?? null;
+  useTourOnFirstView("backs");
+  // Per-back settings only exist once this project has a back selected.
+  useTourWhenPresent("backs-back", selected != null, "backs");
 
   const addMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -260,7 +265,7 @@ export default function BacksPage() {
                 with the amount, the server trims the file's own bleed to
                 the sheet's (or tops it up), so the trim content stays
                 exactly card sized whatever bleed the project uses. */}
-            <label className="check">
+            <label className="check" data-tour="back-bleed">
               <input
                 type="checkbox"
                 checked={selected.includes_bleed}
@@ -305,7 +310,7 @@ export default function BacksPage() {
               </p>
             )}
 
-            <label className="check">
+            <label className="check" data-tour="back-default">
               <input
                 type="checkbox"
                 checked={defaultQuery.data === selected.id}
@@ -404,6 +409,7 @@ export default function BacksPage() {
           <button
             type="button"
             className={`dropzone${dragging ? " is-dragging" : ""}`}
+            data-tour="back-dropzone"
             onClick={() => fileInput.current?.click()}
             disabled={addMutation.isPending}
           >

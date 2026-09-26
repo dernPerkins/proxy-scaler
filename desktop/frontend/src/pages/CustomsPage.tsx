@@ -30,6 +30,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import ModalOverlay from "../components/ModalOverlay";
 import { useServerVersion } from "../config";
 import { useProject } from "../context/ProjectContext";
+import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import { getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -330,6 +331,7 @@ function CustomTile({
       className="thumb"
       role="button"
       tabIndex={0}
+      data-tour={selected ? "custom-tile" : undefined}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -366,6 +368,7 @@ function CustomTile({
         <button
           type="button"
           className="thumb-zoom"
+          data-tour={selected ? "custom-zoom" : undefined}
           title="View full image"
           aria-label="View full image"
           onClick={(e) => {
@@ -387,6 +390,7 @@ function CustomTile({
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
         <button
           type="button"
+          data-tour={selected ? "custom-add" : undefined}
           onClick={(e) => {
             // The tile itself selects; the button must not also toggle
             // the sidebar to some other image mid-click.
@@ -434,6 +438,9 @@ export default function CustomsPage() {
   );
   const selected = images.find((i) => i.id === selectedId) ?? null;
   const viewing = images.find((i) => i.id === viewingId) ?? null;
+  useTourOnFirstView("customs");
+  // Per-card settings only exist once a card is selected.
+  useTourWhenPresent("customs-card", selected != null, "customs");
 
   const addMutation = useMutation({
     mutationFn: async (files: File[]) => {
@@ -516,7 +523,7 @@ export default function CustomsPage() {
             drawn on it.
           </p>
         ) : (
-          <>
+          <div data-tour="custom-settings">
             <CustomSettingsFields
               image={selected}
               onBleed={(change) => bleedMutation.mutate(change)}
@@ -529,7 +536,7 @@ export default function CustomsPage() {
             >
               Remove this image
             </button>
-          </>
+          </div>
         )}
       </aside>
 
@@ -575,6 +582,7 @@ export default function CustomsPage() {
           <button
             type="button"
             className={`dropzone${dragging ? " is-dragging" : ""}`}
+            data-tour="custom-dropzone"
             onClick={() => fileInput.current?.click()}
             disabled={addMutation.isPending}
           >

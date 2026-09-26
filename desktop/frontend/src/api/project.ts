@@ -282,6 +282,12 @@ export const projectApi = {
   setCardDbPromptDismissed: (dismissed: boolean) =>
     invokeCommand<void>("set_card_db_prompt_dismissed", { dismissed }),
 
+  // Ids of the first-view tutorials already finished or skipped
+  // (tutorial/tutorialStore.ts). Empty until any has been.
+  getCompletedTutorials: () => invokeCommand<string[]>("get_completed_tutorials"),
+  markTutorialCompleted: (id: string) =>
+    invokeCommand<void>("mark_tutorial_completed", { id }),
+
   // Remembered remote server address+port pairs (see connection.tsx) — not
   // project data, but the same app_settings-backed store, so it lives here
   // alongside the other app_settings-backed calls above.

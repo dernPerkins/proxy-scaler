@@ -1,6 +1,8 @@
 import { type ReactNode } from "react";
 import RecentHostsList from "./components/RecentHostsList";
 import { useConnection } from "./connection";
+import TutorialButton from "./tutorial/TutorialButton";
+import { useTourOnFirstView } from "./tutorial/tutorialStore";
 
 // First-launch Local/Remote picker, ported from the old plain-JS
 // desktop/src/index.html into React. Gates the whole app: nothing under
@@ -19,6 +21,9 @@ import { useConnection } from "./connection";
 export default function ConnectGate({ children }: { children: ReactNode }) {
   const { status, setStatus, host, setHost, port, setPort, connect, recentHosts, removeRecentHost } =
     useConnection();
+  // The first thing a new user sees, so the first tour: "just pick this
+  // device". Only while the picker itself is up.
+  useTourOnFirstView("connect", { scope: "gate", present: status.kind === "picker" });
 
   function submitRemote() {
     if (!host.trim()) return;
@@ -36,16 +41,25 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
   return (
     <div className="gate-screen">
       <div className="gate">
+        {status.kind === "picker" && <TutorialButton tour="connect" className="gate-tutorial" />}
         <h1>Proxy Scaler</h1>
         <p className="gate-sub">Where should generation run?</p>
 
         {status.kind === "picker" && (
           <>
-            <button className="gate-option" onClick={() => connect({ mode: "local" })}>
+            <button
+              className="gate-option"
+              data-tour="gate-local"
+              onClick={() => connect({ mode: "local" })}
+            >
               <strong>Use this device</strong>
               <span>Runs everything locally — no setup needed.</span>
             </button>
-            <button className="gate-option" onClick={() => setStatus({ kind: "remote-form" })}>
+            <button
+              className="gate-option"
+              data-tour="gate-remote"
+              onClick={() => setStatus({ kind: "remote-form" })}
+            >
               <strong>Connect to a server</strong>
               <span>Point this app at a proxy-scaler server running elsewhere.</span>
             </button>

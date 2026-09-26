@@ -178,7 +178,7 @@ export default function PrintingPicker(props: {
     : "— · —";
 
   return (
-    <span className="printing-cell" ref={cellRef}>
+    <span className="printing-cell" ref={cellRef} data-tour="printing-picker">
       <button
         type="button"
         className="card-meta mono printing-toggle"

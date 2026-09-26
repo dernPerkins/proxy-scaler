@@ -1604,3 +1604,126 @@ tbody tr:last-child td {
   flex: 0 0 260px;
   max-width: 260px;
 }
+
+/* ---------- tutorials ---------- */
+
+/* The tour overlay (tutorial/TutorialOverlay.tsx): above modals (1000),
+   below toasts (2000). The blocker swallows clicks that miss the card;
+   the spotlight's giant box-shadow is what dims everything around the
+   target, so a step with no target dims via .tour-dim instead. */
+.tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+}
+.tour-blocker {
+  position: fixed;
+  inset: 0;
+}
+.tour-dim {
+  background: rgba(0, 0, 0, 0.55);
+}
+.tour-spotlight {
+  position: fixed;
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 0 9999px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  transition:
+    top 0.2s ease,
+    left 0.2s ease,
+    width 0.2s ease,
+    height 0.2s ease;
+}
+.tour-card {
+  position: fixed;
+  width: min(340px, calc(100vw - 24px));
+  padding: 16px 18px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  transition:
+    top 0.2s ease,
+    left 0.2s ease;
+}
+.tour-count {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+.tour-title {
+  margin: 0 0 6px;
+}
+.tour-body {
+  margin: 0 0 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tour-nav {
+  display: flex;
+  gap: 6px;
+}
+.tour-skip {
+  border-color: transparent;
+  background: none;
+  color: var(--text-muted);
+}
+.tour-skip:hover {
+  color: var(--text);
+}
+
+/* The ? that replays a screen's tour (tutorial/TutorialButton.tsx): a
+   round icon that slides open to read "Tutorial" on hover or focus. */
+.tutorial-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  overflow: hidden;
+}
+.tutorial-btn:hover:not(:disabled),
+.tutorial-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tutorial-btn-icon {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+}
+.tutorial-btn-label {
+  max-width: 0;
+  opacity: 0;
+  white-space: nowrap;
+  transition:
+    max-width 0.2s ease,
+    opacity 0.2s ease,
+    margin 0.2s ease;
+}
+.tutorial-btn:hover .tutorial-btn-label,
+.tutorial-btn:focus-visible .tutorial-btn-label {
+  max-width: 70px;
+  opacity: 1;
+  margin: 0 3px 0 4px;
+}
+/* On the connect screen, pinned to the picker's top-right corner. */
+.gate {
+  position: relative;
+}
+.gate-tutorial {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+}

@@ -40,6 +40,7 @@ import {
   addImagesSequentially,
 } from "../imageUpload";
 import { runDownload, useDownloadStatus } from "../download";
+import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import {
   cardIdentity,
   groupByCard,
@@ -120,6 +121,9 @@ export default function DecklistPage() {
   } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
+  useTourOnFirstView("decklist");
+  // The card-row controls only exist once something's been imported.
+  useTourWhenPresent("decklist-cards", cards.length > 0, "decklist");
   // Whether the generation server is reachable right now — remote mode
   // has its own 30s heartbeat (connection.remoteHealthy); local mode's
   // equivalent is "has the sidecar finished starting". Generate/PDF
@@ -623,7 +627,7 @@ export default function DecklistPage() {
         <ServerSwitcher />
 
         <div className="field-group">
-          <label className="field">
+          <label className="field" data-tour="model-select">
             <span>Upscale model</span>
             <ModelSelect
               value={settings.model}
@@ -662,7 +666,7 @@ export default function DecklistPage() {
             </p>
           )}
 
-          <div className="field">
+          <div className="field" data-tour="dpi-targets">
             <span>Target DPI</span>
             <div className="check-row">
               {DPI_OPTIONS.map((dpi) => (
@@ -694,7 +698,7 @@ export default function DecklistPage() {
               probe VRAM, so they default to Medium instead. The raw number
               input remains only for a server older than the tiers. */}
           {vramPresets.length > 0 ? (
-            <label className="field">
+            <label className="field" data-tour="vram-select">
               <span>GPU VRAM</span>
               <select
                 value={
@@ -716,7 +720,7 @@ export default function DecklistPage() {
               </select>
             </label>
           ) : (
-            <label className="field">
+            <label className="field" data-tour="vram-select">
               <span>Tile size (0 = auto)</span>
               <input
                 type="number"
@@ -820,7 +824,7 @@ export default function DecklistPage() {
           </p>
         )}
 
-        <div className="import-box panel" style={{ marginTop: 10 }}>
+        <div className="import-box panel" style={{ marginTop: 10 }} data-tour="import-box">
           <p className="hint">
             One card per line — best format:{" "}
             <code>4 Card Name (set) 123</code>. Set and collector number are
@@ -909,6 +913,7 @@ export default function DecklistPage() {
         <div
           className={`import-box panel custom-drop${dragDepth > 0 ? " is-dragging" : ""}`}
           style={{ marginTop: 10 }}
+          data-tour="custom-drop"
         >
           <p className="hint">
             Or use your own art — drop image files anywhere on this page, or{" "}
@@ -951,7 +956,7 @@ export default function DecklistPage() {
           <h2>
             Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
           </h2>
-          <div className="decklist-actions">
+          <div className="decklist-actions" data-tour="deck-actions">
             <SortSelect />
             <button
               onClick={() => downloadAllMutation.mutate()}
@@ -1149,7 +1154,7 @@ function CardRowView(props: {
   }
 
   return (
-    <div className="card-row">
+    <div className="card-row" data-tour="card-row">
       <div className="card-main">
         {/* Non-English printings show their printed name; the English/
             oracle name stays underneath (and in the tooltip) as the
@@ -1175,7 +1180,7 @@ function CardRowView(props: {
             onPick={onPickPrinting}
           />
         )}
-        <span className="card-qty-stepper">
+        <span className="card-qty-stepper" data-tour="card-qty">
           <button
             className="btn-sm"
             aria-label="Decrease quantity"
@@ -1197,7 +1202,7 @@ function CardRowView(props: {
             +
           </button>
         </span>
-        <span className="card-buttons">
+        <span className="card-buttons" data-tour="card-buttons">
           {hasImages && (
             <button className="btn-sm" onClick={() => onToggleExpand(rowKey)}>
               {expanded ? "Hide" : "Show"}
@@ -1226,7 +1231,7 @@ function CardRowView(props: {
         </div>
       ) : (
         faces.map((face, i) => (
-          <div key={i} className="variants">
+          <div key={i} className="variants" data-tour="card-variants">
             {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
             {face.variants.map((v) => (
               <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>

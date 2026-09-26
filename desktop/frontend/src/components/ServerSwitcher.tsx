@@ -71,7 +71,7 @@ export default function ServerSwitcher() {
   }
 
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ marginBottom: 16 }} data-tour="server-switcher">
       <div className="field" style={{ marginBottom: 6 }}>
         <span>Generation server</span>
         <div className="segmented">

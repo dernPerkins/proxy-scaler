@@ -255,7 +255,7 @@ export default function ProjectBar() {
       : `Unnamed · ${cardCount} ${cardCount === 1 ? "card" : "cards"}`;
 
   return (
-    <div className="project-bar panel">
+    <div className="project-bar panel" data-tour="project-bar">
       <span className={project.isNamed ? "chip chip-named" : "chip"}>{chipLabel}</span>
 
       <input

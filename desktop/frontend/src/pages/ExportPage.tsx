@@ -16,6 +16,7 @@ import {
   useServerVersion,
 } from "../config";
 import { useProject } from "../context/ProjectContext";
+import { useTourOnFirstView } from "../tutorial/tutorialStore";
 import { cardToEntry, sortCards } from "../deckEntries";
 import NumberInput from "../components/NumberInput";
 import SortSelect from "../components/SortSelect";
@@ -207,6 +208,9 @@ export default function ExportPage() {
     }
   }
 
+  // With no project the page is just a placeholder — nothing to tour yet.
+  useTourOnFirstView("export", { present: projectId != null });
+
   if (projectId == null) {
     return (
       <div>
@@ -246,7 +250,7 @@ export default function ExportPage() {
             only select among existing images, never trigger generation;
             Preferred DPI is a hard filter (see PdfPage / pdf_layout.py::
             _pick_dpi_variant). */}
-        <div className="field-group">
+        <div className="field-group" data-tour="export-source">
           <label className="field">
             <span>Preferred model</span>
             <ModelSelect
@@ -320,7 +324,7 @@ export default function ExportPage() {
         {/* Export-only, persisted per project like everything else on this
             page. PNG + no bleed is the original export (the stored files,
             untouched); anything else re-renders each image server-side. */}
-        <div className="field-group">
+        <div className="field-group" data-tour="export-output">
           <div
             className="field"
             title={
@@ -522,7 +526,7 @@ export default function ExportPage() {
           </div>
         ) : null}
 
-        <div className="summary-row" style={{ marginTop: 14 }}>
+        <div className="summary-row" style={{ marginTop: 14 }} data-tour="export-buttons">
           <SortSelect />
           <button
             className="btn-primary export-btn"

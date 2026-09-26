@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
@@ -20,6 +20,8 @@ import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
 import TasksPage from "./pages/TasksPage";
 import { isTauri } from "./tauri";
+import TutorialButton from "./tutorial/TutorialButton";
+import { ROUTE_TOURS } from "./tutorial/tours";
 import {
   getAppVersion,
   requestPatchNotesPrompt,
@@ -53,23 +55,34 @@ function AppVersion() {
       .then(setVersion)
       .catch(() => {});
   }, []);
-  if (!version) return null;
   return (
     <span className="tabs-version">
+      <TabTutorialButton />
       {update && (
         <button className="btn-sm btn-ok" onClick={requestUpdatePrompt}>
           Update to v{update.latest}
         </button>
       )}
-      <button
-        className="tabs-version-btn"
-        title="Patch notes"
-        onClick={requestPatchNotesPrompt}
-      >
-        v{version}
-      </button>
+      {version && (
+        <button
+          className="tabs-version-btn"
+          title="Patch notes"
+          onClick={requestPatchNotesPrompt}
+        >
+          v{version}
+        </button>
+      )}
     </span>
   );
+}
+
+// The ? that replays the current tab's tour. In the tab bar's right-hand
+// cluster because the pages share no header of their own — this is the
+// one top-right spot every tab has.
+function TabTutorialButton() {
+  const { pathname } = useLocation();
+  const tour = ROUTE_TOURS[pathname];
+  return tour ? <TutorialButton tour={tour} /> : null;
 }
 
 // ProjectBar renders above the routed tabs and stays mounted across
@@ -118,7 +131,7 @@ export default function App() {
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual
             location matching needed. */}
-        <nav className="tabs">
+        <nav className="tabs" data-tour="tabs">
           <NavLink to="/decklist">Decklist</NavLink>
           <NavLink to="/customs">Customs</NavLink>
           <NavLink to="/backs">Backs</NavLink>
