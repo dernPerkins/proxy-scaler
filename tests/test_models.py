@@ -143,18 +143,18 @@ def test_tile_presets_shape():
 
 
 def test_onnx_models_have_one_hashed_file_per_tier():
-    from proxy_scaler.upscale import _WEIGHTS, ONNX_TILE_PRESETS, onnx_filename, onnx_input_size
+    from proxy_scaler.upscale import _WEIGHTS, ONNX_TILE_PRESETS, onnx_filename, onnx_input_shape
 
     onnx = [m for m in UpscaleModel if m.backend is Backend.ONNX]
     assert {m.value for m in onnx} == {"ultrasharp_v2_ort", "illustrationjanai_ort"}
     for model in onnx:
         spec = _WEIGHTS[(model, 4)]
         assert [f.filename for f in spec.files] == [
-            onnx_filename(model, onnx_input_size(p.tile)) for p in ONNX_TILE_PRESETS
+            onnx_filename(model, onnx_input_shape(p.tile)) for p in ONNX_TILE_PRESETS
         ]
         for wf in spec.files:
             assert wf.sha256 and len(wf.sha256) == 64
-            assert wf.url.endswith("/models/onnx/v1/" + wf.filename)
+            assert wf.url.endswith("/models/onnx/v2/" + wf.filename)
         presets = tile_presets_for(model)
         assert presets and all(p.tile > 0 for p in presets)
         assert default_tile_preset(model).key == "medium"

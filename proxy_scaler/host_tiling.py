@@ -32,16 +32,30 @@ def box_downscale(chw: np.ndarray, factor: int) -> np.ndarray:
     return chw[:, : h2 * factor, : w2 * factor].reshape(c, h2, factor, w2, factor).mean(axis=(2, 4))
 
 
+def _psnr(mse: float) -> float:
+    return 99.0 if mse <= 0.0 else float(10.0 * np.log10(1.0 / mse))
+
+
+def _consistency(clipped: np.ndarray, source: np.ndarray, scale: int) -> float:
+    down = box_downscale(clipped, scale)
+    h = min(down.shape[1], source.shape[1])
+    w = min(down.shape[2], source.shape[2])
+    return _psnr(float(np.mean((down[:, :h, :w] - source[:, :h, :w]) ** 2)))
+
+
+def _identity(clipped: np.ndarray, source: np.ndarray, scale: int) -> float:
+    # Compare against the nearest-neighbour blow-up by broadcasting each
+    # source pixel over its scale x scale block, without building the
+    # blown-up image (it is as large as the output).
+    c, h, w = source.shape
+    blocks = clipped[:, : h * scale, : w * scale].reshape(c, h, scale, w, scale)
+    return _psnr(float(np.mean((blocks - source[:, :, None, :, None]) ** 2)))
+
+
 def consistency_psnr(output: np.ndarray, source: np.ndarray, scale: int) -> float:
     """PSNR between the output box-downscaled by `scale` and the source.
     Both float32 CHW in [0,1]; output must be exactly scale x source."""
-    down = box_downscale(np.clip(output, 0.0, 1.0), scale)
-    h = min(down.shape[1], source.shape[1])
-    w = min(down.shape[2], source.shape[2])
-    mse = float(np.mean((down[:, :h, :w] - source[:, :h, :w]) ** 2))
-    if mse <= 0.0:
-        return 99.0
-    return float(10.0 * np.log10(1.0 / mse))
+    return _consistency(np.clip(output, 0.0, 1.0), source, scale)
 
 
 def nearest_upscale(source: np.ndarray, scale: int) -> np.ndarray:
@@ -52,11 +66,7 @@ def identity_psnr(output: np.ndarray, source: np.ndarray, scale: int) -> float:
     """PSNR between the output and a plain nearest-neighbour blow-up of the
     source. A working model always departs from that (typically 20-35 dB
     on a card); a result that *matches* it did no work at all."""
-    nn = nearest_upscale(source, scale)
-    mse = float(np.mean((np.clip(output, 0.0, 1.0) - nn) ** 2))
-    if mse <= 0.0:
-        return 99.0
-    return float(10.0 * np.log10(1.0 / mse))
+    return _identity(np.clip(output, 0.0, 1.0), source, scale)
 
 
 def plausible(output: np.ndarray, source: np.ndarray, scale: int) -> bool:
@@ -64,7 +74,8 @@ def plausible(output: np.ndarray, source: np.ndarray, scale: int) -> bool:
         return False
     if not np.isfinite(output).all():
         return False
-    if consistency_psnr(output, source, scale) < PLAUSIBILITY_MIN_PSNR_DB:
+    clipped = np.clip(output, 0.0, 1.0)
+    if _consistency(clipped, source, scale) < PLAUSIBILITY_MIN_PSNR_DB:
         return False
     # Seen live on a GPU with ~1 GB of VRAM left: every vkAllocateMemory
     # failed, the convolution branch silently produced zeros, and the
@@ -72,7 +83,7 @@ def plausible(output: np.ndarray, source: np.ndarray, scale: int) -> bool:
     # upscaled — finite, "consistent" with the input to 99 dB, and
     # useless. That is what an unchanged image looks like, so treat it
     # as a failed pass.
-    if identity_psnr(output, source, scale) > IDENTITY_MAX_PSNR_DB:
+    if _identity(clipped, source, scale) > IDENTITY_MAX_PSNR_DB:
         return False
     return True
 
@@ -80,18 +91,21 @@ def plausible(output: np.ndarray, source: np.ndarray, scale: int) -> bool:
 # --- tiling -----------------------------------------------------------------
 
 
-def _run_padded(run: Callable[[np.ndarray], np.ndarray], chunk: np.ndarray, size: int, scale: int) -> np.ndarray:
-    """Run `chunk` through a model that only accepts `size` x `size` input:
+def _run_padded(
+    run: Callable[[np.ndarray], np.ndarray], chunk: np.ndarray, shape: tuple[int, int], scale: int
+) -> np.ndarray:
+    """Run `chunk` through a model that only accepts `shape` (h, w) input:
     edge-pad bottom/right up to it, run, crop the output back to the
     chunk's own extent x scale. Edge padding (repeat the last row/column)
     keeps the model from seeing an artificial black border next to real
     pixels, and the padded strip is discarded anyway."""
     _, h, w = chunk.shape
-    if h > size or w > size:
-        raise ValueError(f"tile {w}x{h} exceeds the model's fixed input {size}x{size}")
+    sh, sw = shape
+    if h > sh or w > sw:
+        raise ValueError(f"tile {w}x{h} exceeds the model's fixed input {sw}x{sh}")
     padded = chunk
-    if h < size or w < size:
-        padded = np.pad(chunk, ((0, 0), (0, size - h), (0, size - w)), mode="edge")
+    if h < sh or w < sw:
+        padded = np.pad(chunk, ((0, 0), (0, sh - h), (0, sw - w)), mode="edge")
     out = run(np.ascontiguousarray(padded, dtype=np.float32))
     return out[:, : h * scale, : w * scale]
 
@@ -103,36 +117,22 @@ def run_tiled(
     tile: int,
     pad: int,
     scale: int,
-    fixed_size: int | None = None,
 ) -> np.ndarray:
-    """Overlapping-tile pass, same geometry as Upscaler._tiled_inference
-    (pad on every side, keep the unpadded core, average overlaps).
-
-    `run` maps float32 CHW -> float32 CHW at `scale`. `fixed_size`: the
-    model only accepts N x N input (a fixed-shape ONNX export); every tile
-    is then edge-padded up to N and cropped back, so `tile + 2*pad` must
-    not exceed N. Without it, an image no larger than one tile goes
-    through in a single untiled call."""
+    """Overlapping-tile pass for a model that accepts any input size, same
+    geometry as Upscaler._tiled_inference (pad on every side, keep the
+    unpadded core, average overlaps). `run` maps float32 CHW -> float32
+    CHW at `scale`. An image no larger than one tile goes through in a
+    single untiled call."""
     _, height, width = img.shape
-    if fixed_size is not None and tile + 2 * pad > fixed_size:
-        raise ValueError(f"tile {tile} + 2x{pad} pad exceeds the fixed input {fixed_size}")
-
-    def one(chunk: np.ndarray) -> np.ndarray:
-        if fixed_size is None:
-            return run(np.ascontiguousarray(chunk, dtype=np.float32))
-        return _run_padded(run, chunk, fixed_size, scale)
-
-    if fixed_size is None and tile >= max(height, width):
-        return one(img)
-    if fixed_size is not None and max(height, width) <= fixed_size:
-        return one(img)
+    if tile >= max(height, width):
+        return run(np.ascontiguousarray(img, dtype=np.float32))
     output = np.zeros((3, height * scale, width * scale), dtype=np.float32)
     weights = np.zeros((1, height * scale, width * scale), dtype=np.float32)
     for y in range(0, height, tile):
         for x in range(0, width, tile):
             y0, x0 = max(y - pad, 0), max(x - pad, 0)
             y1, x1 = min(y + tile + pad, height), min(x + tile + pad, width)
-            tile_out = one(img[:, y0:y1, x0:x1])
+            tile_out = run(np.ascontiguousarray(img[:, y0:y1, x0:x1], dtype=np.float32))
             oy0, ox0 = (y - y0) * scale, (x - x0) * scale
             oy1 = oy0 + min(tile, height - y) * scale
             ox1 = ox0 + min(tile, width - x) * scale
@@ -142,6 +142,56 @@ def run_tiled(
             output[:, out_y0:out_y1, out_x0:out_x1] += tile_out[:, oy0:oy1, ox0:ox1]
             weights[:, out_y0:out_y1, out_x0:out_x1] += 1.0
     return output / np.maximum(weights, 1.0)
+
+
+def fixed_tile_spans(length: int, size: int, pad: int) -> list[tuple[int, int, int]]:
+    """Tiles along one axis for a model with a fixed input `size`:
+    [(start, keep_lo, keep_hi)], image coordinates. Every tile is a full
+    `size` window of real pixels (the last one is shifted back inside the
+    image rather than padded), the windows are spaced evenly with at least
+    2*pad of overlap (to within a pixel of rounding), and each keeps the
+    half of every overlap nearest its own centre, so the kept spans
+    partition [0, length) and every kept pixel has >= pad of context on
+    each side except at the image border. A length <= size is one tile
+    (padded up by the caller)."""
+    if size <= 2 * pad:
+        raise ValueError(f"fixed input {size} leaves nothing inside a {pad} px pad")
+    if length <= size:
+        return [(0, 0, length)]
+    count = -(-(length - 2 * pad) // (size - 2 * pad))
+    starts = [round(i * (length - size) / (count - 1)) for i in range(count)]
+    spans = []
+    for i, start in enumerate(starts):
+        lo = 0 if i == 0 else (starts[i - 1] + size + start) // 2
+        hi = length if i == count - 1 else (start + size + starts[i + 1]) // 2
+        spans.append((start, lo, hi))
+    return spans
+
+
+def run_fixed_tiled(
+    run: Callable[[np.ndarray], np.ndarray],
+    img: np.ndarray,
+    *,
+    shape: tuple[int, int],
+    pad: int,
+    scale: int,
+) -> np.ndarray:
+    """Tile pass for a model that only accepts `shape` (h, w) input (a
+    fixed-shape ONNX export). Every call is exactly that shape: tiles are
+    laid out by fixed_tile_spans, and only an image smaller than the shape
+    along an axis is edge-padded there. Kept regions partition the output,
+    so nothing is averaged and no model call is spent on padding the
+    image doesn't need."""
+    channels, height, width = img.shape
+    th, tw = shape
+    output = np.empty((channels, height * scale, width * scale), dtype=np.float32)
+    for ys, ylo, yhi in fixed_tile_spans(height, th, pad):
+        for xs, xlo, xhi in fixed_tile_spans(width, tw, pad):
+            res = _run_padded(run, img[:, ys : ys + th, xs : xs + tw], shape, scale)
+            output[:, ylo * scale : yhi * scale, xlo * scale : xhi * scale] = res[
+                :, (ylo - ys) * scale : (yhi - ys) * scale, (xlo - xs) * scale : (xhi - xs) * scale
+            ]
+    return output
 
 
 def tile_ladder(start: int, preset_tiles: Sequence[int]) -> list[int]:
@@ -212,7 +262,10 @@ def split_image(image):
 def join_image(chw: np.ndarray, alpha):
     from PIL import Image
 
-    out8 = (np.clip(chw, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8).transpose(1, 2, 0)
+    scaled = np.clip(chw, 0.0, 1.0)
+    scaled *= 255.0
+    scaled += 0.5
+    out8 = scaled.astype(np.uint8).transpose(1, 2, 0)
     out_image = Image.fromarray(np.ascontiguousarray(out8), mode="RGB")
     if alpha is not None:
         out_image.putalpha(alpha.resize(out_image.size, Image.Resampling.LANCZOS))

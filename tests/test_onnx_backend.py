@@ -1,5 +1,5 @@
 """ONNX Runtime (WebGPU) backend — no real onnxruntime or GPU needed: the
-session factory is monkeypatched with a fake that honours the fixed-size
+session factory is monkeypatched with a fake that honours the fixed-shape
 contract. Pins tier selection, the ladder, the plausibility gate, cache
 eviction across runtimes, and the Upscaler contract."""
 
@@ -16,7 +16,7 @@ from proxy_scaler.upscale import (
     UpscaleResult,
     make_upscaler,
     onnx_filename,
-    onnx_input_size,
+    onnx_input_shape,
 )
 
 MODEL = UpscaleModel.ULTRASHARP_V2_ORT
@@ -25,13 +25,14 @@ MODEL = UpscaleModel.ULTRASHARP_V2_ORT
 class FakeSession:
     def __init__(self, path, gpu, behaviour):
         self.path, self.gpu, self.behaviour = path, gpu, behaviour
-        self.input_size = int(path.stem.rsplit("_", 1)[1])
+        w, h = path.stem.rsplit("_", 1)[1].split("x")
+        self.input_shape = (int(h), int(w))
         self.calls = []
 
     def run(self, chw):
-        assert chw.shape == (3, self.input_size, self.input_size), "fixed-size contract"
+        assert chw.shape == (3, *self.input_shape), "fixed-shape contract"
         self.calls.append(chw.shape)
-        mode = self.behaviour(self.gpu, self.input_size)
+        mode = self.behaviour(self.gpu, self.input_shape)
         if mode == "raise":
             raise RuntimeError("webgpu: device lost")
         out = np.clip(np.repeat(np.repeat(chw, 4, axis=1), 4, axis=2) * 0.97 + 0.01, 0, 1)
@@ -95,10 +96,9 @@ def test_happy_path_uses_one_tier_file_and_keeps_alpha(harness):
     assert result.image.size == (1200, 1680) and result.image.mode == "RGBA"
     assert result.image.getpixel((2, 2))[3] == 0
     assert result.device == "gpu" and result.dtype == "fp32"
-    assert harness["fetched"] == [onnx_filename(MODEL, onnx_input_size(tile))]
+    assert harness["fetched"] == [onnx_filename(MODEL, onnx_input_shape(tile))]
     [session] = harness["sessions"]
-    n = onnx_input_size(tile)
-    assert session.gpu and session.calls and set(session.calls) == {(3, n, n)}
+    assert session.gpu and session.calls and set(session.calls) == {(3, *onnx_input_shape(tile))}
 
 
 def test_ladder_steps_down_tiers_then_cpu_with_hook(harness):
@@ -109,8 +109,9 @@ def test_ladder_steps_down_tiers_then_cpu_with_hook(harness):
     result = up.upscale(_card())
     assert result.device == "cpu"
     assert fired == [1]
-    gpu_sizes = [s.input_size for s in harness["sessions"] if s.gpu]
-    assert gpu_sizes == sorted({onnx_input_size(p.tile) for p in ONNX_TILE_PRESETS}, reverse=True)
+    gpu_shapes = [s.input_shape for s in harness["sessions"] if s.gpu]
+    tiers = sorted((p.tile for p in ONNX_TILE_PRESETS), reverse=True)
+    assert gpu_shapes == [onnx_input_shape(t) for t in tiers]
     # Next task in the process skips the GPU tiers and the hook.
     up2 = ob.OnnxUpscaler(MODEL, 4, harness["dir"], tile=top, on_cpu_fallback=lambda: fired.append(2))
     assert up2.upscale(_card()).device == "cpu" and fired == [1]
@@ -118,7 +119,7 @@ def test_ladder_steps_down_tiers_then_cpu_with_hook(harness):
 
 def test_implausible_output_is_not_kept(harness):
     medium = next(p.tile for p in ONNX_TILE_PRESETS if p.key == "medium")
-    harness["behaviour"]["fn"] = lambda gpu, n: "black" if gpu and n == onnx_input_size(medium) else "ok"
+    harness["behaviour"]["fn"] = lambda gpu, n: "black" if gpu and n == onnx_input_shape(medium) else "ok"
     up = ob.OnnxUpscaler(MODEL, 4, harness["dir"], tile=medium)
     result = up.upscale(_card())
     assert result.device == "gpu" and up.tile < medium  # recovered one tier down

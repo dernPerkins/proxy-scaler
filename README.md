@@ -342,12 +342,16 @@ WebGPU package for macOS, and Macs already run both models on Metal).
 
 They compute the same model as the regular entries at full precision
 (fp32; within ~59 dB of PyTorch fp32 on a real card), which makes them
-slower: about 3x the time of the regular bf16 path on the same healthy
-GPU. Use them when the regular entries fail on your GPU, not as a
-default. The exported files are fixed-size, one per VRAM tier (Low /
-Medium / High; no Max, which exceeds WebGPU's buffer limits), ~53 MB
-each, downloaded on first use from `dl.proxy-scaler.com/models/onnx/`;
-sources and the export recipe live in [`packaging/onnx/`](packaging/onnx/).
+slower than the regular bf16 path on a healthy GPU. Use them when the
+regular entries fail on your GPU, not as a default. On an RTX 3080 Ti a
+card takes about 16 s at **High**, 23 s at Medium and 24 s at Low,
+against about 12 s for the regular UltraSharpV2. High is the fastest
+tier because its 416×320 tiles cover a card in 8 passes. The exported
+files are fixed-size, one per VRAM tier (Low / Medium / High; peak VRAM
+about 2.5 / 4.3 / 8.6 GB, and anything larger runs out of memory on a
+12 GB card, so there is no Max), ~53 MB each, downloaded on first use
+from `dl.proxy-scaler.com/models/onnx/`; sources and the export recipe
+live in [`packaging/onnx/`](packaging/onnx/).
 
 ## Target DPI
 

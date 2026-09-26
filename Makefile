@@ -441,8 +441,8 @@ onnx-export:
 	PYTHONUNBUFFERED=1 $(PYTHON) packaging/onnx/export-models.py export $(MODELS)
 onnx-upload:
 	@test -d dist/onnx-models || { echo "nothing in dist/onnx-models -- run make onnx-export first"; exit 1; }
-	aws s3 cp dist/onnx-models/ s3://proxy-scaler-site/models/onnx/v1/ --recursive \
-		--exclude "manifest.json" --exclude ".*" --profile r2 --endpoint-url $(NCNN_UPLOAD_ENDPOINT)
+	aws s3 cp dist/onnx-models/ s3://proxy-scaler-site/models/onnx/v2/ --recursive \
+		--exclude "manifest.json" --exclude ".*" --only-show-errors --profile r2 --endpoint-url $(NCNN_UPLOAD_ENDPOINT)
 ncnn-convert:
 	PYTHONUNBUFFERED=1 $(PYTHON) packaging/ncnn/convert-models.py convert $(MODELS)
 ncnn-upload:

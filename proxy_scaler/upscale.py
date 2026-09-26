@@ -238,15 +238,21 @@ NCNN_DEFAULT_PRESET = "medium"
 # ONNX (DAT) exports are fixed-size: DAT's padding and attention masks are
 # computed from the input size at trace time, so a file only runs at the
 # size it was exported at (a 64 px export failed at 96 px). One file per
-# tier; the tile below is the content, the file's input is tile + 2x32 pad
-# (onnx_input_size). Same tier labels as ncnn; VRAM per tier measured on
-# the exported files (see packaging/onnx/).
+# tier. A preset's `tile` is only the tier's key here (it is what the
+# client stores in tile_size); the file's input shape comes from
+# onnx_input_shape(), and host_tiling.run_fixed_tiled spaces those tiles
+# evenly across the image with at least 2x ONNX_TILE_PAD of overlap, so
+# every kept pixel has the same context as the torch path's pad.
 #
-# Measured on the exported UltraSharpV2 (WebGPU, 3080 Ti): input 192 ->
-# 2.4 GB / 0.66 s per tile, 256 -> 3.6 GB / 1.24 s, 384 -> 4.2 GB / 2.9 s.
-# No Max tier: at input 512 one attention buffer (~188 MB) exceeds
-# WebGPU's per-buffer binding limit (commonly 128 MiB) and the run fails
-# validation regardless of VRAM; 384 (~106 MB) is the largest that fits.
+# Shapes are multiples of 32 (DAT pads its attention input to its 32 px
+# window; anything else is computed and thrown away) and picked to cover
+# the standard 745x1040 card with the least total work: Low 6x8 tiles of
+# 192x192, Medium 4x6 of 256x256, High 2x4 of 416x320 (a square 384 needs
+# 12 tiles for 40% more work). Peak VRAM, UltraSharpV2 on WebGPU (3080 Ti,
+# storage buffer cache "simple"): 192x192 2.5 GB, 256x256 4.3 GB, 416x320
+# 8.6 GB. The peak is transient: memory measured after a run reads about
+# half of it. Larger tiles run out of device memory on a 12 GB card, so
+# there is no Max tier.
 ONNX_TILE_PAD = 32
 ONNX_TILE_PRESETS: tuple[TilePreset, ...] = (
     TilePreset("low", "Low VRAM (4 GB or less)", 128),
@@ -254,10 +260,17 @@ ONNX_TILE_PRESETS: tuple[TilePreset, ...] = (
     TilePreset("high", "High VRAM (12 GB+)", 320),
 )
 ONNX_DEFAULT_PRESET = "medium"
+# tier key -> exported input (height, width)
+_ONNX_INPUT_SHAPES: dict[int, tuple[int, int]] = {
+    128: (192, 192),
+    192: (256, 256),
+    320: (320, 416),
+}
 
 
-def onnx_input_size(tile: int) -> int:
-    return tile + 2 * ONNX_TILE_PAD
+def onnx_input_shape(tile: int) -> tuple[int, int]:
+    """(height, width) of the file a tier runs (see ONNX_TILE_PRESETS)."""
+    return _ONNX_INPUT_SHAPES[tile]
 
 
 def tile_presets_for(model: UpscaleModel) -> tuple[TilePreset, ...]:
@@ -318,21 +331,25 @@ def _single(filename: str, url: str) -> _WeightSpec:
 NCNN_WEIGHTS_BASE_URL = "https://dl.proxy-scaler.com/models/ncnn/v1/"
 
 
-ONNX_WEIGHTS_BASE_URL = "https://dl.proxy-scaler.com/models/onnx/v1/"
+# v2: GlobalAveragePool rewritten to ReduceMean (ORT WebGPU's pool kernel
+# was 23% of the run) and the 416x320 High tier. v1 stays on the bucket
+# for the test build that shipped with it.
+ONNX_WEIGHTS_BASE_URL = "https://dl.proxy-scaler.com/models/onnx/v2/"
 
 
-def onnx_filename(model: UpscaleModel, input_size: int) -> str:
-    return f"{model.value}_{input_size}.onnx"
+def onnx_filename(model: UpscaleModel, shape: tuple[int, int]) -> str:
+    h, w = shape
+    return f"{model.value}_{w}x{h}.onnx"
 
 
-def _onnx_tiers(model: UpscaleModel, sha256_by_input_size: dict[int, str]) -> _WeightSpec:
+def _onnx_tiers(model: UpscaleModel, sha256_by_file: dict[str, str]) -> _WeightSpec:
     """One fixed-size .onnx per VRAM tier (see ONNX_TILE_PRESETS), in tier
-    order. A task downloads only the file for the tier it runs at."""
+    order, keyed by filename. A task downloads only the file for the tier
+    it runs at."""
     files = []
     for preset in ONNX_TILE_PRESETS:
-        n = onnx_input_size(preset.tile)
-        name = onnx_filename(model, n)
-        files.append(WeightFile(name, f"{ONNX_WEIGHTS_BASE_URL}{name}", sha256_by_input_size[n]))
+        name = onnx_filename(model, onnx_input_shape(preset.tile))
+        files.append(WeightFile(name, f"{ONNX_WEIGHTS_BASE_URL}{name}", sha256_by_file[name]))
     return _WeightSpec(tuple(files))
 
 
@@ -398,13 +415,21 @@ _WEIGHTS: dict[tuple[UpscaleModel, int], _WeightSpec] = {
         "1d5f792cd58cf31213193467b0ab5f2ff9a2e3de63d3bf8caa8abe8eebe95df5",
     ),
     # ONNX (WebGPU) exports of the two DAT models, one fixed-size file per
-    # VRAM tier (packaging/onnx/export-models.py; gated at 84-89 dB against
-    # PyTorch fp32 on a real card). CC-BY-NC-SA-4.0, like their sources.
+    # VRAM tier (packaging/onnx/export-models.py; gated at 85-89 dB against
+    # PyTorch fp32 on a real card crop). CC-BY-NC-SA-4.0, like their sources.
     (UpscaleModel.ULTRASHARP_V2_ORT, 4): _onnx_tiers(
-        UpscaleModel.ULTRASHARP_V2_ORT, {192: "f98e744a5ac524bfeb6ca55fc281a60796cabd4f273c775c490e399595957fd8", 256: "d333d5aa58fb9b8b755194e15d81a24e390ed171123ed702f464ca2d34eafbb5", 384: "ec89000b3be646dd76b197527bbf0452d039b1c0703674fda5766a869ce0bd35"}
+        UpscaleModel.ULTRASHARP_V2_ORT, {
+            "ultrasharp_v2_ort_192x192.onnx": "fa9d3bfc784bfb09d9799c3a93175a8cb661d4310c24b715662381002c0ea798",
+            "ultrasharp_v2_ort_256x256.onnx": "453a8e2c22a13a7099dc224ff1c9d23ce70b88fed3f47db714edde496432c96f",
+            "ultrasharp_v2_ort_416x320.onnx": "dd9b712957bdc39255eb9a780d72106b2ca4c5efb64b1e6ca586f23c3adba355",
+        }
     ),
     (UpscaleModel.ILLUSTRATIONJANAI_ORT, 4): _onnx_tiers(
-        UpscaleModel.ILLUSTRATIONJANAI_ORT, {192: "5b2718c7d25f4e8fa04f0717fbd1078560cc3088af214a39b4474cd03d8f9bff", 256: "07a433548a1fcde26fcc2568726d197117d940b7aeccddb3020f3d0bc9dc5b2f", 384: "fd17652a4d21a1ccdfdbc61a441b56bc000f5914f6c6b0e785d731402446ee31"}
+        UpscaleModel.ILLUSTRATIONJANAI_ORT, {
+            "illustrationjanai_ort_192x192.onnx": "db7dec8a4bb616af6a34043d0d69d7e9529cc21efed2d6a8e0e09e3f85ade28c",
+            "illustrationjanai_ort_256x256.onnx": "4e81468c2318424ba80a535cefff93e672f44496f6df6b8565915db1e26d383b",
+            "illustrationjanai_ort_416x320.onnx": "2c4c5c79a45481e8882f6addc480151eb2a9587b0d3c08af78d03d2c9d57501b",
+        }
     ),
 }
 

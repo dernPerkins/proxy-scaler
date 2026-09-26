@@ -10,9 +10,8 @@ WebGPU execution provider runs the same model, exported to ONNX, through
 Dawn: Vulkan on Linux, Direct3D 12 on Windows — never DirectML. Measured
 86.6 dB against PyTorch fp32 on a real card tile (the torch bf16 path is
 55 dB), and 58.9 dB on a whole card tiled identically. It is full
-precision only (WebGPU has no bf16 and DAT is fp16-unsafe): a card takes
-about 3x as long as the torch bf16 path on the same healthy GPU (3080 Ti:
-~34 s at tile 192 vs ~12 s).
+precision only (WebGPU has no bf16 and DAT is fp16-unsafe), so it is
+slower than the torch bf16 path on the same healthy GPU; see below.
 
 Shape: OnnxUpscaler mirrors upscale.Upscaler / ncnn_backend.NcnnUpscaler
 (constructor kwargs, model_id / scale / tile, upscale() -> UpscaleResult),
@@ -21,7 +20,18 @@ lazily: this module is on the API process's import path, and the package
 doesn't exist at all on macOS (the two models are hidden there).
 
 Exports are fixed-size (upscale.ONNX_TILE_PRESETS): one .onnx per VRAM
-tier, each tile edge-padded to that file's input size by host_tiling.
+tier, laid over the image by host_tiling.run_fixed_tiled.
+
+Where the time goes (profiled 2026-09-25, 256x256 tile, 3080 Ti): per
+tile ONNX Runtime WebGPU is within ~10% of PyTorch fp32 once the export's
+GlobalAveragePool is rewritten to ReduceMean (its WebGPU kernel alone was
+23% of the run). What remains is the model's own layout transposes (~20%),
+attention MatMul, LayerNorm. Dead ends measured: validationMode, NCHW
+layout (removes the inserted transposes, Conv gets slower by as much),
+graph optimization level, fp16 (NaN, and it would lose the full precision
+these entries exist for). Provider options only take effect as
+"ep.webgpuexecutionprovider.*" session config entries; the provider-options
+dict route is silently ignored.
 """
 
 from __future__ import annotations
@@ -45,7 +55,7 @@ from .upscale import (
     default_tile_preset,
     ensure_weight_file,
     onnx_filename,
-    onnx_input_size,
+    onnx_input_shape,
     parse_model,
 )
 
@@ -103,16 +113,22 @@ class _Session:
             # An op ONNX Runtime can't place on the GPU must be an error,
             # never a silent partial CPU run (minutes per card, unannounced).
             so.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+            # "simple" returns freed storage buffers for exact-size reuse
+            # instead of power-of-two buckets: ~12% lower peak VRAM (4.9 ->
+            # 4.3 GB at 256x256) and slightly faster.
+            so.add_session_config_entry(
+                "ep.webgpuexecutionprovider.storageBufferCacheMode", "simple"
+            )
             providers = [WEBGPU_PROVIDER]
         else:
             providers = [CPU_PROVIDER]
         self.gpu = gpu
         self._session = ort.InferenceSession(str(path), so, providers=providers)
         shape = self._session.get_inputs()[0].shape
-        self.input_size = int(shape[-1])
+        self.input_shape = (int(shape[-2]), int(shape[-1]))
 
     def run(self, chw: np.ndarray) -> np.ndarray:
-        """float32 CHW (exactly input_size square) -> float32 CHW x4."""
+        """float32 CHW (exactly input_shape) -> float32 CHW x4."""
         batch = np.ascontiguousarray(chw[None], dtype=np.float32)
         out = self._session.run([OUTPUT_NAME], {INPUT_NAME: batch})[0]
         return np.asarray(out[0], dtype=np.float32)
@@ -211,8 +227,8 @@ class OnnxUpscaler:
             print(f"warning: cpu-fallback hook failed: {exc}", file=sys.stderr)
 
     def _session(self, tile: int, gpu: bool) -> _Session:
-        size = onnx_input_size(tile)
-        key = (self.model_id, self.scale, str(self.weights_dir.resolve()), size, gpu)
+        shape = onnx_input_shape(tile)
+        key = (self.model_id, self.scale, str(self.weights_dir.resolve()), shape, gpu)
         session = _SESSION_CACHE.get(key)
         if session is not None:
             return session
@@ -226,10 +242,10 @@ class OnnxUpscaler:
             clear_ncnn_cache()
             _SESSION_CACHE.clear()
             path, _ = ensure_weight_file(
-                self.model_id, self.scale, self.weights_dir, onnx_filename(self.model_id, size)
+                self.model_id, self.scale, self.weights_dir, onnx_filename(self.model_id, shape)
             )
             where = "webgpu" if gpu else "cpu"
-            print(f"Loading {self.model_id.value} x{self.scale} on {where} (input {size}, {path.name})...")
+            print(f"Loading {self.model_id.value} x{self.scale} on {where} ({path.name})...")
             started = time.perf_counter()
             session = _make_session(path, gpu)
             print(f"  onnx session ready in {time.perf_counter() - started:.1f}s")
@@ -243,13 +259,12 @@ class OnnxUpscaler:
         try:
             session = self._session(tile, gpu)
             with host_tiling.StderrCapture():
-                out = host_tiling.run_tiled(
+                out = host_tiling.run_fixed_tiled(
                     session.run,
                     img,
-                    tile=tile,
+                    shape=session.input_shape,
                     pad=ONNX_TILE_PAD,
                     scale=self.scale,
-                    fixed_size=session.input_size,
                 )
         except Exception as exc:  # noqa: BLE001
             print(f"onnx pass failed on {where} at tile {tile}: {exc}")
@@ -296,10 +311,8 @@ class OnnxUpscaler:
     def upscale(self, image: Image.Image) -> UpscaleResult:
         img, alpha = host_tiling.split_image(image)
         self.tile = self._base_tile
-        print(
-            f"  inference config: webgpu fp32, tile {self.tile} "
-            f"(input {onnx_input_size(self.tile)})"
-        )
+        h, w = onnx_input_shape(self.tile)
+        print(f"  inference config: webgpu fp32, tier {self.tile} (tiles {w}x{h})")
         with self._phase("inference"):
             out, device = self._infer(img)
         return UpscaleResult(image=host_tiling.join_image(out, alpha), device=device, dtype="fp32")
