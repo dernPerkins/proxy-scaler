@@ -86,7 +86,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "tabs",
         title: "The tabs, left to right",
-        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or an export. Tasks shows what's running.",
+        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running.",
         placement: "bottom",
       },
       {
@@ -151,7 +151,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "card-qty",
         title: "Quantity",
-        body: "How many copies of this card go into your PDF or export.",
+        body: "How many copies of this card go into your PDF or ZIP.",
         placement: "bottom",
       },
       {

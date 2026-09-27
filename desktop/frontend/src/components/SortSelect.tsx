@@ -1,7 +1,7 @@
 import { useProject } from "../context/ProjectContext";
 import type { SortPrimary } from "../api/types";
 
-// The one card-sort control, rendered on the Decklist, PDF, and Export
+// The one card-sort control, rendered on the Decklist, PDF, and ZIP
 // pages. One component (rather than three copies of the <select>) because
 // the value is shared, persisted project state that decides both the
 // Decklist display order and the printed/exported output order — the

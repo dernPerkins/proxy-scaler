@@ -136,7 +136,7 @@ export default function App() {
           <NavLink to="/customs">Customs</NavLink>
           <NavLink to="/backs">Backs</NavLink>
           <NavLink to="/pdf">PDF</NavLink>
-          <NavLink to="/export">Export</NavLink>
+          <NavLink to="/export">ZIP</NavLink>
           <NavLink to="/tasks">Tasks</NavLink>
           <AppVersion />
         </nav>

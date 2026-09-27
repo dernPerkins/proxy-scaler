@@ -50,7 +50,7 @@ export interface ProjectSettings {
   preferred_model: string | null;
   // Source PDF/export runs from the cached ~300 DPI Scryfall originals
   // instead of upscaled outputs; the preferred pair above is inert while
-  // set. Shared by the PDF and Export tabs like the pair itself.
+  // set. Shared by the PDF and ZIP tabs like the pair itself.
   use_originals: boolean;
   // Import-language preference (Scryfall code, "en" default): the language
   // the resolve-gated import demands ("strictly literal" — see
@@ -89,7 +89,7 @@ export interface ProjectSettings {
   cutter_inset_mm: number;
   hide_cutter_marks_front: boolean;
   hide_cutter_marks_back: boolean;
-  // Export tab output options. "png" ships the stored files as they are;
+  // ZIP tab output options. "png" ships the stored files as they are;
   // "jpg" re-encodes. The bleed is the ZIP export's own, separate from
   // the PDF tab's bleed_mm: it defaults to the 3 mm MakePlayingCards.com
   // expects to find inside the file.

@@ -246,7 +246,7 @@ function useAutoStart(id: TourId, eligible: boolean): void {
 
 /** Auto-starts a screen's base tour the first time it's viewed. `present`
  *  holds it back while the screen shows only a placeholder (PDF and
- *  Export with no project yet). */
+ *  ZIP with no project yet). */
 export function useTourOnFirstView(
   id: TourId,
   options: { scope?: "gate" | "app"; present?: boolean } = {},

@@ -109,7 +109,7 @@ function getDefaultSettings(): ProjectSettings {
     cutter_inset_mm: 10,
     hide_cutter_marks_front: false,
     hide_cutter_marks_back: true,
-    // Export tab: JPG by default — the ZIP is most often headed for a
+    // ZIP tab: JPG by default — the ZIP is most often headed for a
     // vendor upload (TCGPlaytest, MakePlayingCards), where the far smaller
     // files matter and print quality is the same. PNG (the stored files
     // as they are) stays one click away. No bleed by default; 3 mm is

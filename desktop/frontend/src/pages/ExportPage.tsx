@@ -214,7 +214,7 @@ export default function ExportPage() {
   if (projectId == null) {
     return (
       <div>
-        <h2>Export</h2>
+        <h2>ZIP</h2>
         <p className="hint" style={{ marginTop: 8 }}>
           Import a decklist on the Decklist tab to get started.
         </p>
@@ -406,7 +406,7 @@ export default function ExportPage() {
       </aside>
 
       <main className="content">
-        <h2>Export</h2>
+        <h2>ZIP</h2>
 
         {serverUnavailable && (
           <p className="error-text" style={{ marginTop: 10 }}>

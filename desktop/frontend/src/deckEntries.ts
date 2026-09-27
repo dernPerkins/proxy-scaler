@@ -14,7 +14,7 @@ export function sortCards(cards: CardRow[], primary: SortPrimary): CardRow[] {
 
 /** A project card as the DeckEntryIn the generation server expects.
  *
- *  One shared copy (Decklist, PDF, and Export all send entries) because
+ *  One shared copy (Decklist, PDF, and ZIP all send entries) because
  *  the field set is load-bearing and drifted once already: language is
  *  part of a printing's identity in the gallery match
  *  (pdf_layout.match_quantities compares entry.lang against the

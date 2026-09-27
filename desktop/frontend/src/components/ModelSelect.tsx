@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import type { ModelOption } from "../api/types";
 
 // The one model dropdown, rendered on the Decklist (generation model), PDF
-// and Export (preferred model) pages. One component rather than three
+// and ZIP (preferred model) pages. One component rather than three
 // copies of the <select> because the grouping below must never drift
 // between pages: the server marks each model with the header it sits
 // under ("Models" for the torch runtime, "Vulkan Models" for ncnn), and
@@ -16,7 +16,7 @@ interface Props {
   onChange: (value: string) => void;
   models: ModelOption[] | undefined;
   disabled?: boolean;
-  // Label for an extra leading option with value "" — the PDF/Export
+  // Label for an extra leading option with value "" — the PDF/ZIP
   // pages' "Any (highest DPI available)". Absent on the generation picker.
   anyOption?: string;
 }
