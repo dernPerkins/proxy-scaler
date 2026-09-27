@@ -106,13 +106,22 @@ export default function TutorialOverlay() {
   // scroll, queries fill in and shift layout, the window resizes. A rAF
   // loop that only sets state on change is simpler and sturdier than
   // wiring scroll/resize/mutation observers for every case.
-  useEffect(() => {
-    if (!step) return;
+  //
+  // A layout effect, and the first measurement is set unconditionally:
+  // the overlay stays mounted between tours, so the previous step's
+  // spotlight (say, the connect screen's ? button) must be replaced
+  // before paint, not left standing when this step has no target at all.
+  useLayoutEffect(() => {
+    if (!step) {
+      setSpot(null);
+      return;
+    }
     if (target) {
       findTourTarget(target)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
+    let last = measure(target);
+    setSpot(last);
     let frame = 0;
-    let last: Rect | null = null;
     const tick = () => {
       const next = measure(target);
       if (!sameRect(next, last)) {
@@ -121,7 +130,7 @@ export default function TutorialOverlay() {
       }
       frame = requestAnimationFrame(tick);
     };
-    tick();
+    frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [step, target]);
 

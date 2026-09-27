@@ -2122,6 +2122,13 @@ fn add_completed_tutorial(conn: &Connection, id: &str) -> Result<(), String> {
     write_app_setting(conn, TUTORIALS_COMPLETED_KEY, &raw)
 }
 
+fn remove_completed_tutorials(conn: &Connection, ids: &[String]) -> Result<(), String> {
+    let mut stored = read_completed_tutorials(conn)?;
+    stored.retain(|existing| !ids.contains(existing));
+    let raw = serde_json::to_string(&stored).map_err(|e| e.to_string())?;
+    write_app_setting(conn, TUTORIALS_COMPLETED_KEY, &raw)
+}
+
 #[tauri::command]
 pub fn get_completed_tutorials(app: AppHandle) -> Result<Vec<String>, String> {
     let conn = open_db(&app)?;
@@ -2132,6 +2139,14 @@ pub fn get_completed_tutorials(app: AppHandle) -> Result<Vec<String>, String> {
 pub fn mark_tutorial_completed(app: AppHandle, id: String) -> Result<(), String> {
     let conn = open_db(&app)?;
     add_completed_tutorial(&conn, &id)
+}
+
+/// The ? button's reset: a replayed tab's follow-up tours become unseen
+/// again, so each auto-shows the next time its piece appears.
+#[tauri::command]
+pub fn unmark_tutorials_completed(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    remove_completed_tutorials(&conn, &ids)
 }
 
 // Whether the boot-time update check runs at all (UpdatePrompt.tsx reads
@@ -2915,6 +2930,8 @@ mod tests {
             read_completed_tutorials(&conn).expect("read"),
             vec!["connect".to_string(), "decklist".to_string()]
         );
+        remove_completed_tutorials(&conn, &["connect".to_string()]).expect("unmark");
+        assert_eq!(read_completed_tutorials(&conn).expect("read"), vec!["decklist".to_string()]);
         // A corrupt value reads as empty rather than erroring the prompt.
         write_app_setting(&conn, TUTORIALS_COMPLETED_KEY, "not json").expect("corrupt");
         assert!(read_completed_tutorials(&conn).expect("read").is_empty());

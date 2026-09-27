@@ -1203,11 +1203,16 @@ function CardRowView(props: {
           </button>
         </span>
         <span className="card-buttons" data-tour="card-buttons">
-          {hasImages && (
-            <button className="btn-sm" onClick={() => onToggleExpand(rowKey)}>
-              {expanded ? "Hide" : "Show"}
-            </button>
-          )}
+          {/* Always present, disabled until there's something to show, so
+              the row's controls don't shift once the first image lands. */}
+          <button
+            className="btn-sm"
+            onClick={() => onToggleExpand(rowKey)}
+            disabled={!hasImages}
+            title={hasImages ? undefined : "Nothing to show yet — generate or download this card first"}
+          >
+            {expanded && hasImages ? "Hide" : "Show"}
+          </button>
           {/* Custom Images are never upscaled — the server routes any
               generate straight to source registration, which the bulk
               buttons already cover — so a per-row Generate would be a

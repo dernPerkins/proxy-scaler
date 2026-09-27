@@ -72,8 +72,10 @@ export const TOURS: Record<TourId, Tour> = {
     followUps: ["decklist-cards"],
     steps: [
       {
+        target: "import-box",
         title: "This is the Decklist tab",
-        body: "Paste your deck here, pick a model, and generate sharp, print-ready card images. It's really not that bad, so let's take a quick look around.",
+        body: "Let's take a quick look around, starting here: paste your decklist, one card per line. \"4 Lightning Bolt\" works, but we recommend including the set code and number, formatted like \"1 Sol Ring (c21) 263\". Choose a language, then click Import cards.",
+        placement: "bottom",
       },
       {
         target: "tabs",
@@ -100,22 +102,16 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "right",
       },
       {
+        target: "dpi-targets",
+        title: "Target DPI",
+        body: "1200 is the default because every model already upscales 4×. Lower DPIs come from simply downscaling that result, and give you smaller files. Tick more than one to make several versions.",
+        placement: "right",
+      },
+      {
         target: "vram-select",
         title: "GPU VRAM",
         body: "Match this to your graphics card's memory, or leave it on Auto if you have that option. If you get crashes or it slows to a crawl, go one tier lower.",
         placement: "right",
-      },
-      {
-        target: "dpi-targets",
-        title: "Target DPI",
-        body: "How sharp the output is. 600 already looks great in print. Higher values take longer and make bigger files. Tick more than one to make several versions.",
-        placement: "right",
-      },
-      {
-        target: "import-box",
-        title: "Paste your decklist",
-        body: "One card per line, the way most deck sites export it: \"4 Lightning Bolt\" works, and a set code and number pick an exact printing. Choose a language, then click Import cards.",
-        placement: "bottom",
       },
       {
         target: "custom-drop",
@@ -137,7 +133,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "deck-actions",
         title: "Your cards are in!",
-        body: "Generate upscaled images makes every card at once. Download images just grabs the regular-resolution originals if you don't need upscaling. Sort changes the order here and in your PDF.",
+        body: "\"Generate upscaled images\" queues every card at once. Download images just grabs the regular-resolution originals if you don't need upscaling. Sort changes the order here and in your PDF.",
         placement: "bottom",
       },
       {
@@ -161,7 +157,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "card-buttons",
         title: "Per-card actions",
-        body: "Generate just this card, a quick way to test a model. Show opens the finished images so you can compare them with the original or regenerate. Remove takes the card out of the deck.",
+        body: "Generate just this card, a quick way to test a model. Show opens the finished images (once there are some) so you can compare them with the original or regenerate. Remove takes the card out of the deck.",
         placement: "left",
       },
       {

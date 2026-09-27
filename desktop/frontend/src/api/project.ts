@@ -287,6 +287,8 @@ export const projectApi = {
   getCompletedTutorials: () => invokeCommand<string[]>("get_completed_tutorials"),
   markTutorialCompleted: (id: string) =>
     invokeCommand<void>("mark_tutorial_completed", { id }),
+  unmarkTutorialsCompleted: (ids: string[]) =>
+    invokeCommand<void>("unmark_tutorials_completed", { ids }),
 
   // Remembered remote server address+port pairs (see connection.tsx) — not
   // project data, but the same app_settings-backed store, so it lives here

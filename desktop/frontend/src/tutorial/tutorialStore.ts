@@ -124,11 +124,23 @@ function start(ids: TourId[]): boolean {
   return true;
 }
 
-/** The ? button: replay a tour regardless of completion, followed by any
- *  of its follow-ups whose piece is on screen right now. */
+/** The ? button resets the screen's tutorial: it replays the tour
+ *  regardless of completion, straight into any follow-up whose piece is on
+ *  screen now — and marks the rest unseen again, so each auto-shows the
+ *  next time its piece appears (a fresh project, before any import). */
 export function replayTour(id: TourId): void {
-  const followUps = (TOURS[id].followUps ?? []).filter((f) => present.get(f));
-  start([id, ...followUps]);
+  const followUps = TOURS[id].followUps ?? [];
+  const onScreen = followUps.filter((f) => present.get(f));
+  const later = followUps.filter((f) => !present.get(f));
+  if (later.length) unmarkCompleted(later);
+  start([id, ...onScreen]);
+}
+
+function unmarkCompleted(ids: TourId[]): void {
+  const completed = new Set(state.completed ?? []);
+  for (const id of ids) completed.delete(id);
+  setState({ completed });
+  if (isTauri()) projectApi.unmarkTutorialsCompleted(ids).catch(() => {});
 }
 
 export function nextStep(): void {
