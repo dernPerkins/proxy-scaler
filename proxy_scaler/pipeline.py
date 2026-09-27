@@ -26,6 +26,7 @@ from .dpi import (
     ORIGINAL_DPI,
     ORIGINAL_MODEL,
     bled_target_pixels,
+    is_native_custom_dpi,
     native_scale_for_dpi,
     resolve_dpi_targets,
     target_pixels,
@@ -479,6 +480,35 @@ def custom_bleed_mm(custom_hash: str | None) -> float:
     return customs.read_bleed_mm(custom_hash)
 
 
+# How far a native custom upscale may sit from its recorded DPI's exact
+# box and still be kept as the model produced it. The recorded DPI is the
+# upload's measured DPI rounded to a whole number, times 4, so the file
+# and the box differ by that rounding (under 1% for any upload above
+# 50 DPI) — and a Lanczos pass over ~50 Mpx to remove it would only
+# soften the result. The renderers size every face from its own pixels,
+# exactly as they already do for an un-upscaled custom_source row.
+_NATIVE_KEEP_TOLERANCE = 0.01
+
+
+def _variant_image(
+    raw: Image.Image, *, face: CardFaceImage, dpi: int, bleed_mm: float
+) -> Image.Image:
+    """The image a DPI variant stores: `raw` resampled to the exact
+    (bled) box for `dpi` — except a Custom Image's native 4x variant
+    (dpi.is_native_custom_dpi), which keeps the model's own pixels when
+    they already sit within _NATIVE_KEEP_TOLERANCE of that box. One capped
+    at dpi.NATIVE_MAX_DPI is well outside it, and is resampled down."""
+    target = bled_target_pixels(dpi, bleed_mm)
+    if face.is_custom and is_native_custom_dpi(dpi):
+        close = all(
+            abs(have - want) <= max(2, want * _NATIVE_KEEP_TOLERANCE)
+            for have, want in zip(raw.size, target)
+        )
+        if close:
+            return raw
+    return _resize_to_size(raw, target)
+
+
 def _write_dpi_variant(
     *,
     face: CardFaceImage,
@@ -516,7 +546,7 @@ def _write_dpi_variant(
     # the bled aspect, so its variant is the bled box at this DPI — the
     # renderer trims that to the project's bleed later. Everything else is
     # exactly trim-sized.
-    sized = _resize_to_size(raw, bled_target_pixels(dpi, bleed_mm))
+    sized = _variant_image(raw, face=face, dpi=dpi, bleed_mm=bleed_mm)
     atomic_save_png(sized, out_path)
     return FaceResult(
         out_path=out_path,

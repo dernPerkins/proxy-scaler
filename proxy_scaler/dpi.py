@@ -38,7 +38,32 @@ ORIGINAL_MODEL = "original"
 # an exclusive world (use_originals on/off), and filing customs there would
 # force "Use 300 DPI originals" on to print one — blanking every upscaled
 # Scryfall card on the same sheet.
+#
+# A Custom Image is upscaled only when the project's custom_upscale
+# setting asks for it (see custom_upscale_targets below); the source row
+# is registered either way, so the upload always prints.
 CUSTOM_SOURCE_MODEL = "custom_source"
+
+# The project setting that decides whether Generate upscales Custom Images:
+#   off     never (the upload prints at its own resolution)
+#   target  to each selected DPI the upload doesn't already reach
+#   native  the model's own 4x result, capped at NATIVE_MAX_DPI
+CUSTOM_UPSCALE_OFF = "off"
+CUSTOM_UPSCALE_TARGET = "target"
+CUSTOM_UPSCALE_NATIVE = "native"
+CUSTOM_UPSCALE_MODES: tuple[str, ...] = (
+    CUSTOM_UPSCALE_OFF,
+    CUSTOM_UPSCALE_TARGET,
+    CUSTOM_UPSCALE_NATIVE,
+)
+
+# Ceiling on a "native" custom upscale. A full 4x of a ~1150 DPI upload
+# is over 179 Mpx, which Pillow refuses to open (its decompression-bomb
+# limit) — so the x4 cache, the PDF renderer, the ZIP export and the
+# gallery thumbnail would all fail on the file. 2400 DPI keeps a card with
+# MPC bleed at ~58 Mpx, well inside that, and is already 2x the finest
+# selectable print density.
+NATIVE_MAX_DPI = 2400
 
 
 # Upper bound on a declared or requested bleed, per side. Anything past
@@ -105,6 +130,40 @@ def native_scale_for_dpi(dpi: int, model: UpscaleModel) -> int:
     (600/800 DPI downscale from it).
     """
     return model.supported_scales[-1]
+
+
+def native_output_dpi(source_dpi: int, scale: int = 4) -> int:
+    """The DPI a "native" custom upscale is registered at: the model's own
+    scale over the upload's measured DPI, capped at NATIVE_MAX_DPI."""
+    return min(int(source_dpi) * scale, NATIVE_MAX_DPI)
+
+
+def custom_upscale_targets(
+    mode: str, source_dpi: int, dpi_targets: list[int]
+) -> list[int]:
+    """Which upscaled variants Generate should queue for one Custom Image
+    measured at `source_dpi`, given the project's selected targets.
+
+    Only an upload *below* a selected target is ever upscaled: one that
+    already reaches every target prints from its source row, and running a
+    4x model over it would spend GPU time (and, above ~1150 DPI, more
+    memory than a pass can have) to reproduce what is there. Empty for
+    mode "off"."""
+    if mode not in CUSTOM_UPSCALE_MODES:
+        raise ValueError(f"custom_upscale must be one of {CUSTOM_UPSCALE_MODES}, got {mode!r}")
+    below = sorted({t for t in dpi_targets if t > source_dpi})
+    if mode == CUSTOM_UPSCALE_OFF or not below:
+        return []
+    if mode == CUSTOM_UPSCALE_TARGET:
+        return below
+    return [native_output_dpi(source_dpi)]
+
+
+def is_native_custom_dpi(dpi: int) -> bool:
+    """Whether a custom upscale task's DPI came from native_output_dpi
+    rather than the selectable targets: those are written as the model
+    produced them instead of being resampled to an exact box."""
+    return dpi not in DPI_OPTIONS
 
 
 def resolve_dpi_targets(

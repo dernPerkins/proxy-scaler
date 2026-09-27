@@ -748,11 +748,12 @@ def test_enqueue_reports_a_custom_that_was_never_uploaded(
 def test_generate_never_upscales_a_custom(
     tmp_path: Path, db_path: Path, monkeypatch
 ) -> None:
-    """Generate routes Custom Images to source registration instead of the
-    upscale queue: the user prepared that file (often already at print
-    resolution), so a 4x model pass over it is pure GPU waste. The rule
-    lives in enqueue_decklist_entries — the one gate both the bulk button
-    and the per-row Generate go through."""
+    """With custom_upscale at its default ("off"), Generate routes Custom
+    Images to source registration only: the user prepared that file, and
+    the project hasn't asked for it to be upscaled. The rule lives in
+    enqueue_decklist_entries — the one gate both the bulk button and the
+    per-row Generate go through. The other modes are in
+    tests/test_custom_upscale.py."""
     from proxy_scaler.services import generation as gen
 
     monkeypatch.chdir(tmp_path)

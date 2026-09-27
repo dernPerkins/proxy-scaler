@@ -23,7 +23,11 @@ where upscaling buys least, and running them through the pipeline would
 have meant inventing a synthetic Scryfall identity. Custom fronts are the
 opposite case: they are card art, upscaling is exactly what this
 application is for, and rather than fake a UUID the identity is made
-explicit and typed all the way down.
+explicit and typed all the way down. It is still the project's choice:
+Generate upscales a custom only when the custom_upscale setting asks for
+it, and only to the targets the upload doesn't already reach
+(dpi.custom_upscale_targets). The upload itself is always registered as
+printable.
 
 **Uploads are cover-cropped to card aspect on the way in.** Scryfall art is
 already 63:88; a user's file is whatever they had. Cropping here, once,

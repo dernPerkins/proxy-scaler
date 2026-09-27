@@ -117,6 +117,9 @@ export interface GenerateRequest {
   dpi_targets: number[];
   skip_existing?: boolean;
   tile_size?: number;
+  /** Whether Custom Images are upscaled too — see ProjectSettings.
+   *  An older server drops it and registers customs only. */
+  custom_upscale?: "off" | "target" | "native";
   output_dir: string;
   cache_dir: string;
   weights_dir: string;

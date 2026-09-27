@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS projects (
     export_image_format TEXT NOT NULL DEFAULT 'jpg',
     export_with_bleed INTEGER NOT NULL DEFAULT 0,
     export_bleed_mm REAL NOT NULL DEFAULT 3.0,
+    custom_upscale TEXT NOT NULL DEFAULT 'off',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -227,6 +228,11 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("export_image_format", "TEXT NOT NULL DEFAULT 'jpg'"),
     ("export_with_bleed", "INTEGER NOT NULL DEFAULT 0"),
     ("export_bleed_mm", "REAL NOT NULL DEFAULT 3.0"),
+    // Whether Generate upscales Custom Images: 'off' | 'target' | 'native'.
+    // Opaque like sort_primary; the generation server validates it
+    // (proxy_scaler/dpi.py CUSTOM_UPSCALE_MODES). 'off' keeps every
+    // existing project doing what it did before the setting existed.
+    ("custom_upscale", "TEXT NOT NULL DEFAULT 'off'"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -577,6 +583,15 @@ pub struct ProjectSettings {
     pub export_with_bleed: bool,
     #[serde(default = "default_export_bleed_mm")]
     pub export_bleed_mm: f64,
+    // Whether Generate upscales Custom Images — see PROJECTS_ADDED_COLUMNS.
+    // Defaulted on deserialize so a frontend build that predates it
+    // can't wipe it.
+    #[serde(default = "default_custom_upscale")]
+    pub custom_upscale: String,
+}
+
+fn default_custom_upscale() -> String {
+    "off".to_string()
 }
 
 fn default_export_image_format() -> String {
@@ -673,6 +688,7 @@ impl Default for ProjectSettings {
             export_image_format: default_export_image_format(),
             export_with_bleed: false,
             export_bleed_mm: default_export_bleed_mm(),
+            custom_upscale: default_custom_upscale(),
         }
     }
 }
@@ -905,6 +921,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         export_image_format: String,
         export_with_bleed: bool,
         export_bleed_mm: f64,
+        custom_upscale: String,
         created_at: String,
         updated_at: String,
     }
@@ -924,6 +941,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     cutter, cutter_mark_style, cutter_orientation, cutter_inset_mm,
                     hide_cutter_marks_front, hide_cutter_marks_back,
                     export_image_format, export_with_bleed, export_bleed_mm,
+                    custom_upscale,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -975,6 +993,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     export_image_format: row.get("export_image_format")?,
                     export_with_bleed: row.get("export_with_bleed")?,
                     export_bleed_mm: row.get("export_bleed_mm")?,
+                    custom_upscale: row.get("custom_upscale")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -1034,6 +1053,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             export_image_format: loaded.export_image_format,
             export_with_bleed: loaded.export_with_bleed,
             export_bleed_mm: loaded.export_bleed_mm,
+            custom_upscale: loaded.custom_upscale,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1281,6 +1301,7 @@ fn update_project_row(
          cutter_inset_mm = ?41, hide_cutter_marks_front = ?42,
          hide_cutter_marks_back = ?43,
          export_image_format = ?44, export_with_bleed = ?45, export_bleed_mm = ?46,
+         custom_upscale = ?47,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1330,6 +1351,7 @@ fn update_project_row(
             settings.export_image_format,
             settings.export_with_bleed,
             settings.export_bleed_mm,
+            settings.custom_upscale,
         ],
     )
     .map_err(|e| {
@@ -3009,6 +3031,27 @@ mod tests {
         assert_eq!(loaded.export_image_format, "png");
         assert!(loaded.export_with_bleed);
         assert_eq!(loaded.export_bleed_mm, 2.5);
+    }
+
+    #[test]
+    fn custom_upscale_roundtrips_and_defaults_off() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        assert_eq!(load_project(&conn, id).expect("load").settings.custom_upscale, "off");
+
+        let settings = ProjectSettings {
+            custom_upscale: "native".to_string(),
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        assert_eq!(load_project(&conn, id).expect("load").settings.custom_upscale, "native");
+
+        // A frontend build that predates the setting must not wipe it to
+        // anything but the default.
+        let mut json = serde_json::to_value(ProjectSettings::default()).expect("serialize");
+        json.as_object_mut().expect("object").remove("custom_upscale");
+        let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(settings.custom_upscale, "off");
     }
 
     #[test]

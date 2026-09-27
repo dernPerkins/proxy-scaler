@@ -12,7 +12,14 @@ from pathlib import Path
 
 from proxy_scaler import db
 from proxy_scaler.card_lookup import CardResolver
-from proxy_scaler.dpi import CUSTOM_SOURCE_MODEL, ORIGINAL_DPI, ORIGINAL_MODEL
+from proxy_scaler.dpi import (
+    CUSTOM_SOURCE_MODEL,
+    CUSTOM_UPSCALE_MODES,
+    CUSTOM_UPSCALE_OFF,
+    ORIGINAL_DPI,
+    ORIGINAL_MODEL,
+    custom_upscale_targets,
+)
 from proxy_scaler.pipeline import FaceResult, output_filename
 from proxy_scaler.scryfall import CardFaceImage, ScryfallError, expand_faces
 from proxy_scaler.upscale import original_cache_path
@@ -186,23 +193,28 @@ def enqueue_decklist_entries(
     on_note=None,
     db_path: Path | str | None = None,
     card_db_path: Path | str | None = None,
+    custom_upscale: str = CUSTOM_UPSCALE_OFF,
 ) -> tuple[int, int, list[int]]:
     """Resolve entries (one batched Scryfall call, not one per card) and
     queue one task per (face, dpi) that's actually missing: not already
     satisfied on disk (when skip_existing) and not already pending/running
     for this project (always — regardless of skip_existing, duplicating
-    in-flight work is never wanted). Custom Image entries never upscale:
-    they are routed to enqueue_download_entries, which registers the
-    uploaded file at its native DPI instead (see below). Returns
-    (queued_count, failed_count, task_ids)."""
-    # Custom Images are never upscaled — the user prepared that file, often
-    # already at print resolution, and running a 4x model over it spends
-    # GPU time to (at best) reproduce it. Generate instead registers the
-    # upload at its measured native DPI, exactly what Download does, so a
-    # deck mixing both worlds comes out fully printable from either button.
-    # The pipeline still knows how to upscale a custom face (kept working
-    # and under test); this routing is the single gate, so re-enabling the
-    # feature later is deleting this block.
+    in-flight work is never wanted). Custom Image entries are always
+    registered at their native DPI via enqueue_download_entries, and are
+    upscaled on top of that only as `custom_upscale` directs (see below).
+    Returns (queued_count, failed_count, task_ids)."""
+    if custom_upscale not in CUSTOM_UPSCALE_MODES:
+        raise ValueError(
+            f"custom_upscale must be one of {CUSTOM_UPSCALE_MODES}, got {custom_upscale!r}"
+        )
+    # Every Custom Image is registered at its measured native DPI, exactly
+    # what Download does, so a deck mixing both worlds comes out fully
+    # printable from either button — and an upload that is refused an
+    # upscale (too large for the GPU) or still waiting for one prints
+    # regardless. Upscaling it on top is the project's choice
+    # (custom_upscale): "off" keeps the upload as prepared; "target" and
+    # "native" queue model passes for the selected targets it doesn't
+    # already reach (dpi.custom_upscale_targets).
     customs = [e for e in entries if getattr(e, "custom_hash", None)]
     queued = 0
     failed = 0
@@ -218,7 +230,20 @@ def enqueue_decklist_entries(
             db_path=db_path,
             card_db_path=card_db_path,
         )
-        entries = [e for e in entries if not getattr(e, "custom_hash", None)]
+        from proxy_scaler import customs as customs_store
+
+        # Customs stay for the upscale loop below only when upscaling is
+        # on and the upload is on this server — a missing one was already
+        # counted and noted as failed by the registration step.
+        entries = [
+            e
+            for e in entries
+            if not getattr(e, "custom_hash", None)
+            or (
+                custom_upscale != CUSTOM_UPSCALE_OFF
+                and customs_store.has_original(e.custom_hash)
+            )
+        ]
 
     # Local-first: answered from the imported card corpus when possible,
     # live Scryfall only for the leftovers (see card_lookup.CardResolver).
@@ -240,8 +265,18 @@ def enqueue_decklist_entries(
                     continue
                 seen_keys.add(face_key)
 
+                face_targets = dpi_targets
+                if face.is_custom:
+                    # Only the targets this upload doesn't already reach
+                    # (or its one native-4x variant). An upload that
+                    # reaches them all queues nothing here — its source
+                    # row, registered above, is what prints.
+                    face_targets = custom_upscale_targets(
+                        custom_upscale, _custom_source_dpi(face), dpi_targets
+                    )
+
                 targets_needed = []
-                for target_dpi in dpi_targets:
+                for target_dpi in face_targets:
                     if (face.identity_key, face.face_index, target_dpi, model) in active:
                         skipped_active += 1
                         continue

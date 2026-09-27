@@ -17,9 +17,9 @@ export const ORIGINAL_DPI = 300;
 
 // Sentinel variant for a Custom Image's uploaded file registered as
 // printable at its measured native DPI — mirrors CUSTOM_SOURCE_MODEL in
-// proxy_scaler/dpi.py. Custom Images are never upscaled (the server
-// routes their Generate to source registration), so this is the only
-// variant a custom card normally has.
+// proxy_scaler/dpi.py. Every custom card has this variant; it gets
+// upscaled variants on top only when the project's custom_upscale
+// setting asks for them.
 export const CUSTOM_SOURCE_MODEL = "custom_source";
 
 // Acronyms for compact spots (deck-list status badges, thumbnail labels)

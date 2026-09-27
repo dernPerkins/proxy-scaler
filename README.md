@@ -259,9 +259,20 @@ onto the Decklist tab adds them in one step. The library is shared across
 every project on your machine, and removing an image removes the cards
 that use it.
 
-Custom images are **not** upscaled: the file you uploaded prints at its
-native resolution, so prepare art at the DPI you want on paper. The tab
-flags anything that works out below about 300 DPI across a card.
+By default custom images are **not** upscaled: the file you uploaded
+prints at its native resolution, and the tab flags anything that works out
+below about 300 DPI across a card. The **Custom images** setting on the
+Decklist tab changes that for a project:
+
+- **Upscale to target DPI** upscales an upload to each ticked Target DPI
+  it doesn't already reach. A 600 DPI upload with 600 and 1200 ticked
+  gets a 1200 DPI version only.
+- **Upscale 4× (up to 2400 DPI)** keeps the model's own 4× result instead,
+  capped at 2400 DPI. It only runs for an upload below a ticked target.
+
+Either way the uploaded file stays printable. An upload too large for your
+GPU, or above about 1100 DPI, is skipped with a message on its task, and
+prints at its own resolution. Needs a 0.3.4 or newer server.
 
 With a remote [server](#server), custom art is uploaded the first time
 something needs it — Generate, PDF, or ZIP export — with a progress

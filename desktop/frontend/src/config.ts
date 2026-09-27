@@ -222,6 +222,14 @@ export const EXPORT_OPTIONS_MIN_SERVER_VERSION = "0.3.1";
 // it ships in; packaging/set-version.py must never rewrite it.
 export const CUSTOM_BLEED_MIN_SERVER_VERSION = "0.3.3";
 
+// Upscaling Custom Images needs GenerateIn's custom_upscale field. An
+// older server drops it (Pydantic ignores unknown fields) and registers
+// the customs at their uploaded resolution only — silently, while the
+// control claims they'll be upscaled. So the control is disabled below
+// this version and "off" is sent. 0.3.4 because that is the release it
+// ships in; packaging/set-version.py must never rewrite it.
+export const CUSTOM_UPSCALE_MIN_SERVER_VERSION = "0.3.4";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -293,6 +301,14 @@ export function serverSupportsCustomImages(serverVersion: string | null): boolea
 export function serverSupportsCustomBleed(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, CUSTOM_BLEED_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server understand GenerateIn.custom_upscale? Same
+ *  null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsCustomUpscale(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, CUSTOM_UPSCALE_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

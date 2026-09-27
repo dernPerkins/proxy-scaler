@@ -9,7 +9,9 @@
 //
 // The difference from a Back Image is that a Custom Image *is* a card. It
 // takes a row in the decklist, carries a quantity, and goes through the
-// upscale pipeline. Since it has no Scryfall printing, the generation
+// upscale pipeline when the project's custom_upscale setting asks for it
+// (always registered as printable either way). Since it has no Scryfall
+// printing, the generation
 // database identifies it by the sha256 of its bytes instead — see
 // proxy_scaler/customs.py and db.py migration 008.
 //

@@ -6,6 +6,7 @@ checked as both sides evolve."""
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -166,6 +167,12 @@ class GenerateIn(BaseModel):
     dpi_targets: list[int]
     skip_existing: bool = True
     tile_size: int = 0
+    # Whether Custom Images are upscaled too (dpi.CUSTOM_UPSCALE_MODES):
+    # "off" registers the upload only, "target" upscales to each selected
+    # DPI it doesn't reach, "native" keeps the model's 4x result (capped at
+    # dpi.NATIVE_MAX_DPI). Defaulted so an older client gets today's
+    # behaviour; an older server drops the field and does the same.
+    custom_upscale: Literal["off", "target", "native"] = "off"
     output_dir: str
     cache_dir: str
     weights_dir: str

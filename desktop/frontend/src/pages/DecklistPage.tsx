@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
-import type { CardRow } from "../api/project";
+import type { CardRow, CustomUpscaleMode } from "../api/project";
 import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import ModelSelect, { reconcileTileForModel } from "../components/ModelSelect";
@@ -23,6 +23,7 @@ import {
 import { useConnection } from "../connection";
 import {
   getProbedDevice,
+  serverSupportsCustomUpscale,
   subscribeProbedDevice,
   useServerReadiness,
   useServerVersion,
@@ -137,6 +138,11 @@ export default function DecklistPage() {
   // syncCustomImages turns this into a real error rather than letting an
   // older server silently drop the field. See config.ts.
   const serverVersion = useServerVersion();
+  // What Generate actually asks for: a server older than the setting
+  // would drop the field anyway, so the control is disabled and "off"
+  // is sent rather than a choice it can't honour.
+  const customUpscaleSupported = serverSupportsCustomUpscale(serverVersion);
+  const customUpscale = customUpscaleSupported ? settings.custom_upscale : "off";
 
   // Always read this from the API, never hardcode — see
   // api/generation.ts's listModels comment for the regression this
@@ -421,6 +427,7 @@ export default function DecklistPage() {
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
+        custom_upscale: customUpscale,
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
@@ -480,6 +487,7 @@ export default function DecklistPage() {
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
+        custom_upscale: customUpscale,
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
@@ -731,6 +739,34 @@ export default function DecklistPage() {
               />
             </label>
           )}
+
+          {/* Custom Images print as uploaded unless this asks otherwise.
+              Either way only an upload below a selected target is
+              upscaled, and one too large for this machine is refused with
+              a message on its task (proxy_scaler/upscale.py) — it still
+              prints at its own resolution. */}
+          <label className="field" data-tour="custom-upscale-select">
+            <span>Custom images</span>
+            <select
+              value={customUpscale}
+              disabled={!customUpscaleSupported}
+              onChange={(e) =>
+                setSettings((s) => ({
+                  ...s,
+                  custom_upscale: e.target.value as CustomUpscaleMode,
+                }))
+              }
+            >
+              <option value="off">Don't upscale</option>
+              <option value="target">Upscale to target DPI</option>
+              <option value="native">Upscale 4× (up to 2400 DPI)</option>
+            </select>
+          </label>
+          <p className="hint">
+            {customUpscaleSupported
+              ? "Only uploads below a selected target DPI are upscaled. One too large for this GPU is skipped with a message and prints as uploaded."
+              : "Needs a newer generation server. Custom images print as uploaded."}
+          </p>
 
           <div className="field divided">
             <span>Directories</span>
@@ -1031,6 +1067,7 @@ export default function DecklistPage() {
               onRemove={() => removeCard(card.id)}
               onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
               onGenerate={() => generateCardMutation.mutate(card)}
+              upscalesCustoms={customUpscale !== "off"}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
               preferredLang={settings.preferred_lang}
@@ -1089,6 +1126,9 @@ function CardRowView(props: {
   onRemove: () => void;
   onSetQuantity: (quantity: number) => void;
   onGenerate: () => void;
+  /** Whether Generate upscales Custom Images for this project — without
+   *  it a custom's per-row Generate would upscale nothing. */
+  upscalesCustoms: boolean;
   onRegenerate: (galleryItemId: number) => void;
   /** Re-download this face's Scryfall original, overwriting the cached
    *  copy — takes any of the face's gallery item ids. */
@@ -1117,6 +1157,7 @@ function CardRowView(props: {
     onRemove,
     onSetQuantity,
     onGenerate,
+    upscalesCustoms,
     onRegenerate,
     onRefetch,
     preferredLang,
@@ -1213,11 +1254,11 @@ function CardRowView(props: {
           >
             {expanded && hasImages ? "Hide" : "Show"}
           </button>
-          {/* Custom Images are never upscaled — the server routes any
+          {/* With custom upscaling off the server routes a custom's
               generate straight to source registration, which the bulk
               buttons already cover — so a per-row Generate would be a
               button that upscales nothing. */}
-          {card.custom_image_id == null && (
+          {(card.custom_image_id == null || upscalesCustoms) && (
             <button className="btn-sm" onClick={onGenerate} disabled={disabled}>
               Generate
             </button>

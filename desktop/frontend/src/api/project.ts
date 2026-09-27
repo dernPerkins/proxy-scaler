@@ -96,7 +96,14 @@ export interface ProjectSettings {
   export_image_format: ExportImageFormat;
   export_with_bleed: boolean;
   export_bleed_mm: number;
+  // Whether Generate upscales Custom Images. "off" registers the upload
+  // only; "target" upscales to each selected DPI the upload doesn't
+  // already reach; "native" keeps the model's own 4x result, capped at
+  // 2400 DPI. Mirrors proxy_scaler/dpi.py CUSTOM_UPSCALE_MODES.
+  custom_upscale: CustomUpscaleMode;
 }
+
+export type CustomUpscaleMode = "off" | "target" | "native";
 
 export interface CardRow {
   id: number;

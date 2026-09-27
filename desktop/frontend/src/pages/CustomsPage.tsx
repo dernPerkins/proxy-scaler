@@ -3,7 +3,8 @@
 // Structurally the Backs tab's twin (app-global, client-owned,
 // content-addressed, works with no server reachable), with one difference
 // that drives every decision here: a Custom Image is a card. It gets a row
-// in the decklist, a quantity, and the full upscale pipeline — so this tab
+// in the decklist, a quantity, and the upscale pipeline (when the project's
+// "Custom images" setting on the Decklist tab asks for it) — so this tab
 // manages the library, and "Add to project" is what turns an entry into an
 // actual card.
 //
@@ -146,8 +147,8 @@ function CustomSettingsFields({
       {image.source_dpi < LOW_DPI && (
         <p className="hint">
           This image works out to about {Math.round(image.source_dpi)} DPI across a card,
-          which will look soft in print. Upscaling it is a real remedy here, or replace it
-          with a larger source image.
+          which will look soft in print. Turn on &quot;Custom images&quot; upscaling in the
+          Decklist settings, or replace it with a larger source image.
         </p>
       )}
     </div>

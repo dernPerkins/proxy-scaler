@@ -12,9 +12,10 @@ Image belongs to the machine, not to a project — the same file dropped
 into two projects is one upload and one upscale — which is also why
 `POST /api/tags/{tag}/discard` leaves them alone.
 
-Unlike Back Images, Custom Images *are* upscaled: they are card fronts, and
-the generation database identifies them by content hash instead of a
-Scryfall UUID. See proxy_scaler/customs.py for why that asymmetry is
+Unlike Back Images, Custom Images can be upscaled (when the project's
+custom_upscale setting asks for it): they are card fronts, and the
+generation database identifies them by content hash instead of a Scryfall
+UUID. See proxy_scaler/customs.py for why that asymmetry is
 deliberate.
 """
 

@@ -79,6 +79,7 @@ def generate(body: GenerateIn) -> GenerateOut:
         on_note=notes.append,
         db_path=db_path,
         card_db_path=get_card_db_path(),
+        custom_upscale=body.custom_upscale,
     )
     return GenerateOut(queued=queued, failed=failed, task_ids=task_ids, notes=notes)
 

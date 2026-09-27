@@ -118,6 +118,7 @@ function getDefaultSettings(): ProjectSettings {
     export_image_format: "jpg",
     export_with_bleed: false,
     export_bleed_mm: 3.0,
+    custom_upscale: "off",
   };
 }
 

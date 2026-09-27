@@ -120,6 +120,12 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "right",
       },
       {
+        target: "custom-upscale-select",
+        title: "Custom images",
+        body: "Your own uploaded images print as they are unless you change this. \"Upscale to target DPI\" brings a low-resolution upload up to the DPI you ticked above. \"Upscale 4×\" keeps the model's full result, up to 2400 DPI. Uploads that are already sharp enough are left alone either way.",
+        placement: "right",
+      },
+      {
         target: "tutorial-button",
         title: "That's it for now!",
         body: "Once you import some cards, we'll show you around the card list. You can replay any tour with this button.",

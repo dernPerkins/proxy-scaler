@@ -755,6 +755,103 @@ _VRAM_HEADROOM_FIRST_TASK = 2.0
 # what the card can do right now is what matters.
 _UNTILED_MIN_FREE = 9 * 1024**3
 
+# ---- Oversized sources (Custom Images) --------------------------------
+#
+# Everything above is fit to a Scryfall card, where the one cost that
+# scales with the *whole* image — the x4 output being stitched together on
+# the device — is small enough to hide inside the headroom. It isn't small
+# for a large upload: _tiled_inference allocates the full x4 output and
+# its weight map on the device, and upscale() takes a clamp and an fp32
+# copy of it before moving it to the CPU. A 1400 DPI upload needs ~7 GB
+# for those alone, which is how Custom Images used to walk the whole tile
+# ladder into the CPU fallback. Only CUDA and MPS stitch on the device:
+# DirectML (_directml_tiled_inference), ncnn and ONNX stitch in system
+# memory, so their VRAM is bounded by the tile.
+#
+# Sources up to this many pixels take the usual path untouched: a 300 DPI
+# card carrying MakePlayingCards' 3.175 mm bleed (819x1114) — a Scryfall
+# original (745x1040) and anything the user uploads at Scryfall resolution
+# sit inside it. Above it, the whole-image term is added to the estimate.
+# (dpi.bled_target_pixels(300, dpi.MPC_BLEED_MM), spelled out because dpi
+# imports this module.)
+USUAL_PATH_MAX_PX = 819 * 1114
+# Bytes per *output* pixel held on the device at the peak of a stitched
+# pass: bf16 is the output (6) + clamp temp (6) + fp32 copy (12) at the end
+# of upscale(); fp32 peaks at the division in _tiled_inference: output (12)
+# + weight map (4) + its clamp (4) + quotient (12). Added to the tile term
+# rather than max'd with it, which errs towards refusing.
+_VRAM_WHOLE_IMAGE_BYTES_PER_OUT_PX = {"bf16": 24, "fp32": 32}
+# A light model tiled for an oversized source: its activations at the 384
+# retry tile are a small fraction of this, which is just a round allowance
+# rather than a fit (the cost model above is DAT2's, far heavier).
+_LIGHT_MODEL_TILE_BYTES = 512 * 1024**2
+# Devices with no free-memory probe that still stitch on the device
+# (Apple's MPS, whose memory is shared with the whole system): a fixed
+# ceiling on the source instead of a measurement.
+UNPROBED_MAX_SOURCE_DPI = 600
+
+# Pillow refuses to open an image above twice Image.MAX_IMAGE_PIXELS (its
+# decompression-bomb guard, left at the default everywhere here). An x4
+# result that large could be written but never read back — not by the x4
+# cache, the PDF renderer, the ZIP export or the gallery thumbnail — so a
+# source whose output would cross it is refused up front.
+_CARD_AREA_SQIN = (63.0 / 25.4) * (88.0 / 25.4)
+
+
+class SourceTooLargeError(RuntimeError):
+    """A source image too large to upscale on this machine. The message
+    is user-facing (it becomes the task's error); the source itself still
+    prints at its own resolution."""
+
+
+def _card_dpi(width: int, height: int) -> int:
+    """Approximate DPI of an image across a 63x88 mm card, for messages
+    only (the upscaler doesn't know a custom's declared bleed, so this can
+    read a little high for a pre-bled file)."""
+    return round(max(width, height) / (88.0 / 25.4))
+
+
+def _dpi_for_pixels(px: float) -> int:
+    """Card-shaped DPI whose image has `px` pixels."""
+    return int((max(px, 0.0) / _CARD_AREA_SQIN) ** 0.5)
+
+
+def max_output_pixels() -> int | None:
+    """Largest image Pillow will open here, or None when unguarded."""
+    limit = Image.MAX_IMAGE_PIXELS
+    return None if limit is None else int(2 * limit)
+
+
+def check_source_size(width: int, height: int, scale: int) -> None:
+    """Refuse, before any backend runs, a source whose xscale result
+    Pillow could not open again. Runs for every backend: ncnn and ONNX in
+    particular must never see such a source, because a pass that fails
+    there (a host MemoryError included) counts as a failed GPU rung, and
+    failing every rung moves the rest of the session to the CPU."""
+    if width * height <= USUAL_PATH_MAX_PX:
+        return
+    limit = max_output_pixels()
+    if limit is None or width * height * scale * scale <= limit:
+        return
+    max_dpi = _dpi_for_pixels(limit / (scale * scale))
+    raise SourceTooLargeError(
+        f"{width}x{height} is about {_card_dpi(width, height)} DPI at card size; "
+        f"upscaling it {scale}x would make an image too large to open again. "
+        f"Sources up to about {max_dpi} DPI can be upscaled. "
+        "The uploaded image still prints at its own resolution."
+    )
+
+
+def _whole_image_bytes(width: int, height: int, scale: int, dtype_label: str) -> int:
+    """Device bytes the stitched output of an oversized source needs on
+    top of the tile's own activations (0 up to USUAL_PATH_MAX_PX, so every
+    Scryfall-sized estimate is unchanged)."""
+    extra_px = max(0, width * height - USUAL_PATH_MAX_PX)
+    per_out_px = _VRAM_WHOLE_IMAGE_BYTES_PER_OUT_PX.get(
+        dtype_label, _VRAM_WHOLE_IMAGE_BYTES_PER_OUT_PX["fp32"]
+    )
+    return extra_px * scale * scale * per_out_px
+
 # Free VRAM a later task needs to see before it moves a model that an
 # earlier task's OOM parked on the CPU (_relocate_to_cpu) back onto the
 # GPU. The fallback only fires once even the 256 rung fails, i.e. with
@@ -866,10 +963,14 @@ def _estimated_vram_need(
     dtype_label: str,
     headroom: float,
 ) -> int:
-    """Free VRAM a rung wants before the ladder will pick it (bytes)."""
+    """Free VRAM a rung wants before the ladder will pick it (bytes).
+    Includes the stitched x4 output for a source above USUAL_PATH_MAX_PX
+    (see _whole_image_bytes); only ever consulted for CUDA, which stitches
+    on the device."""
     px = _max_padded_tile_px(width, height, tile, pad)
     per_px = _VRAM_BYTES_PER_PX.get(dtype_label, _VRAM_BYTES_PER_PX["fp32"])
-    need = int((_VRAM_BASE_BYTES + px * per_px) * headroom)
+    whole = _whole_image_bytes(width, height, 4, dtype_label)
+    need = int((_VRAM_BASE_BYTES + px * per_px + whole) * headroom)
     if px == width * height:
         # Resolves to a full-image pass for this image: the explicit floor
         # applies whichever rung got it there.
@@ -1444,6 +1545,78 @@ class Upscaler:
             )
         self.tile = new_tile
 
+    def _fit_oversized_source(self, width: int, height: int) -> int | None:
+        """For a source above USUAL_PATH_MAX_PX on a device that stitches
+        the output on-device: make sure it runs tiled, then refuse it
+        (SourceTooLargeError) if even that won't fit. Anything at or below
+        Scryfall size, and every host-stitched device, is left alone.
+
+        Returns the tile to restore after this task when it had to force
+        one (a light model normally runs untiled, and its tile would
+        otherwise stick for later, normal-sized cards), else None."""
+        if width * height <= USUAL_PATH_MAX_PX:
+            return None
+        device = self._device
+        if device is None or device.type not in ("cuda", "mps"):
+            return None
+        light = self._auto_base_tile <= 0
+        restore = None
+        if light and self.tile_auto and not self.tile:
+            restore = self.tile
+            self.tile = _LIGHT_MODEL_RETRY_TILE
+        dtype_label = _dtype_label(self._dtype)
+        if device.type == "mps":
+            if _card_dpi(width, height) > UNPROBED_MAX_SOURCE_DPI:
+                self._refuse(
+                    width,
+                    height,
+                    "this GPU has no way to report its free memory",
+                    UNPROBED_MAX_SOURCE_DPI,
+                    restore,
+                )
+            return restore
+        free = self._probe_free_vram()
+        if free is None:
+            return restore
+        headroom = _current_headroom()
+        if light:
+            tile_bytes = _LIGHT_MODEL_TILE_BYTES
+            need = int(
+                (_VRAM_BASE_BYTES + tile_bytes + _whole_image_bytes(width, height, self.scale, dtype_label))
+                * headroom
+            )
+        else:
+            need = _estimated_vram_need(width, height, self.tile, self.tile_pad, dtype_label, headroom)
+            floor_px = _max_padded_tile_px(width, height, _AUTO_TILE_FLOOR, self.tile_pad)
+            tile_bytes = floor_px * _VRAM_BYTES_PER_PX.get(dtype_label, _VRAM_BYTES_PER_PX["fp32"])
+        if need <= free:
+            return restore
+        # The largest source that would fit at the smallest tile, for the
+        # message: invert base + tile + whole-image term <= free/headroom.
+        per_out_px = _VRAM_WHOLE_IMAGE_BYTES_PER_OUT_PX.get(dtype_label, 32)
+        room = free / headroom - _VRAM_BASE_BYTES - tile_bytes
+        max_px = USUAL_PATH_MAX_PX + max(room, 0) / (per_out_px * self.scale * self.scale)
+        self._refuse(
+            width,
+            height,
+            f"upscaling it needs about {need / 1024**3:.1f} GB of free GPU memory "
+            f"and {free / 1024**3:.1f} GB is free",
+            _dpi_for_pixels(max_px),
+            restore,
+        )
+        return restore  # unreachable; _refuse raises
+
+    def _refuse(
+        self, width: int, height: int, why: str, max_dpi: int, restore: int | None
+    ) -> None:
+        if restore is not None:
+            self.tile = restore
+        raise SourceTooLargeError(
+            f"{width}x{height} is about {_card_dpi(width, height)} DPI at card size; "
+            f"{why}. This GPU can upscale images up to about {max_dpi} DPI right now. "
+            "The uploaded image still prints at its own resolution."
+        )
+
     def _next_oom_rung(self, width: int, height: int) -> int | None:
         """After an OOM at self.tile: the rung to retry on the same device,
         or None when the GPU has nothing left to offer (→ CPU relocation).
@@ -1704,6 +1877,10 @@ class Upscaler:
             width, height = rgb.size
             self._cap_allocator_to_free()
             self._apply_auto_tile(width, height)
+            # Before the inference try below, on purpose: a refusal is not
+            # a device failure, so it must not reach the DirectML
+            # worker-recycle handler that try carries.
+            restore_tile = self._fit_oversized_source(width, height)
             # The one line a user report needs: which capability gates fired.
             print(f"  inference config: {_dtype_label(self._dtype)}, tile {self.tile or 'off'}")
             dtype = self._dtype or torch.float32
@@ -1788,6 +1965,8 @@ class Upscaler:
                     request_worker_recycle(f"DirectML task failed: {lost or exc}")
                 raise
             finally:
+                if restore_tile is not None:
+                    self.tile = restore_tile
                 # Deliberately NO empty_cache() here: clearing per image
                 # forced the CUDA allocator to re-grow its arenas on every
                 # task. The allocator reuses the freed blocks for the next
@@ -2095,6 +2274,8 @@ def load_or_upscale(
         )
 
     src = Image.open(io.BytesIO(png_bytes))
+    # Before any backend sees it — see check_source_size.
+    check_source_size(*src.size, upscaler.scale)
     if timings is not None:
         timings.set_src_dims(*src.size)
     result = upscaler.upscale(src)
