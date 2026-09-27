@@ -890,6 +890,7 @@ fn main() {
             back_images::count_projects_using_back_image,
             back_images::delete_back_image,
             back_images::back_image_thumbnail,
+            back_images::back_image_full,
             back_images::get_default_back_image_id,
             back_images::set_default_back_image_id,
             back_images::sync_back_image,

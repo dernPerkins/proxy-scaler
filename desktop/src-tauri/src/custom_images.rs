@@ -394,24 +394,10 @@ pub fn custom_image_full(app: AppHandle, id: i64) -> Result<Option<String>, Stri
     let Some(file_name) = file_name else {
         return Ok(None);
     };
-    let path = customs_dir(&app)?.join(&file_name);
-    let Ok(bytes) = std::fs::read(&path) else {
-        return Ok(None);
-    };
-    let mime = match Path::new(&file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        _ => "image/png",
-    };
-    Ok(Some(format!(
-        "data:{mime};base64,{}",
-        crate::back_images::base64_encode(&bytes)
-    )))
+    Ok(crate::back_images::image_data_url(
+        &customs_dir(&app)?.join(&file_name),
+        &file_name,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]

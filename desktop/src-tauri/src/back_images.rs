@@ -342,6 +342,26 @@ pub fn back_image_thumbnail(app: AppHandle, id: i64) -> Result<Option<String>, S
     )))
 }
 
+/// The original file as a data URL, for the full-image viewer — the same
+/// trade as custom_images::custom_image_full: the whole upload crosses IPC,
+/// but only when the viewer opens for one back, never for the grid.
+#[tauri::command]
+pub fn back_image_full(app: AppHandle, id: i64) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    let file_name: Option<String> = conn
+        .query_row(
+            "SELECT file_name FROM back_images WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+    Ok(image_data_url(&backs_dir(&app)?.join(&file_name), &file_name))
+}
+
 fn read_default_back_image_id(conn: &Connection) -> Result<Option<i64>, String> {
     Ok(crate::project_store::read_app_setting_pub(conn, DEFAULT_BACK_IMAGE_KEY)?
         .and_then(|v| v.parse::<i64>().ok()))
@@ -471,6 +491,24 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// A library file as a data URL, typed by its extension. Shared by both
+/// full-image viewers (backs and custom images); None when the file is
+/// missing, which the viewer reports rather than erroring.
+pub(crate) fn image_data_url(path: &Path, file_name: &str) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let mime = match Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    };
+    Some(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +544,22 @@ mod tests {
             |row| row.get(0),
         )
         .expect("read project")
+    }
+
+    #[test]
+    fn image_data_url_types_by_extension_and_tolerates_a_missing_file() {
+        let dir = std::env::temp_dir().join(format!("ps-data-url-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("art.JPG");
+        std::fs::write(&path, b"abc").expect("write");
+        assert_eq!(
+            image_data_url(&path, "art.JPG").as_deref(),
+            Some("data:image/jpeg;base64,YWJj")
+        );
+        assert!(image_data_url(&path, "art.webp").unwrap().starts_with("data:image/webp;"));
+        assert!(image_data_url(&path, "art.png").unwrap().starts_with("data:image/png;"));
+        assert_eq!(image_data_url(&dir.join("gone.png"), "gone.png"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -14,21 +14,25 @@
 // Where back printing is configured — the toggle, flip edge, page order,
 // offsets, guides — is the PDF tab, because all of those change the sheet
 // rather than the image. This tab owns the image and nothing else.
+//
+// The magnifier on a tile opens the shared full-image viewer
+// (components/ImageViewer) with the trim line drawn from the back's bleed
+// declaration, and the same settings as the sidebar beside it. Viewing a
+// back does not select it: selecting changes what this project prints
+// with, and looking should never do that.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { BackImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
+import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageViewer";
 import { useConnection } from "../connection";
 import { useServerReadiness } from "../config";
 import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 
-// Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
-// source_dpi calculation — below this, a back is being asked to cover a
-// 63×88mm card with less detail than a decent printer resolves.
 // Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation — below this, a back is being asked to cover a
 // 63×88mm card with less detail than a decent printer resolves.
@@ -58,16 +62,132 @@ function UploadIcon() {
   );
 }
 
+type BleedChange = { id: number; includesBleed: boolean; bleedMm: number };
+
+/** The per-back settings, shared by the sidebar and the viewer so the two
+ *  can never disagree about what a back can be told. `tourTargets` is set
+ *  only in the sidebar: the viewer renders the same fields while the
+ *  sidebar is still mounted, and a tour anchor must be unique. */
+function BackSettingsFields({
+  back,
+  isDefault,
+  onBleed,
+  error,
+  tourTargets,
+}: {
+  back: BackImage;
+  isDefault: boolean;
+  onBleed: (change: BleedChange) => void;
+  error: string | null;
+  tourTargets: boolean;
+}) {
+  const queryClient = useQueryClient();
+  return (
+    <div className="field-group">
+      <label className="field">
+        <span>Name</span>
+        <input
+          defaultValue={back.label}
+          key={back.id}
+          onBlur={(e) => {
+            const next = e.target.value.trim();
+            if (next && next !== back.label) {
+              void projectApi
+                .setBackImageLabel(back.id, next)
+                .then(() => queryClient.invalidateQueries({ queryKey: ["back-images"] }));
+            }
+          }}
+        />
+      </label>
+
+      {/* The user's declaration about their own file. Art that
+          already carries bleed is not edge-extended a second time:
+          with the amount, the server trims the file's own bleed to
+          the sheet's (or tops it up), so the trim content stays
+          exactly card sized whatever bleed the project uses. */}
+      <label className="check" data-tour={tourTargets ? "back-bleed" : undefined}>
+        <input
+          type="checkbox"
+          checked={back.includes_bleed}
+          onChange={(e) =>
+            onBleed({ id: back.id, includesBleed: e.target.checked, bleedMm: back.bleed_mm })
+          }
+        />
+        This image already includes bleed
+      </label>
+      {back.includes_bleed && (
+        <label className="field">
+          <span>Bleed in the file (mm per side)</span>
+          <input
+            type="number"
+            min={0}
+            max={MAX_BLEED_MM}
+            step={0.001}
+            key={`bleed-${back.id}`}
+            defaultValue={back.bleed_mm}
+            onBlur={(e) => {
+              const next = Number(e.target.value);
+              if (
+                Number.isFinite(next) &&
+                next >= 0 &&
+                next <= MAX_BLEED_MM &&
+                next !== back.bleed_mm
+              ) {
+                onBleed({ id: back.id, includesBleed: true, bleedMm: next });
+              }
+            }}
+          />
+        </label>
+      )}
+      {back.includes_bleed && (
+        <p className="hint" style={{ marginTop: -4 }}>
+          MakePlayingCards images carry 3.175 mm (1/8 in) per side. Printing trims
+          this down to the project&apos;s bleed, or extends it if the project asks
+          for more.
+        </p>
+      )}
+      {error ? <p className="error-text">{error}</p> : null}
+
+      <label className="check" data-tour={tourTargets ? "back-default" : undefined}>
+        <input
+          type="checkbox"
+          checked={isDefault}
+          onChange={(e) => {
+            void projectApi
+              .setDefaultBackImageId(e.target.checked ? back.id : null)
+              .then(() => queryClient.invalidateQueries({ queryKey: ["back-image-default"] }));
+          }}
+        />
+        Use for new projects
+      </label>
+      <p className="hint" style={{ marginTop: -4 }}>
+        New projects start with this back. Projects you already have keep whatever
+        they were set to.
+      </p>
+
+      {back.source_dpi < LOW_DPI && (
+        <p className="hint">
+          This image works out to about {Math.round(back.source_dpi)} DPI
+          across a card, which will look soft in print. It will still print —
+          replace it with a larger source image if you want it sharp.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function BackTile({
   back,
   selected,
   isDefault,
   onSelect,
+  onView,
 }: {
   back: BackImage;
   selected: boolean;
   isDefault: boolean;
   onSelect: () => void;
+  onView: () => void;
 }) {
   const thumbQuery = useQuery({
     queryKey: ["back-thumb", back.id],
@@ -75,9 +195,18 @@ function BackTile({
     staleTime: Infinity,
   });
   return (
-    <button
-      type="button"
+    // A div acting as a button rather than a <button>: the zoom control
+    // inside it is itself a button, and buttons cannot nest.
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       data-tour={selected ? "back-tile" : undefined}
       className="panel"
       style={{
@@ -97,6 +226,7 @@ function BackTile({
     >
       <div
         style={{
+          position: "relative",
           width: "100%",
           aspectRatio: "63 / 88",
           background: "var(--surface-2)",
@@ -111,6 +241,21 @@ function BackTile({
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
           />
         )}
+        <button
+          type="button"
+          className="thumb-zoom"
+          data-tour={selected ? "back-zoom" : undefined}
+          title="View full image"
+          aria-label="View full image"
+          onClick={(e) => {
+            // Viewing must not also select: that would switch the
+            // project's back as a side effect of looking at one.
+            e.stopPropagation();
+            onView();
+          }}
+        >
+          <MagnifierIcon />
+        </button>
       </div>
       {/* Uploaded filenames run long (and some are near-unreadable
           hashes), so the label is clamped to one ellipsised line with the
@@ -131,9 +276,10 @@ function BackTile({
       <div className="hint" style={{ fontSize: 12 }}>
         {back.width}×{back.height}
         {back.source_dpi < LOW_DPI && " · low resolution"}
+        {back.includes_bleed && " · bleed included"}
         {isDefault && " · default"}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -147,6 +293,8 @@ export default function BacksPage() {
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [viewingId, setViewingId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ back: BackImage; uses: number } | null>(
     null,
   );
@@ -167,6 +315,7 @@ export default function BacksPage() {
   });
   const backs = useMemo(() => libraryQuery.data ?? [], [libraryQuery.data]);
   const selected = backs.find((b) => b.id === settings.back_image_id) ?? null;
+  const viewing = backs.find((b) => b.id === viewingId) ?? null;
   useTourOnFirstView("backs");
   // Per-back settings only exist once this project has a back selected.
   useTourWhenPresent("backs-back", selected != null, "backs");
@@ -214,7 +363,20 @@ export default function BacksPage() {
       void queryClient.invalidateQueries({ queryKey: ["back-images"] });
       void queryClient.invalidateQueries({ queryKey: ["back-image-default"] });
       setPendingDelete(null);
+      setViewingId(null);
     },
+  });
+
+  // The declaration about the file. Only recorded locally: unlike a custom
+  // image, a back's bleed travels with every PDF/export request, so there
+  // is nothing on the server to bring up to date.
+  const bleedMutation = useMutation({
+    mutationFn: async (args: BleedChange) => {
+      await projectApi.setBackImageBleed(args.id, args.includesBleed, args.bleedMm);
+      await queryClient.invalidateQueries({ queryKey: ["back-images"] });
+    },
+    onSuccess: () => setSettingsError(null),
+    onError: (err: unknown) => setSettingsError(err instanceof Error ? err.message : String(err)),
   });
 
   // The Rust delete nulls this project's pointer in the database, but this
@@ -241,102 +403,14 @@ export default function BacksPage() {
             one.
           </p>
         ) : (
-          <div className="field-group">
-            <label className="field">
-              <span>Name</span>
-              <input
-                defaultValue={selected.label}
-                key={selected.id}
-                onBlur={(e) => {
-                  const next = e.target.value.trim();
-                  if (next && next !== selected.label) {
-                    void projectApi
-                      .setBackImageLabel(selected.id, next)
-                      .then(() =>
-                        queryClient.invalidateQueries({ queryKey: ["back-images"] }),
-                      );
-                  }
-                }}
-              />
-            </label>
-
-            {/* The user's declaration about their own file. Art that
-                already carries bleed is not edge-extended a second time:
-                with the amount, the server trims the file's own bleed to
-                the sheet's (or tops it up), so the trim content stays
-                exactly card sized whatever bleed the project uses. */}
-            <label className="check" data-tour="back-bleed">
-              <input
-                type="checkbox"
-                checked={selected.includes_bleed}
-                onChange={(e) => {
-                  void projectApi
-                    .setBackImageBleed(selected.id, e.target.checked, selected.bleed_mm)
-                    .then(() =>
-                      queryClient.invalidateQueries({ queryKey: ["back-images"] }),
-                    );
-                }}
-              />
-              This image already includes bleed
-            </label>
-            {selected.includes_bleed && (
-              <label className="field">
-                <span>Bleed in the file (mm per side)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={10}
-                  step={0.001}
-                  key={`bleed-${selected.id}`}
-                  defaultValue={selected.bleed_mm}
-                  onBlur={(e) => {
-                    const next = Number(e.target.value);
-                    if (Number.isFinite(next) && next >= 0 && next <= 10 && next !== selected.bleed_mm) {
-                      void projectApi
-                        .setBackImageBleed(selected.id, true, next)
-                        .then(() =>
-                          queryClient.invalidateQueries({ queryKey: ["back-images"] }),
-                        );
-                    }
-                  }}
-                />
-              </label>
-            )}
-            {selected.includes_bleed && (
-              <p className="hint" style={{ marginTop: -4 }}>
-                MakePlayingCards images carry 3.175 mm (1/8 in) per side. Printing trims
-                this down to the project&apos;s bleed, or extends it if the project asks
-                for more.
-              </p>
-            )}
-
-            <label className="check" data-tour="back-default">
-              <input
-                type="checkbox"
-                checked={defaultQuery.data === selected.id}
-                onChange={(e) => {
-                  void projectApi
-                    .setDefaultBackImageId(e.target.checked ? selected.id : null)
-                    .then(() =>
-                      queryClient.invalidateQueries({ queryKey: ["back-image-default"] }),
-                    );
-                }}
-              />
-              Use for new projects
-            </label>
-            <p className="hint" style={{ marginTop: -4 }}>
-              New projects start with this back. Projects you already have keep whatever
-              they were set to.
-            </p>
-
-            {selected.source_dpi < LOW_DPI && (
-              <p className="hint">
-                This image works out to about {Math.round(selected.source_dpi)} DPI
-                across a card, which will look soft in print. It will still print —
-                replace it with a larger source image if you want it sharp.
-              </p>
-            )}
-
+          <div>
+            <BackSettingsFields
+              back={selected}
+              isDefault={defaultQuery.data === selected.id}
+              onBleed={(change) => bleedMutation.mutate(change)}
+              error={settingsError}
+              tourTargets
+            />
             <button
               className="btn-sm"
               style={{ marginTop: 18 }}
@@ -459,6 +533,7 @@ export default function BacksPage() {
               selected={back.id === settings.back_image_id}
               isDefault={defaultQuery.data === back.id}
               onSelect={() => setSettings((s) => ({ ...s, back_image_id: back.id }))}
+              onView={() => setViewingId(back.id)}
             />
           ))}
         </div>
@@ -479,6 +554,28 @@ export default function BacksPage() {
           </p>
         )}
       </main>
+
+      {viewing && (
+        <ImageViewer
+          title={viewing.label}
+          fullQueryKey={["back-full", viewing.id]}
+          loadFull={() => projectApi.backImageFull(viewing.id)}
+          includesBleed={viewing.includes_bleed}
+          bleedMm={viewing.bleed_mm}
+          width={viewing.width}
+          height={viewing.height}
+          sourceDpi={viewing.source_dpi}
+          onClose={() => setViewingId(null)}
+        >
+          <BackSettingsFields
+            back={viewing}
+            isDefault={defaultQuery.data === viewing.id}
+            onBleed={(change) => bleedMutation.mutate(change)}
+            error={settingsError}
+            tourTargets={false}
+          />
+        </ImageViewer>
+      )}
 
       {pendingDelete && (
         <ConfirmDialog

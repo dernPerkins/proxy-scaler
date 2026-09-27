@@ -1523,9 +1523,9 @@ tbody tr:last-child td {
   }
 }
 
-/* --- Customs tab: full-image viewer -------------------------------- */
+/* --- Full-image viewer (Customs and Backs tabs) --------------------- */
 
-/* The "+" over a custom tile's thumbnail: a tight white ring that fills
+/* The "+" over a custom or back tile's thumbnail: a tight white ring that fills
    white on hover. Absolute inside the thumbnail box, which the tile makes
    position: relative. */
 .thumb-zoom {

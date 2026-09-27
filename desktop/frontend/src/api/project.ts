@@ -349,6 +349,11 @@ export const projectApi = {
   backImageThumbnail: (id: number) =>
     invokeCommand<string | null>("back_image_thumbnail", { id }),
 
+  /** The original file as a data URL, for the full-image viewer. The
+   *  whole upload crosses IPC, so only call it when the viewer opens. */
+  backImageFull: (id: number) =>
+    invokeCommand<string | null>("back_image_full", { id }),
+
   getDefaultBackImageId: () =>
     invokeCommand<number | null>("get_default_back_image_id"),
 

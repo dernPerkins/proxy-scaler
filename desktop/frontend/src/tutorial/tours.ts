@@ -251,6 +251,12 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "right",
       },
       {
+        target: "back-zoom",
+        title: "Check the trim",
+        body: "Opens the full image with the cut line drawn on it, so you can see exactly what ends up on the back. Looking doesn't switch this project's back.",
+        placement: "right",
+      },
+      {
         target: "back-bleed",
         title: "Already has bleed?",
         body: "Tick this if the image already has a print border (MakePlayingCards backs do). That way it's trimmed to fit instead of padded twice.",

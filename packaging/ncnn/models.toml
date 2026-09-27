@@ -143,3 +143,20 @@ license = "BSD-3-Clause"
 homepage = "https://github.com/xinntao/Real-ESRGAN"
 source_url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth"
 source_sha256 = "8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292"
+
+# --- Round three (2026-09-27): upscayl's bundled restoration model, asked
+# about from Reddit. Trained on game frames + photos with BSRGAN_Resize and
+# Combo_Noise degradations, so it targets JPEG/noise removal rather than
+# illustration.
+
+[uniscale_restore_vk]
+arch = "ESRGAN (RRDBNet)"
+converter = "esrgan"
+author = "Kim2091"
+license = "CC-BY-NC-SA-4.0"
+homepage = "https://openmodeldb.info/models/4x-UniScale-Restore"
+# Author hosts on Mega only; HuggingFace mirror (byte size matches
+# OpenModelDB's 66961958). Cross-checked against upscayl's own ncnn
+# conversion (custom-models/models/uniscale_restore.*).
+source_url = "https://huggingface.co/Zabin/Resizers/resolve/main/4x-UniScale_Restore.pth"
+source_sha256 = "7309d334680427f433266cc14ae5a64d9c9be2ab0e7a4d887ce561b0aa4f5f1a"
