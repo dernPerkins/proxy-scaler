@@ -1279,7 +1279,7 @@ export default function PdfPage() {
             {/* Checking the flip edge here costs nothing; checking it on
                 the printer costs a sheet of cardstock. */}
             {layout.back_printing && (
-              <div className="summary-row" style={{ marginBottom: 8 }} data-tour="pdf-preview-side">
+              <div className="summary-row" style={{ marginBottom: 8 }} data-tour="pdf-preview-side" data-tour-fit>
                 <button
                   className={previewSide === "front" ? "btn-primary" : "btn-sm"}
                   onClick={() => setPreviewSideChoice("front")}
@@ -1361,7 +1361,7 @@ export default function PdfPage() {
           </div>
         )}
 
-        <div className="summary-row" data-tour="pdf-download">
+        <div className="summary-row" data-tour="pdf-download" data-tour-fit>
           <button
             className="btn-primary"
             onClick={() => handleDownload()}

@@ -35,11 +35,31 @@ function sameRect(a: Rect | null, b: Rect | null): boolean {
   return a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height;
 }
 
+// A full-width flex row (.summary-row) would spotlight a band of empty
+// space beside its buttons; `data-tour-fit` asks for the box around the
+// row's visible children instead.
+function fitsChildren(el: HTMLElement): DOMRect | null {
+  if (!el.hasAttribute("data-tour-fit")) return null;
+  let top = Infinity;
+  let left = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const child of Array.from(el.children)) {
+    const c = child.getBoundingClientRect();
+    if (c.width === 0 && c.height === 0) continue;
+    top = Math.min(top, c.top);
+    left = Math.min(left, c.left);
+    right = Math.max(right, c.right);
+    bottom = Math.max(bottom, c.bottom);
+  }
+  return top === Infinity ? null : new DOMRect(left, top, right - left, bottom - top);
+}
+
 function measure(target: string | undefined): Rect | null {
   if (!target) return null;
   const el = findTourTarget(target);
   if (!el) return null;
-  const r = el.getBoundingClientRect();
+  const r = fitsChildren(el) ?? el.getBoundingClientRect();
   if (r.width === 0 && r.height === 0) return null;
   return {
     top: r.top - PAD,

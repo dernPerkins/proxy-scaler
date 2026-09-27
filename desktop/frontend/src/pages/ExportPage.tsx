@@ -526,7 +526,7 @@ export default function ExportPage() {
           </div>
         ) : null}
 
-        <div className="summary-row" style={{ marginTop: 14 }} data-tour="export-buttons">
+        <div className="summary-row" style={{ marginTop: 14 }} data-tour="export-buttons" data-tour-fit>
           <SortSelect />
           <button
             className="btn-primary export-btn"

@@ -82,7 +82,7 @@ export default function TasksPage() {
     <div>
       <h2>Tasks</h2>
 
-      <div className="summary-row" data-tour="tasks-summary">
+      <div className="summary-row" data-tour="tasks-summary" data-tour-fit>
         <span className="chip">
           Worker:{" "}
           {workerQuery.isLoading

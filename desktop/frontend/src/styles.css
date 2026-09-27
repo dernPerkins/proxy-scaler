@@ -1718,12 +1718,10 @@ tbody tr:last-child td {
   opacity: 1;
   margin: 0 3px 0 4px;
 }
-/* On the connect screen, pinned to the picker's top-right corner. */
-.gate {
-  position: relative;
-}
-.gate-tutorial {
-  position: absolute;
-  top: 24px;
-  right: 24px;
+/* On the connect screen, level with the title at the picker's right edge. */
+.gate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }

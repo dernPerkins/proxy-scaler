@@ -78,6 +78,12 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "bottom",
       },
       {
+        target: "custom-drop",
+        title: "Or use your own art",
+        body: "Drop image files anywhere on this page and each one becomes a card.",
+        placement: "top",
+      },
+      {
         target: "tabs",
         title: "The tabs, left to right",
         body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or an export. Tasks shows what's running.",
@@ -112,12 +118,6 @@ export const TOURS: Record<TourId, Tour> = {
         title: "GPU VRAM",
         body: "Match this to your graphics card's memory, or leave it on Auto if you have that option. If you get crashes or it slows to a crawl, go one tier lower.",
         placement: "right",
-      },
-      {
-        target: "custom-drop",
-        title: "Or use your own art",
-        body: "Drop image files anywhere on this page and each one becomes a card.",
-        placement: "top",
       },
       {
         target: "tutorial-button",
@@ -269,10 +269,6 @@ export const TOURS: Record<TourId, Tour> = {
     followUps: ["pdf-preview"],
     steps: [
       {
-        title: "Print it: the PDF tab",
-        body: "Turns your generated cards into print-ready sheets. The defaults work for most home printers, so change only what you need.",
-      },
-      {
         target: "pdf-source",
         title: "Source images",
         body: "Chooses which of your generated versions go into the PDF. This never generates anything new, it only picks among what you already have.",
@@ -281,7 +277,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "pdf-layout",
         title: "Layout",
-        body: "Paper size, cards per page, spacing and bleed. The default 3×3 on Letter or A4 is what most people want.",
+        body: "Paper size, cards per page, spacing and bleed. The default 3×3 on A4 or 4×2 on Letter is what most people want.",
         placement: "right",
       },
       {
@@ -293,7 +289,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "pdf-guides",
         title: "Cutting guides",
-        body: "Small marks that show where to cut. Leave them on for the fronts. They're off on backs by default so no ink shows on the card.",
+        body: "Card Guides are the corner cutting marks. Page Guides are the lines leading from the edge of the grid to the edge of the paper. Both are very helpful for lining up on manual cutters. Important to note: the lines sit just outside the edge of the cards, so no guide print ever lands on a card.",
         placement: "left",
       },
       {
@@ -348,10 +344,6 @@ export const TOURS: Record<TourId, Tour> = {
 
   export: {
     steps: [
-      {
-        title: "Export",
-        body: "Downloads your card images as a ZIP, for ordering from a print shop or using elsewhere.",
-      },
       {
         target: "export-source",
         title: "Source images",

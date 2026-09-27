@@ -41,8 +41,10 @@ export default function ConnectGate({ children }: { children: ReactNode }) {
   return (
     <div className="gate-screen">
       <div className="gate">
-        {status.kind === "picker" && <TutorialButton tour="connect" className="gate-tutorial" />}
-        <h1>Proxy Scaler</h1>
+        <div className="gate-head">
+          <h1>Proxy Scaler</h1>
+          {status.kind === "picker" && <TutorialButton tour="connect" />}
+        </div>
         <p className="gate-sub">Where should generation run?</p>
 
         {status.kind === "picker" && (
