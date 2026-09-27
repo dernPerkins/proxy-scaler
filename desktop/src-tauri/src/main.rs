@@ -50,6 +50,7 @@
 mod back_images;
 mod custom_images;
 mod project_store;
+mod save_dialog;
 mod update;
 
 use std::collections::VecDeque;
@@ -387,8 +388,16 @@ async fn pick_save_path(app: AppHandle, suggested_name: String) -> Result<Option
     // much larger dedicated blocking-thread pool instead, so the shared
     // async pool is never at risk regardless of how many downloads
     // overlap.
+    //
+    // The filter is what keeps the extension on Windows — see save_dialog.
+    let extension = save_dialog::expected_extension(&suggested_name);
+    let dialog_ext = extension.clone();
     let chosen = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog().file().set_file_name(&suggested_name).blocking_save_file()
+        let mut dialog = app.dialog().file().set_file_name(&suggested_name);
+        if let Some(ext) = &dialog_ext {
+            dialog = dialog.add_filter(save_dialog::filter_label(ext), &[ext.as_str()]);
+        }
+        dialog.blocking_save_file()
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -396,7 +405,12 @@ async fn pick_save_path(app: AppHandle, suggested_name: String) -> Result<Option
     let Some(file_path) = chosen else {
         return Ok(None);
     };
-    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    let mut path = file_path.into_path().map_err(|e| e.to_string())?;
+    if let Some(ext) = &extension {
+        path = save_dialog::with_extension_kept(path, ext);
+    }
+    // Returned rather than just used: the progress modal names the file
+    // from this path, so it has to be the one actually written.
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
