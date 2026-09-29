@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from proxy_scaler import customs, db
-from proxy_scaler.dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM
+from proxy_scaler.dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM, CUSTOM_SOURCE_MODEL
 from proxy_scaler.pipeline import FaceResult
 from proxy_scaler.upscale import cache_path, original_cache_path, original_thumb_path
 
@@ -167,3 +167,57 @@ def test_delete_removes_the_sidecar_too(client: TestClient) -> None:
     assert client.delete(f"/api/customs/{content_hash}").json() == {"removed": 1}
     assert not customs.sidecar_path(content_hash).exists()
     assert client.get(f"/api/customs/{content_hash}").json()["bleed_mm"] == 0.0
+
+
+def test_clearing_generated_data_keeps_registered_custom_sources(
+    client: TestClient, tmp_path: Path, db_path: Path
+) -> None:
+    """"Delete all generated images & cache" used to wipe a custom's
+    registered source copy too, dropping the card to "not registered" until
+    the PDF tab's registerCustomCards() quietly copied it back. The copy is
+    the upload itself, so it — and its custom_source row, and this
+    project's membership of it — now survive; the custom's upscales and
+    every Scryfall original are still wiped."""
+    data, content_hash = _png()
+    assert client.post(f"/api/customs/{content_hash}", content=data).status_code == 200
+    files = _seed_derivatives(tmp_path, db_path, content_hash)
+    db.upsert_gallery_item(
+        "tag-a",
+        FaceResult(
+            out_path=files["original"],
+            original_path=files["original"],
+            scryfall_id=None,
+            custom_hash=content_hash,
+            face_index=None,
+            face_name="My Alter",
+            card_name="My Alter",
+            set_code="",
+            collector_number="",
+            png_url="",
+            dpi=300,
+            model=CUSTOM_SOURCE_MODEL,
+            native_scale=1,
+        ),
+        db_path=db_path,
+    )
+    scryfall_original = original_cache_path(tmp_path / "imgcache", "sol-id", None)
+    scryfall_original.write_bytes(b"png")
+
+    resp = client.post(
+        "/api/generated-data/clear",
+        json={
+            "output_dir": str(tmp_path / "output"),
+            "cache_dir": str(tmp_path / "imgcache"),
+            "project_tag": "tag-a",
+        },
+    )
+    assert resp.status_code == 200
+
+    assert files["original"].exists()
+    assert files["thumb"].exists()
+    assert not files["cached"].exists()
+    assert not files["out"].exists()
+    assert not scryfall_original.exists()
+    assert customs.has_original(content_hash)
+    [kept] = db.list_gallery_items("tag-a", db_path=db_path)
+    assert kept["model"] == CUSTOM_SOURCE_MODEL

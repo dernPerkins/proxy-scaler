@@ -272,7 +272,7 @@ Decklist tab changes that for a project:
 
 Either way the uploaded file stays printable. An upload too large for your
 GPU, or above about 1100 DPI, is skipped with a message on its task, and
-prints at its own resolution. Needs a 0.3.4 or newer server.
+prints at its own resolution. Needs a 0.3.5 or newer server.
 
 With a remote [server](#server), custom art is uploaded the first time
 something needs it — Generate, PDF, or ZIP export — with a progress

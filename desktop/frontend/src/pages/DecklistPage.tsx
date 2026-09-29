@@ -784,7 +784,7 @@ export default function DecklistPage() {
           <h3>Danger zone</h3>
           <p className="hint">
             Deletes the generated images and download cache (the output and cache directories
-            above). Model weights are kept.
+            above). Model weights and uploaded custom images are kept.
           </p>
           <button
             className="btn-danger btn-block"
@@ -804,8 +804,9 @@ export default function DecklistPage() {
               onCancel={() => setConfirmClearOpen(false)}
             >
               This deletes every generated image and the download cache (the
-              output and cache directories in the sidebar). Model weights are
-              kept. Cards can be re-generated any time.
+              output and cache directories in the sidebar). Model weights and
+              your uploaded custom images are kept. Cards can be re-generated
+              any time.
             </ConfirmDialog>
           )}
           {clearGeneratedMutation.data && (

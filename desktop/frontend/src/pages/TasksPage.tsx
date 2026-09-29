@@ -155,7 +155,7 @@ export default function TasksPage() {
                   <td>
                     <StatusBadge status={task.status} />
                   </td>
-                  <td className="error-text">{task.error ? task.error.slice(0, 100) : ""}</td>
+                  <td className="error-text">{task.error ?? ""}</td>
                   <td>
                     {task.status === "pending" && (
                       <button

@@ -286,11 +286,51 @@ class PipelineResult:
     notes: list[str] = field(default_factory=list)
 
 
+def is_custom_source_copy(path: Path) -> bool:
+    """Whether `path` is a Custom Image's registered source copy (or its
+    thumbnail) in the cache: originals/custom_<hash>_<face>.png, as
+    original_cache_path/cache_stem name it.
+
+    That copy is the user's own upload, not anything generated or
+    downloaded — process_custom_source_task makes it straight from the
+    customs/ store. Wiping it with the rest of the cache deleted nothing
+    worth deleting: the card merely dropped to "not registered" until the
+    next registerCustomCards() (PDF tab, export) copied it back. So "delete
+    all generated images & cache" keeps it, along with its custom_source
+    registry row (db.prune_registry_under_dir keep_custom_sources). A
+    custom's *upscaled* variants live in output/ and are wiped as usual."""
+    return path.parent.name == "originals" and path.name.startswith("custom_")
+
+
+def _empty_dir(path: Path, keep: Callable[[Path], bool] | None) -> int:
+    """Delete everything under `path` except what `keep` claims, leaving
+    `path` itself. Subdirectories left empty are removed; ones still
+    holding a kept file stay. Returns the number of files kept."""
+    kept = 0
+    for child in path.iterdir():
+        if keep is not None and keep(child):
+            kept += 1
+        elif child.is_dir() and not child.is_symlink():
+            if keep is None:
+                shutil.rmtree(child)
+                continue
+            inner = _empty_dir(child, keep)
+            if inner:
+                kept += inner
+            else:
+                child.rmdir()
+        else:
+            child.unlink()
+    return kept
+
+
 def clear_generated_data(
     *dirs: Path,
+    keep: Callable[[Path], bool] | None = None,
 ) -> list[str]:
     """Delete the contents of generated output/cache directories, keeping
-    the directories themselves. Returns human-readable notes.
+    the directories themselves — and any file `keep` returns True for (see
+    is_custom_source_copy). Returns human-readable notes.
 
     The roots must stay alive: they sit inside the repo, and uvicorn's
     --reload stat-watcher rglobs the reload dir every second — a watched
@@ -302,12 +342,8 @@ def clear_generated_data(
         if not path.exists():
             notes.append(f"skipped missing: {path}")
             continue
-        for child in path.iterdir():
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        notes.append(f"cleared: {path}")
+        kept = _empty_dir(path, keep)
+        notes.append(f"cleared: {path}" + (" (uploaded custom images kept)" if kept else ""))
     return notes
 
 

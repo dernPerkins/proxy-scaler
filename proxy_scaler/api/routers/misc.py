@@ -18,7 +18,7 @@ from proxy_scaler.api.schemas import (
     VersionOut,
 )
 from proxy_scaler.ncnn_backend import vulkan_available
-from proxy_scaler.pipeline import clear_generated_data
+from proxy_scaler.pipeline import clear_generated_data, is_custom_source_copy
 from proxy_scaler.upscale import (
     Backend,
     UpscaleModel,
@@ -143,23 +143,34 @@ def get_paths() -> GenPathsOut:
 
 @router.post("/generated-data/clear", response_model=ClearGeneratedOut)
 def clear_generated(body: ClearGeneratedIn) -> ClearGeneratedOut:
-    notes = clear_generated_data(Path(body.output_dir), Path(body.cache_dir))
+    # Custom Images' registered source copies (and their rows and
+    # memberships, below) survive: they are the user's uploads, not
+    # generated output — see pipeline.is_custom_source_copy.
+    notes = clear_generated_data(
+        Path(body.output_dir), Path(body.cache_dir), keep=is_custom_source_copy
+    )
     # Every registry row pointing under the just-emptied output dir is now
     # a lie, for every project — and the registry answers existence
     # queries (skip-existing, the picker's /api/gallery/status) without
     # ever statting disk, so it must be told, not left to notice. The
     # membership cascade clears the affected galleries along the way.
-    removed = db.prune_registry_under_dir(Path(body.output_dir), db_path=get_db_path())
+    removed = db.prune_registry_under_dir(
+        Path(body.output_dir), db_path=get_db_path(), keep_custom_sources=True
+    )
     # Download-only rows point their out_path at the cached original under
     # cache_dir/originals/ (see dpi.ORIGINAL_MODEL) — the cache was just
     # emptied too, so those rows are equally stale.
-    removed += db.prune_registry_under_dir(Path(body.cache_dir), db_path=get_db_path())
+    removed += db.prune_registry_under_dir(
+        Path(body.cache_dir), db_path=get_db_path(), keep_custom_sources=True
+    )
     if removed:
         notes.append(f"unregistered {removed} generated image record(s)")
     if body.project_tag:
         # A completed task's own history reports "done" too, even with
         # its registry row gone — see db.py::clear_project_generation_records.
-        db.clear_project_generation_records(body.project_tag, db_path=get_db_path())
+        db.clear_project_generation_records(
+            body.project_tag, db_path=get_db_path(), keep_custom_sources=True
+        )
         notes.append("cleared generation records for this project")
     return ClearGeneratedOut(notes=notes)
 

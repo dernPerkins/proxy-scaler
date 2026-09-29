@@ -51,6 +51,12 @@ them — `clear_generated_data` empties those two and
 Living outside both is what makes "Custom Images survive the wipe" a
 property of where the files are rather than a condition somebody has to
 remember to re-check.
+
+The one piece of a custom that *does* live under `imgcache/` is its
+registered source copy (originals/custom_<hash>_*.png, what makes an
+un-upscaled upload printable). The wipe spares that by name instead —
+see pipeline.is_custom_source_copy — since it is the upload itself, not
+generated output.
 """
 
 from __future__ import annotations

@@ -226,9 +226,9 @@ export const CUSTOM_BLEED_MIN_SERVER_VERSION = "0.3.3";
 // older server drops it (Pydantic ignores unknown fields) and registers
 // the customs at their uploaded resolution only — silently, while the
 // control claims they'll be upscaled. So the control is disabled below
-// this version and "off" is sent. 0.3.4 because that is the release it
+// this version and "off" is sent. 0.3.5 because that is the release it
 // ships in; packaging/set-version.py must never rewrite it.
-export const CUSTOM_UPSCALE_MIN_SERVER_VERSION = "0.3.4";
+export const CUSTOM_UPSCALE_MIN_SERVER_VERSION = "0.3.5";
 
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");

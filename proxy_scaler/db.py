@@ -2020,7 +2020,10 @@ def generated_variants_status(
 
 
 def clear_project_generation_records(
-    project_tag: str, db_path: Path | str | None = None
+    project_tag: str,
+    db_path: Path | str | None = None,
+    *,
+    keep_custom_sources: bool = False,
 ) -> None:
     """Deletes this project_tag's finished generation_tasks (done/failed/
     canceled) and all of its gallery memberships — the DB-side half of
@@ -2041,7 +2044,14 @@ def clear_project_generation_records(
     literally "done" — so deleting only the membership would still leave
     the UI reporting "done" for images that no longer exist on disk, from
     task history alone. A no-op for a falsy project_tag, matching every
-    other project_tag-scoped write in this module."""
+    other project_tag-scoped write in this module.
+
+    keep_custom_sources leaves this project's memberships of custom_source
+    rows in place — the wipe keeps those images and their registry rows
+    (see pipeline.is_custom_source_copy), so they must stay in the gallery
+    too. Discard doesn't pass it: a thrown-away session keeps nothing. The
+    custom_source *tasks* still go; with the registry row present the
+    client's merge never falls back to them."""
     if not project_tag:
         return
     with connect(db_path) as conn:
@@ -2050,10 +2060,18 @@ def clear_project_generation_records(
             "AND status NOT IN ('pending', 'running')",
             (project_tag,),
         )
-        conn.execute(
-            "DELETE FROM project_gallery_memberships WHERE project_tag = ?",
-            (project_tag,),
-        )
+        if keep_custom_sources:
+            conn.execute(
+                "DELETE FROM project_gallery_memberships WHERE project_tag = ? "
+                "AND image_id NOT IN "
+                "(SELECT id FROM generated_images WHERE model = ?)",
+                (project_tag, CUSTOM_SOURCE_MODEL),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM project_gallery_memberships WHERE project_tag = ?",
+                (project_tag,),
+            )
         conn.commit()
 
 
@@ -2094,7 +2112,10 @@ def delete_custom_records(
 
 
 def prune_registry_under_dir(
-    output_dir: Path | str, db_path: Path | str | None = None
+    output_dir: Path | str,
+    db_path: Path | str | None = None,
+    *,
+    keep_custom_sources: bool = False,
 ) -> int:
     """Delete every registry row whose out_path sits under output_dir —
     the DB-side companion to pipeline.clear_generated_data actually
@@ -2102,19 +2123,27 @@ def prune_registry_under_dir(
     (generated_variants_status and the skip-existing registry probe) would
     keep asserting images that were just wiped, for every project, until
     some prune happened to notice. The membership cascade clears every
-    project's gallery along the way. Returns rows deleted."""
+    project's gallery along the way. Returns rows deleted.
+
+    keep_custom_sources spares custom_source rows: the wipe keeps the
+    cached copies they point at (pipeline.is_custom_source_copy), so they
+    are still true."""
     prefix = str(Path(output_dir).resolve())
     if not prefix:
         return 0
     if not prefix.endswith(os.sep):
         prefix += os.sep
+    sql = "DELETE FROM generated_images WHERE out_path LIKE ? ESCAPE '\\'"
+    # ESCAPE so a directory containing SQL wildcard characters (%, _)
+    # can't over-match unrelated paths.
+    params: list[str] = [
+        prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+    ]
+    if keep_custom_sources:
+        sql += " AND model != ?"
+        params.append(CUSTOM_SOURCE_MODEL)
     with connect(db_path) as conn:
-        cur = conn.execute(
-            # ESCAPE so a directory containing SQL wildcard characters
-            # (%, _) can't over-match unrelated paths.
-            "DELETE FROM generated_images WHERE out_path LIKE ? ESCAPE '\\'",
-            (prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%",),
-        )
+        cur = conn.execute(sql, params)
         conn.commit()
         return cur.rowcount
 

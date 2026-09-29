@@ -1,6 +1,6 @@
 [package]
 name = "proxy-scaler-spike"
-version = "0.3.3"
+version = "0.3.5"
 description = "proxy-scaler desktop app: decklist import, upscaled proxy generation, and PDF export"
 edition = "2021"
 
