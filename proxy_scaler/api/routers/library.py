@@ -126,12 +126,16 @@ def library_image_status(kind: str, content_hash: str) -> LibraryStatusOut:
     project_tag — the union is the image's real state, since a project's
     Generate and the library tab both write the same global registry."""
     db_path = get_db_path()
+    # Reconcile against disk first, as a project's gallery is on load:
+    # a version whose file was wiped must not keep its badge.
     if kind == "back":
         content_hash = _checked_back(content_hash)
+        db.prune_stale_library_records(back_hash=content_hash, db_path=db_path)
         tasks = db.list_tasks(back_hash=content_hash, db_path=db_path)
         items = db.list_registry_items_for_back(content_hash, db_path=db_path)
     elif kind == "custom":
         content_hash = _checked_custom(content_hash)
+        db.prune_stale_library_records(custom_hash=content_hash, db_path=db_path)
         tasks = db.list_tasks(custom_hash=content_hash, db_path=db_path)
         items = db.list_registry_items_for_custom(content_hash, db_path=db_path)
     else:

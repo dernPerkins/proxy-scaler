@@ -217,3 +217,27 @@ def test_adopt_takes_custom_variants_by_hash_only(client: TestClient, tmp_path: 
     assert [(r["dpi"], r["custom_hash"]) for r in db.list_gallery_items(tag, db_path=db_path)] == [
         (1200, content_hash)
     ]
+
+
+def test_status_prunes_versions_whose_file_is_gone(client: TestClient, tmp_path: Path, db_path: Path) -> None:
+    """Seen live: a custom upscaled long ago, its output since wiped, kept
+    a green badge on the Customs tab — the by-identity read had no disk
+    reconcile, unlike a project's gallery. The done task goes with the
+    row, or the client's merge would still show it as done."""
+    content_hash = _upload(client)
+    _register_done(db_path, "e" * 32, content_hash, 1200, "ultrasharp_v2", tmp_path / "out")
+    _register_done(db_path, "e" * 32, content_hash, 600, "ultrasharp_v2", tmp_path / "out")
+    kept = [r for r in db.list_registry_items_for_custom(content_hash, db_path=db_path) if r["dpi"] == 600][0]
+    gone = [r for r in db.list_registry_items_for_custom(content_hash, db_path=db_path) if r["dpi"] == 1200][0]
+    Path(gone["out_path"]).unlink()
+    task_id = db.enqueue_task(
+        "e" * 32, custom_hash=content_hash, face_index=None, face_label=None, face_name="My Alter",
+        card_name="My Alter", dpi=1200, model="ultrasharp_v2", output_dir=str(tmp_path / "out"),
+        cache_dir=str(tmp_path / "cache"), weights_dir="w", db_path=db_path,
+    )
+    db.mark_task_done(task_id, db_path=db_path)
+
+    status = client.get(f"/api/library/custom/{content_hash}/status").json()
+    assert [g["id"] for g in status["gallery"]] == [kept["id"]]
+    assert status["tasks"] == []
+    assert db.get_task(task_id, db_path=db_path) is None

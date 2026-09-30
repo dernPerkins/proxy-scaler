@@ -1763,6 +1763,47 @@ def list_registry_items_for_custom(
     return [_gallery_row_to_dict(g) for g in rows]
 
 
+def prune_stale_library_records(
+    *,
+    custom_hash: str | None = None,
+    back_hash: str | None = None,
+    db_path: Path | str | None = None,
+) -> int:
+    """prune_stale_gallery_items for one library image, across every tag:
+    drop its registry rows whose output file is gone from disk, and its
+    done tasks for a (model, dpi) that no longer has a row — a done task
+    alone still reads as a green badge in the client's merge. Called by
+    the library status route, the one place library rows are read
+    without a project's reconcile having run first (a file wiped or
+    hand-deleted from output/ used to keep its badge there forever).
+    Returns the records deleted."""
+    col, value = ("custom_hash", custom_hash) if custom_hash else ("back_hash", back_hash)
+    if not value:
+        return 0
+    pruned = 0
+    with connect(db_path) as conn:
+        stale = [
+            int(r["id"])
+            for r in conn.execute(
+                f"SELECT id, out_path FROM generated_images WHERE {col} = ?", (value,)
+            )
+            if not Path(r["out_path"]).is_file()
+        ]
+        for gid in stale:
+            conn.execute("DELETE FROM generated_images WHERE id = ?", (gid,))
+        pruned += len(stale)
+        cur = conn.execute(
+            f"DELETE FROM generation_tasks WHERE {col} = ? AND status = 'done' "
+            "AND NOT EXISTS (SELECT 1 FROM generated_images g "
+            f"WHERE g.{col} = generation_tasks.{col} "
+            "AND g.model = generation_tasks.model AND g.dpi = generation_tasks.dpi)",
+            (value,),
+        )
+        pruned += cur.rowcount
+        conn.commit()
+    return pruned
+
+
 def list_registry_items_for_back(
     back_hash: str, db_path: Path | str | None = None
 ) -> list[dict[str, Any]]:
