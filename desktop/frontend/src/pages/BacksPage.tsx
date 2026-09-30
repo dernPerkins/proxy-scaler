@@ -504,7 +504,7 @@ export default function BacksPage() {
               }}
             />
             <button
-              className="btn-sm btn-danger"
+              className="btn-sm btn-danger btn-block"
               style={{ marginTop: 18 }}
               onClick={() => void confirmDelete(selected)}
             >

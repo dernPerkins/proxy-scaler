@@ -379,3 +379,51 @@ def test_mps_uses_a_fixed_ceiling(monkeypatch) -> None:
     assert up._fit_oversized_source(*target_pixels(550)) is None
     with pytest.raises(SourceTooLargeError):
         up._fit_oversized_source(*target_pixels(700))
+
+
+# --------------------------------------------------------------------
+# A bleed change while a registration is queued (two "Source" badges)
+# --------------------------------------------------------------------
+
+
+def test_invalidation_cancels_a_pending_source_registration(
+    tmp_path: Path, db_path: Path, monkeypatch
+) -> None:
+    """Seen live: toggling bleed re-cropped the file and cleared its rows,
+    but a custom_source task still in the queue kept the old DPI and
+    later wrote a row for a file that no longer existed — a second
+    "Source" badge. Pending registrations are cancelled with the rows."""
+    from proxy_scaler import pipeline
+
+    monkeypatch.chdir(tmp_path)
+    content_hash = _upload(target_pixels(300))
+    _, _, task_ids = _enqueue(tmp_path, db_path, content_hash, "off", [1200])
+    [task_id] = task_ids
+    assert db_module.get_task(task_id, db_path=db_path).status == "pending"
+
+    pipeline.invalidate_custom_derivatives(content_hash, db_path=db_path, default_cache_dir=tmp_path / "cache")
+    assert db_module.get_task(task_id, db_path=db_path).status == "canceled"
+
+
+def test_a_running_source_registration_records_what_the_file_measures_now(
+    tmp_path: Path, db_path: Path, monkeypatch
+) -> None:
+    """The one a cancel can't catch: the task was already running when the
+    file was re-cropped. Its row records the copy's real DPI, not the
+    stale number frozen on the task."""
+    from proxy_scaler import pipeline
+
+    monkeypatch.chdir(tmp_path)
+    data = _png_bytes(target_pixels(300))
+    content_hash, _ = customs.store_original(data)
+    _, _, task_ids = _enqueue(tmp_path, db_path, content_hash, "off", [1200])
+    task = db_module.get_task(task_ids[0], db_path=db_path)
+    assert task.dpi == 300
+
+    # Re-declared with bleed after enqueue: the store re-crops the same bytes.
+    customs.store_original(data, bleed_mm=MPC_BLEED_MM)
+    now = round(customs.source_dpi(content_hash))
+    assert now != 300
+
+    result = pipeline.process_custom_source_task(task)
+    assert result.dpi == now

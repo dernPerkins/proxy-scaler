@@ -1086,6 +1086,24 @@ def invalidate_back_derivatives(
     return len(rows)
 
 
+def _measured_source_dpi(task: TaskRow, *, customs_dpi: bool) -> int:
+    """The DPI a source-registration row should record: the task's own
+    unless the stored file measures differently now (re-cropped after the
+    task was enqueued — see process_custom_source_task)."""
+    from proxy_scaler import backs, customs
+
+    measured = (
+        customs.source_dpi(task.custom_hash) if customs_dpi else backs.source_dpi(task.back_hash)
+    )
+    if measured is None or round(measured) == task.dpi:
+        return task.dpi
+    print(
+        f"  source for {task.face_name} measures {round(measured)} DPI now, not the "
+        f"{task.dpi} it was queued at (re-cropped since); registering at {round(measured)}"
+    )
+    return round(measured)
+
+
 def process_back_source_task(
     task: TaskRow,
     *,
@@ -1097,10 +1115,12 @@ def process_back_source_task(
     back's registered source, so the Backs tab shows it and
     backs.resolve_print_source can rank it against the back's upscales.
     The recorded dpi is the row's, measured at enqueue (bleed-agnostic —
-    see backs.source_dpi)."""
+    see backs.source_dpi), re-measured on completion for the same reason
+    process_custom_source_task gives."""
     if on_progress:
         on_progress(f"Registering back image for {task.face_name}…")
     png_bytes = _read_back_png(task.back_hash, describe=task.face_name)
+    dpi = _measured_source_dpi(task, customs_dpi=False)
     with _phase(timings, "encode"):
         original_path = _save_original(
             png_bytes,
@@ -1124,7 +1144,7 @@ def process_back_source_task(
         set_code="",
         collector_number="",
         png_url="",
-        dpi=task.dpi,
+        dpi=dpi,
         model=BACK_SOURCE_MODEL,
         face_label=task.face_label,
         native_scale=1,
@@ -1154,14 +1174,21 @@ def process_custom_source_task(
     The recorded dpi is the image's true resolution at card size, not a
     fixed sentinel like ORIGINAL_DPI — a custom upload is whatever the user
     had, and the PDF tab ranks it against upscaled variants on that number.
-    It is taken from the task row rather than recomputed here: enqueueing
-    already measured it to build this task's variant key (see
-    services/generation._custom_source_dpi), and measuring twice is how the
-    two would eventually disagree about which variant this row is.
+    Enqueueing measured it to build this task's variant key (see
+    services/generation._custom_source_dpi), and normally the row records
+    that same number. The one exception is a file re-cropped between
+    enqueue and now (its declared bleed changed, so the store rewrote it):
+    the row then records what the copy actually measures, because a
+    source row whose DPI describes a file that no longer exists is worse
+    than a task whose key drifted — it prints wrong and shows as a second
+    "Source" badge. The invalidation that re-crops also cancels pending
+    registrations (db.delete_custom_records), so this only ever catches
+    a task that was already running.
     """
     if on_progress:
         on_progress(f"Registering uploaded image for {task.face_name}…")
     png_bytes = _read_custom_png(task.custom_hash, describe=task.face_name)
+    dpi = _measured_source_dpi(task, customs_dpi=True)
     with _phase(timings, "encode"):
         original_path = _save_original(
             png_bytes,
@@ -1187,7 +1214,7 @@ def process_custom_source_task(
         set_code="",
         collector_number="",
         png_url="",
-        dpi=task.dpi,
+        dpi=dpi,
         model=CUSTOM_SOURCE_MODEL,
         face_label=task.face_label,
         native_scale=1,

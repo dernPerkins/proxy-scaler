@@ -37,7 +37,7 @@ export default function LibraryUpscaleControls({
   return (
     <div data-tour="library-upscale" style={{ marginTop: 14 }}>
       <button
-        className="btn-primary"
+        className="btn-primary btn-block"
         onClick={onUpscale}
         disabled={pending || reason != null}
         title={reason ?? undefined}
@@ -46,8 +46,9 @@ export default function LibraryUpscaleControls({
       </button>
       {reason ? <p className="hint">{reason}</p> : null}
       {note ? <p className="hint">{note}</p> : null}
+      {/* Same gap as the remove button below, so the three stack evenly. */}
       {variants.length > 0 && (
-        <div className="variants">
+        <div className="variants" style={{ marginTop: 18 }}>
           {variants.map((v) => (
             <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
               <span title={v.error ?? undefined}>

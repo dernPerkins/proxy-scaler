@@ -2348,6 +2348,17 @@ def delete_custom_records(
             "AND status NOT IN ('pending', 'running')",
             (custom_hash,),
         )
+        # A registration still waiting in the queue carries the DPI the
+        # file had when it was enqueued; run later, it would write a row
+        # for a version of the file that no longer exists. Cancel it —
+        # the caller enqueues a fresh one for the new geometry. A running
+        # one can't be stopped; the worker re-measures on completion
+        # (pipeline.process_custom_source_task) so it lands right anyway.
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'canceled', completed_at = ? "
+            "WHERE custom_hash = ? AND status = 'pending'",
+            (_utc_now(), custom_hash),
+        )
         conn.commit()
     return rows
 
@@ -2374,6 +2385,17 @@ def delete_back_records(
             "DELETE FROM generation_tasks WHERE back_hash = ? "
             "AND status NOT IN ('pending', 'running')",
             (back_hash,),
+        )
+        # A registration still waiting in the queue carries the DPI the
+        # file had when it was enqueued; run later, it would write a row
+        # for a version of the file that no longer exists. Cancel it —
+        # the caller enqueues a fresh one for the new geometry. A running
+        # one can't be stopped; the worker re-measures on completion
+        # (pipeline.process_custom_source_task) so it lands right anyway.
+        conn.execute(
+            "UPDATE generation_tasks SET status = 'canceled', completed_at = ? "
+            "WHERE back_hash = ? AND status = 'pending'",
+            (_utc_now(), back_hash),
         )
         conn.commit()
     return rows
