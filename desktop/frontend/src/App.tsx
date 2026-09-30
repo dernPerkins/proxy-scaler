@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
@@ -19,6 +19,7 @@ import BacksPage from "./pages/BacksPage";
 import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
 import TasksPage from "./pages/TasksPage";
+import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "./shortcuts";
 import { isTauri } from "./tauri";
 import TutorialButton from "./tutorial/TutorialButton";
 import { ROUTE_TOURS } from "./tutorial/tours";
@@ -76,6 +77,44 @@ function AppVersion() {
   );
 }
 
+// The tab bar, in order. One list feeds both the NavLinks and the
+// Ctrl/Cmd+1..N shortcuts, so the number a tooltip promises is always the
+// number that gets there.
+const TABS = [
+  { to: "/decklist", label: "Decklist" },
+  { to: "/customs", label: "Customs" },
+  { to: "/backs", label: "Backs" },
+  { to: "/pdf", label: "PDF" },
+  { to: "/export", label: "ZIP" },
+  { to: "/tasks", label: "Tasks" },
+];
+
+// Ctrl/Cmd+1..6 jumps to that tab, the same way browsers number theirs.
+// Matched on the physical key (e.code) rather than e.key so the top row
+// works on layouts where the unshifted digit key types something else
+// (AZERTY's & é " …), which is also what browsers do for their own tab
+// shortcuts. Digits past the last tab do nothing; Shift is left to the
+// browser/webview, whose Ctrl+Shift+digit chords are its own.
+function useTabShortcuts() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!hasShortcutModifier(e) || e.shiftKey) return;
+      const digit = /^Digit([1-9])$/.exec(e.code);
+      if (!digit) return;
+      const tab = TABS[Number(digit[1]) - 1];
+      if (!tab) return;
+      // Claimed even while a dialog is up: the webview would otherwise
+      // act on the chord itself (a browser dev tab switches its own tabs).
+      e.preventDefault();
+      if (isDialogOpen()) return;
+      navigate(tab.to);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [navigate]);
+}
+
 // The ? that replays the current tab's tour. In the tab bar's right-hand
 // cluster because the pages share no header of their own — this is the
 // one top-right spot every tab has.
@@ -95,6 +134,7 @@ function TabTutorialButton() {
 // genuinely unaffected by which generation server is connected, so
 // there's nothing about it that a connection change needs to reset.
 export default function App() {
+  useTabShortcuts();
   return (
     <ProjectProvider>
       <div className="app">
@@ -132,12 +172,11 @@ export default function App() {
             default — .tabs styles the underline off that, no manual
             location matching needed. */}
         <nav className="tabs" data-tour="tabs">
-          <NavLink to="/decklist">Decklist</NavLink>
-          <NavLink to="/customs">Customs</NavLink>
-          <NavLink to="/backs">Backs</NavLink>
-          <NavLink to="/pdf">PDF</NavLink>
-          <NavLink to="/export">ZIP</NavLink>
-          <NavLink to="/tasks">Tasks</NavLink>
+          {TABS.map((tab, i) => (
+            <NavLink key={tab.to} to={tab.to} title={shortcutLabel(String(i + 1))}>
+              {tab.label}
+            </NavLink>
+          ))}
           <AppVersion />
         </nav>
         <Routes>

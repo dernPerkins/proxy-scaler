@@ -86,7 +86,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "tabs",
         title: "The tabs, left to right",
-        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running.",
+        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running. Ctrl+1 to Ctrl+6 (Cmd on a Mac) jump straight to a tab, and Ctrl+N starts a new project.",
         placement: "bottom",
       },
       {

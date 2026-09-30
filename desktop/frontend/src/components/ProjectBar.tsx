@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { projectApi } from "../api/project";
 import { useProject } from "../context/ProjectContext";
 import { useServerReadiness } from "../config";
+import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import ConfirmDialog from "./ConfirmDialog";
 
 // Long enough that typing "Krenko Goblins" is one commit rather than two,
@@ -221,6 +222,41 @@ export default function ProjectBar() {
     closeDuplicateField();
   }
 
+  // The New button's click, and Ctrl/Cmd+N's. Spec §5.6: an Unnamed
+  // Project holding cards is wiped behind a confirm. Everything else is a
+  // detach and goes straight through.
+  function requestNew() {
+    if (project.newWouldDiscard) {
+      suspendedCommit.current = queuedName.current;
+      cancelPendingCommit();
+      setConfirmingNew(true);
+      return;
+    }
+    applyNew();
+  }
+
+  // Ctrl/Cmd+N. Through a ref so the handler registered once sees the
+  // current render's closures — the same reason flushLatest exists above.
+  // Quiet while a dialog is up: under this bar's own discard confirm a
+  // second press would re-run requestNew and, with the timer already
+  // cancelled, overwrite the suspended name with null.
+  const requestNewLatest = useRef(requestNew);
+  useEffect(() => {
+    requestNewLatest.current = requestNew;
+  });
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!hasShortcutModifier(e) || e.shiftKey || e.code !== "KeyN") return;
+      // Claimed even when ignored, so the webview never gets to open a
+      // new window for a chord meant for the app.
+      e.preventDefault();
+      if (isDialogOpen()) return;
+      requestNewLatest.current();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // Declining has to leave the field exactly as the click found it, timer
   // included — so the suspended commit is rescheduled rather than dropped.
   // It restarts the 500ms, which is the honest reading: the pause the user
@@ -281,19 +317,7 @@ export default function ProjectBar() {
       />
       {nameError && <span className="error-text">{nameError}</span>}
 
-      <button
-        onClick={() => {
-          // Spec §5.6: an Unnamed Project holding cards is wiped behind a
-          // confirm. Everything else is a detach and goes straight through.
-          if (project.newWouldDiscard) {
-            suspendedCommit.current = queuedName.current;
-            cancelPendingCommit();
-            setConfirmingNew(true);
-            return;
-          }
-          applyNew();
-        }}
-      >
+      <button onClick={requestNew} title={shortcutLabel("N")}>
         New
       </button>
 
