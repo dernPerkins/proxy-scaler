@@ -441,33 +441,7 @@ export default function BacksPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
-        {/* The same app-global upscale settings the Customs tab shows —
-            not this project's, since upscaling a back involves no
-            project (see the header comment). */}
-        <h3 style={{ marginBottom: 14 }}>Upscale settings</h3>
-        <div className="field-group" data-tour="library-upscale-settings">
-          <UpscaleSettingsFields
-            value={upscaleSettings}
-            onChange={updateUpscaleSettings}
-            tourPrefix="library-"
-          />
-          <label className="field">
-            <span>Result</span>
-            <select
-              value={upscaleSettings.mode}
-              onChange={(e) => updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })}
-            >
-              <option value="target">Match target DPI</option>
-              <option value="native">Keep full 4× (up to 2400 DPI)</option>
-            </select>
-          </label>
-          <p className="hint">
-            Only a back below a ticked target is upscaled. Every project that prints with it
-            uses the result; the PDF and ZIP tabs&apos; preferred DPI picks which version.
-          </p>
-        </div>
-
-        <h3 style={{ marginTop: 22, marginBottom: 14 }}>Back image</h3>
+        <h3 style={{ marginBottom: 14 }}>Back image</h3>
         {selected == null ? (
           <p className="hint">
             No back selected for this project. Pick one from the library, or add a new
@@ -482,6 +456,35 @@ export default function BacksPage() {
               error={settingsError}
               tourTargets
             />
+
+            {/* The same app-global upscale settings the Customs tab shows
+                — not this project's, since upscaling a back involves no
+                project (see the header comment). */}
+            <h3 style={{ marginTop: 22, marginBottom: 14 }}>Upscale settings</h3>
+            <div className="field-group" data-tour="library-upscale-settings">
+              <UpscaleSettingsFields
+                value={upscaleSettings}
+                onChange={updateUpscaleSettings}
+                tourPrefix="library-"
+              />
+              <label className="field">
+                <span>Result</span>
+                <select
+                  value={upscaleSettings.mode}
+                  onChange={(e) =>
+                    updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })
+                  }
+                >
+                  <option value="target">Match target DPI</option>
+                  <option value="native">Keep full 4× (up to 2400 DPI)</option>
+                </select>
+              </label>
+              <p className="hint">
+                Only a back below a ticked target is upscaled. Every project that prints
+                with it uses the result; the PDF and ZIP tabs&apos; preferred DPI picks
+                which version.
+              </p>
+            </div>
             <LibraryUpscaleControls
               sourceDpi={serverSourceDpi("back", selected)}
               variants={variants}
@@ -501,7 +504,7 @@ export default function BacksPage() {
               }}
             />
             <button
-              className="btn-sm"
+              className="btn-sm btn-danger"
               style={{ marginTop: 18 }}
               onClick={() => void confirmDelete(selected)}
             >

@@ -37,7 +37,7 @@ export default function LibraryUpscaleControls({
   return (
     <div data-tour="library-upscale" style={{ marginTop: 14 }}>
       <button
-        className="btn-sm"
+        className="btn-primary"
         onClick={onUpscale}
         disabled={pending || reason != null}
         title={reason ?? undefined}

@@ -413,34 +413,7 @@ export default function CustomsPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
-        {/* App-global, not the project's Decklist settings: this tab
-            upscales library images whether or not any project uses them,
-            and the project's "Custom images" rule is about what its own
-            bulk Generate does. */}
-        <h3 style={{ marginBottom: 14 }}>Upscale settings</h3>
-        <div className="field-group" data-tour="library-upscale-settings">
-          <UpscaleSettingsFields
-            value={upscaleSettings}
-            onChange={updateUpscaleSettings}
-            tourPrefix="library-"
-          />
-          <label className="field">
-            <span>Result</span>
-            <select
-              value={upscaleSettings.mode}
-              onChange={(e) => updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })}
-            >
-              <option value="target">Match target DPI</option>
-              <option value="native">Keep full 4× (up to 2400 DPI)</option>
-            </select>
-          </label>
-          <p className="hint">
-            Only an image below a ticked target is upscaled. One too large for this GPU is
-            skipped with a message and prints as uploaded.
-          </p>
-        </div>
-
-        <h3 style={{ marginTop: 22, marginBottom: 14 }}>Custom card</h3>
+        <h3 style={{ marginBottom: 14 }}>Custom card</h3>
         {selected == null ? (
           <p className="hint">
             Select an image to upscale it, rename it, say whether it already includes bleed,
@@ -454,6 +427,35 @@ export default function CustomsPage() {
               onBleed={(change) => bleedMutation.mutate(change)}
               error={settingsError}
             />
+
+            {/* App-global, not the project's Decklist settings: this tab
+                upscales library images whether or not any project uses
+                them, and the project's "Custom images" rule is about what
+                its own bulk Generate does. */}
+            <h3 style={{ marginTop: 22, marginBottom: 14 }}>Upscale settings</h3>
+            <div className="field-group" data-tour="library-upscale-settings">
+              <UpscaleSettingsFields
+                value={upscaleSettings}
+                onChange={updateUpscaleSettings}
+                tourPrefix="library-"
+              />
+              <label className="field">
+                <span>Result</span>
+                <select
+                  value={upscaleSettings.mode}
+                  onChange={(e) =>
+                    updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })
+                  }
+                >
+                  <option value="target">Match target DPI</option>
+                  <option value="native">Keep full 4× (up to 2400 DPI)</option>
+                </select>
+              </label>
+              <p className="hint">
+                Only an image below a ticked target is upscaled. One too large for this GPU
+                is skipped with a message and prints as uploaded.
+              </p>
+            </div>
             <LibraryUpscaleControls
               sourceDpi={selected.source_dpi}
               variants={variants}
@@ -473,7 +475,7 @@ export default function CustomsPage() {
               }}
             />
             <button
-              className="btn-sm"
+              className="btn-sm btn-danger"
               style={{ marginTop: 18 }}
               onClick={() => void confirmDelete(selected)}
             >
