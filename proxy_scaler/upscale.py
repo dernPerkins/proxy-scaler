@@ -2152,18 +2152,23 @@ def save_cache_png(image: Image.Image, path: Path, device: str, *, compress_leve
     write_cache_device(path, device)
 
 
-def cache_stem(scryfall_id: str | None, custom_hash: str | None = None) -> str:
+def cache_stem(
+    scryfall_id: str | None, custom_hash: str | None = None, back_hash: str | None = None
+) -> str:
     """Filename-safe token identifying one face in the cache directories.
 
     Deliberately NOT customs.identity_key(): that yields 'custom:<sha256>'
     and a colon is not a legal filename character on Windows, which the
     desktop app ships to. An underscore separator gives the same
-    collision-freedom — a Scryfall UUID can never start with 'custom_'.
+    collision-freedom — a Scryfall UUID can never start with 'custom_'
+    or 'back_'.
     """
     if custom_hash:
         return f"custom_{custom_hash}"
+    if back_hash:
+        return f"back_{back_hash}"
     if not scryfall_id:
-        raise ValueError("A cached face needs either a scryfall_id or a custom_hash.")
+        raise ValueError("A cached face needs a scryfall_id, a custom_hash or a back_hash.")
     return scryfall_id
 
 
@@ -2175,10 +2180,11 @@ def cache_path(
     model: UpscaleModel | str,
     *,
     custom_hash: str | None = None,
+    back_hash: str | None = None,
 ) -> Path:
     model_id = parse_model(model)
     face_part = "single" if face_index is None else f"face{face_index}"
-    stem = cache_stem(scryfall_id, custom_hash)
+    stem = cache_stem(scryfall_id, custom_hash, back_hash)
     return cache_dir / f"{stem}_{face_part}_{model_id.value}_x{scale}.png"
 
 
@@ -2188,9 +2194,10 @@ def original_cache_path(
     face_index: int | None,
     *,
     custom_hash: str | None = None,
+    back_hash: str | None = None,
 ) -> Path:
     face_part = "single" if face_index is None else f"face{face_index}"
-    stem = cache_stem(scryfall_id, custom_hash)
+    stem = cache_stem(scryfall_id, custom_hash, back_hash)
     return cache_dir / "originals" / f"{stem}_{face_part}.png"
 
 
@@ -2240,6 +2247,7 @@ def load_or_upscale(
     timings: object | None = None,
     defer_cache_write: bool = False,
     custom_hash: str | None = None,
+    back_hash: str | None = None,
 ) -> UpscaleResult:
     """Return upscaled image (+ device), using disk cache when present.
 
@@ -2259,6 +2267,7 @@ def load_or_upscale(
         upscaler.scale,
         upscaler.model_id,
         custom_hash=custom_hash,
+        back_hash=back_hash,
     )
     if path.exists() and not force:
         cached = Image.open(path)

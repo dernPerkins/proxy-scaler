@@ -1,13 +1,14 @@
 """Back Image store + endpoints (proxy_scaler/backs.py, api/routers/backs.py).
 
 The generation server's half of the Back Library. The client owns the
-canonical copy (docs/adr/0003), so everything here is a cache keyed by
-content hash — which is exactly why the hash checks are worth testing:
-a cache that stores the wrong bytes under a hash is wrong forever after.
+canonical copy (desktop/src-tauri/src/back_images.rs), so everything
+here is a cache keyed by content hash — which is exactly why the hash
+checks are worth testing: a cache that stores the wrong bytes under a
+hash is wrong forever after.
 
-Back Images are never upscaled. The low-resolution warning is therefore
-the only quality signal a user gets, which is why it is tested here
-rather than treated as cosmetic.
+Back Images are upscaled only from the Backs tab (tests/test_back_upscale.py).
+The low-resolution warning is the nudge towards that, which is why it is
+tested here rather than treated as cosmetic.
 """
 
 from __future__ import annotations
@@ -92,18 +93,19 @@ def test_delete_removes_the_original_from_this_server_only(client: TestClient) -
     assert client.get(f"/api/backs/{digest}").json()["present"] is False
 
 
-def test_resolve_print_source_is_the_synced_original_or_nothing(
-    client: TestClient,
+def test_resolve_print_source_is_the_synced_original_until_upscaled(
+    client: TestClient, db_path: Path
 ) -> None:
-    """There is exactly one candidate image for a Reverse, because Back
-    Images are never upscaled — build_pdf cover-fits and resizes the
-    original at export time instead."""
+    """With nothing upscaled yet the only candidate for a Reverse is the
+    synced original — build_pdf cover-fits it at export time. The
+    upscaled cases are in tests/test_back_upscale.py."""
     data, digest = _png()
-    assert backs.resolve_print_source(digest) is None
-    assert backs.resolve_print_source(None) is None
+    assert backs.resolve_print_source(digest, db_path=db_path) is None
+    assert backs.resolve_print_source(None, db_path=db_path) is None
 
     client.post(f"/api/backs/{digest}", content=data)
-    assert backs.resolve_print_source(digest) == backs.original_path(digest)
+    assert backs.resolve_print_source(digest, db_path=db_path) == backs.original_path(digest)
+    assert backs.resolve_print_source(digest, preferred_dpi=1200, db_path=db_path) == backs.original_path(digest)
 
 
 def test_oversized_uploads_are_refused(client: TestClient, monkeypatch) -> None:

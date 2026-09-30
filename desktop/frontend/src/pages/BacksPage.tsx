@@ -1,15 +1,18 @@
 // The Back Library: upload, pick, and manage the art printed on a card's
 // Reverse.
 //
-// The library is app-global and lives on THIS machine (docs/adr/0003) —
-// every project sees every back, and a project points at one by id. The
-// generation server only ever holds a synced copy of the bytes, pushed
-// lazily when something actually needs to render with them, so this whole
-// tab works with no server reachable at all.
+// The library is app-global and lives on THIS machine — every project
+// sees every back, and a project points at one by id. The generation
+// server only ever holds a synced copy of the bytes, pushed lazily when
+// something actually needs to render with them, so this whole tab works
+// with no server reachable at all.
 //
-// Back Images are never upscaled, unlike card art. The low-resolution
-// warning below is therefore the only quality signal there is, which is
-// why it says what to do about it rather than just noting the number.
+// A back is upscaled from here, never by a project's Generate: the
+// sidebar's upscale settings are the app-global library ones
+// (libraryUpscale.ts), the server queues the work under its library tag,
+// and whatever it makes is used by every project that prints with the
+// back — the PDF/ZIP back lookup ranks its versions by the same preferred
+// DPI/model as the cards.
 //
 // Where back printing is configured — the toggle, flip edge, page order,
 // offsets, guides — is the PDF tab, because all of those change the sheet
@@ -27,8 +30,19 @@ import { projectApi } from "../api/project";
 import type { BackImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageViewer";
+import LibraryUpscaleControls from "../components/LibraryUpscaleControls";
+import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import { useConnection } from "../connection";
-import { useServerReadiness } from "../config";
+import { serverSupportsLibraryUpscale, useServerReadiness, useServerVersion } from "../config";
+import {
+  serverSourceDpi,
+  targetsFor,
+  upscaleLibraryImage,
+  useLibraryStatus,
+  useLibraryUpscaleSettings,
+  type LibraryUpscaleMode,
+} from "../libraryUpscale";
+import { UploadCanceled } from "../uploadProgress";
 import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
@@ -169,7 +183,7 @@ function BackSettingsFields({
         <p className="hint">
           This image works out to about {Math.round(back.source_dpi)} DPI
           across a card, which will look soft in print. It will still print —
-          replace it with a larger source image if you want it sharp.
+          upscale it below, or replace it with a larger source image.
         </p>
       )}
     </div>
@@ -290,6 +304,14 @@ export default function BacksPage() {
   const readiness = useServerReadiness();
   const serverUnavailable =
     connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
+  const serverVersion = useServerVersion();
+  // Upscaling from this tab involves no project: the settings are the
+  // app-global library ones (libraryUpscale.ts), shared with the Customs
+  // tab, and the server files the work under its library tag.
+  const libraryUpscaleSupported = serverSupportsLibraryUpscale(serverVersion);
+  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => generationApi.listModels() });
+  const { settings: upscaleSettings, update: updateUpscaleSettings } =
+    useLibraryUpscaleSettings(modelsQuery.data);
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -316,6 +338,29 @@ export default function BacksPage() {
   const backs = useMemo(() => libraryQuery.data ?? [], [libraryQuery.data]);
   const selected = backs.find((b) => b.id === settings.back_image_id) ?? null;
   const viewing = backs.find((b) => b.id === viewingId) ?? null;
+  // Everything ever made for the selected back — polled only while one
+  // is selected and the server can answer.
+  const { variants } = useLibraryStatus(
+    "back",
+    selected?.content_hash ?? null,
+    !serverUnavailable && libraryUpscaleSupported,
+  );
+  const [upscaleNote, setUpscaleNote] = useState<string | null>(null);
+  const upscaleMutation = useMutation({
+    mutationFn: (back: BackImage) => upscaleLibraryImage("back", back, upscaleSettings, serverVersion),
+    onSuccess: (result, back) => {
+      setUpscaleNote(
+        result.queued
+          ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
+          : `Nothing to do.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["library-status", "back", back.content_hash] });
+    },
+    onError: (err: Error) => {
+      if (err instanceof UploadCanceled) return;
+      setUpscaleNote(`Upscale failed: ${err.message}`);
+    },
+  });
   useTourOnFirstView("backs");
   // Per-back settings only exist once this project has a back selected.
   useTourWhenPresent("backs-back", selected != null, "backs");
@@ -396,7 +441,33 @@ export default function BacksPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Back image</h3>
+        {/* The same app-global upscale settings the Customs tab shows —
+            not this project's, since upscaling a back involves no
+            project (see the header comment). */}
+        <h3 style={{ marginBottom: 14 }}>Upscale settings</h3>
+        <div className="field-group" data-tour="library-upscale-settings">
+          <UpscaleSettingsFields
+            value={upscaleSettings}
+            onChange={updateUpscaleSettings}
+            tourPrefix="library-"
+          />
+          <label className="field">
+            <span>Result</span>
+            <select
+              value={upscaleSettings.mode}
+              onChange={(e) => updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })}
+            >
+              <option value="target">Match target DPI</option>
+              <option value="native">Keep full 4× (up to 2400 DPI)</option>
+            </select>
+          </label>
+          <p className="hint">
+            Only a back below a ticked target is upscaled. Every project that prints with it
+            uses the result; the PDF and ZIP tabs&apos; preferred DPI picks which version.
+          </p>
+        </div>
+
+        <h3 style={{ marginTop: 22, marginBottom: 14 }}>Back image</h3>
         {selected == null ? (
           <p className="hint">
             No back selected for this project. Pick one from the library, or add a new
@@ -410,6 +481,24 @@ export default function BacksPage() {
               onBleed={(change) => bleedMutation.mutate(change)}
               error={settingsError}
               tourTargets
+            />
+            <LibraryUpscaleControls
+              sourceDpi={serverSourceDpi("back", selected)}
+              variants={variants}
+              targets={targetsFor("back", selected, upscaleSettings)}
+              disabledReason={
+                !libraryUpscaleSupported
+                  ? "Needs a newer generation server."
+                  : serverUnavailable
+                    ? "The generation server isn't reachable."
+                    : null
+              }
+              pending={upscaleMutation.isPending}
+              note={upscaleNote}
+              onUpscale={() => {
+                setUpscaleNote(null);
+                upscaleMutation.mutate(selected);
+              }}
             />
             <button
               className="btn-sm"

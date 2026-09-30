@@ -207,9 +207,12 @@ click to pick a file), choose one for the project, and optionally mark one
 as the default new projects start with. PNG, JPEG or WebP. The library is
 shared across every project on your machine.
 
-Back images are **not** upscaled, unlike your card images — upload art
-that's already sharp enough to print. The tab warns you when an image
-works out below about 300 DPI across a card.
+The tab warns you when an image works out below about 300 DPI across a
+card. Backs aren't upscaled by a project's Generate, but the Backs tab has
+its own **Upscale** button and settings (the same ones the Customs tab
+has): the result is used for every project that prints with that back,
+and the PDF and ZIP tabs' preferred model and DPI apply to it like any
+card. Needs a 0.3.5 or newer server.
 
 Turn **Print card backs** on from the PDF tab and every sheet is followed
 by its reverse, mirrored so the backs land on the right cards once the
@@ -273,6 +276,14 @@ Decklist tab changes that for a project:
 Either way the uploaded file stays printable. An upload too large for your
 GPU, or above about 1100 DPI, is skipped with a message on its task, and
 prints at its own resolution. Needs a 0.3.5 or newer server.
+
+You can also upscale an image straight from the **Customs** tab, without
+it being in any project: the sidebar has its own upscale settings (model,
+Target DPI, GPU VRAM, and whether to match the target or keep the full 4×
+result), an **Upscale** button for the selected image, and badges showing
+every version that exists. Those versions are shared: any project that
+prints the image uses them, and the PDF and ZIP tabs' preferred model and
+DPI apply to custom images exactly as they do to cards.
 
 With a remote [server](#server), custom art is uploaded the first time
 something needs it — Generate, PDF, or ZIP export — with a progress

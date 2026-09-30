@@ -44,6 +44,13 @@ ORIGINAL_MODEL = "original"
 # is registered either way, so the upload always prints.
 CUSTOM_SOURCE_MODEL = "custom_source"
 
+# Sentinel variant for a Back Image's synced original, registered so the
+# library tab can show it and the PDF/ZIP back lookup can rank it against
+# the back's upscales (backs.resolve_print_source). Same shape and rules as
+# CUSTOM_SOURCE_MODEL: not an UpscaleModel, no fixed DPI (the row carries
+# the file's measured dpi_at_card_size), branched on before parse_model().
+BACK_SOURCE_MODEL = "back_source"
+
 # The project setting that decides whether Generate upscales Custom Images:
 #   off     never (the upload prints at its own resolution)
 #   target  to each selected DPI the upload doesn't already reach
@@ -56,6 +63,16 @@ CUSTOM_UPSCALE_MODES: tuple[str, ...] = (
     CUSTOM_UPSCALE_TARGET,
     CUSTOM_UPSCALE_NATIVE,
 )
+
+# The project_tag every task and gallery membership made from the Customs
+# or Backs tab carries. Those libraries belong to the machine, not to a
+# project, so their upscales are queued under this fixed tag instead of
+# whichever project happens to be open: the registry row is global either
+# way, a project adopts it when the image becomes one of its cards
+# (db.adopt_gallery_items), and the PDF/ZIP paths look library images up
+# by identity regardless of tag. Can never collide with a real tag — the
+# client mints those as 32 hex characters (project_store.rs).
+LIBRARY_TAG = "library"
 
 # Ceiling on a "native" custom upscale. A full 4x of a ~1150 DPI upload
 # is over 179 Mpx, which Pillow refuses to open (its decompression-bomb

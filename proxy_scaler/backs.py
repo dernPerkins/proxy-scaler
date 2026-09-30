@@ -1,21 +1,23 @@
 """Back Images: the user-supplied art printed on a card's Reverse.
 
 A Back Image is not a card. It has no Scryfall identity, never appears in
-a decklist, and its canonical copy lives on the *client* (see
-docs/adr/0003). This module is the generation server's half: a
-content-addressed cache of the bytes, and nothing more.
+a decklist, and its canonical copy lives on the *client* (the Back
+Library, desktop/src-tauri/src/back_images.rs). This module is the
+generation server's half: a content-addressed cache of the bytes, plus the
+lookup that picks which image prints on a Reverse.
 
-**Back Images are deliberately never upscaled.** The obvious symmetry with
-card art is a trap: an uploaded back is whatever file the user chose, and
-the honest fix for a soft one is to upload a better file, not to invent
-detail the source never had. Running them through the pipeline would have
-meant a synthetic Scryfall identity, registry rows that no decklist can
-ever match, per-server variants that vanish when you switch hosts, and a
-DPI-selection rule that had to differ from the card rule to avoid blanking
-every Reverse on the sheet — a lot of machinery in exchange for very
-little, on art that is usually a flat design where upscaling buys least.
-What is left instead is a low-resolution *warning* (MIN_COMFORTABLE_DPI
-below) and a cover-fit at export time.
+**Upscaling a back is a library-tab action, never a Generate one.** Backs
+were originally never upscaled, because the only shapes on offer were a
+fake Scryfall identity and registry rows no decklist could match. Custom
+Images settled both: identity is typed (db migration 008 for customs, 010
+for backs — a back_hash column, never a minted UUID), and a decklist
+doesn't need to match a back at all, because the PDF/ZIP paths look the
+back up by hash (resolve_print_source below) and rank its variants with
+the same preferred-DPI/model rules as a card — degrading to the best
+available rather than blanking the Reverse, exactly as a Custom Image
+does. The Backs tab queues the work under dpi.LIBRARY_TAG (see
+api/routers/library.py); a project is never involved. The low-resolution
+*warning* (MIN_COMFORTABLE_DPI below) stays, as the nudge to upscale.
 
 The directory is a sibling of `output/` and `cache/`, never inside them.
 `clear_generated_data` empties those two, and `prune_registry_under_dir`
@@ -48,10 +50,8 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 # Below this, a Back Image is being asked to cover a 63×88mm card with
 # less detail than a decent printer resolves. Warned about, never blocked:
-# plenty of people knowingly print a flat logo at low DPI, and since backs
-# are never upscaled this warning is the *only* thing standing between a
-# soft source and a soft print — so it has to be visible without being a
-# refusal.
+# plenty of people knowingly print a flat logo at low DPI; the remedy is
+# the Backs tab's Upscale button, or a better file.
 MIN_COMFORTABLE_DPI = 300
 
 
@@ -131,7 +131,15 @@ def store_original(
 
 def source_dpi(content_hash: str, *, root: Path | str = BACKS_DIR_NAME) -> float | None:
     """Effective print DPI of the stored original at card size, or None if
-    it isn't stored. What the low-resolution warning is computed from."""
+    it isn't stored. What the low-resolution warning is computed from, and
+    what a back's back_source registry row and its upscale targets are
+    measured against.
+
+    Deliberately bleed-agnostic: the server holds no bleed declaration for
+    a back (it rides on each render request), so this and every variant's
+    recorded DPI use the same plain long-edge measure. A pre-bled back
+    reads a few percent high on both sides of the "already reaches this
+    target" comparison, which cancels out."""
     path = original_path(content_hash, root=root)
     if not path.is_file():
         return None
@@ -141,20 +149,80 @@ def source_dpi(content_hash: str, *, root: Path | str = BACKS_DIR_NAME) -> float
         return dpi_at_card_size(*img.size)
 
 
+def identity_key(content_hash: str) -> str:
+    """'back:<sha256>' — see customs.identity_key for the shared contract."""
+    from proxy_scaler.customs import identity_key as shared
+
+    return shared(None, None, validate_hash(content_hash))
+
+
 def resolve_print_source(
-    content_hash: str | None, *, root: Path | str = BACKS_DIR_NAME
+    content_hash: str | None,
+    *,
+    root: Path | str = BACKS_DIR_NAME,
+    preferred_dpi: int | None = None,
+    preferred_model: str | None = None,
+    use_originals: bool = False,
+    db_path: Path | str | None = None,
 ) -> Path | None:
     """The image build_pdf should print on a Reverse, or None if this
-    server doesn't hold it.
+    server doesn't hold the back at all.
 
-    There is exactly one candidate — the synced original — because backs
-    are never upscaled. build_pdf cover-fits and resizes it to export_dpi
-    at render time (see pdf_layout.render_back_image).
+    The candidates are the back's registry rows — its back_source row and
+    every upscale, whichever project or the library tab made them — that
+    still exist on disk, plus the synced original itself. They are ranked
+    exactly as a Custom Image's variants are (pdf_layout._pick_dpi_variant
+    with the never-blank rule): the preferred DPI wins when it exists,
+    else the best available, with the preferred model breaking ties.
+    `use_originals` prints the synced original, the way it narrows a card
+    to its Scryfall scan. build_pdf cover-fits whatever comes back to the
+    export DPI (pdf_layout.render_back_image), so an upscale and the
+    original are interchangeable downstream.
     """
     if not content_hash:
         return None
-    path = original_path(validate_hash(content_hash), root=root)
-    return path if path.is_file() else None
+    checked = validate_hash(content_hash)
+    original = original_path(checked, root=root)
+    if not original.is_file():
+        return None
+    if use_originals:
+        return original
+
+    from proxy_scaler import db
+    from proxy_scaler.dpi import BACK_SOURCE_MODEL, dpi_at_card_size
+    from proxy_scaler.pdf_layout import _pick_dpi_variant
+    from proxy_scaler.pipeline import FaceResult
+
+    candidates = [
+        item
+        for item in (
+            FaceResult.from_dict(d)
+            for d in db.list_registry_items_for_back(checked, db_path=db_path)
+        )
+        if item.out_path.is_file()
+    ]
+    if not any(c.model == BACK_SOURCE_MODEL for c in candidates):
+        with Image.open(original) as img:
+            measured = round(dpi_at_card_size(*img.size))
+        candidates.append(
+            FaceResult(
+                out_path=original,
+                original_path=original,
+                scryfall_id=None,
+                back_hash=checked,
+                face_index=None,
+                face_name="Card back",
+                card_name="Card back",
+                set_code="",
+                collector_number="",
+                png_url="",
+                dpi=measured,
+                model=BACK_SOURCE_MODEL,
+                native_scale=1,
+            )
+        )
+    chosen, _ = _pick_dpi_variant(candidates, preferred_dpi, preferred_model)
+    return chosen.out_path if chosen is not None else original
 
 
 def delete_back(content_hash: str, *, root: Path | str = BACKS_DIR_NAME) -> int:

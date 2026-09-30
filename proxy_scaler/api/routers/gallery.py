@@ -43,28 +43,32 @@ def _resolve_existing(path_str: str) -> Path:
     return p
 
 
+def _gallery_item_out(i: dict) -> GalleryItemOut:
+    """One registry dict (db._gallery_row_to_dict) on the wire. Shared
+    with routers/library.py, which lists the same rows by identity."""
+    return GalleryItemOut(
+        id=i["id"],
+        scryfall_id=i["scryfall_id"] or "",
+        custom_hash=i["custom_hash"],
+        back_hash=i.get("back_hash"),
+        face_index=i["face_index"],
+        face_label=i["face_label"],
+        face_name=i["face_name"],
+        card_name=i["card_name"],
+        set_code=i["set_code"],
+        collector_number=i["collector_number"],
+        dpi=i["dpi"],
+        model=i["model"],
+        image_filename=i["image_filename"],
+        lang=i["lang"],
+        device=i["device"] or "unknown",
+    )
+
+
 @router.get("", response_model=list[GalleryItemOut])
 def list_gallery(project_tag: str) -> list[GalleryItemOut]:
     items = db.list_gallery_items(project_tag, db_path=get_db_path())
-    return [
-        GalleryItemOut(
-            id=i["id"],
-            scryfall_id=i["scryfall_id"] or "",
-            custom_hash=i["custom_hash"],
-            face_index=i["face_index"],
-            face_label=i["face_label"],
-            face_name=i["face_name"],
-            card_name=i["card_name"],
-            set_code=i["set_code"],
-            collector_number=i["collector_number"],
-            dpi=i["dpi"],
-            model=i["model"],
-            image_filename=i["image_filename"],
-            lang=i["lang"],
-            device=i["device"] or "unknown",
-        )
-        for i in items
-    ]
+    return [_gallery_item_out(i) for i in items]
 
 
 @router.post("/adopt", response_model=AdoptGalleryOut)
@@ -208,6 +212,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
     task_ids = generation_service.enqueue_face(
         scryfall_id=item["scryfall_id"],
         custom_hash=item["custom_hash"],
+        back_hash=item.get("back_hash"),
         face_index=item["face_index"],
         face_label=item["face_label"],
         face_name=item["face_name"],
@@ -248,14 +253,14 @@ def refetch_original(gallery_item_id: int, body: RefetchOriginalIn) -> GenerateO
     bypass the cache outright (force=True)."""
     db_path = get_db_path()
     item = _find_item(gallery_item_id)
-    if item["custom_hash"]:
-        # There is no upstream to re-fetch from: a Custom Image's source is
-        # the file the user uploaded, and the way to replace it is to
+    if item["custom_hash"] or item.get("back_hash"):
+        # There is no upstream to re-fetch from: an uploaded image's source
+        # is the file the user uploaded, and the way to replace it is to
         # upload a different one (which, being different bytes, is a
-        # different Custom Image).
+        # different image).
         raise HTTPException(
             status_code=400,
-            detail="Custom images have no Scryfall original to re-fetch.",
+            detail="Uploaded images have no Scryfall original to re-fetch.",
         )
     active = generation_service.active_task_keys(body.project_tag, db_path=db_path)
     key = (item["scryfall_id"], item["face_index"], ORIGINAL_DPI, ORIGINAL_MODEL)

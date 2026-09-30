@@ -66,17 +66,29 @@ class CardFaceImage:
     # Custom Image, in which case scryfall_id/png_url are "" — the pipeline
     # branches on is_custom, never on a falsy png_url.
     custom_hash: str | None = None
+    # sha256 of a Back Image (proxy_scaler/backs.py), for a back being
+    # upscaled from the Backs tab. Same contract as custom_hash.
+    back_hash: str | None = None
 
     @property
     def is_custom(self) -> bool:
         return self.custom_hash is not None
 
     @property
+    def is_back(self) -> bool:
+        return self.back_hash is not None
+
+    @property
+    def is_upload(self) -> bool:
+        """A user-supplied image of either kind — no Scryfall printing."""
+        return self.is_custom or self.is_back
+
+    @property
     def identity_key(self) -> str:
         """The string this face is identified by — see customs.identity_key."""
         from proxy_scaler.customs import identity_key
 
-        return identity_key(self.scryfall_id or None, self.custom_hash)
+        return identity_key(self.scryfall_id or None, self.custom_hash, self.back_hash)
 
     @property
     def is_dfc_face(self) -> bool:

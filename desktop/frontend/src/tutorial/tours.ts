@@ -223,6 +223,12 @@ export const TOURS: Record<TourId, Tour> = {
         body: "Rename it, and tick \"already includes bleed\" if the file has a print border (MPC Fill downloads usually do). That way it isn't padded twice.",
         placement: "right",
       },
+      {
+        target: "library-upscale",
+        title: "Upscale it here",
+        body: "Upscales this image with the settings at the top of the sidebar, whether or not it's in a project. The badges show every version that exists. Images already sharper than the ticked DPI are left alone.",
+        placement: "right",
+      },
     ],
   },
 
@@ -272,6 +278,12 @@ export const TOURS: Record<TourId, Tour> = {
         target: "back-default",
         title: "Default for new projects",
         body: "Makes new projects start with this back. Existing projects keep their own.",
+        placement: "right",
+      },
+      {
+        target: "library-upscale",
+        title: "Upscale it here",
+        body: "Upscales this back with the settings at the top of the sidebar. Every project that prints with it uses the result, and the badges show every version that exists.",
         placement: "right",
       },
     ],

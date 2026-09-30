@@ -26,12 +26,24 @@
 // shared with the Backs tab.
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { CustomImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageViewer";
-import { useServerVersion } from "../config";
+import LibraryUpscaleControls from "../components/LibraryUpscaleControls";
+import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
+import { serverSupportsLibraryUpscale, useServerReadiness, useServerVersion } from "../config";
+import { useConnection } from "../connection";
 import { useProject } from "../context/ProjectContext";
+import {
+  targetsFor,
+  upscaleLibraryImage,
+  useLibraryStatus,
+  useLibraryUpscaleSettings,
+  type LibraryUpscaleMode,
+} from "../libraryUpscale";
+import { UploadCanceled } from "../uploadProgress";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import { getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
@@ -147,8 +159,8 @@ function CustomSettingsFields({
       {image.source_dpi < LOW_DPI && (
         <p className="hint">
           This image works out to about {Math.round(image.source_dpi)} DPI across a card,
-          which will look soft in print. Turn on &quot;Custom images&quot; upscaling in the
-          Decklist settings, or replace it with a larger source image.
+          which will look soft in print. Upscale it below, or replace it with a larger
+          source image.
         </p>
       )}
     </div>
@@ -260,6 +272,17 @@ export default function CustomsPage() {
   const queryClient = useQueryClient();
   const { cards, addCustomCards, reloadCards } = useProject();
   const serverVersion = useServerVersion();
+  const connection = useConnection();
+  const readiness = useServerReadiness();
+  const serverUnavailable =
+    connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
+  // Upscaling from this tab involves no project: the settings are the
+  // app-global library ones (libraryUpscale.ts), and the server files the
+  // work under its library tag. Needs a server with /api/library.
+  const libraryUpscaleSupported = serverSupportsLibraryUpscale(serverVersion);
+  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => generationApi.listModels() });
+  const { settings: upscaleSettings, update: updateUpscaleSettings } =
+    useLibraryUpscaleSettings(modelsQuery.data);
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -288,6 +311,31 @@ export default function CustomsPage() {
   );
   const selected = images.find((i) => i.id === selectedId) ?? null;
   const viewing = images.find((i) => i.id === viewingId) ?? null;
+  // Everything ever made for the selected image, whichever project or
+  // this tab made it — polled only while something is selected.
+  const { variants } = useLibraryStatus(
+    "custom",
+    selected?.content_hash ?? null,
+    !serverUnavailable && libraryUpscaleSupported,
+  );
+  const [upscaleNote, setUpscaleNote] = useState<string | null>(null);
+  const upscaleMutation = useMutation({
+    mutationFn: (image: CustomImage) =>
+      upscaleLibraryImage("custom", image, upscaleSettings, serverVersion),
+    onSuccess: (result, image) => {
+      setUpscaleNote(
+        result.queued
+          ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
+          : `Nothing to do.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["library-status", "custom", image.content_hash] });
+    },
+    onError: (err: Error) => {
+      // Cancelling the upload is a normal outcome, not a failure.
+      if (err instanceof UploadCanceled) return;
+      setUpscaleNote(`Upscale failed: ${err.message}`);
+    },
+  });
   useTourOnFirstView("customs");
   // Per-card settings only exist once a card is selected.
   useTourWhenPresent("customs-card", selected != null, "customs");
@@ -365,12 +413,39 @@ export default function CustomsPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Custom card</h3>
+        {/* App-global, not the project's Decklist settings: this tab
+            upscales library images whether or not any project uses them,
+            and the project's "Custom images" rule is about what its own
+            bulk Generate does. */}
+        <h3 style={{ marginBottom: 14 }}>Upscale settings</h3>
+        <div className="field-group" data-tour="library-upscale-settings">
+          <UpscaleSettingsFields
+            value={upscaleSettings}
+            onChange={updateUpscaleSettings}
+            tourPrefix="library-"
+          />
+          <label className="field">
+            <span>Result</span>
+            <select
+              value={upscaleSettings.mode}
+              onChange={(e) => updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })}
+            >
+              <option value="target">Match target DPI</option>
+              <option value="native">Keep full 4× (up to 2400 DPI)</option>
+            </select>
+          </label>
+          <p className="hint">
+            Only an image below a ticked target is upscaled. One too large for this GPU is
+            skipped with a message and prints as uploaded.
+          </p>
+        </div>
+
+        <h3 style={{ marginTop: 22, marginBottom: 14 }}>Custom card</h3>
         {selected == null ? (
           <p className="hint">
-            Select an image to rename it, say whether it already includes bleed, or remove
-            it from the library. The + on a tile opens the full image with the trim line
-            drawn on it.
+            Select an image to upscale it, rename it, say whether it already includes bleed,
+            or remove it from the library. The + on a tile opens the full image with the
+            trim line drawn on it.
           </p>
         ) : (
           <div data-tour="custom-settings">
@@ -378,6 +453,24 @@ export default function CustomsPage() {
               image={selected}
               onBleed={(change) => bleedMutation.mutate(change)}
               error={settingsError}
+            />
+            <LibraryUpscaleControls
+              sourceDpi={selected.source_dpi}
+              variants={variants}
+              targets={targetsFor("custom", selected, upscaleSettings)}
+              disabledReason={
+                !libraryUpscaleSupported
+                  ? "Needs a newer generation server."
+                  : serverUnavailable
+                    ? "The generation server isn't reachable."
+                    : null
+              }
+              pending={upscaleMutation.isPending}
+              note={upscaleNote}
+              onUpscale={() => {
+                setUpscaleNote(null);
+                upscaleMutation.mutate(selected);
+              }}
             />
             <button
               className="btn-sm"

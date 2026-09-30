@@ -2,8 +2,9 @@
 //
 // App-global and client-owned. A project points at one of these by id;
 // the generation server only ever holds a content-addressed cache of the
-// bytes, and losing that costs the user one re-sync. See docs/adr/0003
-// for why ownership splits that way, and why these are never upscaled.
+// bytes, and losing that costs the user one re-sync. Upscaling a back is
+// a Backs-tab action against that synced copy (the server files the
+// result under its library tag), never part of a project's Generate.
 //
 // Two things live here that could plausibly have lived elsewhere:
 //

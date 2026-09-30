@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
 
 from .customs import identity_key
-from .dpi import CUSTOM_SOURCE_MODEL
+from .dpi import BACK_SOURCE_MODEL, CUSTOM_SOURCE_MODEL
 from .decklist import DeckEntry
 from .scryfall import SCRYFALL_LANGUAGES
 from .upscale import UpscaleModel
@@ -128,6 +128,24 @@ _CUSTOM_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A Back Image's upscaled output — Name-back-<sha256>-model-dpi.png. Same
+# reasoning as the custom shape; tried before the Scryfall one for the
+# same reason.
+_BACK_OUTPUT_RE = re.compile(
+    r"^(?P<stem>.+?)"
+    r"-back-(?P<back_hash>[0-9a-f]{64})"
+    rf"(?:-(?P<model>{_MODEL_SLUGS})"
+    r"-(?P<dpi>\d+)dpi)?"
+    r"\.png$",
+    re.IGNORECASE,
+)
+
+# The identity expression every registry lookup and the unique index are
+# built over — one string per face whichever kind it is, matching
+# customs.identity_key exactly. Spelled once so the index, the probes and
+# the skip-existing lookup can never disagree.
+IDENTITY_SQL = "COALESCE(scryfall_id, 'custom:' || custom_hash, 'back:' || back_hash)"
+
 _OUTPUT_SUFFIX_RE = re.compile(
     r"^(?P<head>.+?)"
     rf"(?:-(?P<lang>{_LANG_CODES}))?"
@@ -160,14 +178,16 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_tag TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
-    -- Exactly one of scryfall_id / custom_hash is set, enforced by the
-    -- CHECK below: a task either generates a Scryfall printing or a
-    -- Custom Image (a user-uploaded card front, keyed by the sha256 of
-    -- its bytes — see proxy_scaler/customs.py). set_code,
-    -- collector_number and png_url are all NULL for the custom case,
-    -- which is why none of them are NOT NULL any more.
+    -- Exactly one of scryfall_id / custom_hash / back_hash is set,
+    -- enforced by the CHECK below: a task either generates a Scryfall
+    -- printing, a Custom Image (a user-uploaded card front, keyed by the
+    -- sha256 of its bytes — see proxy_scaler/customs.py) or a Back Image
+    -- (proxy_scaler/backs.py, migration 010). set_code, collector_number
+    -- and png_url are all NULL for the uploaded cases, which is why none
+    -- of them are NOT NULL any more.
     scryfall_id TEXT,
     custom_hash TEXT,
+    back_hash TEXT,
     face_index INTEGER,
     face_label TEXT,
     face_name TEXT NOT NULL,
@@ -202,7 +222,7 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     -- raising, and without this bound the same row would take down every
     -- worker that ever started.
     attempts INTEGER NOT NULL DEFAULT 0,
-    CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
+    CHECK ((scryfall_id IS NOT NULL) + (custom_hash IS NOT NULL) + (back_hash IS NOT NULL) = 1)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status
@@ -213,15 +233,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_tag
 -- The global registry of generated images: one row per physically
 -- distinct output image, shared by every project. No project_tag —
 -- which projects show an image is project_gallery_memberships' job.
--- Identity is a typed either/or: exactly one of scryfall_id /
--- custom_hash is set on every row, enforced by the CHECK below.
+-- Identity is typed: exactly one of scryfall_id / custom_hash /
+-- back_hash is set on every row, enforced by the CHECK below.
 -- scryfall_id, when set, is always a real Scryfall UUID — files that
 -- can't be resolved to one (output-dir rescans without a card corpus)
 -- are simply not registered, rather than minting sentinel ids, which is
 -- what migration 006 cleaned up. custom_hash is the sha256 of a Custom
 -- Image the user uploaded (proxy_scaler/customs.py); migration 008 added
 -- it as the honest alternative to reintroducing fake UUIDs for art that
--- genuinely has no Scryfall printing. This table is the authoritative
+-- genuinely has no Scryfall printing; migration 010 added back_hash the
+-- same way for Back Images (proxy_scaler/backs.py), whose upscales are
+-- never matched by a decklist — the PDF/ZIP back lookup finds them by
+-- hash instead. This table is the authoritative
 -- "does this image exist" answer — query paths (gallery list,
 -- generation-status lookups, PDF layout) read it without touching the
 -- filesystem; reconcile paths (prune/adopt) are what re-align it with
@@ -230,6 +253,7 @@ CREATE TABLE IF NOT EXISTS generated_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scryfall_id TEXT,
     custom_hash TEXT,
+    back_hash TEXT,
     face_index INTEGER,
     face_name TEXT,
     card_name TEXT,
@@ -257,12 +281,12 @@ CREATE TABLE IF NOT EXISTS generated_images (
     -- Scryfall language code of the printing (see generation_tasks.lang).
     -- 'en' for rows predating migration 005.
     lang TEXT NOT NULL DEFAULT 'en',
-    CHECK ((scryfall_id IS NULL) <> (custom_hash IS NULL))
+    CHECK ((scryfall_id IS NOT NULL) + (custom_hash IS NOT NULL) + (back_hash IS NOT NULL) = 1)
 );
 
 -- DB-level backstop for one-row-per-variant. Keyed on the identity
--- *expression* rather than a column, since either half of the
--- scryfall_id/custom_hash pair may be NULL. COALESCE throughout because
+-- *expression* rather than a column, since any of the identity columns
+-- may be NULL (see IDENTITY_SQL). COALESCE throughout because
 -- SQLite treats every NULL as distinct in a UNIQUE index — true of
 -- face_index (NULL for single-faced cards) and, since migration 008, of
 -- scryfall_id too, so without the COALESCE the backstop would silently
@@ -271,7 +295,7 @@ CREATE TABLE IF NOT EXISTS generated_images (
 -- ON CONFLICT against an expression index.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_variant
     ON generated_images(
-        COALESCE(scryfall_id, 'custom:' || custom_hash),
+        COALESCE(scryfall_id, 'custom:' || custom_hash, 'back:' || back_hash),
         COALESCE(face_index, -1), model, dpi);
 
 -- Which projects show which registry images in their gallery. Pure
@@ -342,9 +366,11 @@ class TaskRow:
     # User-initiated regeneration: bypass the x4 upscale cache. False for
     # first-generation tasks so sibling DPI tasks share one model pass.
     force: bool = False
-    # sha256 of a user-uploaded card front (proxy_scaler/customs.py). Set
-    # exactly when scryfall_id is not.
+    # sha256 of a user-uploaded card front (proxy_scaler/customs.py) or
+    # of a Back Image (proxy_scaler/backs.py). Exactly one of scryfall_id
+    # / custom_hash / back_hash is set.
     custom_hash: str | None = None
+    back_hash: str | None = None
     # Times a worker has claimed this row (db migration 009); see the
     # schema comment and reset_orphaned_running_tasks.
     attempts: int = 0
@@ -353,11 +379,15 @@ class TaskRow:
     def identity_key(self) -> str:
         """The string this task's face is identified by — see
         customs.identity_key."""
-        return identity_key(self.scryfall_id, self.custom_hash)
+        return identity_key(self.scryfall_id, self.custom_hash, self.back_hash)
 
     @property
     def is_custom(self) -> bool:
         return self.custom_hash is not None
+
+    @property
+    def is_back(self) -> bool:
+        return self.back_hash is not None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> TaskRow:
@@ -387,6 +417,7 @@ class TaskRow:
             lang=row["lang"] if "lang" in row.keys() else "en",
             force=bool(row["force"]) if "force" in row.keys() else False,
             custom_hash=row["custom_hash"] if "custom_hash" in row.keys() else None,
+            back_hash=row["back_hash"] if "back_hash" in row.keys() else None,
             attempts=int(row["attempts"]) if "attempts" in row.keys() else 0,
         )
 
@@ -698,6 +729,146 @@ def _migration_009_add_task_attempts(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE generation_tasks "
             "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+_TASKS_DDL_010 = """
+    CREATE TABLE generation_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_tag TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        scryfall_id TEXT,
+        custom_hash TEXT,
+        back_hash TEXT,
+        face_index INTEGER,
+        face_label TEXT,
+        face_name TEXT NOT NULL,
+        card_name TEXT NOT NULL,
+        set_code TEXT,
+        collector_number TEXT,
+        png_url TEXT,
+        dpi INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        tile_size INTEGER NOT NULL DEFAULT 0,
+        output_dir TEXT NOT NULL,
+        cache_dir TEXT NOT NULL,
+        weights_dir TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        total_faces INTEGER,
+        lang TEXT NOT NULL DEFAULT 'en',
+        force INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        CHECK ((scryfall_id IS NOT NULL) + (custom_hash IS NOT NULL) + (back_hash IS NOT NULL) = 1)
+    )
+"""
+
+_IMAGES_DDL_010 = """
+    CREATE TABLE generated_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scryfall_id TEXT,
+        custom_hash TEXT,
+        back_hash TEXT,
+        face_index INTEGER,
+        face_name TEXT,
+        card_name TEXT,
+        set_code TEXT,
+        collector_number TEXT,
+        face_label TEXT,
+        model TEXT NOT NULL,
+        dpi INTEGER NOT NULL,
+        native_scale INTEGER NOT NULL DEFAULT 4,
+        device TEXT NOT NULL DEFAULT 'unknown',
+        image_filename TEXT NOT NULL,
+        out_path TEXT NOT NULL,
+        original_path TEXT NOT NULL,
+        png_url TEXT,
+        created_at TEXT,
+        total_faces INTEGER,
+        lang TEXT NOT NULL DEFAULT 'en',
+        CHECK ((scryfall_id IS NOT NULL) + (custom_hash IS NOT NULL) + (back_hash IS NOT NULL) = 1)
+    )
+"""
+
+_TASK_COLUMNS_010 = (
+    "id, project_tag, status, scryfall_id, custom_hash, face_index, "
+    "face_label, face_name, card_name, set_code, collector_number, png_url, "
+    "dpi, model, tile_size, output_dir, cache_dir, weights_dir, error, "
+    "created_at, started_at, completed_at, total_faces, lang, force, attempts"
+)
+_IMAGE_COLUMNS_010 = (
+    "id, scryfall_id, custom_hash, face_index, face_name, card_name, "
+    "set_code, collector_number, face_label, model, dpi, native_scale, device, "
+    "image_filename, out_path, original_path, png_url, created_at, total_faces, lang"
+)
+
+
+def _migration_010_back_image_identity(conn: sqlite3.Connection) -> None:
+    """Let a task/registry row be identified by a Back Image's content hash
+    (proxy_scaler/backs.py) — the third identity kind, added when backs
+    became upscalable from the Backs tab.
+
+    Same shape as migration 008 and for the same reason: the CHECK
+    constraint is what changes (exactly one of three now), and SQLite can't
+    alter a CHECK in place, so both tables are rebuilt with every existing
+    column copied by name and back_hash NULL on every old row. And the
+    same trap: project_gallery_memberships is repointed at the new
+    generated_images before the old one is dropped, or the cascade empties
+    every project's gallery — see 008's docstring. Defensive about which
+    tables exist, like 006 and 008.
+    """
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "generation_tasks" in tables:
+        conn.execute("ALTER TABLE generation_tasks RENAME TO generation_tasks_old")
+        conn.execute(_TASKS_DDL_010)
+        conn.execute(
+            f"INSERT INTO generation_tasks ({_TASK_COLUMNS_010}) "
+            f"SELECT {_TASK_COLUMNS_010} FROM generation_tasks_old"
+        )
+        conn.execute("DROP TABLE generation_tasks_old")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_status "
+            "ON generation_tasks(status, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_project_tag "
+            "ON generation_tasks(project_tag)"
+        )
+    if "generated_images" in tables:
+        has_memberships = "project_gallery_memberships" in tables
+        conn.execute("ALTER TABLE generated_images RENAME TO generated_images_old")
+        conn.execute(_IMAGES_DDL_010)
+        conn.execute(
+            f"INSERT INTO generated_images ({_IMAGE_COLUMNS_010}) "
+            f"SELECT {_IMAGE_COLUMNS_010} FROM generated_images_old"
+        )
+        if has_memberships:
+            conn.execute(
+                "ALTER TABLE project_gallery_memberships "
+                "RENAME TO project_gallery_memberships_old"
+            )
+            conn.execute(_MEMBERSHIPS_DDL_008)
+            conn.execute(
+                "INSERT INTO project_gallery_memberships (id, project_tag, image_id) "
+                "SELECT id, project_tag, image_id FROM project_gallery_memberships_old"
+            )
+            conn.execute("DROP TABLE project_gallery_memberships_old")
+        conn.execute("DROP TABLE generated_images_old")
+        if has_memberships:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memberships_project_tag "
+                "ON project_gallery_memberships(project_tag)"
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_generated_images_variant "
+            f"ON generated_images({IDENTITY_SQL}, COALESCE(face_index, -1), model, dpi)"
         )
 
 
@@ -1085,8 +1256,15 @@ _MIGRATIONS: list[Migration] = [
         "orphaned by a crashed worker is re-queued before it is failed",
         _migration_009_add_task_attempts,
     ),
+    Migration(
+        10,
+        "rebuild generation_tasks/generated_images so a row can be "
+        "identified by a Back Image's content hash — exactly one of "
+        "scryfall_id / custom_hash / back_hash, enforced by CHECK",
+        _migration_010_back_image_identity,
+    ),
 ]
-SCHEMA_VERSION = 9  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 10  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -1161,6 +1339,7 @@ def enqueue_task(
     *,
     scryfall_id: str | None = None,
     custom_hash: str | None = None,
+    back_hash: str | None = None,
     face_index: int | None,
     face_label: str | None,
     face_name: str,
@@ -1183,26 +1362,28 @@ def enqueue_task(
     picked up by the background worker (see worker.py). force=True marks a
     user-initiated regeneration that must bypass the x4 upscale cache.
 
-    Pass exactly one of scryfall_id (a Scryfall printing) or custom_hash (a
-    user-uploaded card front); the database CHECK rejects both or neither.
-    The set_code/collector_number/png_url trio only applies to the former.
+    Pass exactly one of scryfall_id (a Scryfall printing), custom_hash (a
+    user-uploaded card front) or back_hash (a Back Image); the database
+    CHECK rejects anything else. The set_code/collector_number/png_url trio
+    only applies to the first.
     """
-    identity_key(scryfall_id, custom_hash)  # raises before touching the DB
+    identity_key(scryfall_id, custom_hash, back_hash)  # raises before touching the DB
     now = _utc_now()
     with connect(db_path) as conn:
         cur = conn.execute(
             """
             INSERT INTO generation_tasks (
-                project_tag, status, scryfall_id, custom_hash, face_index,
+                project_tag, status, scryfall_id, custom_hash, back_hash, face_index,
                 face_label, face_name, card_name, set_code, collector_number,
                 png_url, dpi, model, tile_size, output_dir, cache_dir,
                 weights_dir, created_at, total_faces, lang, force
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
                 scryfall_id,
                 custom_hash,
+                back_hash,
                 face_index,
                 face_label,
                 face_name,
@@ -1471,13 +1652,25 @@ def list_tasks(
     project_tag: str | None = None,
     statuses: list[str] | None = None,
     db_path: Path | str | None = None,
+    *,
+    custom_hash: str | None = None,
+    back_hash: str | None = None,
 ) -> list[TaskRow]:
+    """Tasks, newest first. `custom_hash` / `back_hash` narrow to one
+    library image across every project_tag — its status is the union of
+    what any project and the library tab itself ever queued for it."""
     query = "SELECT * FROM generation_tasks"
     clauses: list[str] = []
     params: list[Any] = []
     if project_tag is not None:
         clauses.append("project_tag = ?")
         params.append(project_tag)
+    if custom_hash is not None:
+        clauses.append("custom_hash = ?")
+        params.append(custom_hash)
+    if back_hash is not None:
+        clauses.append("back_hash = ?")
+        params.append(back_hash)
     if statuses:
         placeholders = ",".join("?" for _ in statuses)
         clauses.append(f"status IN ({placeholders})")
@@ -1508,8 +1701,10 @@ def _gallery_row_to_dict(g: sqlite3.Row) -> dict[str, Any]:
         "out_path": g["out_path"],
         "original_path": g["original_path"],
         "scryfall_id": g["scryfall_id"],
-        # Set exactly when scryfall_id is not — a user-uploaded card front.
+        # Exactly one of these three is set: a user-uploaded card front,
+        # or a Back Image (migration 010).
         "custom_hash": g["custom_hash"],
+        "back_hash": g["back_hash"] if "back_hash" in g.keys() else None,
         "face_index": g["face_index"],
         "face_name": g["face_name"] or "",
         "card_name": g["card_name"] or "",
@@ -1547,6 +1742,37 @@ def list_gallery_items(
             ORDER BY g.dpi ASC, g.face_index ASC
             """,
             (project_tag,),
+        ).fetchall()
+    return [_gallery_row_to_dict(g) for g in rows]
+
+
+def list_registry_items_for_custom(
+    custom_hash: str, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """Every registry row of one Custom Image, whatever project (or the
+    library tag) made it. Custom Images belong to the machine, so their
+    variants do too: the Customs tab's badges and the PDF/ZIP paths
+    (which merge these into the project's own gallery) both read this
+    rather than a membership-scoped list."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM generated_images WHERE custom_hash = ? "
+            "ORDER BY dpi ASC, face_index ASC",
+            (custom_hash,),
+        ).fetchall()
+    return [_gallery_row_to_dict(g) for g in rows]
+
+
+def list_registry_items_for_back(
+    back_hash: str, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """Every registry row of one Back Image — the Backs tab's badges and
+    backs.resolve_print_source (which ranks them by the print
+    preferences) both read the machine-wide set, never a membership."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM generated_images WHERE back_hash = ? ORDER BY dpi ASC",
+            (back_hash,),
         ).fetchall()
     return [_gallery_row_to_dict(g) for g in rows]
 
@@ -1609,6 +1835,11 @@ def adopt_gallery_items(
         for entry in entries
         if not (entry.set_code and entry.collector_number is not None)
     }
+    # Custom Images adopt by content hash alone — never by name (a custom
+    # called "Sol Ring" must not soak up the real card's images, nor the
+    # reverse). Scryfall-only entries contribute nothing here, and a
+    # custom entry contributes nothing to `names` above.
+    custom_hashes = {entry.custom_hash for entry in entries if getattr(entry, "custom_hash", None)}
 
     adopted = 0
     card_conn: sqlite3.Connection | None = None
@@ -1647,16 +1878,22 @@ def adopt_gallery_items(
                 (project_tag,),
             ).fetchall()
             for row in candidates:
-                matches = (
-                    row["scryfall_id"] in ids
-                    or (
-                        (row["set_code"] or "").lower(),
-                        str(row["collector_number"]),
-                        (row["lang"] or "en").lower(),
+                if row["back_hash"] is not None:
+                    # A back is never a card: nothing in a deck can claim it.
+                    matches = False
+                elif row["custom_hash"] is not None:
+                    matches = row["custom_hash"] in custom_hashes
+                else:
+                    matches = (
+                        row["scryfall_id"] in ids
+                        or (
+                            (row["set_code"] or "").lower(),
+                            str(row["collector_number"]),
+                            (row["lang"] or "en").lower(),
+                        )
+                        in exact
+                        or (row["card_name"] or "").lower() in names
                     )
-                    in exact
-                    or (row["card_name"] or "").lower() in names
-                )
                 if not matches:
                     continue
                 if not Path(row["out_path"]).is_file():
@@ -1769,7 +2006,9 @@ def backfill_source_variants(project_tag: str, db_path: Path | str | None = None
     # share one original, so dedupe before statting.
     seen_faces: set[tuple[str, int | None]] = set()
     for item in list_gallery_items(project_tag, db_path=db_path):
-        if item["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL):
+        if item["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL) or item.get("back_hash"):
+            # A back's source registers through its own back_source task
+            # (services/generation.enqueue_back_upscale), never here.
             continue
         identity = identity_key(item["scryfall_id"], item["custom_hash"])
         face_key = (identity, item["face_index"])
@@ -1837,7 +2076,7 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
     if not project_tag:
         return 0
     # Local import: pipeline imports this module at runtime.
-    from .dpi import CUSTOM_SOURCE_MODEL, ORIGINAL_MODEL
+    from .dpi import BACK_SOURCE_MODEL, CUSTOM_SOURCE_MODEL, ORIGINAL_MODEL
     from .pipeline import output_filename
     from .upscale import original_cache_path
 
@@ -1864,7 +2103,7 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
 
         stale_tasks = []
         for t in conn.execute(
-            "SELECT id, scryfall_id, custom_hash, face_index, face_name, "
+            "SELECT id, scryfall_id, custom_hash, back_hash, face_index, face_name, "
             "set_code, collector_number, face_label, model, dpi, output_dir, "
             "cache_dir, lang FROM generation_tasks "
             "WHERE project_tag = ? AND status = 'done'",
@@ -1874,12 +2113,13 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
             # artifact is the cached original itself, at a deterministic
             # path (and their sentinel models would crash output_filename's
             # parse_model).
-            if t["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL):
+            if t["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL, BACK_SOURCE_MODEL):
                 original = original_cache_path(
                     Path(t["cache_dir"]),
                     t["scryfall_id"],
                     t["face_index"],
                     custom_hash=t["custom_hash"],
+                    back_hash=t["back_hash"],
                 )
                 if not original.is_file():
                     stale_tasks.append(int(t["id"]))
@@ -1902,9 +2142,10 @@ def prune_stale_gallery_items(project_tag: str, db_path: Path | str | None = Non
                     lang=t["lang"],
                     scryfall_id=t["scryfall_id"],
                     custom_hash=t["custom_hash"],
+                    back_hash=t["back_hash"],
                 ),
             ]
-            if not t["custom_hash"]:
+            if not t["custom_hash"] and not t["back_hash"]:
                 names.append(
                     output_filename(
                         t["face_name"],
@@ -1950,8 +2191,8 @@ def find_generated_image(
     is the authority on what exists, so a known image needs no filename
     reconstruction — just a liveness stat of the recorded out_path.
 
-    `identity` is a customs.identity_key() string — a Scryfall UUID or
-    'custom:<sha256>'. The WHERE clause rebuilds the same expression
+    `identity` is a customs.identity_key() string — a Scryfall UUID,
+    'custom:<sha256>' or 'back:<sha256>'. The WHERE clause uses the same expression
     idx_generated_images_variant is built over, so this stays an index
     lookup rather than a scan, and cannot disagree with the uniqueness
     backstop about which rows are the same variant.
@@ -1959,7 +2200,7 @@ def find_generated_image(
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM generated_images "
-            "WHERE COALESCE(scryfall_id, 'custom:' || custom_hash) = ? "
+            f"WHERE {IDENTITY_SQL} = ? "
             "AND face_index IS ? AND model = ? AND dpi = ?",
             (identity, face_index, model, dpi),
         ).fetchone()
@@ -2064,8 +2305,8 @@ def clear_project_generation_records(
             conn.execute(
                 "DELETE FROM project_gallery_memberships WHERE project_tag = ? "
                 "AND image_id NOT IN "
-                "(SELECT id FROM generated_images WHERE model = ?)",
-                (project_tag, CUSTOM_SOURCE_MODEL),
+                "(SELECT id FROM generated_images WHERE model IN (?, ?))",
+                (project_tag, CUSTOM_SOURCE_MODEL, BACK_SOURCE_MODEL),
             )
         else:
             conn.execute(
@@ -2111,6 +2352,33 @@ def delete_custom_records(
     return rows
 
 
+def delete_back_records(
+    back_hash: str, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """delete_custom_records for a Back Image: forget its registry rows
+    and finished task records, returning the rows so the caller can remove
+    the files they name. Called when the back is deleted from this server
+    (api/routers/backs.py) — its upscales were derived from bytes that are
+    no longer here."""
+    if not back_hash:
+        return []
+    with connect(db_path) as conn:
+        rows = [
+            _gallery_row_to_dict(g)
+            for g in conn.execute(
+                "SELECT * FROM generated_images WHERE back_hash = ?", (back_hash,)
+            )
+        ]
+        conn.execute("DELETE FROM generated_images WHERE back_hash = ?", (back_hash,))
+        conn.execute(
+            "DELETE FROM generation_tasks WHERE back_hash = ? "
+            "AND status NOT IN ('pending', 'running')",
+            (back_hash,),
+        )
+        conn.commit()
+    return rows
+
+
 def prune_registry_under_dir(
     output_dir: Path | str,
     db_path: Path | str | None = None,
@@ -2140,8 +2408,8 @@ def prune_registry_under_dir(
         prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
     ]
     if keep_custom_sources:
-        sql += " AND model != ?"
-        params.append(CUSTOM_SOURCE_MODEL)
+        sql += " AND model NOT IN (?, ?)"
+        params.extend((CUSTOM_SOURCE_MODEL, BACK_SOURCE_MODEL))
     with connect(db_path) as conn:
         cur = conn.execute(sql, params)
         conn.commit()
@@ -2179,6 +2447,7 @@ def upsert_gallery_item_for_task(
     if (
         result.model not in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL)
         and not result.custom_hash
+        and not result.back_hash
         and result.original_path != result.out_path
         and result.original_path.is_file()
     ):
@@ -2216,7 +2485,7 @@ def upsert_gallery_item(
     skip-existing both start from fully resolved faces): the registry's
     contract is that a row is identified by one or the other, never by a
     sentinel standing in for a missing id."""
-    if not project_tag or not (result.scryfall_id or result.custom_hash):
+    if not project_tag or not (result.scryfall_id or result.custom_hash or result.back_hash):
         return
     with connect(db_path) as conn:
         # Not a plain `ON CONFLICT` upsert: the UNIQUE index includes
@@ -2227,7 +2496,7 @@ def upsert_gallery_item(
         # (unlike `= ?`) matches NULL-to-NULL correctly.
         existing = conn.execute(
             "SELECT id FROM generated_images "
-            "WHERE COALESCE(scryfall_id, 'custom:' || custom_hash) = ? "
+            f"WHERE {IDENTITY_SQL} = ? "
             "AND face_index IS ? AND model = ? AND dpi = ?",
             (
                 result.identity_key,
@@ -2272,15 +2541,16 @@ def upsert_gallery_item(
             cur = conn.execute(
                 """
                 INSERT INTO generated_images (
-                    scryfall_id, custom_hash, face_index, face_name, card_name,
+                    scryfall_id, custom_hash, back_hash, face_index, face_name, card_name,
                     set_code, collector_number, face_label, model, dpi, native_scale,
                     device, image_filename, out_path, original_path, png_url,
                     created_at, total_faces, lang
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.scryfall_id,
                     result.custom_hash,
+                    result.back_hash,
                     result.face_index,
                     result.face_name,
                     result.card_name,
@@ -2471,6 +2741,25 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
             "lang": "en",
             "scryfall_id": "",
             "custom_hash": custom.group("custom_hash").lower(),
+            "back_hash": None,
+        }
+    back = _BACK_OUTPUT_RE.match(name)
+    if back:
+        model = back.group("model")
+        dpi = back.group("dpi")
+        return {
+            "image_filename": name,
+            "set_code": "",
+            "collector_number": "",
+            "face_label": None,
+            "face_index": None,
+            "model": model.lower() if model else BACK_SOURCE_MODEL,
+            "dpi": int(dpi) if dpi else 0,
+            "stem": back.group("stem"),
+            "lang": "en",
+            "scryfall_id": "",
+            "custom_hash": None,
+            "back_hash": back.group("back_hash").lower(),
         }
     match = _OUTPUT_SUFFIX_RE.match(name)
     if not match:
@@ -2505,6 +2794,7 @@ def parse_output_filename(name: str) -> dict[str, Any] | None:
         # need the card corpus to resolve to a real scryfall_id.
         "scryfall_id": scryfall_id.lower() if scryfall_id else "",
         "custom_hash": None,
+        "back_hash": None,
     }
 
 

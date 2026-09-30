@@ -291,6 +291,12 @@ export const projectApi = {
 
   // Ids of the first-view tutorials already finished or skipped
   // (tutorial/tutorialStore.ts). Empty until any has been.
+  // The Customs/Backs tabs' upscale settings — app-global, one opaque JSON
+  // string (libraryUpscale.ts owns the shape). null until first written.
+  getLibraryUpscaleSettings: () => invokeCommand<string | null>("get_library_upscale_settings"),
+  setLibraryUpscaleSettings: (json: string) =>
+    invokeCommand<void>("set_library_upscale_settings", { json }),
+
   getCompletedTutorials: () => invokeCommand<string[]>("get_completed_tutorials"),
   markTutorialCompleted: (id: string) =>
     invokeCommand<void>("mark_tutorial_completed", { id }),

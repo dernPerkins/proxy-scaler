@@ -178,6 +178,28 @@ class GenerateIn(BaseModel):
     weights_dir: str
 
 
+class LibraryUpscaleIn(BaseModel):
+    """Upscale one image straight from the Customs or Backs tab — no
+    project involved. Queued under dpi.LIBRARY_TAG; the registry row is
+    global, so any project the image later belongs to adopts it."""
+
+    kind: Literal["custom", "back"]
+    content_hash: str
+    # The name the task and output file carry; the client's label for the
+    # image (the server holds no name for it).
+    label: str = ""
+    model: str
+    dpi_targets: list[int]
+    tile_size: int = 0
+    # "target" resizes to each selected DPI the upload doesn't reach;
+    # "native" keeps the 4x result (capped at dpi.NATIVE_MAX_DPI). Same
+    # rules as GenerateIn.custom_upscale, minus "off".
+    mode: Literal["target", "native"] = "target"
+    output_dir: str
+    cache_dir: str
+    weights_dir: str
+
+
 class RegenerateGalleryItemIn(BaseModel):
     # Redo one exact existing variant unchanged — its own scryfall_id/
     # png_url/model/dpi come from the stored gallery item server-side (see
@@ -242,6 +264,7 @@ class TaskOut(BaseModel):
     # about custom_hash — "" rather than null keeps their parsing intact.
     scryfall_id: str = ""
     custom_hash: str | None = None
+    back_hash: str | None = None
     face_index: int | None
     face_label: str | None
     face_name: str
@@ -278,6 +301,7 @@ class GalleryItemOut(BaseModel):
     # TaskOut above for why scryfall_id stays a "" -defaulted string.
     scryfall_id: str = ""
     custom_hash: str | None = None
+    back_hash: str | None = None
     face_index: int | None
     face_label: str | None
     face_name: str
@@ -293,6 +317,14 @@ class GalleryItemOut(BaseModel):
     # Lets the client mark CPU-fallback output on machines that have a
     # working GPU.
     device: str = "unknown"
+
+
+class LibraryStatusOut(BaseModel):
+    """Everything ever queued or made for one library image, across every
+    project and the library tag — what the library tabs' badges show."""
+
+    tasks: list[TaskOut]
+    gallery: list[GalleryItemOut]
 
 
 class ReverseFillIn(str, Enum):

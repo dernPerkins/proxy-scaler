@@ -43,7 +43,7 @@ const FAST_MODEL = "realesrgan_anime_fast";
 //   at all: fall back to the coarse `kind`, i.e. exactly the pre-existing
 //   gpu-or-not behavior. Never let an unrecognized backend name silently
 //   downgrade a real GPU box.
-function recommendedDefaultModel(): string {
+export function recommendedDefaultModel(): string {
   const device = getProbedDevice();
   if (device !== null) {
     if (device.backend === "mps") return FAST_MODEL;

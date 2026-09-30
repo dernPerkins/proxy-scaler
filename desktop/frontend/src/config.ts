@@ -230,6 +230,13 @@ export const CUSTOM_BLEED_MIN_SERVER_VERSION = "0.3.3";
 // ships in; packaging/set-version.py must never rewrite it.
 export const CUSTOM_UPSCALE_MIN_SERVER_VERSION = "0.3.5";
 
+// Upscaling from the Customs/Backs tabs needs /api/library/*. Against an
+// older server the failure is loud (a 404), so this is UX polish: the
+// Upscale button is disabled with a clear message instead of failing.
+// Same release as the setting above; packaging/set-version.py must never
+// rewrite it.
+export const LIBRARY_UPSCALE_MIN_SERVER_VERSION = "0.3.5";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -309,6 +316,14 @@ export function serverSupportsCustomBleed(serverVersion: string | null): boolean
 export function serverSupportsCustomUpscale(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, CUSTOM_UPSCALE_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server have the /api/library routes? Same
+ *  null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsLibraryUpscale(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, LIBRARY_UPSCALE_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

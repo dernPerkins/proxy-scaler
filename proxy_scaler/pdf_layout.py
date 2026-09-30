@@ -790,14 +790,16 @@ def _pick_dpi_variant(
     happened to be; excluding it doesn't reveal a problem, it just prints a
     hole in the sheet where the card they explicitly supplied should be.
     So for a custom face the preference degrades to "best available" and
-    the unit is flagged dpi_fallback instead of dropped.
+    the unit is flagged dpi_fallback instead of dropped. A Back Image
+    (backs.resolve_print_source) gets the same treatment, for the same
+    reason.
 
     Returns (chosen, unavailable_at_preferred_dpi).
     """
     if preferred_dpi is not None:
         at_dpi = [item for item in face_items if item.dpi == preferred_dpi]
         if not at_dpi:
-            if face_items and face_items[0].is_custom:
+            if face_items and face_items[0].is_upload:
                 return max(face_items, key=lambda x: (x.dpi, _recency_key(x))), True
             return None, True
         if preferred_model is not None:
@@ -876,6 +878,10 @@ def match_quantities(
     Returns (units, missing, missing_at_dpi).
     """
     def _eligible(item: FaceResult) -> bool:
+        if item.is_back:
+            # A Back Image is never a card: it prints on Reverses through
+            # backs.resolve_print_source, not through a decklist entry.
+            return False
         if item.is_custom:
             # Custom Images live outside the originals/upscales split.
             # Their uploaded source (CUSTOM_SOURCE_MODEL) is always

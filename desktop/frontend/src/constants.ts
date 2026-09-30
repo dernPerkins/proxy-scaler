@@ -22,6 +22,11 @@ export const ORIGINAL_DPI = 300;
 // setting asks for them.
 export const CUSTOM_SOURCE_MODEL = "custom_source";
 
+// The project_tag the server files Customs/Backs-tab upscales under —
+// mirrors LIBRARY_TAG in proxy_scaler/dpi.py. Only ever compared against
+// task rows on the Tasks tab; the library tabs read status by identity.
+export const LIBRARY_TAG = "library";
+
 // Acronyms for compact spots (deck-list status badges, thumbnail labels)
 // where the full model names wrap; raw enum values stay in API calls,
 // filenames, and the Tasks table. Unknown models fall back to their raw

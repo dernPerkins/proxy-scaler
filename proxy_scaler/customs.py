@@ -17,13 +17,12 @@ without the server ever being authoritative for a file it may never see.
 
 Two deliberate asymmetries with backs.py:
 
-**Upscaling is allowed, and is the point.** backs.py explains at length why
-Back Images are never upscaled — an uploaded back is usually flat design
-where upscaling buys least, and running them through the pipeline would
-have meant inventing a synthetic Scryfall identity. Custom fronts are the
-opposite case: they are card art, upscaling is exactly what this
-application is for, and rather than fake a UUID the identity is made
-explicit and typed all the way down. It is still the project's choice:
+**Upscaling is the point, and a project can ask for it.** A custom front
+is card art: rather than fake a UUID the identity is made explicit and
+typed all the way down (db migration 008), which is also the shape Back
+Images later adopted (migration 010) when the Backs tab gained an Upscale
+button. The difference that remains is who asks: it is the project's choice
+for customs:
 Generate upscales a custom only when the custom_upscale setting asks for
 it, and only to the targets the upload doesn't already reach
 (dpi.custom_upscale_targets). The upload itself is always registered as
@@ -307,21 +306,28 @@ def attach_bleed(
 # index, the PDF face-grouping, the client's status merge — uses
 # identity_key() below rather than reaching for scryfall_id directly.
 CUSTOM_ID_PREFIX = "custom:"
+# Same for a Back Image (proxy_scaler/backs.py): a third identity kind,
+# added when backs became upscalable (db migration 010).
+BACK_ID_PREFIX = "back:"
 
 
-def identity_key(scryfall_id: str | None, custom_hash: str | None) -> str:
+def identity_key(
+    scryfall_id: str | None, custom_hash: str | None, back_hash: str | None = None
+) -> str:
     """The one string that identifies a face, whichever kind it is.
 
     Mirrored by the desktop client (mergeCardStatus.ts::cardIdentity) and
     by the generated_images unique index, which builds the same expression
-    in SQL. All three have to agree or a generated image stops matching the
-    card that asked for it.
+    in SQL (db.IDENTITY_SQL). All three have to agree or a generated image
+    stops matching the card that asked for it.
     """
     if scryfall_id:
         return scryfall_id
     if custom_hash:
         return f"{CUSTOM_ID_PREFIX}{custom_hash}"
-    raise ValueError("A face must have either a scryfall_id or a custom_hash.")
+    if back_hash:
+        return f"{BACK_ID_PREFIX}{back_hash}"
+    raise ValueError("A face must have a scryfall_id, a custom_hash or a back_hash.")
 
 
 def is_custom_identity(key: str) -> bool:

@@ -14,6 +14,7 @@ from proxy_scaler.api.routers import (
     export,
     gallery,
     generation,
+    library,
     misc,
     pdf,
     resolve,
@@ -42,3 +43,4 @@ app.include_router(cards.router)
 app.include_router(backs.router)
 app.include_router(customs.router)
 app.include_router(export.router)
+app.include_router(library.router)

@@ -13,6 +13,7 @@ from pathlib import Path
 from proxy_scaler import db
 from proxy_scaler.card_lookup import CardResolver
 from proxy_scaler.dpi import (
+    BACK_SOURCE_MODEL,
     CUSTOM_SOURCE_MODEL,
     CUSTOM_UPSCALE_MODES,
     CUSTOM_UPSCALE_OFF,
@@ -113,6 +114,7 @@ def enqueue_face(
     png_url: str,
     dpi_targets: list[int],
     custom_hash: str | None = None,
+    back_hash: str | None = None,
     model: str,
     tile_size: int,
     output_dir: Path,
@@ -136,10 +138,11 @@ def enqueue_face(
     return [
         db.enqueue_task(
             project_tag,
-            # The database CHECK requires exactly one identity, so a custom
-            # face must send scryfall_id as NULL rather than "".
-            scryfall_id=(scryfall_id or None) if not custom_hash else None,
+            # The database CHECK requires exactly one identity, so an
+            # uploaded face must send scryfall_id as NULL rather than "".
+            scryfall_id=(scryfall_id or None) if not (custom_hash or back_hash) else None,
             custom_hash=custom_hash,
+            back_hash=back_hash,
             face_index=face_index,
             face_label=face_label,
             face_name=face_name,
@@ -567,3 +570,90 @@ def enqueue_download_entries(
             on_note(f"{skipped_active} download(s) already queued or running.")
 
     return queued, failed, task_ids
+
+
+def enqueue_back_upscale(
+    back_hash: str,
+    *,
+    label: str,
+    model: str,
+    dpi_targets: list[int],
+    mode: str,
+    tile_size: int,
+    output_dir: Path,
+    cache_dir: Path,
+    weights_dir: Path,
+    project_tag: str,
+    on_note=None,
+    db_path: Path | str | None = None,
+) -> tuple[int, int, list[int]]:
+    """The Backs tab's Upscale: register the synced back as its own
+    back_source variant (the analogue of a custom's source registration)
+    and queue one upscale per target the back doesn't already reach, per
+    dpi.custom_upscale_targets — the same rules a Custom Image follows, on
+    an image no decklist will ever name. Registry-first and in-flight-
+    deduped like enqueue_decklist_entries. Returns (queued, failed,
+    task_ids)."""
+    from proxy_scaler import backs
+
+    measured = backs.source_dpi(back_hash)
+    if measured is None:
+        if on_note:
+            on_note("This back image hasn't been uploaded to the server yet.")
+        return 0, 1, []
+    source_dpi = round(measured)
+    name = (label or "").strip() or "Card back"
+    face = CardFaceImage(
+        scryfall_id="",
+        card_name=name,
+        face_name=name,
+        set_code="",
+        collector_number="",
+        png_url="",
+        face_index=None,
+        total_faces=1,
+        lang="en",
+        back_hash=back_hash,
+    )
+    active = active_task_keys(project_tag, db_path=db_path)
+    task_ids: list[int] = []
+    queued = 0
+
+    def wanted(model_name: str, dpi: int) -> bool:
+        if (face.identity_key, None, dpi, model_name) in active:
+            return False
+        known = db.find_generated_image(face.identity_key, None, model_name, dpi, db_path=db_path)
+        if known is not None and Path(known["out_path"]).exists():
+            db.add_membership(project_tag, known["id"], db_path=db_path)
+            return False
+        return True
+
+    common = dict(
+        back_hash=back_hash,
+        face_index=None,
+        face_label=None,
+        face_name=name,
+        card_name=name,
+        set_code="",
+        collector_number="",
+        png_url="",
+        tile_size=tile_size,
+        output_dir=output_dir,
+        cache_dir=cache_dir,
+        weights_dir=weights_dir,
+        project_tag=project_tag,
+        total_faces=1,
+        db_path=db_path,
+    )
+    if wanted(BACK_SOURCE_MODEL, source_dpi):
+        task_ids.extend(
+            enqueue_face(scryfall_id=None, dpi_targets=[source_dpi], model=BACK_SOURCE_MODEL, **common)
+        )
+        queued += 1
+    targets = [d for d in custom_upscale_targets(mode, source_dpi, dpi_targets) if wanted(model, d)]
+    if targets:
+        task_ids.extend(enqueue_face(scryfall_id=None, dpi_targets=targets, model=model, **common))
+        queued += len(targets)
+    if queued == 0 and on_note:
+        on_note("Every requested version of this back already exists or is queued.")
+    return queued, 0, task_ids

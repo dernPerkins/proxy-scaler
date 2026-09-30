@@ -169,14 +169,32 @@ def _rect_out(r: Rect) -> RectOut:
     return RectOut(x_mm=r.x, y_mm=r.y, w_mm=r.w, h_mm=r.h)
 
 
+
+def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> list[FaceResult]:
+    """The project's gallery plus every registry row of the Custom Images
+    it prints, whatever tag made them. Custom Images belong to the
+    machine, so a variant upscaled from the Customs tab (dpi.LIBRARY_TAG)
+    or by another project is as printable here as one this project made;
+    match_quantities and _pick_dpi_variant then apply the preferred
+    DPI/model to customs exactly as they do to cards. Deduped by registry
+    id, and the declared bleed is attached to every custom row."""
+    raw_items = db.list_gallery_items(project_tag, db_path=db_path)
+    seen = {int(d["id"]) for d in raw_items}
+    for custom_hash in {e.custom_hash for e in entries if e.custom_hash}:
+        for d in db.list_registry_items_for_custom(custom_hash, db_path=db_path):
+            if int(d["id"]) not in seen:
+                seen.add(int(d["id"]))
+                raw_items.append(d)
+    items = [FaceResult.from_dict(d) for d in raw_items]
+    customs.attach_bleed(items)
+    return items
+
 def _prepare(body: PdfLayoutIn) -> PreparedRender:
     if not body.entries:
         raise HTTPException(status_code=400, detail="No cards to print.")
     db_path = get_db_path()
-    raw_items = db.list_gallery_items(body.project_tag, db_path=db_path)
-    items = [FaceResult.from_dict(d) for d in raw_items]
-    customs.attach_bleed(items)
     entries = [_to_deck_entry(e) for e in body.entries]
+    items = gallery_for_print(body.project_tag, entries, db_path)
     units, missing, missing_at_dpi = match_quantities(
         entries,
         items,
@@ -214,7 +232,15 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         )
         if reverses_needing_back_image and body.back_image_hash:
             try:
-                back_image_path = backs.resolve_print_source(body.back_image_hash)
+                # The same preferences the cards were just matched with:
+                # an upscaled back is picked like an upscaled custom.
+                back_image_path = backs.resolve_print_source(
+                    body.back_image_hash,
+                    preferred_dpi=None if body.use_originals else body.preferred_dpi,
+                    preferred_model=None if body.use_originals else body.preferred_model,
+                    use_originals=body.use_originals,
+                    db_path=db_path,
+                )
             except backs.BackImageError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 

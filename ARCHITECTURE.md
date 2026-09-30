@@ -307,7 +307,8 @@ is a lottery: VLC commonly claims it on Linux).
 `set_default_back_image_id`, `sync_back_image`. App-global rather than
 per-project; a project holds a nullable `back_image_id` pointing into it,
 copied once from the app default at creation and never live-followed. See
-[ADR-0003](./docs/adr/0003-back-images-are-client-owned-and-never-upscaled.md).
+the module comment in `proxy_scaler/backs.py`. Backs are upscaled only from
+the Backs tab (`/api/library/upscale`), never by a project's Generate.
 
 ### HTTP (generation server — `proxy_scaler/api/`)
 
@@ -345,7 +346,7 @@ string, not a database relationship.
 | `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
 | `GET /api/health` | Supervisor readiness probe |
 | `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |
-| `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Back Images are never upscaled — see ADR-0003 for why that asymmetry with card art is deliberate |
+| `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Upscaling a back is a Backs-tab action (`POST /api/library/upscale`), never part of a project's Generate |
 | `DELETE /api/backs/{hash}` | Remove a Back Image from this server entirely. The client's library copy is canonical and untouched |
 | `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |
 

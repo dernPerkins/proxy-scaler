@@ -44,10 +44,19 @@ export function getProjectSnapshot(): { cards: CardRow[]; projectTag: string | n
   return projectSnapshot;
 }
 
+/** One library image to sync: its library id, content hash and the name
+ *  the upload dialog shows. Built from cards (distinctCustoms) or straight
+ *  from a library entry (the Customs tab's Upscale button). */
+export interface CustomSyncItem {
+  id: number;
+  hash: string | null;
+  label: string;
+}
+
 /** One entry per distinct custom image among `cards`, keyed by library id
  *  with the card name as its dialog label. */
-function distinctCustoms(cards: CardRow[]): Array<{ id: number; hash: string | null; label: string }> {
-  const seen = new Map<number, { id: number; hash: string | null; label: string }>();
+function distinctCustoms(cards: CardRow[]): CustomSyncItem[] {
+  const seen = new Map<number, CustomSyncItem>();
   for (const c of cards) {
     if (c.custom_image_id != null && !seen.has(c.custom_image_id)) {
       seen.set(c.custom_image_id, {
@@ -85,7 +94,13 @@ export async function probeMissingCustoms(
   cards: CardRow[],
   baseUrl: string,
 ): Promise<UploadItem[]> {
-  const customs = distinctCustoms(cards);
+  return probeMissingCustomItems(distinctCustoms(cards), baseUrl);
+}
+
+export async function probeMissingCustomItems(
+  customs: CustomSyncItem[],
+  baseUrl: string,
+): Promise<UploadItem[]> {
   const declared = await declaredBleedByImageId();
   const missing = await Promise.all(
     customs.map(async ({ id, hash }) => {
@@ -145,7 +160,16 @@ export async function syncCustomImages(
   serverVersion?: string | null,
   opts?: SyncCustomOptions,
 ): Promise<void> {
-  const customs = distinctCustoms(cards);
+  return syncCustomItems(distinctCustoms(cards), serverVersion, opts);
+}
+
+/** syncCustomImages for library entries that need not be cards — the
+ *  Customs tab upscales an image whether or not any project uses it. */
+export async function syncCustomItems(
+  customs: CustomSyncItem[],
+  serverVersion?: string | null,
+  opts?: SyncCustomOptions,
+): Promise<void> {
   if (customs.length === 0) return;
   // Checked here rather than at each call site because this is the one
   // place every custom-art action funnels through, and the failure it
@@ -182,7 +206,7 @@ export async function syncCustomImages(
     }
     return;
   }
-  const missingItems = await probeMissingCustoms(cards, baseUrl);
+  const missingItems = await probeMissingCustomItems(customs, baseUrl);
   if (missingItems.length === 0) return;
   await runCustomUploads(missingItems, baseUrl);
 }

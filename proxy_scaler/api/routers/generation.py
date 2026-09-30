@@ -27,6 +27,7 @@ def _task_out(t: db.TaskRow) -> TaskOut:
         status=t.status,
         scryfall_id=t.scryfall_id or "",
         custom_hash=t.custom_hash,
+        back_hash=t.back_hash,
         face_index=t.face_index,
         face_label=t.face_label,
         face_name=t.face_name,

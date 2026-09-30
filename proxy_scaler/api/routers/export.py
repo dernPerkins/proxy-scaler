@@ -56,7 +56,12 @@ from starlette.background import BackgroundTask
 
 from proxy_scaler import backs, db, pdf_jobs
 from proxy_scaler.api.deps import get_db_path
-from proxy_scaler.api.routers.pdf import _default_pdf_basename, _slugify, _to_deck_entry
+from proxy_scaler.api.routers.pdf import (
+    _default_pdf_basename,
+    _slugify,
+    _to_deck_entry,
+    gallery_for_print,
+)
 from proxy_scaler.api.schemas import (
     ExportFormatIn,
     ExportImageFormatIn,
@@ -103,10 +108,9 @@ def _prepare_slots(body: ExportZipIn) -> tuple[list[PrintSlot], list[PrintSlot],
     if not body.entries:
         raise HTTPException(status_code=400, detail="No cards to export.")
     db_path = get_db_path()
-    raw_items = db.list_gallery_items(body.project_tag, db_path=db_path)
-    items = [FaceResult.from_dict(d) for d in raw_items]
-    customs.attach_bleed(items)
     entries = [_to_deck_entry(e) for e in body.entries]
+    # Library-made custom variants included — see pdf.gallery_for_print.
+    items = gallery_for_print(body.project_tag, entries, db_path)
     units, missing, missing_at_dpi = match_quantities(
         entries,
         items,
@@ -138,7 +142,14 @@ def _resolve_back(body: ExportZipIn):
     if not body.back_image_hash:
         return None
     try:
-        path = backs.resolve_print_source(body.back_image_hash)
+        # Same preferences as the cards (see pdf.py::_prepare).
+        path = backs.resolve_print_source(
+            body.back_image_hash,
+            preferred_dpi=None if body.use_originals else body.preferred_dpi,
+            preferred_model=None if body.use_originals else body.preferred_model,
+            use_originals=body.use_originals,
+            db_path=get_db_path(),
+        )
     except backs.BackImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if path is None:

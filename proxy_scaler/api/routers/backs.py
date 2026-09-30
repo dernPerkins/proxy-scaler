@@ -1,17 +1,17 @@
 """Back Image endpoints — the generation server's half of the Back Library.
 
-The library itself is client-side (docs/adr/0003): these routes hold a
-content-addressed *cache* of the bytes the client has synced here.
-Nothing here is authoritative — losing all of it costs the user one
-re-upload.
+The library itself is client-side (desktop/src-tauri/src/back_images.rs):
+these routes hold a content-addressed *cache* of the bytes the client has
+synced here. Nothing here is authoritative — losing all of it costs the
+user one re-upload.
 
 Every route is keyed by content hash rather than by project_tag. A Back
 Image belongs to the machine, not to a project, which is also why
 `POST /api/tags/{tag}/discard` leaves them alone: a discarded tag has no
 claim on a file another project may have selected.
 
-Back Images are never upscaled — see the module comment in
-proxy_scaler/backs.py for why that asymmetry with card art is deliberate.
+Upscaling a back happens from the Backs tab (api/routers/library.py), never
+from a project's Generate — see the module comment in proxy_scaler/backs.py.
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
 from proxy_scaler import backs
+from proxy_scaler.api.deps import get_db_path
+from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
 from proxy_scaler.api.schemas import BackImageOut, DeleteBackOut
+from proxy_scaler.pipeline import invalidate_back_derivatives
 
 router = APIRouter(prefix="/api/backs", tags=["backs"])
 
@@ -78,7 +81,11 @@ async def upload_back(content_hash: str, request: Request) -> BackImageOut:
 
 @router.delete("/{content_hash}", response_model=DeleteBackOut)
 def delete_back(content_hash: str) -> DeleteBackOut:
-    """Remove a Back Image from this server. The client's own library copy
-    is canonical and untouched."""
+    """Remove a Back Image from this server, with everything derived from
+    it (registry rows, upscaled outputs, cached copies). The client's own
+    library copy is canonical and untouched."""
     checked = _checked(content_hash)
+    invalidate_back_derivatives(
+        checked, db_path=get_db_path(), default_cache_dir=DEFAULT_CACHE_DIR
+    )
     return DeleteBackOut(removed=backs.delete_back(checked))

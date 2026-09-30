@@ -2192,6 +2192,31 @@ pub fn set_update_check_enabled(app: AppHandle, enabled: bool) -> Result<(), Str
     write_app_setting(&conn, UPDATE_CHECK_ENABLED_KEY, if enabled { "1" } else { "0" })
 }
 
+// --- Library upscale settings ----------------------------------------------
+//
+// The model / target DPI / VRAM tier / result mode the Customs and Backs
+// tabs upscale with. App-global, not per-project: those libraries belong
+// to the machine, and upscaling from them involves no project at all
+// (the server queues the work under its fixed library tag). Stored as one
+// opaque JSON string the frontend owns the shape of
+// (libraryUpscale.ts::LibraryUpscaleSettings); Rust never interprets it,
+// so a new field on the frontend side needs no change here. None until
+// first written — the frontend supplies the defaults.
+
+const LIBRARY_UPSCALE_SETTINGS_KEY: &str = "library_upscale_settings";
+
+#[tauri::command]
+pub fn get_library_upscale_settings(app: AppHandle) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    read_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY)
+}
+
+#[tauri::command]
+pub fn set_library_upscale_settings(app: AppHandle, json: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY, &json)
+}
+
 // --- Recent remote hosts --------------------------------------------------
 //
 // A plain list of remote server address+port pairs the user has
@@ -3031,6 +3056,23 @@ mod tests {
         assert_eq!(loaded.export_image_format, "png");
         assert!(loaded.export_with_bleed);
         assert_eq!(loaded.export_bleed_mm, 2.5);
+    }
+
+    #[test]
+    fn library_upscale_settings_roundtrip_as_an_opaque_string() {
+        let conn = test_conn();
+        assert_eq!(read_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY).expect("read"), None);
+        write_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY, r#"{"model":"x","dpi_targets":[1200]}"#)
+            .expect("write");
+        assert_eq!(
+            read_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY).expect("read").as_deref(),
+            Some(r#"{"model":"x","dpi_targets":[1200]}"#)
+        );
+        write_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY, "{}").expect("overwrite");
+        assert_eq!(
+            read_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY).expect("read").as_deref(),
+            Some("{}")
+        );
     }
 
     #[test]

@@ -129,6 +129,33 @@ export interface GenerateRequest {
   backs_dir?: string;
 }
 
+/** Mirrors LibraryUpscaleIn: upscale one Custom (or, later, Back) Image
+ *  straight from its library tab — no project involved. Queued under the
+ *  server's fixed library tag; the resulting registry row is global, so
+ *  any project the image belongs to adopts it. */
+export interface LibraryUpscaleRequest {
+  kind: "custom" | "back";
+  content_hash: string;
+  /** The name the task and file carry — the library label. */
+  label: string;
+  model: string;
+  dpi_targets: number[];
+  tile_size: number;
+  /** "target" resizes to each selected DPI the upload doesn't reach;
+   *  "native" keeps the model's 4x result (capped at 2400 DPI). */
+  mode: "target" | "native";
+  output_dir: string;
+  cache_dir: string;
+  weights_dir: string;
+}
+
+/** Mirrors LibraryStatusOut: everything ever queued or made for one
+ *  library image, across every project and the library tag. */
+export interface LibraryStatus {
+  tasks: Task[];
+  gallery: GalleryItem[];
+}
+
 /** Mirrors DownloadOriginalsIn: download-only batch — fetch and cache the
  *  ~300 DPI Scryfall originals, no upscaling. No model/dpi_targets/
  *  skip_existing: downloads always target the (300, "original") sentinel
@@ -195,6 +222,8 @@ export interface Task {
   // Custom Image rather than absent, so the field's type is unchanged.
   scryfall_id: string;
   custom_hash?: string | null;
+  /** Set for a Back Image's task or registry row (db migration 010). */
+  back_hash?: string | null;
   face_index: number | null;
   face_label: string | null;
   face_name: string;
@@ -228,6 +257,8 @@ export interface GalleryItem {
   // Exactly one of these identifies the image; see Task above.
   scryfall_id: string;
   custom_hash?: string | null;
+  /** Set for a Back Image's task or registry row (db migration 010). */
+  back_hash?: string | null;
   face_index: number | null;
   face_label: string | null;
   face_name: string;

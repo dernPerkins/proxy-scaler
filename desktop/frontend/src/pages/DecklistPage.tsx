@@ -5,7 +5,7 @@ import { projectApi } from "../api/project";
 import type { CardRow, CustomUpscaleMode } from "../api/project";
 import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
-import ModelSelect, { reconcileTileForModel } from "../components/ModelSelect";
+import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import CompareDialog from "../components/CompareDialog";
 import CompareMenu, { type CompareSide } from "../components/CompareMenu";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -16,7 +16,6 @@ import StatusBadge from "../components/StatusBadge";
 import {
   CUSTOM_SOURCE_MODEL,
   DEFAULT_GEN_PATHS,
-  DPI_OPTIONS,
   ORIGINAL_MODEL,
   modelDisplayName,
 } from "../constants";
@@ -144,11 +143,6 @@ export default function DecklistPage() {
   const customUpscaleSupported = serverSupportsCustomUpscale(serverVersion);
   const customUpscale = customUpscaleSupported ? settings.custom_upscale : "off";
 
-  // Always read this from the API, never hardcode — see
-  // api/generation.ts's listModels comment for the regression this
-  // replaced.
-  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: () => generationApi.listModels() });
-
   // Purely an entry box — never seeded from the project's stored last
   // paste (the card rows below are the actual deck; decklistText lives on
   // only as Save As's copy source in ProjectContext). Cleared when a
@@ -241,8 +235,6 @@ export default function DecklistPage() {
     queryKey: ["gen-paths"],
     queryFn: () => generationApi.getPaths(),
   });
-  const selectedModel = modelsQuery.data?.find((m) => m.value === settings.model);
-  const vramPresets = selectedModel?.tile_presets ?? [];
 
   // Local card data (decklist text -> CardRow[]) is invoke-based and only
   // changes on an explicit mutation — no polling needed, it can't go
@@ -599,15 +591,6 @@ export default function DecklistPage() {
     );
   }
 
-  function toggleDpi(dpi: number) {
-    setSettings((s) => ({
-      ...s,
-      dpi_targets: s.dpi_targets.includes(dpi)
-        ? s.dpi_targets.filter((d) => d !== dpi)
-        : [...s.dpi_targets, dpi].sort((a, b) => a - b),
-    }));
-  }
-
   function toggleExpanded(key: string) {
     setExpandedFaces((prev) => {
       const next = new Set(prev);
@@ -635,60 +618,10 @@ export default function DecklistPage() {
         <ServerSwitcher />
 
         <div className="field-group">
-          <label className="field" data-tour="model-select">
-            <span>Upscale model</span>
-            <ModelSelect
-              value={settings.model}
-              models={modelsQuery.data}
-              disabled={modelsQuery.isLoading || modelsQuery.isError}
-              onChange={(value) =>
-                setSettings((s) => ({
-                  ...s,
-                  model: value,
-                  tile_size: reconcileTileForModel(
-                    modelsQuery.data?.find((m) => m.value === value),
-                    modelsQuery.data?.find((m) => m.value === s.model),
-                    s.tile_size,
-                  ),
-                }))
-              }
-            />
-          </label>
-          {/* Without this, a stuck/failed local-server start (or any other
-              listModels() failure) rendered as a silently empty dropdown —
-              indistinguishable from "there really are no models" — since
-              the .map() above just produces zero <option>s either way. */}
-          {modelsQuery.isLoading && (
-            <p className="hint">
-              {readiness.status === "starting"
-                ? "Waiting for the local server to start…"
-                : "Loading models…"}
-            </p>
-          )}
-          {modelsQuery.isError && (
-            <p className="error-text">
-              Couldn't load models:{" "}
-              {modelsQuery.error instanceof Error
-                ? modelsQuery.error.message
-                : String(modelsQuery.error)}
-            </p>
-          )}
-
-          <div className="field" data-tour="dpi-targets">
-            <span>Target DPI</span>
-            <div className="check-row">
-              {DPI_OPTIONS.map((dpi) => (
-                <label key={dpi} className="check">
-                  <input
-                    type="checkbox"
-                    checked={settings.dpi_targets.includes(dpi)}
-                    onChange={() => toggleDpi(dpi)}
-                  />
-                  {dpi}
-                </label>
-              ))}
-            </div>
-          </div>
+          <UpscaleSettingsFields
+            value={settings}
+            onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
+          />
 
           <label className="check">
             <input
@@ -698,47 +631,6 @@ export default function DecklistPage() {
             />
             Skip existing output files
           </label>
-
-          {/* One "GPU VRAM" control for every model: the server's tiers
-              (upscale.py::VRAM_TIERS), whose tile number rides the existing
-              tile_size setting. torch models also offer Auto (tile 0: the
-              worker measures free VRAM per task); Vulkan models can't
-              probe VRAM, so they default to Medium instead. The raw number
-              input remains only for a server older than the tiers. */}
-          {vramPresets.length > 0 ? (
-            <label className="field" data-tour="vram-select">
-              <span>GPU VRAM</span>
-              <select
-                value={
-                  vramPresets.find((p) => p.tile === settings.tile_size)?.key ?? "custom"
-                }
-                onChange={(e) => {
-                  const preset = vramPresets.find((p) => p.key === e.target.value);
-                  if (preset) setSettings((s) => ({ ...s, tile_size: preset.tile }));
-                }}
-              >
-                {vramPresets.map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.label}
-                  </option>
-                ))}
-                {!vramPresets.some((p) => p.tile === settings.tile_size) && (
-                  <option value="custom">Custom ({settings.tile_size} px tile)</option>
-                )}
-              </select>
-            </label>
-          ) : (
-            <label className="field" data-tour="vram-select">
-              <span>Tile size (0 = auto)</span>
-              <input
-                type="number"
-                min={0}
-                step={32}
-                value={settings.tile_size}
-                onChange={(e) => setSettings((s) => ({ ...s, tile_size: Number(e.target.value) }))}
-              />
-            </label>
-          )}
 
           {/* Custom Images print as uploaded unless this asks otherwise.
               Either way only an upload below a selected target is

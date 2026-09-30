@@ -22,6 +22,8 @@ import type {
   GenerateRequest,
   GenerateResult,
   GenPathsInfo,
+  LibraryStatus,
+  LibraryUpscaleRequest,
   ModelOption,
   PdfJobRequest,
   PdfJobStarted,
@@ -122,6 +124,16 @@ export const generationApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // Upscale one library image (Customs tab, later Backs) with no project
+  // involved — see LibraryUpscaleRequest.
+  upscaleLibraryImage: (body: LibraryUpscaleRequest) =>
+    request<GenerateResult>("/api/library/upscale", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Status by identity, across every project and the library tag.
+  libraryStatus: (kind: "custom" | "back", contentHash: string) =>
+    request<LibraryStatus>(`/api/library/${kind}/${contentHash}/status`),
   regenerateGalleryItem: (galleryItemId: number, body: RegenerateGalleryItemRequest) =>
     request<GenerateResult>(`/api/gallery/${galleryItemId}/regenerate`, {
       method: "POST",
@@ -319,8 +331,9 @@ export const generationApi = {
 
   // --- Back Images ---------------------------------------------------
   //
-  // The server holds a content-addressed cache of Back Image bytes and
-  // nothing else — backs are never upscaled (see proxy_scaler/backs.py
+  // The server holds a content-addressed cache of Back Image bytes; a
+  // back is upscaled only from the Backs tab (upscaleLibraryImage above,
+  // see proxy_scaler/backs.py
   // for why that asymmetry with card art is deliberate). The library
   // itself is client-side, see api/project.ts. Uploading is Rust's job
   // (projectApi.syncBackImage): multi-MB bodies never cross the webview.
