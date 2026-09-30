@@ -212,7 +212,7 @@ card. Backs aren't upscaled by a project's Generate, but the Backs tab has
 its own **Upscale** button and settings (the same ones the Customs tab
 has): the result is used for every project that prints with that back,
 and the PDF and ZIP tabs' preferred model and DPI apply to it like any
-card. Needs a 0.3.5 or newer server.
+card. Needs a 0.4.0 or newer server.
 
 Turn **Print card backs** on from the PDF tab and every sheet is followed
 by its reverse, mirrored so the backs land on the right cards once the
@@ -275,7 +275,7 @@ Decklist tab changes that for a project:
 
 Either way the uploaded file stays printable. An upload too large for your
 GPU, or above about 1100 DPI, is skipped with a message on its task, and
-prints at its own resolution. Needs a 0.3.5 or newer server.
+prints at its own resolution. Needs a 0.4.0 or newer server.
 
 You can also upscale an image straight from the **Customs** tab, without
 it being in any project: the sidebar has its own upscale settings (model,

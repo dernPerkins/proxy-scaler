@@ -23,6 +23,30 @@ export interface PatchNotesEntry {
 
 export const PATCH_NOTES: PatchNotesEntry[] = [
   {
+    version: "0.4.0",
+    date: "September 2026",
+    notes: [
+      "Vulkan models — a second group in the model dropdown that runs on almost any graphics card (Nvidia, AMD, Intel, Apple) in every build, whichever download you picked. They exist for GPUs the regular path can't use reliably, such as AMD cards where ROCm or DirectML returned black or garbled images. Three fast ncnn models (Real-ESRGAN Anime Fast, AnimeSharp, IllustrationJaNai ESRGAN) plus UltraSharpV2 and IllustrationJaNai themselves run through ONNX Runtime — Vulkan on Linux, DirectX 12 on Windows, where the group is called GPU-Universal Models. Expect the ONNX pair to be slower than the regular entries; use them when the regular ones fail on your card. Model files download on first use.",
+      "Linux: the Vulkan models need the Vulkan loader and your GPU's driver — sudo apt install libvulkan1 mesa-vulkan-drivers (Nvidia's driver brings its own). Without them they still work, on the CPU. The C++ runtime now comes from your system instead of the download, which fixes newer AMD drivers failing to load and the Vulkan models silently running on the CPU.",
+      "GPU VRAM dropdown replaces the tile-size number box — Low (4 GB or less), Medium (6–8 GB), High (12 GB+), Max (16 GB+), with Auto measuring free VRAM per card for the regular models. A pass that fails at one tier retries at the next lower one, then on the CPU.",
+      "Custom images can be upscaled — a new Custom images setting on the Decklist tab: Upscale to target DPI upscales an upload to each ticked DPI it doesn't already reach, and Upscale 4× (up to 2400 DPI) keeps the model's full result. Only uploads below a ticked target are upscaled; one too large for your GPU is skipped with a message on its task and prints as uploaded.",
+      "Upscale from the Customs and Backs tabs — each tab now has its own upscale settings and an Upscale button for the selected image, without it being in any project. Backs can be upscaled for the first time. Results are shared: every project that prints the image uses them, and badges under the button list every version that exists.",
+      "Full-image viewer on the Customs and Backs tabs — the magnifier on a tile opens the upload with the trim line drawn on it, rounded to the real card corners, with anything cropped off to fit the card shaded. The name and bleed settings are editable right there, and on Backs looking doesn't switch the project's back.",
+      "Compare any two versions — the caret next to Compare on a card's images lets you pick what the slider compares against: the original or any other DPI and model, so you can put two models side by side. The labels no longer hide behind the slider while dragging.",
+      "Guided tutorials — each screen walks you through its controls the first time you open it, with follow-ups the first time cards land, an image is selected, or a preview renders. Replay any of them from the ? button at the end of the tab bar.",
+      "Keyboard shortcuts — Ctrl+1 to Ctrl+6 (Cmd on a Mac) jump straight to a tab, and Ctrl+N starts a new project.",
+      "The Export tab is now the ZIP tab.",
+      "Generated images on the Decklist show up faster and use far less memory — the tiles load small previews instead of decoding a ~50 MB bitmap per 1200 DPI card. Downloads and comparisons still use the full file.",
+      "Card lookups no longer pick an Art Series card, token, emblem or other non-playable printing over the real card of the same name.",
+      "Fixed the cut guides on the right and bottom of each card sitting one full gap outside the card whenever card spacing was set.",
+      "Windows: saving a PDF, ZIP, cut file or image with an edited name no longer drops the extension — the Save dialog now offers the proper file type and adds it when missing.",
+      "Windows: the Directories folder buttons failed with \"file not found\" in remote mode, and tried to SSH into your own machine when the server app ran locally. Both now just open the folder.",
+      "AMD on Windows (DirectML): tiles no longer come back black or as noise; running out of GPU memory now retries at a smaller tile or on the CPU instead of failing the task, no longer leaves every later card on the CPU, and no longer holds the GPU memory until restart. On non-English Windows the out-of-memory error showed as a 'utf-8' codec error instead of being handled.",
+      "Customs: the selected image is kept when you switch tabs and come back; changing an image's bleed while a registration was still queued no longer leaves a duplicate Source badge that could print wrong; and a green badge no longer lingers for an upscale whose file was deleted.",
+      "Danger Zone → Delete all now keeps your uploaded custom images, and the Tasks tab shows the full error message instead of cutting it short.",
+    ],
+  },
+  {
     version: "0.3.3",
     date: "September 2026",
     notes: [
