@@ -52,6 +52,18 @@ import {
   addImagesSequentially,
 } from "../imageUpload";
 
+// The tile selected when this page was last on screen. Routes unmount
+// their page on every tab switch, so plain component state would put the
+// user back on the "Select an image" hint each time they came back from
+// Tasks to check on an upscale — the Backs tab keeps its selection
+// because there it is a project setting; here it is only ever UI state,
+// and this is where it waits. Module-level rather than persisted: the
+// library is app-global, so it is valid across projects, but a fresh
+// launch starts with nothing selected like every other tab. An id whose
+// image has since been deleted resolves to nothing selected through the
+// same lookup as a stale live id.
+let lastSelectedId: number | null = null;
+
 // Matches proxy_scaler/customs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation.
 const LOW_DPI = 300;
@@ -288,7 +300,13 @@ export default function CustomsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedIdState] = useState<number | null>(lastSelectedId);
+  function setSelectedId(id: number | null) {
+    lastSelectedId = id;
+    setSelectedIdState(id);
+  }
+  // The full-size viewer deliberately does not survive a tab switch: it is
+  // a modal over the page, not part of where the user was.
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     image: CustomImage;
