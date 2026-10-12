@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .scryfall import ScryfallError, download_png, expand_faces, image_version
+from .scryfall import CardFaceImage, ScryfallError, download_png, expand_faces, image_version
 from .upscale import atomic_write_bytes
 
 THUMBS_DIRNAME = "thumbs"
@@ -33,17 +33,19 @@ class NoSuchFace(LookupError):
     single-faced card, or a card Scryfall has no PNG for at all)."""
 
 
-def face_png_url(card: dict[str, Any], face: int) -> str:
-    """The stored png URL of face `face` (0 = front) of a corpus card.
+def face_image(card: dict[str, Any], face: int) -> CardFaceImage:
+    """Face `face` (0 = front) of a corpus card, as Generate would see it.
     Faces are counted the way Generate counts them (expand_faces): a DFC
-    has one per face with its own image, everything else just the one."""
+    has one per face with its own image, everything else just the one.
+    The result's face_index is Scryfall's own, which is what the originals
+    cache is keyed by — it can differ from the grid's 0/1 position."""
     try:
         faces = expand_faces(card)
     except ScryfallError as exc:
         raise NoSuchFace(str(exc)) from exc
     if face >= len(faces):
         raise NoSuchFace(f"{card.get('name')} has no face {face}")
-    return faces[face].png_url
+    return faces[face]
 
 
 def normal_jpeg_url(png_url: str) -> str:
@@ -68,7 +70,7 @@ def get_thumbnail(
     fetched through `origin` and cached, plus the Scryfall image version
     they are. Raises NoSuchFace, or ScryfallError when the image can't be
     fetched from anywhere."""
-    png_url = face_png_url(card, face)
+    png_url = face_image(card, face).png_url
     version = image_version(png_url)
     path = thumb_cache_path(cache_dir, card["id"], face, png_url)
     if path.is_file():

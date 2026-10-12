@@ -1458,7 +1458,7 @@ def test_gallery_status_reports_cross_project_existence(
     )
     assert resp.status_code == 200
     assert resp.json() == {
-        "statuses": {"sol-id": [{"dpi": 800, "face_index": None}]}
+        "statuses": {"sol-id": [{"dpi": 800, "model": "ultrasharp_v2", "face_index": None}]}
     }
 
     # Another model: nothing generated there.
@@ -2196,6 +2196,15 @@ _BOLT_NORMAL = "https://cards.scryfall.io/normal/front/7/7/77c6fa74.jpg?15595916
 _BOLT_NORMAL_VIA_WORKER = "https://img.proxy-scaler.com/normal/front/7/7/77c6fa74.jpg?1559591645"
 
 
+def _png_bytes_for(url: str) -> bytes:
+    """A small real PNG whose pixels differ per URL, so front and back
+    originals are distinguishable."""
+    shade = sum(url.encode()) % 256
+    buf = io.BytesIO()
+    Image.new("RGBA", (40, 56), (shade, 40, 90, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 class _ImageSession:
     """Fake outbound image session: answers by host, records every URL."""
 
@@ -2212,11 +2221,19 @@ class _ImageSession:
         if isinstance(outcome, Exception):
             raise outcome
 
+        # A real PNG for full-size originals: the download path decodes it
+        # (postprocess.clean_original_png). Thumbnails are never decoded.
+        body = (
+            _png_bytes_for(url)
+            if urlsplit(url).path.endswith(".png")
+            else f"jpeg from {url}".encode()
+        )
+
         class _Resp:
             ok = outcome == 200
             status_code = outcome
             text = "" if outcome == 200 else "upstream said no"
-            content = f"jpeg from {url}".encode()
+            content = body
 
         return _Resp()
 
@@ -2438,3 +2455,221 @@ def test_thumb_without_a_version_keeps_the_one_day_max_age(
     _seed_card_db(image_uris={"png": _BOLT_PNG})
     resp = client.get("/api/cards/bolt-lea/thumb")
     assert resp.headers["cache-control"] == "public, max-age=86400"
+
+
+# --- Full-size preview: GET /api/cards/{scryfall_id}/original ------------------
+
+_BOLT_PNG_VIA_WORKER = "https://img.proxy-scaler.com/png/front/7/7/77c6fa74.png?1559591645"
+
+
+def test_original_miss_downloads_the_png_into_the_originals_cache(
+    client: TestClient, image_session: _ImageSession, tmp_path: Path
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get("/api/cards/bolt-lea/original")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["cache-control"] == "no-cache"
+    assert image_session.urls == [_BOLT_PNG_VIA_WORKER]
+    original = tmp_path / "imgcache" / "originals" / "bolt-lea_single.png"
+    assert original.read_bytes() == resp.content
+    assert (tmp_path / "imgcache" / "originals" / "bolt-lea_single_thumb.jpg").is_file()
+
+
+def test_original_hit_makes_no_outbound_request(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    first = client.get("/api/cards/bolt-lea/original")
+    image_session.urls.clear()
+    second = client.get("/api/cards/bolt-lea/original")
+    assert second.status_code == 200
+    assert second.content == first.content
+    assert image_session.urls == []
+
+
+def test_original_face_1_saves_the_dfc_back_under_its_face_index(
+    client: TestClient, image_session: _ImageSession, tmp_path: Path
+) -> None:
+    _seed_dfc()
+    resp = client.get("/api/cards/delver-isd/original", params={"face": 1, "via": "scryfall"})
+    assert resp.status_code == 200
+    assert image_session.urls == ["https://cards.scryfall.io/png/back/1/1/11bf.png?1"]
+    assert (tmp_path / "imgcache" / "originals" / "delver-isd_face1.png").is_file()
+
+
+def test_original_via_scryfall_never_requests_the_worker(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/original", params={"via": "scryfall"}).status_code == 200
+    assert image_session.urls == [_BOLT_PNG]
+
+
+@pytest.mark.parametrize(
+    "card_id,params",
+    [("bolt-lea", {"face": 1}), ("no-such-card", {})],
+)
+def test_original_unknown_card_or_face_is_404(
+    client: TestClient, image_session: _ImageSession, card_id: str, params: dict
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get(f"/api/cards/{card_id}/original", params=params).status_code == 404
+    assert image_session.urls == []
+
+
+def test_original_without_a_corpus_answers_like_variants(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    original = client.get("/api/cards/bolt-lea/original")
+    variants = client.get("/api/cards/variants", params={"scryfall_id": "bolt-lea"})
+    assert original.status_code == variants.status_code == 404
+    assert original.json()["detail"] == variants.json()["detail"]
+
+
+def test_original_offline_with_nothing_cached_is_502(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    import requests
+
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    image_session.by_host = {
+        "img.proxy-scaler.com": requests.ConnectionError("offline"),
+        "cards.scryfall.io": requests.ConnectionError("offline"),
+    }
+    assert client.get("/api/cards/bolt-lea/original").status_code == 502
+
+
+def _bolt_entry() -> dict:
+    return {
+        "quantity": 1,
+        "name": "Lightning Bolt",
+        "set_code": "lea",
+        "collector_number": "161",
+        "raw_line": "1 Lightning Bolt (lea) 161",
+        "scryfall_id": "bolt-lea",
+    }
+
+
+def test_a_previewed_original_is_not_downloaded_again_by_download(
+    client: TestClient, image_session: _ImageSession, tmp_path: Path
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/original").status_code == 200
+    resp = client.post(
+        "/api/generate/downloads",
+        json={
+            "project_tag": "tag-a",
+            "entries": [_bolt_entry()],
+            "output_dir": "output",
+            "cache_dir": "imgcache",
+            "weights_dir": "weights",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["queued"] == 0
+
+
+def test_a_previewed_original_is_not_downloaded_again_by_generate(
+    client: TestClient, image_session: _ImageSession, tmp_path: Path, monkeypatch
+) -> None:
+    from proxy_scaler.upscale import UpscaleModel, UpscaleResult
+    from proxy_scaler.worker import _process_one
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/original").status_code == 200
+
+    resp = client.post(
+        "/api/generate",
+        json=_generate_body(
+            tmp_path,
+            entries=[_bolt_entry()],
+            output_dir="output",
+            cache_dir="imgcache",
+            weights_dir="weights",
+        ),
+    )
+    assert resp.json()["queued"] == 1
+
+    downloads: list[str] = []
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png",
+        lambda url, session=None, **_: downloads.append(url) or b"",
+    )
+
+    class FakeUpscaler:
+        def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
+            self.model_id = UpscaleModel(model) if isinstance(model, str) else model
+            self.scale = scale
+
+        def upscale(self, image):
+            return UpscaleResult(image=Image.new("RGB", (160, 224)), device="cpu")
+
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", FakeUpscaler)
+    _process_one(db.claim_next_task(db_path=db_path), db_path=db_path)
+
+    [task] = client.get("/api/tasks", params={"project_tag": "tag-a"}).json()
+    assert task["status"] == "done", task.get("error")
+    assert downloads == []
+
+
+# --- A preview registers its original; the status lookup's all-models mode ---
+
+
+def test_a_preview_registers_the_original_without_joining_any_project(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    """Registry-only: previewing a printing nobody picks must not add it to
+    a project's gallery. Adoption joins it to the projects whose deck holds
+    that printing (next test)."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/original").status_code == 200
+    assert client.get("/api/cards/bolt-lea/original").status_code == 200
+
+    row = db.find_generated_image("bolt-lea", None, ORIGINAL_MODEL, ORIGINAL_DPI, db_path=db_path)
+    assert row is not None
+    assert row["out_path"].endswith("imgcache/originals/bolt-lea_single.png")
+    assert client.get("/api/gallery", params={"project_tag": "tag-a"}).json() == []
+
+
+def test_adopting_after_a_preview_shows_the_original_in_the_projects_gallery(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/original").status_code == 200
+    resp = client.post(
+        "/api/gallery/adopt", json={"project_tag": "tag-a", "entries": [_bolt_entry()]}
+    )
+    assert resp.json()["adopted"] == 1
+    [item] = client.get("/api/gallery", params={"project_tag": "tag-a"}).json()
+    assert (item["dpi"], item["model"]) == (300, "original")
+
+
+def test_gallery_status_without_a_model_lists_every_generated_variant(
+    client: TestClient, tmp_path: Path, image_session: _ImageSession
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")  # sol-id, 800 DPI ultrasharp_v2
+    resp = client.post("/api/gallery/status", json={"scryfall_ids": ["sol-id"]})
+    assert resp.status_code == 200
+    pairs = resp.json()["statuses"]["sol-id"]
+    assert {"dpi": 800, "model": "ultrasharp_v2", "face_index": None} in pairs
+    # The worker's write-through also registered the 300 DPI original.
+    assert {(p["dpi"], p["model"]) for p in pairs} >= {(800, "ultrasharp_v2")}
+
+
+def test_gallery_status_with_a_model_still_filters_and_names_the_model(
+    client: TestClient, tmp_path: Path
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    body = {"scryfall_ids": ["sol-id"], "model": "ultrasharp_v2", "dpis": [800]}
+    assert client.post("/api/gallery/status", json=body).json()["statuses"] == {
+        "sol-id": [{"dpi": 800, "model": "ultrasharp_v2", "face_index": None}]
+    }
+    body = {"scryfall_ids": ["sol-id"], "model": "realesrgan_anime_fast", "dpis": [800]}
+    assert client.post("/api/gallery/status", json=body).json()["statuses"] == {}

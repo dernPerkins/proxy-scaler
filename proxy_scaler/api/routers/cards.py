@@ -3,8 +3,10 @@ the languages present in the corpus, and the printing-variants listing that
 feeds the client's change-printing picker. Every read here answers from the
 local corpus (carddb.py). Two things here touch the network: the import job
 itself (card_import.run_import's CHECKING phase), which is where the user
-has actually asked for fresh data, and a thumbnail cache miss, which fetches
-one image through the request's image origin (thumbs.py)."""
+has actually asked for fresh data, and an image cache miss — a grid
+thumbnail (thumbs.py) or a full-size preview original (pipeline.
+ensure_cached_original) — which fetches one image through the request's
+image origin."""
 
 from __future__ import annotations
 
@@ -15,12 +17,16 @@ from pathlib import Path
 
 import requests
 from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import FileResponse
 
-from proxy_scaler import card_import, card_jobs, carddb, thumbs
-from proxy_scaler.api.deps import get_card_db_path
+from proxy_scaler import card_import, card_jobs, carddb, db, pipeline, thumbs
+from proxy_scaler.api.deps import get_card_db_path, get_db_path
 from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
+from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+from proxy_scaler.services.generation import source_face_result
 from proxy_scaler.scryfall import (
     DEFAULT_IMAGE_ORIGIN,
+    CardFaceImage,
     SCRYFALL_LANGUAGES,
     ImageOrigin,
     ScryfallError,
@@ -251,6 +257,23 @@ _THUMB_CACHE_STALE_VERSION = "no-cache"
 _THUMB_CACHE_UNVERSIONED = "public, max-age=86400"
 
 
+def _corpus_card(scryfall_id: str) -> dict:
+    """One printing's Scryfall JSON from the corpus, for the image routes.
+    No corpus answers like /variants; an id the corpus lacks is a 404."""
+    conn = carddb.open_if_ready(get_card_db_path())
+    if conn is None:
+        raise HTTPException(status_code=404, detail=_IMPORT_HINT)
+    try:
+        card = carddb.get_card_by_id(conn, scryfall_id)
+    finally:
+        conn.close()
+    if card is None:
+        raise HTTPException(
+            status_code=404, detail="Card not found in the local card database."
+        )
+    return card
+
+
 @router.get("/{scryfall_id}/thumb")
 def card_thumb(
     scryfall_id: str,
@@ -263,17 +286,7 @@ def card_thumb(
     through `via` (the client's image-origin choice) and cached; see
     thumbs.py. 404 for an id the corpus doesn't hold or a face the
     printing doesn't have; no corpus at all answers like /variants."""
-    conn = carddb.open_if_ready(get_card_db_path())
-    if conn is None:
-        raise HTTPException(status_code=404, detail=_IMPORT_HINT)
-    try:
-        card = carddb.get_card_by_id(conn, scryfall_id)
-    finally:
-        conn.close()
-    if card is None:
-        raise HTTPException(
-            status_code=404, detail="Card not found in the local card database."
-        )
+    card = _corpus_card(scryfall_id)
     try:
         data, version = thumbs.get_thumbnail(
             card, face, cache_dir=Path(DEFAULT_CACHE_DIR), origin=via
@@ -295,3 +308,53 @@ def card_thumb(
         media_type="image/jpeg",
         headers={"Cache-Control": cache_control},
     )
+
+
+@router.get("/{scryfall_id}/original")
+def card_original(
+    scryfall_id: str,
+    face: int = Query(0, ge=0, le=1),
+    via: ImageOrigin = DEFAULT_IMAGE_ORIGIN,
+) -> FileResponse:
+    """One face of one printing at full size — the exact PNG Generate
+    downloads and upscales, for the change-printing grid's preview pane.
+    Fetched into the originals cache (the same imgcache the client sends
+    as Generate's cache_dir) if it isn't there yet, so previewing a
+    printing IS its download: a later Generate or Download finds it on
+    disk and skips the fetch. no-cache because the originals cache isn't
+    versioned — Re-Fetch overwrites it in place — so the webview
+    revalidates (FileResponse's ETag makes that a cheap 304)."""
+    card = _corpus_card(scryfall_id)
+    try:
+        image = thumbs.face_image(card, face)
+        path = pipeline.ensure_cached_original(
+            image.png_url,
+            image.scryfall_id,
+            image.face_index,
+            Path(DEFAULT_CACHE_DIR),
+            origin=via,
+            describe=f"{image.face_name} ({image.scryfall_id})",
+        )
+    except thumbs.NoSuchFace as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ScryfallError, requests.RequestException) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    _register_original(image, path)
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+
+def _register_original(image: CardFaceImage, path: Path) -> None:
+    """Record a previewed original in the generated-images registry, the
+    same row a Download would write, so the deck list can show its
+    "300 · Original" badge. Registry only: the client's adopt pass joins it
+    to the projects whose deck holds this printing. Written once — a
+    repeat preview leaves created_at (the PDF tab's most-recent-wins
+    order) alone."""
+    db_path = get_db_path()
+    if db.find_generated_image(
+        image.scryfall_id, image.face_index, ORIGINAL_MODEL, ORIGINAL_DPI, db_path=db_path
+    ) is None:
+        db.register_generated_image(
+            source_face_result(image, path, model=ORIGINAL_MODEL, dpi=ORIGINAL_DPI),
+            db_path=db_path,
+        )

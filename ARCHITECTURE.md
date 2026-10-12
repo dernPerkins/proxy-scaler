@@ -219,7 +219,8 @@ again at generate time):
    printing from `GET /api/cards/variants` (every printing sharing the
    card's `oracle_id`, from the corpus, newest first). The grid filters by
    language (defaulting to the card's or the Project's, falling back to
-   all), by text (set code, set name, printed name) and by "Show digital",
+   all), by set (a multi-select of the set codes the card has printings
+   in), by a name search (printed or English name) and by "Show digital",
    sorts newest/oldest/by set, flips double-faced tiles, and marks
    already-generated printings. Each tile is a lazily loaded `<img>` of
    `GET /api/cards/{id}/thumb?face=&via=&v=`: the generation server derives
@@ -229,7 +230,23 @@ again at generate time):
    printing seen once loads instantly and offline. The variants response
    carries that version (`image_version`) and the grid puts it in the URL
    as `v`, so each URL names exactly one image and is cached `immutable`;
-   a scan Scryfall replaces arrives as a new version, hence a new URL. A tile whose image
+   a scan Scryfall replaces arrives as a new version, hence a new URL.
+   Clicking a tile (or arrowing to it) selects it into a left-hand preview
+   pane showing the full-size PNG Generate would download,
+   `GET /api/cards/{id}/original` — fetched through the image origin into
+   the **originals cache** (`imgcache/originals/`, via
+   `pipeline.ensure_cached_original`, the same path the worker's prefetch
+   takes). **A preview is that printing's download**: a later Generate
+   reuses the cached original and Download skips it. The preview also
+   records the original in the `generated_images` registry — registry
+   only, no project membership, so printings nobody picks never clutter a
+   gallery — and closing the picker re-runs the deck's adopt pass, which
+   joins it to the projects holding that printing (the "300 · Original"
+   badge). The pane lists every variant already generated for the
+   printing (`/api/gallery/status` with no model filter). Thumbnails load
+   through an IntersectionObserver rooted on the grid's scroll container,
+   not `loading="lazy"`, which WebKit ignored there. The pane's button, a
+   double-click or Enter picks. A tile whose image
    fails becomes a card-shaped placeholder that still picks; a server
    older than the endpoint (`THUMBNAILS_MIN_SERVER_VERSION` in
    `config.ts`) gets text-only tiles and no thumbnail requests. **"The
@@ -361,6 +378,7 @@ string, not a database relationship.
 | `GET /api/worker/status` | Is the background worker alive, and is it held (see `/api/worker/release`) |
 | `POST /api/worker/release` | Release a worker started held. The desktop app spawns its embedded server with `--hold-worker` so tasks left over from the last session don't start processing at launch; the client asks the user to resume or cancel them (ResumeTasksPrompt), then releases. `POST /api/tasks/cancel-all?include_running=true` is allowed only while held — a held worker has claimed nothing, so `running` rows are provable orphans. Headless/standalone/remote servers never hold |
 | `GET /api/gallery?project_tag=` | List generated images for a project |
+| `POST /api/gallery/status` | Registry-wide "what's generated" for a batch of scryfall_ids: with `model` + `dpis`, the `(dpi, model, face_index)` triples at that model (the printing grid's ✓); with neither, every generated variant (the preview pane's badges). No filesystem stats |
 | `POST /api/gallery/adopt` | Register already-existing images for matching cards into this `project_tag`'s gallery: other projects' rows plus an `output_dir` filename scan for row-less files — called on import/load so already-generated cards show without a Generate request |
 | `GET /api/gallery/{id}/original` \| `/full` | Serve image bytes |
 | `POST /api/pdf` | Assemble a PDF from `project_tag` + layout + card list **with quantities** (quantity is project data the generation server has no other way to know) |
@@ -380,6 +398,7 @@ string, not a database relationship.
 | `DELETE /api/cards/database` | Remove the imported corpus (file + WAL/SHM); 409 while an import job is running. The sidebar panel's "Delete card database" |
 | `GET /api/cards/languages` | The full Scryfall language list (English first) — the import-language dropdown's options, independent of what corpus is imported: the dropdown is a request, resolution answers from corpus or live API |
 | `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing grid's contents, with `face_count`, `face_names` and `image_version` (Scryfall's image version, for the thumbnail URL) per printing. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
+| `GET /api/cards/{scryfall_id}/original` | One face (`face` 0\|1) of one printing at full size — the exact PNG Generate downloads, for the grid's preview pane. Served from the originals cache (`imgcache/originals/`, keyed by id + Scryfall face index, unversioned) or downloaded, cleaned and saved there through `via` first, so a previewed printing is never downloaded again by Generate/Download. Registers the original in the registry (once, no project membership) for adoption to pick up. `no-cache` (Re-Fetch overwrites in place); same 404/502 rules as `/thumb` |
 | `GET /api/cards/{scryfall_id}/thumb` | One face (`face` 0\|1) of one printing as Scryfall's `normal` JPEG — a grid tile. Disk-cached under `imgcache/thumbs/` by id + face + version suffix (a hit makes no network call), else fetched through `via` (`worker` default \| `scryfall`). 404 for an unknown id or a missing face, the variants hint with no corpus, 502 when the image can't be fetched from anywhere. `Cache-Control` follows `v`: `immutable` when it names the current version, `no-cache` when it names one the corpus no longer has (a list from before a re-import), a one-day `max-age` when absent (older clients) |
 | `GET /api/health` | Supervisor readiness probe |
 | `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |

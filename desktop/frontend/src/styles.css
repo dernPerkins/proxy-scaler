@@ -887,9 +887,91 @@ button:disabled {
 /* The change-printing grid (PrintingPicker.tsx's modal): one card-image
    tile per printing, auto-fill columns so arrow-key navigation reads the
    column count off the laid-out grid. */
-.printing-grid-modal {
-  width: min(94vw, 1120px);
+/* Two classes: .modal's own width is defined later in this file and
+   would otherwise win. */
+.modal.printing-grid-modal {
+  width: min(96vw, 1360px);
   height: 90vh;
+}
+/* Preview pane on the left, the scrolling grid beside it. */
+.printing-grid-layout {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+.printing-grid-layout > .modal-body {
+  flex: 1;
+}
+.printing-preview {
+  flex: 0 0 clamp(240px, 30%, 380px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+/* Card aspect at Scryfall's full size (745x1040), so the frame holds its
+   shape while the full image loads over the thumbnail. */
+.printing-preview-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 745 / 1040;
+  border-radius: 4.75% / 3.5%;
+  overflow: hidden;
+  background: var(--surface-3);
+  flex-shrink: 0;
+}
+.printing-preview-frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.printing-preview-frame .printing-tile-placeholder {
+  position: absolute;
+  inset: 0;
+}
+.printing-preview-full {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.printing-preview-full.loaded {
+  opacity: 1;
+}
+.printing-preview-status {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  white-space: nowrap;
+}
+.printing-preview-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.printing-preview-name {
+  font-weight: 580;
+}
+.printing-preview-badges {
+  margin: 0;
+}
+.printing-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
 }
 .printing-grid-controls {
   display: flex;
@@ -902,6 +984,50 @@ button:disabled {
 .printing-grid-controls input[type="search"] {
   flex: 1 1 200px;
   min-width: 0;
+}
+/* The set multi-select (SetFilter.tsx): a select-styled toggle opening a
+   checkbox list of set codes. */
+.set-filter {
+  position: relative;
+}
+.set-filter-toggle {
+  min-width: 110px;
+  text-align: left;
+  white-space: nowrap;
+}
+.set-filter-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 10;
+  width: 200px;
+  max-height: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.set-filter-panel .btn-sm {
+  align-self: flex-start;
+}
+.set-filter-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.set-filter-option {
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.set-filter-option:hover {
+  background: var(--surface-2);
 }
 .printing-grid-count {
   margin-left: auto;
@@ -939,9 +1065,17 @@ button:disabled {
   border-color: var(--accent);
   box-shadow: var(--ring);
 }
-.printing-tile.active .printing-tile-pick {
+/* The card's current printing gets a green border; the selection (what
+   the preview pane shows and would pick) the accent one. When they are the
+   same tile it keeps the green border and adds the accent ring. */
+.printing-tile.selected .printing-tile-pick {
   border-color: var(--accent);
-  background: var(--accent-soft);
+}
+.printing-tile.active .printing-tile-pick {
+  border-color: var(--ok);
+}
+.printing-tile.active.selected .printing-tile-pick {
+  box-shadow: var(--ring);
 }
 /* Fixed card aspect (Scryfall's normal size is 488x680) so a lazy image
    has its size before it loads: zero-height tiles would all sit "in view"
@@ -1777,6 +1911,15 @@ tbody tr:last-child td {
   display: inline-block;
   width: 12px;
   text-align: center;
+}
+/* Fills the same 12px box the ? is centred in, so WebKit's pixel snapping
+   treats both alike (a narrower SVG centred with auto margins landed half
+   a pixel right). The gear's size comes from its viewBox instead: ~9.2px
+   of ink, matching the ? glyph's ~8.7px at the button's 12px/600 font. */
+.reveal-btn-svg {
+  display: block;
+  width: 12px;
+  height: 12px;
 }
 .reveal-btn-label {
   max-width: 0;

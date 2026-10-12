@@ -239,11 +239,12 @@ export const CUSTOM_UPSCALE_MIN_SERVER_VERSION = "0.4.0";
 // rewrite it.
 export const LIBRARY_UPSCALE_MIN_SERVER_VERSION = "0.4.0";
 
-// The change-printing grid's images come from /api/cards/{id}/thumb. An
-// older server 404s every one, so below this the grid renders text-only
-// tiles and never requests a thumbnail. The release the endpoint ships in;
-// packaging/set-version.py must never rewrite it.
-export const THUMBNAILS_MIN_SERVER_VERSION = "0.5.0";
+// The change-printing grid's images come from /api/cards/{id}/thumb (tiles)
+// and /api/cards/{id}/original (the full-size preview). An older server
+// 404s every one, so below this the grid renders text-only tiles, the
+// preview shows no image, and neither is ever requested. The release both
+// endpoints ship in; packaging/set-version.py must never rewrite it.
+export const PRINTING_IMAGES_MIN_SERVER_VERSION = "0.5.0";
 
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
@@ -296,11 +297,11 @@ export function serverSupportsOriginals(serverVersion: string | null): boolean {
   return comparison == null || comparison >= 0;
 }
 
-/** Does the connected server have /api/cards/{id}/thumb? Same
- *  null/unparseable semantics as serverSupportsBackPrinting. */
-export function serverSupportsThumbnails(serverVersion: string | null): boolean {
+/** Does the connected server have /api/cards/{id}/thumb and /original?
+ *  Same null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsPrintingImages(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
-  const comparison = compareVersions(serverVersion, THUMBNAILS_MIN_SERVER_VERSION);
+  const comparison = compareVersions(serverVersion, PRINTING_IMAGES_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

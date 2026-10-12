@@ -1321,6 +1321,32 @@ def process_task(
     return tail[0]
 
 
+def ensure_cached_original(
+    png_url: str,
+    scryfall_id: str,
+    face_index: int | None,
+    cache_dir: Path,
+    *,
+    origin: str = DEFAULT_IMAGE_ORIGIN,
+    describe: str = "",
+) -> Path:
+    """The cached Scryfall original for one face, downloading (and
+    cleaning — see _download_clean_png) it through `origin` only if it
+    isn't on disk yet. The one way an original enters the cache ahead of a
+    generation task: the worker's prefetch and the change-printing
+    preview (/api/cards/{id}/original) both come through here, so a face
+    either of them fetched is a cache hit for every later Generate or
+    Download. Idempotent and race-safe: _save_original is an atomic
+    write-if-missing."""
+    path = original_cache_path(cache_dir, scryfall_id, face_index)
+    if path.is_file():
+        return path
+    png_bytes = _download_clean_png(png_url, origin=origin, describe=describe)
+    original_path = _save_original(png_bytes, cache_dir, scryfall_id, face_index)
+    ensure_original_thumbnail(original_path)
+    return original_path
+
+
 def prefetch_original(task: TaskRow) -> Path | None:
     """Best-effort warm of the originals cache for a not-yet-claimed task,
     called from the worker's prefetch thread while the GPU is busy with
@@ -1334,19 +1360,14 @@ def prefetch_original(task: TaskRow) -> Path | None:
     no network round-trip to hide behind the GPU and nothing to warm."""
     if task.is_custom or task.is_back:
         return None
-    path = original_cache_path(Path(task.cache_dir), task.scryfall_id, task.face_index)
-    if path.is_file():
-        return path
-    png_bytes = _download_clean_png(
+    return ensure_cached_original(
         task.png_url,
+        task.scryfall_id,
+        task.face_index,
+        Path(task.cache_dir),
         origin=task.image_origin,
         describe=f"{task.face_name} ({task.scryfall_id})",
     )
-    original_path = _save_original(
-        png_bytes, Path(task.cache_dir), task.scryfall_id, task.face_index
-    )
-    ensure_original_thumbnail(original_path)
-    return original_path
 
 
 def expected_face_result(task: TaskRow) -> FaceResult:

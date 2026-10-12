@@ -172,6 +172,33 @@ def enqueue_face(
     ]
 
 
+def source_face_result(
+    face: CardFaceImage, source_path: Path, *, model: str, dpi: int
+) -> FaceResult:
+    """The registry entry for a face's un-upscaled source already on disk:
+    a Scryfall original (ORIGINAL_MODEL/ORIGINAL_DPI) or a Custom Image's
+    upload (its source sentinel). out_path and original_path are the file
+    itself."""
+    return FaceResult(
+        out_path=source_path,
+        original_path=source_path,
+        scryfall_id=face.scryfall_id or None,
+        custom_hash=face.custom_hash,
+        face_index=face.face_index,
+        face_name=face.face_name,
+        card_name=face.card_name,
+        set_code=face.set_code,
+        collector_number=face.collector_number,
+        png_url=face.png_url,
+        dpi=dpi,
+        model=model,
+        face_label=face.face_label,
+        native_scale=1,
+        total_faces=face.total_faces,
+        lang=face.lang,
+    )
+
+
 def active_task_keys(
     project_tag: str | None, db_path: Path | str | None = None
 ) -> set[tuple[str, int | None, int, str]]:
@@ -520,23 +547,8 @@ def enqueue_download_entries(
                     skipped_existing += 1
                     db.upsert_gallery_item(
                         project_tag,
-                        FaceResult(
-                            out_path=original_path,
-                            original_path=original_path,
-                            scryfall_id=face.scryfall_id or None,
-                            custom_hash=face.custom_hash,
-                            face_index=face.face_index,
-                            face_name=face.face_name,
-                            card_name=face.card_name,
-                            set_code=face.set_code,
-                            collector_number=face.collector_number,
-                            png_url=face.png_url,
-                            dpi=variant_dpi,
-                            model=variant_model,
-                            face_label=face.face_label,
-                            native_scale=1,
-                            total_faces=face.total_faces,
-                            lang=face.lang,
+                        source_face_result(
+                            face, original_path, model=variant_model, dpi=variant_dpi
                         ),
                         db_path=db_path,
                     )

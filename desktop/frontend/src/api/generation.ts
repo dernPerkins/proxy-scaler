@@ -199,7 +199,10 @@ export const generationApi = {
   // Which of these printings already have generated images at this model/
   // these DPIs — answered from the server's registry alone (cross-project,
   // no filesystem stats). Feeds the printing picker's coverage check marks.
-  galleryStatus: (scryfallIds: string[], model: string, dpis: number[]) =>
+  // With model + dpis: which printings have that model at those DPIs (the
+  // grid's ✓). Without: every generated variant (the preview's badges) —
+  // servers older than 0.5.0 require both.
+  galleryStatus: (scryfallIds: string[], model?: string, dpis?: number[]) =>
     request<GalleryStatusResult>("/api/gallery/status", {
       method: "POST",
       body: JSON.stringify({ scryfall_ids: scryfallIds, model, dpis }),
@@ -331,7 +334,7 @@ export const generationApi = {
   // from the server's thumbnail cache or fetched through `via`. `version`
   // (CardVariant.image_version) makes the URL name exactly one image, which
   // the server then lets the webview cache forever. Only for servers
-  // serverSupportsThumbnails() accepts — older ones 404.
+  // serverSupportsPrintingImages() accepts — older ones 404.
   cardThumbUrl: (
     scryfallId: string,
     face: number,
@@ -341,6 +344,14 @@ export const generationApi = {
     const search = new URLSearchParams({ face: String(face), via });
     if (version) search.set("v", version);
     return `${getApiBaseUrl()}/api/cards/${encodeURIComponent(scryfallId)}/thumb?${search}`;
+  },
+  // The full-size PNG Generate would download (~1.3 MB), for the grid's
+  // preview pane. Loading it puts it in the server's originals cache, so
+  // a later Generate or Download of that printing skips the fetch. Same
+  // server floor as cardThumbUrl.
+  cardOriginalUrl: (scryfallId: string, face: number, via: ImageOrigin) => {
+    const search = new URLSearchParams({ face: String(face), via });
+    return `${getApiBaseUrl()}/api/cards/${encodeURIComponent(scryfallId)}/original?${search}`;
   },
 
   health: () => request<{ status: string }>("/api/health"),

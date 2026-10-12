@@ -437,7 +437,7 @@ def test_generated_variants_status_is_cross_project_and_stat_free(
     found = db_module.generated_variants_status(
         ["sol-id"], "ultrasharp_v2", [800, 1200], db_path=db_path
     )
-    assert sorted(found["sol-id"]) == [(800, None), (1200, None)]
+    assert sorted(found["sol-id"]) == [(800, "ultrasharp_v2", None), (1200, "ultrasharp_v2", None)]
 
 
 def test_generated_variants_status_filters_by_model_and_dpi(db_path: Path) -> None:
@@ -458,7 +458,7 @@ def test_generated_variants_status_filters_by_model_and_dpi(db_path: Path) -> No
     found = db_module.generated_variants_status(
         ["sol-id", "unknown-id"], "ultrasharp_v2", [800], db_path=db_path
     )
-    assert found == {"sol-id": [(800, None)]}
+    assert found == {"sol-id": [(800, "ultrasharp_v2", None)]}
     # Empty inputs never query.
     assert db_module.generated_variants_status([], "ultrasharp_v2", [800], db_path=db_path) == {}
     assert db_module.generated_variants_status(["sol-id"], "ultrasharp_v2", [], db_path=db_path) == {}
@@ -479,7 +479,7 @@ def test_generated_variants_status_reports_faces_separately(db_path: Path) -> No
     found = db_module.generated_variants_status(
         ["dfc-id"], "ultrasharp_v2", [800], db_path=db_path
     )
-    assert found == {"dfc-id": [(800, 0)]}
+    assert found == {"dfc-id": [(800, "ultrasharp_v2", 0)]}
 
     db_module.upsert_gallery_item(
         "tag-a",
@@ -492,7 +492,7 @@ def test_generated_variants_status_reports_faces_separately(db_path: Path) -> No
     found = db_module.generated_variants_status(
         ["dfc-id"], "ultrasharp_v2", [800], db_path=db_path
     )
-    assert sorted(found["dfc-id"]) == [(800, 0), (800, 1)]
+    assert sorted(found["dfc-id"]) == [(800, "ultrasharp_v2", 0), (800, "ultrasharp_v2", 1)]
 
 
 def test_adopt_gallery_items_skips_rows_whose_file_is_gone(db_path: Path, tmp_path: Path) -> None:

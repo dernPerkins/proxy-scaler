@@ -352,6 +352,8 @@ export interface CardVariantsResult {
 // GalleryItem).
 export interface GeneratedPair {
   dpi: number;
+  // Absent from servers older than 0.5.0.
+  model?: string;
   face_index: number | null;
 }
 

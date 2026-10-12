@@ -789,12 +789,15 @@ class GalleryStatusIn(BaseModel):
     # model, at which of these DPIs. POST, not GET — a card can have
     # hundreds of printings, well past sane URL lengths.
     scryfall_ids: list[str]
-    model: str
-    dpis: list[int]
+    # Both or neither: omitted, every generated variant is listed (the
+    # preview pane's badges). Required by servers older than 0.5.0.
+    model: str | None = None
+    dpis: list[int] | None = None
 
 
 class GeneratedPairOut(BaseModel):
     dpi: int
+    model: str
     # NULL face_index = single-faced (same convention as gallery rows).
     face_index: int | None = None
 

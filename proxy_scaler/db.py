@@ -2308,38 +2308,45 @@ def add_membership(
 
 def generated_variants_status(
     scryfall_ids: list[str],
-    model: str,
-    dpis: list[int],
+    model: str | None,
+    dpis: list[int] | None,
     db_path: Path | str | None = None,
-) -> dict[str, list[tuple[int, int | None]]]:
-    """For each requested scryfall_id: the (dpi, face_index) pairs that
-    exist in the registry at the given model, across every project — the
-    printing picker's "already generated" lookup. Registry-only by
-    design: no membership join (an image generated under any project
-    counts) and no filesystem stats — a row can briefly outlive a
-    deleted file until the next adopt/prune reconcile, which is the
-    accepted trade for a query path that never touches disk."""
-    if not scryfall_ids or not dpis or not model:
+) -> dict[str, list[tuple[int, str, int | None]]]:
+    """For each requested scryfall_id: the (dpi, model, face_index) triples
+    that exist in the registry, across every project — the printing
+    picker's "already generated" lookup. With `model` and `dpis`, only
+    that model at those DPIs (the grid's coverage mark); with neither,
+    every variant (the preview pane's badges). Registry-only by design: no
+    membership join (an image generated under any project counts) and no
+    filesystem stats — a row can briefly outlive a deleted file until the
+    next adopt/prune reconcile, which is the accepted trade for a query
+    path that never touches disk."""
+    filtered = model is not None or dpis is not None
+    if not scryfall_ids or (filtered and (not model or not dpis)):
         return {}
-    found: dict[str, list[tuple[int, int | None]]] = {}
+    found: dict[str, list[tuple[int, str, int | None]]] = {}
     with connect(db_path) as conn:
         # Chunked to stay well under SQLite's host-parameter limit.
         for start in range(0, len(scryfall_ids), 500):
             chunk = scryfall_ids[start : start + 500]
             placeholders_ids = ",".join("?" * len(chunk))
-            placeholders_dpis = ",".join("?" * len(dpis))
+            where = f"scryfall_id IN ({placeholders_ids})"
+            params: list[Any] = list(chunk)
+            if filtered:
+                where += f" AND model = ? AND dpi IN ({','.join('?' * len(dpis))})"
+                params += [model, *dpis]
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT scryfall_id, dpi, face_index
+                SELECT DISTINCT scryfall_id, dpi, model, face_index
                 FROM generated_images
-                WHERE model = ? AND dpi IN ({placeholders_dpis})
-                  AND scryfall_id IN ({placeholders_ids})
+                WHERE {where}
+                ORDER BY dpi, model
                 """,
-                (model, *dpis, *chunk),
+                params,
             ).fetchall()
             for r in rows:
                 found.setdefault(r["scryfall_id"], []).append(
-                    (int(r["dpi"]), r["face_index"])
+                    (int(r["dpi"]), r["model"], r["face_index"])
                 )
     return found
 
@@ -2594,95 +2601,116 @@ def upsert_gallery_item(
     if not project_tag or not (result.scryfall_id or result.custom_hash or result.back_hash):
         return
     with connect(db_path) as conn:
-        # Not a plain `ON CONFLICT` upsert: the UNIQUE index includes
-        # face_index, which is NULL for the common single-faced-card case,
-        # and SQLite treats every NULL as distinct in a UNIQUE index (the
-        # index COALESCEs around that as a backstop, but conflict targets
-        # against an expression index are their own can of worms). `IS ?`
-        # (unlike `= ?`) matches NULL-to-NULL correctly.
-        existing = conn.execute(
-            "SELECT id FROM generated_images "
-            f"WHERE {IDENTITY_SQL} = ? "
-            "AND face_index IS ? AND model = ? AND dpi = ?",
-            (
-                result.identity_key,
-                result.face_index,
-                result.model,
-                result.dpi,
-            ),
-        ).fetchone()
-        values = (
-            result.face_name,
-            result.card_name,
-            result.set_code,
-            result.collector_number,
-            result.face_label,
-            result.native_scale,
-            result.device,
-            result.out_path.name,
-            str(result.out_path),
-            str(result.original_path),
-            result.png_url,
-            # Refreshed on update too, not just insert: an upsert here means
-            # the image was just (re)generated, and "most recently produced"
-            # is exactly what the PDF variant pick needs to see.
-            _utc_now(),
-            result.total_faces,
-            result.lang,
-        )
-        if existing is not None:
-            image_id = int(existing["id"])
-            conn.execute(
-                """
-                UPDATE generated_images SET
-                    face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
-                    face_label = ?, native_scale = ?, device = ?, image_filename = ?,
-                    out_path = ?, original_path = ?, png_url = ?, created_at = ?,
-                    total_faces = ?, lang = ?
-                WHERE id = ?
-                """,
-                (*values, image_id),
-            )
-        else:
-            cur = conn.execute(
-                """
-                INSERT INTO generated_images (
-                    scryfall_id, custom_hash, back_hash, face_index, face_name, card_name,
-                    set_code, collector_number, face_label, model, dpi, native_scale,
-                    device, image_filename, out_path, original_path, png_url,
-                    created_at, total_faces, lang
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result.scryfall_id,
-                    result.custom_hash,
-                    result.back_hash,
-                    result.face_index,
-                    result.face_name,
-                    result.card_name,
-                    result.set_code,
-                    result.collector_number,
-                    result.face_label,
-                    result.model,
-                    result.dpi,
-                    result.native_scale,
-                    result.device,
-                    result.out_path.name,
-                    str(result.out_path),
-                    str(result.original_path),
-                    result.png_url,
-                    values[-3],  # same timestamp as the UPDATE branch above
-                    values[-2],  # total_faces
-                    values[-1],  # lang
-                ),
-            )
-            image_id = int(cur.lastrowid)
+        image_id = _upsert_registry_row(conn, result)
         conn.execute(
             "INSERT OR IGNORE INTO project_gallery_memberships "
             "(project_tag, image_id) VALUES (?, ?)",
             (project_tag, image_id),
         )
         conn.commit()
+
+
+def register_generated_image(result: FaceResult, db_path: Path | str | None = None) -> None:
+    """Write one registry row (insert, or refresh in place) and join no
+    project. For an image that exists for reasons no project asked for —
+    the change-printing preview's original (/api/cards/{id}/original):
+    adoption then joins it to every project whose deck holds that printing,
+    and to no other, so previewing printings nobody picks never clutters a
+    gallery. Same identity rule as upsert_gallery_item."""
+    if not (result.scryfall_id or result.custom_hash or result.back_hash):
+        return
+    with connect(db_path) as conn:
+        _upsert_registry_row(conn, result)
+        conn.commit()
+
+
+def _upsert_registry_row(conn: sqlite3.Connection, result: FaceResult) -> int:
+    """The registry half of upsert_gallery_item: insert or refresh this
+    variant's generated_images row and return its id."""
+    # Not a plain `ON CONFLICT` upsert: the UNIQUE index includes
+    # face_index, which is NULL for the common single-faced-card case,
+    # and SQLite treats every NULL as distinct in a UNIQUE index (the
+    # index COALESCEs around that as a backstop, but conflict targets
+    # against an expression index are their own can of worms). `IS ?`
+    # (unlike `= ?`) matches NULL-to-NULL correctly.
+    existing = conn.execute(
+        "SELECT id FROM generated_images "
+        f"WHERE {IDENTITY_SQL} = ? "
+        "AND face_index IS ? AND model = ? AND dpi = ?",
+        (
+            result.identity_key,
+            result.face_index,
+            result.model,
+            result.dpi,
+        ),
+    ).fetchone()
+    values = (
+        result.face_name,
+        result.card_name,
+        result.set_code,
+        result.collector_number,
+        result.face_label,
+        result.native_scale,
+        result.device,
+        result.out_path.name,
+        str(result.out_path),
+        str(result.original_path),
+        result.png_url,
+        # Refreshed on update too, not just insert: an upsert here means
+        # the image was just (re)generated, and "most recently produced"
+        # is exactly what the PDF variant pick needs to see.
+        _utc_now(),
+        result.total_faces,
+        result.lang,
+    )
+    if existing is not None:
+        image_id = int(existing["id"])
+        conn.execute(
+            """
+            UPDATE generated_images SET
+                face_name = ?, card_name = ?, set_code = ?, collector_number = ?,
+                face_label = ?, native_scale = ?, device = ?, image_filename = ?,
+                out_path = ?, original_path = ?, png_url = ?, created_at = ?,
+                total_faces = ?, lang = ?
+            WHERE id = ?
+            """,
+            (*values, image_id),
+        )
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO generated_images (
+                scryfall_id, custom_hash, back_hash, face_index, face_name, card_name,
+                set_code, collector_number, face_label, model, dpi, native_scale,
+                device, image_filename, out_path, original_path, png_url,
+                created_at, total_faces, lang
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result.scryfall_id,
+                result.custom_hash,
+                result.back_hash,
+                result.face_index,
+                result.face_name,
+                result.card_name,
+                result.set_code,
+                result.collector_number,
+                result.face_label,
+                result.model,
+                result.dpi,
+                result.native_scale,
+                result.device,
+                result.out_path.name,
+                str(result.out_path),
+                str(result.original_path),
+                result.png_url,
+                values[-3],  # same timestamp as the UPDATE branch above
+                values[-2],  # total_faces
+                values[-1],  # lang
+            ),
+        )
+        image_id = int(cur.lastrowid)
+    return image_id
 
 
 def acquire_worker_lock(lock_path: Path | str | None = None) -> int | None:

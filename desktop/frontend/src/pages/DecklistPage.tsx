@@ -237,6 +237,11 @@ export default function DecklistPage() {
   // edits don't re-fire it; best-effort because a failure only means the
   // status poll shows a stale view until the next reconcile.
   const cardIdentities = cards.map(localCardIdentity).sort().join("|");
+  // Bumped when a printing picker closes: its preview may have downloaded
+  // originals (registered server-side, project-less) that this deck's
+  // cards should now adopt — "300 · Original" badges included — even when
+  // no printing changed and so no identity did either.
+  const [adoptNonce, setAdoptNonce] = useState(0);
   useEffect(() => {
     if (!projectTag || serverUnavailable || cards.length === 0) return;
     let cancelled = false;
@@ -252,7 +257,7 @@ export default function DecklistPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectTag, cardIdentities, serverUnavailable]);
+  }, [projectTag, cardIdentities, serverUnavailable, adoptNonce]);
 
   // Languages the import dropdown may request — the full Scryfall list
   // (server-owned, same rule as the models list), independent of what
@@ -946,6 +951,7 @@ export default function DecklistPage() {
                   .then(invalidateStatus)
                   .catch(() => {});
               }}
+              onPickerClosed={() => setAdoptNonce((n) => n + 1)}
               disabled={serverUnavailable}
             />
           );
@@ -1009,6 +1015,8 @@ function CardRowView(props: {
     lang: string;
     printedName: string | null;
   }) => void;
+  /** The printing picker closed (picked or not) — see adoptNonce. */
+  onPickerClosed: () => void;
   /** True when the generation server is unreachable — disables
    *  Generate/Regen/printing changes (Remove/Show stay enabled since
    *  those are purely local). */
@@ -1027,6 +1035,7 @@ function CardRowView(props: {
     onRefetch,
     preferredLang,
     onPickPrinting,
+    onPickerClosed,
     disabled,
   } = props;
   const quantity = card.quantity ?? 1;
@@ -1084,6 +1093,7 @@ function CardRowView(props: {
             preferredLang={preferredLang}
             disabled={disabled}
             onPick={onPickPrinting}
+            onClosed={onPickerClosed}
           />
         )}
         <span className="card-qty-stepper" data-tour="card-qty">

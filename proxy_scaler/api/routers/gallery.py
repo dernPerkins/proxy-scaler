@@ -121,8 +121,9 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
 
 @router.post("/status", response_model=GalleryStatusOut)
 def gallery_status(body: GalleryStatusIn) -> GalleryStatusOut:
-    """Which of these printings already have generated images at this
-    model/these DPIs — the printing picker's coverage indicator. Answered
+    """Which of these printings already have generated images — at this
+    model/these DPIs for the printing grid's coverage mark, or every
+    variant when neither is sent, for the preview pane's badges. Answered
     entirely from the generated_images registry: cross-project (an image
     generated under any project counts) and with zero filesystem access —
     a registry row can briefly outlive a deleted file until the next
@@ -134,8 +135,8 @@ def gallery_status(body: GalleryStatusIn) -> GalleryStatusOut:
     return GalleryStatusOut(
         statuses={
             scryfall_id: [
-                GeneratedPairOut(dpi=dpi, face_index=face_index)
-                for dpi, face_index in pairs
+                GeneratedPairOut(dpi=dpi, model=model, face_index=face_index)
+                for dpi, model, face_index in pairs
             ]
             for scryfall_id, pairs in found.items()
         }
