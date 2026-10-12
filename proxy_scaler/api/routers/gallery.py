@@ -232,6 +232,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         # Regenerate is the explicit "make it fresh" action: bypass the x4
         # upscale cache and re-run inference (first-generation tasks reuse it).
         force=True,
+        image_origin=body.image_origin,
         db_path=db_path,
     )
     return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])
@@ -289,6 +290,7 @@ def refetch_original(gallery_item_id: int, body: RefetchOriginalIn) -> GenerateO
         project_tag=body.project_tag,
         total_faces=item["total_faces"],
         lang=item["lang"],
+        image_origin=body.image_origin,
         db_path=db_path,
     )
     return GenerateOut(queued=len(task_ids), failed=0, task_ids=task_ids, notes=[])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 
 from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.scryfall import (
@@ -354,3 +355,117 @@ def test_get_raises_not_found_subclass_on_404() -> None:
     client = ScryfallClient(session=_Session(), delay_s=0)  # type: ignore[arg-type]
     with pytest.raises(ScryfallNotFound):
         client._get("/cards/named", params={"exact": "nope"})
+
+
+# --- Image origin: the Proxy Scaler image cache (Worker) vs Scryfall direct ---
+
+
+class _RoutingSession:
+    """Answers each URL from a host -> response-or-exception table and
+    records every request, with the User-Agent it carried."""
+
+    def __init__(self, by_host: dict) -> None:
+        self.headers = {"User-Agent": "python-requests/2.34.2"}
+        self._by_host = by_host
+        self.calls: list[tuple[str, str]] = []
+
+    def get(self, url, timeout=None):
+        from urllib.parse import urlsplit
+
+        self.calls.append((url, self.headers.get("User-Agent")))
+        outcome = self._by_host[urlsplit(url).hostname]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+_SCRYFALL_PNG = "https://cards.scryfall.io/png/front/a/b/ab12.png?1700000000"
+
+
+def test_worker_origin_rewrites_host_and_keeps_path_and_version() -> None:
+    sess = _RoutingSession({"img.proxy-scaler.com": _FakeResponse(content=b"cached")})
+    assert download_png(_SCRYFALL_PNG, session=sess, origin="worker") == b"cached"
+    assert [url for url, _ in sess.calls] == [
+        "https://img.proxy-scaler.com/png/front/a/b/ab12.png?1700000000"
+    ]
+
+
+def test_worker_is_the_default_origin() -> None:
+    sess = _RoutingSession({"img.proxy-scaler.com": _FakeResponse()})
+    download_png(_SCRYFALL_PNG, session=sess)
+    assert sess.calls[0][0].startswith("https://img.proxy-scaler.com/")
+
+
+@pytest.mark.parametrize(
+    "worker_outcome",
+    [
+        _FakeResponse(ok=False, status_code=502, text="bad gateway"),
+        _FakeResponse(ok=False, status_code=404, text="nope"),
+        requests.ConnectionError("worker unreachable"),
+        requests.Timeout("worker slow"),
+    ],
+)
+def test_worker_failure_retries_scryfall_directly_exactly_once(worker_outcome, capsys) -> None:
+    sess = _RoutingSession(
+        {
+            "img.proxy-scaler.com": worker_outcome,
+            "cards.scryfall.io": _FakeResponse(content=b"direct"),
+        }
+    )
+    assert download_png(_SCRYFALL_PNG, session=sess, origin="worker") == b"direct"
+    assert [url for url, _ in sess.calls] == [
+        "https://img.proxy-scaler.com/png/front/a/b/ab12.png?1700000000",
+        _SCRYFALL_PNG,
+    ]
+    assert "falling back" in capsys.readouterr().out
+
+
+def test_worker_and_direct_both_failing_raises_the_direct_error() -> None:
+    sess = _RoutingSession(
+        {
+            "img.proxy-scaler.com": _FakeResponse(ok=False, status_code=503),
+            "cards.scryfall.io": _FakeResponse(ok=False, status_code=429, text="slow down"),
+        }
+    )
+    with pytest.raises(ScryfallError, match="429"):
+        download_png(_SCRYFALL_PNG, session=sess, origin="worker")
+    assert len(sess.calls) == 2
+
+
+def test_scryfall_origin_never_contacts_the_worker() -> None:
+    sess = _RoutingSession({"cards.scryfall.io": _FakeResponse(content=b"direct")})
+    assert download_png(_SCRYFALL_PNG, session=sess, origin="scryfall") == b"direct"
+    assert [url for url, _ in sess.calls] == [_SCRYFALL_PNG]
+
+
+def test_scryfall_origin_failure_is_not_retried_via_worker() -> None:
+    sess = _RoutingSession(
+        {"cards.scryfall.io": _FakeResponse(ok=False, status_code=500, text="down")}
+    )
+    with pytest.raises(ScryfallError):
+        download_png(_SCRYFALL_PNG, session=sess, origin="scryfall")
+    assert [url for url, _ in sess.calls] == [_SCRYFALL_PNG]
+
+
+def test_user_agent_is_sent_on_worker_and_direct_paths() -> None:
+    sess = _RoutingSession(
+        {
+            "img.proxy-scaler.com": _FakeResponse(ok=False, status_code=500),
+            "cards.scryfall.io": _FakeResponse(),
+        }
+    )
+    download_png(_SCRYFALL_PNG, session=sess, origin="worker")
+    assert [ua for _, ua in sess.calls] == [USER_AGENT, USER_AGENT]
+
+
+def test_non_scryfall_image_hosts_are_fetched_as_given() -> None:
+    """Only cards.scryfall.io paths are something the Worker will serve;
+    any other URL is fetched directly rather than rewritten into a 404."""
+    sess = _RoutingSession({"example.com": _FakeResponse(content=b"x")})
+    assert download_png("https://example.com/a.png", session=sess, origin="worker") == b"x"
+    assert [url for url, _ in sess.calls] == ["https://example.com/a.png"]
+
+
+def test_unknown_origin_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        download_png(_SCRYFALL_PNG, session=_RoutingSession({}), origin="mirror")

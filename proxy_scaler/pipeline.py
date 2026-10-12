@@ -34,6 +34,7 @@ from .dpi import (
     target_pixels,
 )
 from .scryfall import (
+    DEFAULT_IMAGE_ORIGIN,
     CardFaceImage,
     ScryfallClient,
     ScryfallError,
@@ -396,6 +397,7 @@ def _download_clean_png(
     url: str,
     *,
     session=None,
+    origin: str = DEFAULT_IMAGE_ORIGIN,
     describe: str = "",
     log: Callable[[str], None] | None = None,
 ) -> bytes:
@@ -408,7 +410,7 @@ def _download_clean_png(
     already-cached originals are left as-is ("new downloads only"; Re-Fetch
     is the upgrade path). Calls the module-level download_png so test
     monkeypatches still intercept."""
-    raw = download_png(url, session=session)
+    raw = download_png(url, session=session, origin=origin)
     cleaned = clean_original_png(raw)
     if cleaned.applied:
         msg = f"cleanup[{','.join(cleaned.applied)}]: {describe or url}"
@@ -464,6 +466,7 @@ def _load_source_png(
     face: CardFaceImage,
     *,
     session=None,
+    origin: str = DEFAULT_IMAGE_ORIGIN,
     describe: str = "",
     log: Callable[[str], None] | None = None,
 ) -> bytes:
@@ -473,7 +476,9 @@ def _load_source_png(
         return _read_custom_png(face.custom_hash, describe=describe)
     if face.is_back:
         return _read_back_png(face.back_hash, describe=describe)
-    return _download_clean_png(face.png_url, session=session, describe=describe, log=log)
+    return _download_clean_png(
+        face.png_url, session=session, origin=origin, describe=describe, log=log
+    )
 
 
 _THUMB_MAX_DIM = 220  # px, longest side — does most of the size-reduction work
@@ -737,6 +742,7 @@ def _regenerate_face_from_card(
     defer_finish: bool = False,
     force: bool = True,
     on_cpu_fallback: object | None = None,
+    image_origin: str = DEFAULT_IMAGE_ORIGIN,
 ) -> list[FaceResult] | Callable[[], list[FaceResult]]:
     """Shared core of regenerate_face_multi()/process_task(): given an
     already-resolved CardFaceImage (no Scryfall call needed here — the
@@ -804,6 +810,7 @@ def _regenerate_face_from_card(
         with _phase(timings, "download"):
             png_bytes = _load_source_png(
                 face,
+                origin=image_origin,
                 describe=f"{face.card_name} ({face.scryfall_id})",
                 log=log,
             )
@@ -951,6 +958,7 @@ def process_download_task(
     with _phase(timings, "download"):
         png_bytes = _download_clean_png(
             task.png_url,
+            origin=task.image_origin,
             describe=f"{task.face_name} ({task.scryfall_id})",
             log=on_progress,
         )
@@ -1306,6 +1314,7 @@ def process_task(
         # sibling DPI task of the same face then costs a PNG decode, not a
         # model pass. The Regenerate button enqueues force=True.
         force=getattr(task, "force", True),
+        image_origin=task.image_origin,
     )
     if defer_finish:
         return PendingTask(lambda: tail()[0])
@@ -1329,7 +1338,9 @@ def prefetch_original(task: TaskRow) -> Path | None:
     if path.is_file():
         return path
     png_bytes = _download_clean_png(
-        task.png_url, describe=f"{task.face_name} ({task.scryfall_id})"
+        task.png_url,
+        origin=task.image_origin,
+        describe=f"{task.face_name} ({task.scryfall_id})",
     )
     original_path = _save_original(
         png_bytes, Path(task.cache_dir), task.scryfall_id, task.face_index
@@ -1441,6 +1452,7 @@ def process_entries(
     tile_size: int = 0,
     on_progress: ProgressCallback | None = None,
     on_face_done: FaceDoneCallback | None = None,
+    image_origin: str = DEFAULT_IMAGE_ORIGIN,
 ) -> PipelineResult:
     """Resolve, download, upscale, and write PNGs for each deck entry.
 
@@ -1555,6 +1567,7 @@ def process_entries(
                                 png_bytes = _download_clean_png(
                                     face.png_url,
                                     session=client._session,
+                                    origin=image_origin,
                                     describe=f"{face.card_name} ({face.scryfall_id})",
                                     log=log,
                                 )
@@ -1600,6 +1613,7 @@ def process_entries(
                         png_bytes = _download_clean_png(
                             face.png_url,
                             session=client._session,
+                            origin=image_origin,
                             describe=f"{face.card_name} ({face.scryfall_id})",
                             log=log,
                         )

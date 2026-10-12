@@ -104,7 +104,7 @@ def test_cli_writes_outputs_with_mocks(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ScryfallClient, "resolve", lambda self, e: fake_resolve(e))
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: png_bytes
     )
 
     fake_upscaled = Image.new("RGB", (16, 16), color=(40, 50, 60))
@@ -168,7 +168,7 @@ def test_cli_preserves_alpha_through_resize_and_save(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ScryfallClient, "resolve", lambda self, e: (SOL_RING, []))
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: png_bytes
     )
 
     # 16x16 RGBA "upscale result": opaque except an 8x8 transparent corner.

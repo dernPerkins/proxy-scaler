@@ -1,0 +1,20 @@
+// The Proxy Scaler image cache: a read-through cache of Scryfall card
+// images in R2, served on img.proxy-scaler.com. See README.md (deploying)
+// and docs/adr/0005-image-fetches-via-cloudflare-worker-cache.md (why).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "proxy-scaler-image-cache",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "workers_dev": false,
+  "routes": [{ "pattern": "img.proxy-scaler.com", "custom_domain": true }],
+  "r2_buckets": [
+    // Its own bucket, separate from the release bucket.
+    { "binding": "IMAGES", "bucket_name": "proxy-scaler-image-cache" }
+  ],
+  "vars": {
+    // How old a stored image may get before the next request re-fetches
+    // it from Scryfall. Change it here and `npm run deploy`.
+    "CACHE_TTL_DAYS": "14"
+  }
+}

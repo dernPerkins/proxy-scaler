@@ -239,6 +239,12 @@ export const CUSTOM_UPSCALE_MIN_SERVER_VERSION = "0.4.0";
 // rewrite it.
 export const LIBRARY_UPSCALE_MIN_SERVER_VERSION = "0.4.0";
 
+// The change-printing grid's images come from /api/cards/{id}/thumb. An
+// older server 404s every one, so below this the grid renders text-only
+// tiles and never requests a thumbnail. The release the endpoint ships in;
+// packaging/set-version.py must never rewrite it.
+export const THUMBNAILS_MIN_SERVER_VERSION = "0.4.1";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -287,6 +293,14 @@ export function serverSupportsZipExport(serverVersion: string | null): boolean {
 export function serverSupportsOriginals(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, ORIGINALS_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server have /api/cards/{id}/thumb? Same
+ *  null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsThumbnails(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, THUMBNAILS_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

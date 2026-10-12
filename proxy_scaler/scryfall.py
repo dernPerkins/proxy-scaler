@@ -5,8 +5,8 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import quote
+from typing import Any, Literal
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 
@@ -15,6 +15,23 @@ from .decklist import DeckEntry
 SCRYFALL_API = "https://api.scryfall.com"
 USER_AGENT = "proxy-scaler/0.1.0 (https://proxy-scaler.com)"
 REQUEST_DELAY_S = 0.1
+
+# Image origin: where card-image bytes come from. "worker" (the default) is
+# the Proxy Scaler image cache, a Cloudflare Worker + R2 in front of
+# Scryfall's image CDN, with a direct-to-Scryfall retry whenever it fails;
+# "scryfall" never contacts the Worker. Only image fetches take an origin —
+# api.scryfall.com calls and the bulk-data download always go direct. See
+# docs/adr/0005-image-fetches-via-cloudflare-worker-cache.md.
+ImageOrigin = Literal["worker", "scryfall"]
+IMAGE_ORIGINS: tuple[str, ...] = ("worker", "scryfall")
+DEFAULT_IMAGE_ORIGIN: ImageOrigin = "worker"
+SCRYFALL_IMAGE_HOST = "cards.scryfall.io"
+# A constant, not a setting: the Worker's address is part of the trust
+# boundary, so pointing the app at another mirror takes a code change.
+WORKER_IMAGE_HOST = "img.proxy-scaler.com"
+# (connect, read) for the Worker attempt. A short connect timeout keeps an
+# unreachable Worker from stalling every download before the fallback.
+_WORKER_TIMEOUT_S = (5, 60)
 
 # Every printed-language code Scryfall uses. The single source of truth:
 # the import-language dropdown (/api/cards/languages) offers exactly these
@@ -355,6 +372,18 @@ def expected_face_count(card: dict[str, Any]) -> int:
     return len(per_face) if per_face else 1
 
 
+def printable_face_names(card: dict[str, Any]) -> list[str]:
+    """The name of each face expected_face_count counts, in face order —
+    the picker's flip label. Never raises, for the same reason."""
+    faces = card.get("card_faces") or []
+    per_face = [
+        str(face.get("name") or card.get("name") or "")
+        for face in faces
+        if isinstance(face, dict) and (face.get("image_uris") or {}).get("png")
+    ]
+    return per_face if per_face else [str(card.get("name") or "")]
+
+
 def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     """Expand a Scryfall card into one or more printable face images.
 
@@ -463,7 +492,39 @@ def _shared_download_session() -> requests.Session:
         return _download_session
 
 
-def download_png(url: str, session: requests.Session | None = None) -> bytes:
+def _worker_url(url: str) -> str | None:
+    """The Worker URL serving the same image as a cards.scryfall.io `url`
+    (same path, same ?version query), or None for any other host — the
+    Worker only accepts Scryfall card-image paths, so rewriting anything
+    else would just buy a 404."""
+    parts = urlsplit(url)
+    if parts.hostname != SCRYFALL_IMAGE_HOST:
+        return None
+    return urlunsplit(("https", WORKER_IMAGE_HOST, parts.path, parts.query, ""))
+
+
+def _get_image(sess: requests.Session, url: str, timeout) -> bytes:
+    resp = sess.get(url, timeout=timeout)
+    if not resp.ok:
+        raise ScryfallError(
+            f"Scryfall HTTP {resp.status_code} downloading {url}: {resp.text[:200]}"
+        )
+    return resp.content
+
+
+def download_png(
+    url: str,
+    session: requests.Session | None = None,
+    *,
+    origin: str = DEFAULT_IMAGE_ORIGIN,
+) -> bytes:
+    """Fetch one card image (PNG or the JPEG thumbnail sizes alike) through
+    `origin`. With "worker", a cards.scryfall.io URL goes to the Worker
+    host first; any Worker failure (network error, timeout, non-2xx) is
+    logged and retried once against Scryfall directly, so a Worker outage
+    costs latency, never correctness."""
+    if origin not in IMAGE_ORIGINS:
+        raise ValueError(f"Unknown image origin {origin!r}; expected one of {IMAGE_ORIGINS}")
     if session is None:
         sess = _shared_download_session()
     else:
@@ -471,11 +532,16 @@ def download_png(url: str, session: requests.Session | None = None) -> bytes:
         # .update(), not .setdefault(): requests.Session() already
         # pre-populates headers with its own default User-Agent
         # (python-requests/X.Y.Z), which setdefault() would never override —
-        # and Scryfall's CDN rejects that default UA with a 400.
+        # and Scryfall's CDN rejects that default UA with a 400. The Worker
+        # needs it too: it 403s anything not proxy-scaler/*.
         sess.headers.update({"User-Agent": USER_AGENT})
-    resp = sess.get(url, timeout=60)
-    if not resp.ok:
-        raise ScryfallError(
-            f"Scryfall HTTP {resp.status_code} downloading {url}: {resp.text[:200]}"
-        )
-    return resp.content
+    worker_url = _worker_url(url) if origin == "worker" else None
+    if worker_url is not None:
+        try:
+            return _get_image(sess, worker_url, _WORKER_TIMEOUT_S)
+        except (requests.RequestException, ScryfallError) as exc:
+            print(
+                f"image cache failed ({exc}); falling back to {SCRYFALL_IMAGE_HOST}",
+                flush=True,
+            )
+    return _get_image(sess, url, 60)

@@ -110,6 +110,11 @@ export interface ResolveResult {
   failed: ResolveFailure[];
 }
 
+/** Where the generation server fetches card images from: the Proxy
+ *  Scaler image cache (falling back to Scryfall) or Scryfall directly.
+ *  The client's App Settings choice — see imageOrigin.ts. */
+export type ImageOrigin = "worker" | "scryfall";
+
 export interface GenerateRequest {
   project_tag: string;
   entries: DeckEntryIn[];
@@ -120,6 +125,8 @@ export interface GenerateRequest {
   /** Whether Custom Images are upscaled too — see ProjectSettings.
    *  An older server drops it and registers customs only. */
   custom_upscale?: "off" | "target" | "native";
+  /** An older server drops it and fetches from Scryfall directly. */
+  image_origin?: ImageOrigin;
   output_dir: string;
   cache_dir: string;
   weights_dir: string;
@@ -167,6 +174,7 @@ export interface DownloadOriginalsRequest {
   output_dir: string;
   cache_dir: string;
   weights_dir: string;
+  image_origin?: ImageOrigin;
 }
 
 /** Mirrors RefetchOriginalIn: re-download one face's Scryfall original,
@@ -177,6 +185,7 @@ export interface RefetchOriginalRequest {
   output_dir: string;
   cache_dir: string;
   weights_dir: string;
+  image_origin?: ImageOrigin;
 }
 
 export interface RegenerateGalleryItemRequest {
@@ -194,6 +203,7 @@ export interface RegenerateGalleryItemRequest {
   output_dir: string;
   cache_dir: string;
   weights_dir: string;
+  image_origin?: ImageOrigin;
 }
 
 export interface GenPathsInfo {
@@ -322,6 +332,9 @@ export interface CardVariant {
   // generated faces against it. Optional: older servers don't send it,
   // and absent reads as 1.
   face_count?: number;
+  // The name of each of those faces, in order — the image grid's flip
+  // label. Absent from older servers.
+  face_names?: string[];
 }
 
 export interface CardVariantsResult {

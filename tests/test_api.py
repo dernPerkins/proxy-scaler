@@ -2120,3 +2120,277 @@ def test_device_reports_webgpu(client: TestClient) -> None:
         assert client.get("/api/device").json()["webgpu"] is True
     with patch("proxy_scaler.api.routers.misc.backend_available", return_value=False):
         assert client.get("/api/device").json()["webgpu"] is False
+
+
+# --- Image origin on the Generate path ---------------------------------------
+
+
+def _generate_body(tmp_path: Path, **overrides) -> dict:
+    body = {
+        "project_tag": "tag-a",
+        "entries": [_sol_ring_entry()],
+        "model": "ultrasharp_v2",
+        "dpi_targets": [800],
+        "skip_existing": False,
+        "output_dir": str(tmp_path / "out"),
+        "cache_dir": str(tmp_path / "cache"),
+        "weights_dir": str(tmp_path / "weights"),
+    }
+    body.update(overrides)
+    return body
+
+
+def test_generate_without_image_origin_defaults_to_worker(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Older clients send no image_origin; their tasks go through the
+    Proxy Scaler image cache like a current client's default."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    resp = client.post("/api/generate", json=_generate_body(tmp_path))
+    assert resp.status_code == 200
+    [task_id] = resp.json()["task_ids"]
+    assert db.get_task(task_id, db_path=db_path).image_origin == "worker"
+
+
+@pytest.mark.parametrize("path", ["/api/generate", "/api/generate/downloads"])
+def test_image_origin_reaches_the_queued_task(
+    client: TestClient, tmp_path: Path, path: str
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    resp = client.post(path, json=_generate_body(tmp_path, image_origin="scryfall"))
+    assert resp.status_code == 200
+    for task_id in resp.json()["task_ids"]:
+        assert db.get_task(task_id, db_path=db_path).image_origin == "scryfall"
+
+
+@pytest.mark.parametrize("action", ["regenerate", "refetch"])
+def test_gallery_redo_actions_carry_image_origin(
+    client: TestClient, tmp_path: Path, action: str
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+    resp = client.post(
+        f"/api/gallery/{item['id']}/{action}",
+        json={
+            "project_tag": "tag-a",
+            "output_dir": str(tmp_path),
+            "cache_dir": str(tmp_path),
+            "weights_dir": str(tmp_path),
+            "image_origin": "scryfall",
+        },
+    )
+    assert resp.status_code == 200
+    [task_id] = resp.json()["task_ids"]
+    assert db.get_task(task_id, db_path=db_path).image_origin == "scryfall"
+
+
+def test_generate_rejects_an_unknown_image_origin(client: TestClient, tmp_path: Path) -> None:
+    resp = client.post("/api/generate", json=_generate_body(tmp_path, image_origin="mirror"))
+    assert resp.status_code == 422
+
+
+# --- Thumbnail endpoint: GET /api/cards/{scryfall_id}/thumb ---------------------
+
+_BOLT_PNG = "https://cards.scryfall.io/png/front/7/7/77c6fa74.png?1559591645"
+_BOLT_NORMAL = "https://cards.scryfall.io/normal/front/7/7/77c6fa74.jpg?1559591645"
+_BOLT_NORMAL_VIA_WORKER = "https://img.proxy-scaler.com/normal/front/7/7/77c6fa74.jpg?1559591645"
+
+
+class _ImageSession:
+    """Fake outbound image session: answers by host, records every URL."""
+
+    def __init__(self, by_host: dict | None = None) -> None:
+        self.headers: dict = {}
+        self.by_host = by_host or {}
+        self.urls: list[str] = []
+
+    def get(self, url, timeout=None):
+        from urllib.parse import urlsplit
+
+        self.urls.append(url)
+        outcome = self.by_host.get(urlsplit(url).hostname, 200)
+        if isinstance(outcome, Exception):
+            raise outcome
+
+        class _Resp:
+            ok = outcome == 200
+            status_code = outcome
+            text = "" if outcome == 200 else "upstream said no"
+            content = f"jpeg from {url}".encode()
+
+        return _Resp()
+
+
+@pytest.fixture
+def image_session(monkeypatch) -> _ImageSession:
+    from proxy_scaler import scryfall
+
+    sess = _ImageSession()
+    monkeypatch.setattr(scryfall, "_download_session", sess)
+    return sess
+
+
+def _seed_dfc(**overrides) -> None:
+    card = dict(
+        id="delver-isd",
+        oracle_id="oracle-delver",
+        name="Delver of Secrets // Insectile Aberration",
+        set="isd",
+        set_name="Innistrad",
+        collector_number="51",
+        layout="transform",
+        image_uris=None,
+        card_faces=[
+            {
+                "name": "Delver of Secrets",
+                "image_uris": {"png": "https://cards.scryfall.io/png/front/1/1/11bf.png?1"},
+            },
+            {
+                "name": "Insectile Aberration",
+                "image_uris": {"png": "https://cards.scryfall.io/png/back/1/1/11bf.png?1"},
+            },
+        ],
+    )
+    card.update(overrides)
+    _seed_card_db(**card)
+
+
+def test_thumb_miss_fetches_normal_jpeg_and_caches_it(
+    client: TestClient, image_session: _ImageSession, tmp_path: Path
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get("/api/cards/bolt-lea/thumb", params={"via": "scryfall"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert "max-age" in resp.headers["cache-control"]
+    assert "immutable" not in resp.headers["cache-control"]
+    assert resp.content == f"jpeg from {_BOLT_NORMAL}".encode()
+    assert image_session.urls == [_BOLT_NORMAL]
+    cached = list((tmp_path / "imgcache" / "thumbs").iterdir())
+    assert len(cached) == 1 and cached[0].read_bytes() == resp.content
+
+
+def test_thumb_hit_makes_no_outbound_request(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    first = client.get("/api/cards/bolt-lea/thumb")
+    image_session.urls.clear()
+    image_session.by_host = {
+        "img.proxy-scaler.com": OSError("offline"),
+        "cards.scryfall.io": OSError("offline"),
+    }
+    second = client.get("/api/cards/bolt-lea/thumb")
+    assert second.status_code == 200
+    assert second.content == first.content
+    assert image_session.urls == []
+
+
+def test_thumb_changed_version_suffix_fetches_again(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    client.get("/api/cards/bolt-lea/thumb", params={"via": "scryfall"})
+    # A corpus re-import picked up Scryfall's corrected scan.
+    _seed_card_db(image_uris={"png": _BOLT_PNG.replace("1559591645", "1700000000")})
+    image_session.urls.clear()
+    resp = client.get("/api/cards/bolt-lea/thumb", params={"via": "scryfall"})
+    assert resp.status_code == 200
+    assert image_session.urls == [_BOLT_NORMAL.replace("1559591645", "1700000000")]
+
+
+def test_thumb_face_1_serves_the_back_of_a_dfc_cached_separately(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_dfc()
+    front = client.get("/api/cards/delver-isd/thumb", params={"via": "scryfall"})
+    back = client.get("/api/cards/delver-isd/thumb", params={"face": 1, "via": "scryfall"})
+    assert front.status_code == back.status_code == 200
+    assert image_session.urls == [
+        "https://cards.scryfall.io/normal/front/1/1/11bf.jpg?1",
+        "https://cards.scryfall.io/normal/back/1/1/11bf.jpg?1",
+    ]
+    assert front.content != back.content
+
+
+def test_thumb_face_1_on_a_single_faced_printing_is_404(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get("/api/cards/bolt-lea/thumb", params={"face": 1})
+    assert resp.status_code == 404
+    assert image_session.urls == []
+
+
+def test_thumb_unknown_id_is_404(client: TestClient, image_session: _ImageSession) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get("/api/cards/no-such-card/thumb")
+    assert resp.status_code == 404
+    assert image_session.urls == []
+
+
+def test_thumb_without_a_corpus_answers_like_variants(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    thumb = client.get("/api/cards/bolt-lea/thumb")
+    variants = client.get("/api/cards/variants", params={"scryfall_id": "bolt-lea"})
+    assert thumb.status_code == variants.status_code == 404
+    assert thumb.json()["detail"] == variants.json()["detail"]
+
+
+def test_thumb_default_via_tries_worker_then_falls_back_to_scryfall(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    image_session.by_host = {"img.proxy-scaler.com": 503}
+    resp = client.get("/api/cards/bolt-lea/thumb")
+    assert resp.status_code == 200
+    assert image_session.urls == [_BOLT_NORMAL_VIA_WORKER, _BOLT_NORMAL]
+
+
+def test_thumb_default_via_is_served_by_the_worker_when_it_works(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/thumb").status_code == 200
+    assert image_session.urls == [_BOLT_NORMAL_VIA_WORKER]
+
+
+def test_thumb_via_scryfall_never_requests_the_worker(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    image_session.by_host = {"cards.scryfall.io": 500}
+    resp = client.get("/api/cards/bolt-lea/thumb", params={"via": "scryfall"})
+    assert resp.status_code == 502
+    assert image_session.urls == [_BOLT_NORMAL]
+
+
+@pytest.mark.parametrize("params", [{"face": 2}, {"face": -1}, {"via": "mirror"}])
+def test_thumb_rejects_bad_parameters(
+    client: TestClient, image_session: _ImageSession, params: dict
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    assert client.get("/api/cards/bolt-lea/thumb", params=params).status_code == 422
+
+
+def test_card_variants_carry_face_names(client: TestClient) -> None:
+    _seed_dfc()
+    body = client.get("/api/cards/variants", params={"scryfall_id": "delver-isd"}).json()
+    for row in (body["anchor"], body["variants"][0]):
+        assert row["face_count"] == 2
+        assert row["face_names"] == ["Delver of Secrets", "Insectile Aberration"]
+        assert row["set_name"] == "Innistrad"
+
+
+def test_thumb_offline_with_nothing_cached_is_502(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    import requests
+
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    image_session.by_host = {
+        "img.proxy-scaler.com": requests.ConnectionError("offline"),
+        "cards.scryfall.io": requests.ConnectionError("offline"),
+    }
+    assert client.get("/api/cards/bolt-lea/thumb").status_code == 502

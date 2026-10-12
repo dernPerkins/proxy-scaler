@@ -22,6 +22,7 @@ import type {
   GenerateRequest,
   GenerateResult,
   GenPathsInfo,
+  ImageOrigin,
   LibraryStatus,
   LibraryUpscaleRequest,
   ModelOption,
@@ -326,6 +327,11 @@ export const generationApi = {
     if (params.include_digital) search.set("include_digital", "true");
     return request<CardVariantsResult>(`/api/cards/variants?${search}`);
   },
+  // An <img> src, not a fetch: one face of one printing as a JPEG, served
+  // from the server's thumbnail cache or fetched through `via`. Only for
+  // servers serverSupportsThumbnails() accepts — older ones 404.
+  cardThumbUrl: (scryfallId: string, face: number, via: ImageOrigin) =>
+    `${getApiBaseUrl()}/api/cards/${encodeURIComponent(scryfallId)}/thumb?face=${face}&via=${via}`,
 
   health: () => request<{ status: string }>("/api/health"),
 

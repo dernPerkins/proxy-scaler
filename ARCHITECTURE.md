@@ -47,6 +47,24 @@ matter throughout this document:
   `oracle_id`) and makes resolution local-first. Per-server, disposable,
   and optional — every reader tolerates its absence. See
   [ADR-0003](./docs/adr/0003-local-scryfall-corpus-in-separate-sqlite-file.md).
+- **Image origin** — where the generation server fetches a card image
+  from: `worker` (the default — the Proxy Scaler image cache below,
+  retried once against `cards.scryfall.io` on any failure) or `scryfall`
+  (direct only; the Worker is never contacted). Chosen by the client's App
+  Settings toggle and carried per request: `image_origin` on the
+  Generate-family bodies (persisted on the task row, db migration 011) and
+  `via` on thumbnail URLs, so in Remote mode it is the user's choice, not
+  the server operator's. The CLI uses `worker` unless given
+  `--direct-scryfall`. Only image fetches take an origin; `api.scryfall.com`
+  and the bulk-data download stay direct. Implemented once, in
+  `scryfall.download_png`.
+- **Image cache (Worker)** — the Cloudflare Worker + R2 bucket at
+  `img.proxy-scaler.com` (`workers/image-cache/`) that the `worker` origin
+  goes through: accepts only Scryfall card-image paths, 403s non-
+  `proxy-scaler/*` User-Agents, refetches a stored image once it is older
+  than `CACHE_TTL_DAYS` and serves the stale copy if that fails. Its host
+  is a constant (`scryfall.WORKER_IMAGE_HOST`), not a setting. See
+  [ADR-0005](./docs/adr/0005-image-fetches-via-cloudflare-worker-cache.md).
 - **`project_tag`** — an opaque string minted when a Project row is
   created, attached to every generation request, used purely to
   scope/filter that project's tasks and images. Deliberately *not* a
@@ -197,12 +215,26 @@ again at generate time):
    pre-corpus behavior (a set-less hint resolves as name-only there, with
    a warning that the number went unused).
 4. **Changing a printing**: the card row's set/collector button
-   (`PrintingPicker.tsx`) fetches `GET /api/cards/variants` — every
-   printing sharing the card's `oracle_id`, from the corpus, newest
-   first, filterable by language — and a pick writes the new
-   `scryfall_id` + display fields through `set_card_printing`. The card's
-   identity string changes, so the adopt effect re-buckets its gallery
-   badges automatically.
+   (`PrintingPicker.tsx`) opens a modal grid of card images, one tile per
+   printing from `GET /api/cards/variants` (every printing sharing the
+   card's `oracle_id`, from the corpus, newest first). The grid filters by
+   language (defaulting to the card's or the Project's, falling back to
+   all), by text (set code, set name, printed name) and by "Show digital",
+   sorts newest/oldest/by set, flips double-faced tiles, and marks
+   already-generated printings. Each tile is a lazily loaded `<img>` of
+   `GET /api/cards/{id}/thumb?face=&via=`: the generation server derives
+   Scryfall's `normal` JPEG URL from the corpus's stored png URL, fetches
+   it through the image origin, and caches it under `imgcache/thumbs/`
+   keyed by id, face and Scryfall's version suffix (`thumbs.py`), so a
+   printing seen once loads instantly and offline. A tile whose image
+   fails becomes a card-shaped placeholder that still picks; a server
+   older than the endpoint (`THUMBNAILS_MIN_SERVER_VERSION` in
+   `config.ts`) gets text-only tiles and no thumbnail requests. **"The
+   client never calls Scryfall" still holds**: thumbnails come through
+   the generation server. A pick writes the new `scryfall_id` + display
+   fields through `set_card_printing` and downloads nothing until
+   Generate. The card's identity string changes, so the adopt effect
+   re-buckets its gallery badges automatically.
 5. On **Generate**, the frontend sends the project's card list (each
    entry carrying its pinned `scryfall_id` + `lang`) plus the project's
    `project_tag` to `POST /api/generate`. The generation server resolves
@@ -253,7 +285,8 @@ generation-server state.
 | `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
 | `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
 | `get_update_skipped_version` / `set_update_skipped_version` | The update prompt's "Skip this version" (`app_settings`) — suppresses exactly one release; the next one supersedes the skip by not matching it |
-| `get_update_check_enabled` / `set_update_check_enabled` | The Decklist sidebar's "Check for updates at launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
+| `get_update_check_enabled` / `set_update_check_enabled` | App Settings' "Check for updates at launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
+| `get_image_cache_enabled` / `set_image_cache_enabled` | App Settings' "Use Proxy Scaler image cache" (`app_settings`, default on) — the client's **image origin**, sent on every Generate-family request and thumbnail URL (`imageOrigin.ts`) |
 
 The update mechanism itself lives in `desktop/src-tauri/src/update.rs`
 (`check_for_update` / `download_update` / `launch_installer`, driven by
@@ -318,7 +351,7 @@ string, not a database relationship.
 | Method + path | Purpose |
 |---|---|
 | `POST /api/resolve` | Resolve raw entries (card corpus first, live Scryfall fallback); no writes on the generation side. The client persists the returned `scryfall_id`s into its own `project_cards` (resolve → generate flow, step 2) |
-| `POST /api/generate` | Resolve (if needed) + enqueue download+upscale per face |
+| `POST /api/generate` | Resolve (if needed) + enqueue download+upscale per face. `image_origin` (`worker` default \| `scryfall`) rides on each task row, as it does on `/generate/downloads` and the gallery regenerate/refetch routes |
 | `GET /api/tasks?project_tag=` | List tasks for a project |
 | `GET /api/tasks/{id}` | Single task status |
 | `POST /api/tasks/{id}/cancel` | Cancel a queued/running task |
@@ -343,7 +376,8 @@ string, not a database relationship.
 | `POST /api/cards/import/{job_id}/cancel` | Ask a running import to stop at its next chunk/batch boundary |
 | `DELETE /api/cards/database` | Remove the imported corpus (file + WAL/SHM); 409 while an import job is running. The sidebar panel's "Delete card database" |
 | `GET /api/cards/languages` | The full Scryfall language list (English first) — the import-language dropdown's options, independent of what corpus is imported: the dropdown is a request, resolution answers from corpus or live API |
-| `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing picker's contents. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
+| `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing grid's contents, with `face_count` and `face_names` per printing. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
+| `GET /api/cards/{scryfall_id}/thumb` | One face (`face` 0\|1) of one printing as Scryfall's `normal` JPEG — a grid tile. Disk-cached under `imgcache/thumbs/` by id + face + version suffix (a hit makes no network call), else fetched through `via` (`worker` default \| `scryfall`). 404 for an unknown id or a missing face, the variants hint with no corpus, 502 when the image can't be fetched from anywhere. `Cache-Control: max-age` of a day, not immutable, until the URL carries the version |
 | `GET /api/health` | Supervisor readiness probe |
 | `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |
 | `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Upscaling a back is a Backs-tab action (`POST /api/library/upscale`), never part of a project's Generate |
@@ -365,6 +399,14 @@ string, not a database relationship.
   back, only invalidated on explicit mutation) and generation status
   (`fetch`-based, 3s poll — the half that's actually live), merged via
   `mergeCardStatus.ts`.
+- `imageOrigin.ts` — the image-cache setting as a request field:
+  `resolveImageOrigin()` for Generate-family bodies (awaits the stored
+  value, so "off" is never sent as the default) and a hook for the
+  grid's thumbnail `via`.
+- `components/AppSettingsModal.tsx` — client-side, app-wide preferences
+  ("Check for updates at launch", the image-cache toggle), opened from
+  the tab bar's gear. Settings that depend on the connected generation
+  server stay in the Decklist sidebar.
 - `BacksPage.tsx` — the Back Library: an entirely local list (`invoke`),
   usable with no generation server reachable at all. A back's bytes never
   pass through the webview on the way out — `sync_back_image` uploads

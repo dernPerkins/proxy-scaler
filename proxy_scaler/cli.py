@@ -72,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip writing output files that already exist",
     )
+    p.add_argument(
+        "--direct-scryfall",
+        action="store_true",
+        help=(
+            "Download card images straight from Scryfall instead of through "
+            "the Proxy Scaler image cache (the default, which falls back to "
+            "Scryfall on its own whenever the cache fails)"
+        ),
+    )
     return p
 
 
@@ -98,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             weights_dir=args.weights_dir,
             skip_existing=args.skip_existing,
             on_progress=print,
+            image_origin="scryfall" if args.direct_scryfall else "worker",
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

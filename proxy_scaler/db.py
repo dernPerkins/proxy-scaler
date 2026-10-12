@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
 from .customs import identity_key
 from .dpi import BACK_SOURCE_MODEL, CUSTOM_SOURCE_MODEL
 from .decklist import DeckEntry
-from .scryfall import SCRYFALL_LANGUAGES
+from .scryfall import DEFAULT_IMAGE_ORIGIN, SCRYFALL_LANGUAGES
 from .upscale import UpscaleModel
 
 if TYPE_CHECKING:
@@ -222,6 +222,11 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     -- raising, and without this bound the same row would take down every
     -- worker that ever started.
     attempts INTEGER NOT NULL DEFAULT 0,
+    -- Where the worker fetches this face's Scryfall image: 'worker' (the
+    -- Proxy Scaler image cache, falling back to Scryfall directly) or
+    -- 'scryfall' (direct only). The client's choice, carried per request
+    -- (scryfall.download_png, migration 011).
+    image_origin TEXT NOT NULL DEFAULT 'worker',
     CHECK ((scryfall_id IS NOT NULL) + (custom_hash IS NOT NULL) + (back_hash IS NOT NULL) = 1)
 );
 
@@ -374,6 +379,8 @@ class TaskRow:
     # Times a worker has claimed this row (db migration 009); see the
     # schema comment and reset_orphaned_running_tasks.
     attempts: int = 0
+    # scryfall.ImageOrigin the worker downloads through (migration 011).
+    image_origin: str = DEFAULT_IMAGE_ORIGIN
 
     @property
     def identity_key(self) -> str:
@@ -419,6 +426,9 @@ class TaskRow:
             custom_hash=row["custom_hash"] if "custom_hash" in row.keys() else None,
             back_hash=row["back_hash"] if "back_hash" in row.keys() else None,
             attempts=int(row["attempts"]) if "attempts" in row.keys() else 0,
+            image_origin=(
+                row["image_origin"] if "image_origin" in row.keys() else DEFAULT_IMAGE_ORIGIN
+            ),
         )
 
 
@@ -872,6 +882,30 @@ def _migration_010_back_image_identity(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_011_add_task_image_origin(conn: sqlite3.Connection) -> None:
+    """Add generation_tasks.image_origin — which image origin the worker
+    downloads a task's Scryfall image through (scryfall.download_png).
+    Pre-existing rows get 'worker', the same default an older client's
+    request gets. Guarded/no-op the same way as 005/007/009."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "generation_tasks" not in tables:
+        return
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(generation_tasks)").fetchall()
+    }
+    if "image_origin" not in cols:
+        conn.execute(
+            "ALTER TABLE generation_tasks "
+            "ADD COLUMN image_origin TEXT NOT NULL DEFAULT 'worker'"
+        )
+
+
 def _migration_006_split_gallery_registry(conn: sqlite3.Connection) -> None:
     """Split project_gallery_items into the global generated_images
     registry plus the project_gallery_memberships relation (see _SCHEMA).
@@ -1263,8 +1297,15 @@ _MIGRATIONS: list[Migration] = [
         "scryfall_id / custom_hash / back_hash, enforced by CHECK",
         _migration_010_back_image_identity,
     ),
+    Migration(
+        11,
+        "add image_origin to generation_tasks — whether the worker fetches "
+        "a task's Scryfall image through the Proxy Scaler image cache or "
+        "straight from Scryfall",
+        _migration_011_add_task_image_origin,
+    ),
 ]
-SCHEMA_VERSION = 10  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 11  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -1356,6 +1397,7 @@ def enqueue_task(
     total_faces: int | None = None,
     lang: str = "en",
     force: bool = False,
+    image_origin: str = DEFAULT_IMAGE_ORIGIN,
     db_path: Path | str | None = None,
 ) -> int:
     """Add one (face, dpi, model) unit of generation work to the queue,
@@ -1376,8 +1418,8 @@ def enqueue_task(
                 project_tag, status, scryfall_id, custom_hash, back_hash, face_index,
                 face_label, face_name, card_name, set_code, collector_number,
                 png_url, dpi, model, tile_size, output_dir, cache_dir,
-                weights_dir, created_at, total_faces, lang, force
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                weights_dir, created_at, total_faces, lang, force, image_origin
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
@@ -1401,6 +1443,7 @@ def enqueue_task(
                 total_faces,
                 lang,
                 int(force),
+                image_origin,
             ),
         )
         conn.commit()

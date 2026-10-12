@@ -732,6 +732,28 @@ button:disabled {
   color: var(--text);
   background: var(--surface-2);
 }
+/* The App Settings gear: same present-but-ignorable treatment as the
+   version label beside it. */
+.tabs-settings-btn {
+  border: none;
+  background: none;
+  box-shadow: none;
+  padding: 2px 4px;
+  font-size: 15px;
+  line-height: 1;
+  color: inherit;
+}
+.tabs-settings-btn:hover,
+.tabs-settings-btn:focus-visible {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.app-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 4px;
+}
 
 /* ---------- status badges ---------- */
 
@@ -878,68 +900,135 @@ button:disabled {
 .printing-toggle:disabled {
   cursor: default;
 }
-.printing-picker {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 20;
-  width: 330px;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+/* The change-printing grid (PrintingPicker.tsx's modal): one card-image
+   tile per printing, auto-fill columns so arrow-key navigation reads the
+   column count off the laid-out grid. */
+.printing-grid-modal {
+  width: min(94vw, 1120px);
+  height: 90vh;
 }
-.printing-picker-controls {
+.printing-grid-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
 }
-.printing-picker-controls select {
-  flex: 0 1 auto;
+.printing-grid-controls input[type="search"] {
+  flex: 1 1 200px;
+  min-width: 0;
 }
-.printing-picker-controls .btn-sm {
+.printing-grid-count {
   margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
 }
-.printing-picker-list {
-  max-height: 260px;
-  overflow-y: auto;
+.printing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  padding: 4px;
+}
+.printing-tile {
+  position: relative;
+  border-radius: var(--radius-lg);
+}
+.printing-tile-pick {
   display: flex;
   flex-direction: column;
-}
-.printing-option {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  gap: 6px;
+  width: 100%;
+  padding: 6px;
+  border: 2px solid transparent;
+  border-radius: var(--radius-lg);
   background: none;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 8px;
+  box-shadow: none;
   cursor: pointer;
   text-align: left;
 }
-.printing-option:hover {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+.printing-tile-pick:hover {
+  background: var(--surface-2);
 }
-.printing-option.active {
-  background: var(--bg-active, rgba(127, 127, 127, 0.2));
+.printing-tile-pick:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.printing-tile.active .printing-tile-pick {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* Fixed card aspect (Scryfall's normal size is 488x680) so a lazy image
+   has its size before it loads: zero-height tiles would all sit "in view"
+   at once and the browser would load every thumbnail immediately. */
+.printing-tile-frame {
+  display: block;
+  width: 100%;
+  aspect-ratio: 488 / 680;
+  border-radius: 4.75% / 3.5%;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.printing-tile-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.printing-tile-placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: inherit;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.printing-tile-placeholder-name {
+  font-size: 13px;
+  font-weight: 560;
+}
+.printing-tile-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.printing-tile-tag {
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--off);
+  background: var(--off-soft);
+}
+/* Sits at the right end of the label row, under the image, so it never
+   covers the card's name or mana cost. The label leaves room for it. */
+.printing-tile-flip {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+.printing-tile.has-flip .printing-tile-label {
+  padding-right: 52px;
 }
 .printing-set-name {
   color: var(--text-muted);
   font-size: 12px;
 }
-/* "Already generated" coverage mark beside a variant's mono line: green =
-   every selected DPI × every face exists (for the current model), yellow =
-   some but not all. Same status colors as the .badge-* pills. */
-.printing-option-main {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  /* Full row width so the coverage mark can sit flush right, aligned
-     across rows, instead of trailing the variable-length mono label. */
-  align-self: stretch;
-}
+/* "Already generated" coverage mark on a grid tile: green = every
+   selected DPI × every face exists (for the current model), yellow = some
+   but not all. Same status colors as the .badge-* pills. */
 .printing-gen-mark {
   font-size: 12px;
   line-height: 1;

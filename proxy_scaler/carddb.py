@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from . import db as _db
-from .scryfall import card_printed_name, expected_face_count
+from .scryfall import card_printed_name, expected_face_count, printable_face_names
 
 DEFAULT_CARD_DB_PATH = _db._DATA_ROOT / "scryfall_cards.db"
 
@@ -454,8 +454,9 @@ def variants_for_oracle_id(
     """Every printing sharing an oracle_id — the change-printing dropdown's
     contents. Returns column data (not the card_json blobs; the picker
     doesn't need image URLs) plus a computed face_count (how many images
-    one generation of the printing produces per DPI — the blob is read
-    here to derive it, then dropped), sorted newest release first, then
+    one generation of the printing produces per DPI) and face_names (the
+    grid's flip label) — the blob is read here to derive them, then
+    dropped, sorted newest release first, then
     set, then collector number in natural order (so "2" sorts before
     "10"), English before other languages of the same printing."""
     sql = """
@@ -482,9 +483,12 @@ def variants_for_oracle_id(
         data = dict(row)
         raw = data.pop("card_json", None)
         try:
-            data["face_count"] = expected_face_count(json.loads(raw) if raw else {})
+            card = json.loads(raw) if raw else {}
+            data["face_count"] = expected_face_count(card)
+            data["face_names"] = printable_face_names(card)
         except (TypeError, ValueError):
             data["face_count"] = 1
+            data["face_names"] = [data["name"]]
         variants.append(data)
     return variants
 

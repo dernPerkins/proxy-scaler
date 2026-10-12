@@ -11,6 +11,7 @@ import io
 import threading
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from proxy_scaler.db import (
@@ -72,7 +73,7 @@ def test_process_one_marks_task_done_on_success(tmp_path, monkeypatch) -> None:
     Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
     png_bytes = buf.getvalue()
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: png_bytes
     )
 
     class FakeUpscaler:
@@ -120,7 +121,7 @@ def test_process_one_download_task_upserts_original_gallery_row(
     Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
     png_bytes = buf.getvalue()
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: png_bytes
     )
 
     _process_one(task, db_path=db_path)
@@ -184,7 +185,7 @@ def _patch_upscale_fakes(monkeypatch) -> bytes:
     Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
     png_bytes = buf.getvalue()
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: png_bytes
     )
 
     class FakeUpscaler:
@@ -305,7 +306,7 @@ def test_prefetcher_skips_and_swallows(tmp_path, monkeypatch) -> None:
     init_db(db_path)
     calls = {"n": 0}
 
-    def counting_download(url, session=None):
+    def counting_download(url, session=None, **_):
         calls["n"] += 1
         raise RuntimeError("network down")
 
@@ -389,3 +390,72 @@ def test_start_one_wires_cpu_fallback_flag(tmp_path, monkeypatch) -> None:
     assert parsed["face_name"] == "Sol Ring"
     assert parsed["model"] == "ultrasharp_v2"
     assert parsed["at"]
+
+
+def _png_bytes() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class _OriginRecorder:
+    """Stands in for download_png, recording the origin each fetch used."""
+
+    def __init__(self) -> None:
+        self.origins: list[str | None] = []
+
+    def __call__(self, url, session=None, *, origin=None):
+        self.origins.append(origin)
+        return _png_bytes()
+
+
+class _FakeUpscaler:
+    def __init__(self, model="ultrasharp_v2", scale=4, weights_dir="weights", **_kw):
+        from proxy_scaler.upscale import UpscaleModel
+
+        self.model_id = UpscaleModel(model) if isinstance(model, str) else model
+        self.scale = scale
+
+    def upscale(self, image):
+        from proxy_scaler.upscale import UpscaleResult
+
+        return UpscaleResult(image=Image.new("RGB", (32, 32)), device="cpu")
+
+
+
+
+@pytest.mark.parametrize("origin", ["worker", "scryfall"])
+@pytest.mark.parametrize("kind", ["upscale", "download"])
+def test_worker_downloads_through_the_tasks_image_origin(
+    tmp_path, monkeypatch, origin, kind
+) -> None:
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    extra = {"dpi": ORIGINAL_DPI, "model": ORIGINAL_MODEL} if kind == "download" else {}
+    tid = _enqueue(db_path, image_origin=origin, **extra)
+    recorder = _OriginRecorder()
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", recorder)
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
+
+    _process_one(claim_next_task(db_path=db_path), db_path=db_path)
+
+    assert get_task(tid, db_path=db_path).status == "done"
+    assert recorder.origins == [origin]
+
+
+@pytest.mark.parametrize("origin", ["worker", "scryfall"])
+def test_prefetch_downloads_through_the_tasks_image_origin(
+    tmp_path, monkeypatch, origin
+) -> None:
+    from proxy_scaler.pipeline import prefetch_original
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    tid = _enqueue(db_path, image_origin=origin)
+    recorder = _OriginRecorder()
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", recorder)
+
+    assert prefetch_original(get_task(tid, db_path=db_path)) is not None
+    assert recorder.origins == [origin]

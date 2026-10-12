@@ -28,7 +28,7 @@ import {
   useServerVersion,
 } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
-import { getUpdateCheckEnabled, setUpdateCheckEnabled } from "../update";
+import { resolveImageOrigin } from "../imageOrigin";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
@@ -57,37 +57,6 @@ import {
 // (the sidebar shows that, read-only). Not in project.settings either —
 // a path valid on one machine means nothing against a Remote host. See
 // ARCHITECTURE.md.
-// The off switch for the boot-time update check (UpdatePrompt.tsx reads
-// the same setting before calling check_for_update). Tauri-only: in a
-// plain browser tab there's no check to disable. Reads as unchecked until
-// the setting loads — a wrong-for-a-frame checkbox beats an on-by-default
-// flash for people who turned it off.
-function UpdateCheckToggle() {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    getUpdateCheckEnabled()
-      .then(setEnabled)
-      .catch(() => setEnabled(true));
-  }, []);
-  if (!isTauri()) return null;
-  return (
-    <label className="check">
-      <input
-        type="checkbox"
-        checked={enabled}
-        onChange={(e) => {
-          const next = e.target.checked;
-          setEnabled(next);
-          // Best-effort, same reasoning as skipThisVersion: a failed
-          // write just means the old behavior next launch.
-          void setUpdateCheckEnabled(next).catch(() => {});
-        }}
-      />
-      Check for updates at launch
-    </label>
-  );
-}
-
 // A CardRow has no scryfall_id (the client never calls Scryfall — see
 // ARCHITECTURE.md), so its identity falls back to its own name when
 // there's no exact set/collector, same as the gallery/task side's
@@ -423,6 +392,7 @@ export default function DecklistPage() {
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+        image_origin: await resolveImageOrigin(queryClient),
       });
     },
     onSuccess: (result) => {
@@ -452,6 +422,7 @@ export default function DecklistPage() {
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+        image_origin: await resolveImageOrigin(queryClient),
       });
     },
     onSuccess: (result) => {
@@ -483,6 +454,7 @@ export default function DecklistPage() {
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+        image_origin: await resolveImageOrigin(queryClient),
       });
     },
     onSuccess: invalidateStatus,
@@ -494,7 +466,7 @@ export default function DecklistPage() {
   });
 
   const regenerateMutation = useMutation({
-    mutationFn: (galleryItemId: number) =>
+    mutationFn: async (galleryItemId: number) =>
       generationApi.regenerateGalleryItem(galleryItemId, {
         // Gallery rows are global registry entries shared across
         // projects — the request says whose regeneration this is.
@@ -503,18 +475,20 @@ export default function DecklistPage() {
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+        image_origin: await resolveImageOrigin(queryClient),
       }),
     onSuccess: invalidateStatus,
     onError: (err: Error) => setStatus(`Regenerate failed: ${err.message}`),
   });
 
   const refetchMutation = useMutation({
-    mutationFn: (galleryItemId: number) =>
+    mutationFn: async (galleryItemId: number) =>
       generationApi.refetchOriginal(galleryItemId, {
         project_tag: projectTag as string,
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+        image_origin: await resolveImageOrigin(queryClient),
       }),
     onSuccess: invalidateStatus,
     onError: (err: Error) => setStatus(`Re-fetch failed: ${err.message}`),
@@ -666,8 +640,6 @@ export default function DecklistPage() {
             {dirRow("Cache", pathsQuery.data?.cache_dir)}
             {dirRow("Weights", pathsQuery.data?.weights_dir)}
           </div>
-
-          <UpdateCheckToggle />
 
           <CardDbPanel serverUnavailable={serverUnavailable} />
         </div>

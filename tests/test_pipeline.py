@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from proxy_scaler.db import TaskRow
@@ -205,7 +206,7 @@ def test_process_entries_skip_existing_uses_batched_resolve(tmp_path, monkeypatc
 
     download_calls = {"n": 0}
 
-    def fake_download_png(url, session=None):
+    def fake_download_png(url, session=None, **_):
         download_calls["n"] += 1
         buf = io.BytesIO()
         Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
@@ -296,7 +297,7 @@ def _fake_png_bytes() -> bytes:
 def test_process_task_writes_face_result(tmp_path, monkeypatch) -> None:
     task = _task(tmp_path)
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
 
@@ -319,7 +320,7 @@ def test_expected_face_result_matches_process_task_output(tmp_path, monkeypatch)
     before any project/DB gallery row exists."""
     task = _task(tmp_path)
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
 
@@ -340,7 +341,7 @@ def test_process_task_dispatches_download_task_on_sentinel(tmp_path, monkeypatch
     parse_model — the sentinel isn't an UpscaleModel and would raise."""
     task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
 
     result = process_task(task)
@@ -367,7 +368,7 @@ def test_process_download_task_overwrites_cached_original(tmp_path, monkeypatch)
     stale_thumb.write_bytes(b"stale thumb")
 
     fresh = _fake_png_bytes()
-    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None: fresh)
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None, **_: fresh)
 
     result = process_download_task(task)
 
@@ -399,7 +400,7 @@ def test_process_download_task_saves_cleaned_bytes(tmp_path, monkeypatch) -> Non
     raw = buf.getvalue()
 
     task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
-    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None: raw)
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None, **_: raw)
 
     result = process_download_task(task)
 
@@ -418,7 +419,7 @@ def test_process_download_task_clean_bytes_saved_verbatim(tmp_path, monkeypatch)
     use_originals ZIP export re-serves those exact bytes)."""
     task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
     fresh = _fake_png_bytes()
-    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None: fresh)
+    monkeypatch.setattr("proxy_scaler.pipeline.download_png", lambda url, session=None, **_: fresh)
 
     result = process_download_task(task)
 
@@ -558,7 +559,7 @@ def test_process_task_defer_finish_writes_nothing_until_finish(
 
     task = _task(tmp_path)
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
 
@@ -590,7 +591,7 @@ def test_process_task_defer_finish_download_task_already_finished(
 
     task = _task(tmp_path, dpi=ORIGINAL_DPI, model=ORIGINAL_MODEL)
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
 
     pending = process_task(task, defer_finish=True)
@@ -626,7 +627,7 @@ def test_prefetch_original_warms_cache_and_is_idempotent(tmp_path, monkeypatch) 
     task = _task(tmp_path)
     calls = {"n": 0}
 
-    def counting_download(url, session=None):
+    def counting_download(url, session=None, **_):
         calls["n"] += 1
         return _fake_png_bytes()
 
@@ -659,7 +660,7 @@ def test_process_task_siblings_share_one_model_pass(tmp_path, monkeypatch) -> No
     writes its own DPI output."""
     _CountingUpscaler.calls = 0
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _CountingUpscaler)
 
@@ -677,7 +678,7 @@ def test_process_task_siblings_share_one_model_pass(tmp_path, monkeypatch) -> No
 def test_process_task_force_bypasses_cache(tmp_path, monkeypatch) -> None:
     _CountingUpscaler.calls = 0
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _CountingUpscaler)
 
@@ -689,7 +690,7 @@ def test_process_task_force_bypasses_cache(tmp_path, monkeypatch) -> None:
 def test_finish_skips_cache_rewrite_on_hit(tmp_path, monkeypatch) -> None:
     """A cache-hit task must not re-encode the x4 cache PNG it just read."""
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _FakeUpscaler)
     process_task(_task(tmp_path, dpi=600, force=False))  # warms the cache
@@ -711,7 +712,7 @@ def test_process_download_task_invalidates_x4_cache(tmp_path, monkeypatch) -> No
     from proxy_scaler.upscale import cache_device_path
 
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: _fake_png_bytes()
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
     )
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
@@ -730,3 +731,26 @@ def test_process_download_task_invalidates_x4_cache(tmp_path, monkeypatch) -> No
     for stale in stale_paths:
         assert not stale.exists()
         assert not cache_device_path(stale).exists()
+
+
+@pytest.mark.parametrize(
+    "flags,expected_origin",
+    [([], "worker"), (["--direct-scryfall"], "scryfall")],
+)
+def test_cli_image_origin_defaults_to_worker_and_direct_scryfall_skips_it(
+    tmp_path, monkeypatch, flags, expected_origin
+) -> None:
+    from proxy_scaler import cli
+    from proxy_scaler.pipeline import PipelineResult
+
+    decklist = tmp_path / "deck.txt"
+    decklist.write_text("1 Sol Ring (c21) 263\n")
+    seen: dict = {}
+
+    def fake_process_entries(entries, **kwargs):
+        seen.update(kwargs)
+        return PipelineResult()
+
+    monkeypatch.setattr(cli, "process_entries", fake_process_entries)
+    assert cli.main([str(decklist), *flags]) == 0
+    assert seen["image_origin"] == expected_origin

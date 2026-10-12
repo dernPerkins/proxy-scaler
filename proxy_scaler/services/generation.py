@@ -22,7 +22,12 @@ from proxy_scaler.dpi import (
     custom_upscale_targets,
 )
 from proxy_scaler.pipeline import FaceResult, output_filename
-from proxy_scaler.scryfall import CardFaceImage, ScryfallError, expand_faces
+from proxy_scaler.scryfall import (
+    DEFAULT_IMAGE_ORIGIN,
+    CardFaceImage,
+    ScryfallError,
+    expand_faces,
+)
 from proxy_scaler.upscale import original_cache_path
 
 
@@ -124,6 +129,7 @@ def enqueue_face(
     total_faces: int | None = None,
     lang: str = "en",
     force: bool = False,
+    image_origin: str = DEFAULT_IMAGE_ORIGIN,
     db_path: Path | str | None = None,
 ) -> list[int]:
     """Queue one task per requested DPI for an already-resolved face (no
@@ -159,6 +165,7 @@ def enqueue_face(
             total_faces=total_faces,
             lang=lang,
             force=force,
+            image_origin=image_origin,
             db_path=db_path,
         )
         for dpi in dpi_targets
@@ -197,6 +204,7 @@ def enqueue_decklist_entries(
     db_path: Path | str | None = None,
     card_db_path: Path | str | None = None,
     custom_upscale: str = CUSTOM_UPSCALE_OFF,
+    image_origin: str = DEFAULT_IMAGE_ORIGIN,
 ) -> tuple[int, int, list[int]]:
     """Resolve entries (one batched Scryfall call, not one per card) and
     queue one task per (face, dpi) that's actually missing: not already
@@ -407,6 +415,7 @@ def enqueue_decklist_entries(
                     project_tag=project_tag,
                     total_faces=face.total_faces,
                     lang=face.lang,
+                    image_origin=image_origin,
                     db_path=db_path,
                 )
                 task_ids.extend(new_ids)
@@ -438,6 +447,7 @@ def enqueue_download_entries(
     on_note=None,
     db_path: Path | str | None = None,
     card_db_path: Path | str | None = None,
+    image_origin: str = DEFAULT_IMAGE_ORIGIN,
 ) -> tuple[int, int, list[int]]:
     """Resolve entries and queue one download-only task per face whose
     Scryfall original isn't already cached — the download-only analogue of
@@ -551,6 +561,7 @@ def enqueue_download_entries(
                     project_tag=project_tag,
                     total_faces=face.total_faces,
                     lang=face.lang,
+                    image_origin=image_origin,
                     db_path=db_path,
                 )
                 task_ids.extend(new_ids)

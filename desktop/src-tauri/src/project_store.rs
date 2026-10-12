@@ -1973,6 +1973,37 @@ pub fn set_show_digital_printings(app: AppHandle, show: bool) -> Result<(), Stri
     write_show_digital_printings(&conn, show)
 }
 
+// --- App Settings' "Use Proxy Scaler image cache" ---------------------------
+//
+// Which image origin this client asks the generation server to fetch card
+// images through: the Proxy Scaler image cache (a Cloudflare Worker that
+// falls back to Scryfall) or Scryfall directly. The client's choice rather
+// than the server's, so it travels on every Generate request and thumbnail
+// URL — in Remote mode the user decides, not the server operator. Default
+// ON when absent; see docs/adr/0005-image-fetches-via-cloudflare-worker-cache.md.
+
+const IMAGE_CACHE_ENABLED_KEY: &str = "image_cache_enabled";
+
+fn read_image_cache_enabled(conn: &Connection) -> Result<bool, String> {
+    Ok(read_app_setting(conn, IMAGE_CACHE_ENABLED_KEY)?.as_deref() != Some("0"))
+}
+
+fn write_image_cache_enabled(conn: &Connection, enabled: bool) -> Result<(), String> {
+    write_app_setting(conn, IMAGE_CACHE_ENABLED_KEY, if enabled { "1" } else { "0" })
+}
+
+#[tauri::command]
+pub fn get_image_cache_enabled(app: AppHandle) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    read_image_cache_enabled(&conn)
+}
+
+#[tauri::command]
+pub fn set_image_cache_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_image_cache_enabled(&conn, enabled)
+}
+
 // --- The PDF tab's registration-mark inset unit ----------------------------
 //
 // Display-only ("in" or "mm") — the stored inset is always millimetres, so
@@ -2174,8 +2205,8 @@ pub fn unmark_tutorials_completed(app: AppHandle, ids: Vec<String>) -> Result<()
 // Whether the boot-time update check runs at all (UpdatePrompt.tsx reads
 // this before calling check_for_update). Default ON — but the check is an
 // unauthenticated request to the release host on every launch, which some
-// people reasonably want their machine not to make, so the Decklist
-// settings sidebar offers the off switch. The tab bar's manual "Update"
+// people reasonably want their machine not to make, so App Settings
+// (AppSettingsModal.tsx) offers the off switch. The tab bar's manual "Update"
 // button path is unaffected: that only exists once a check has run.
 
 const UPDATE_CHECK_ENABLED_KEY: &str = "update_check_enabled";
@@ -2926,6 +2957,16 @@ mod tests {
         assert!(read_show_digital_printings(&conn).expect("read"));
         write_show_digital_printings(&conn, false).expect("disable");
         assert!(!read_show_digital_printings(&conn).expect("read"));
+    }
+
+    #[test]
+    fn image_cache_setting_defaults_on_and_roundtrips() {
+        let conn = test_conn();
+        assert!(read_image_cache_enabled(&conn).expect("absent means on"));
+        write_image_cache_enabled(&conn, false).expect("disable");
+        assert!(!read_image_cache_enabled(&conn).expect("read"));
+        write_image_cache_enabled(&conn, true).expect("enable");
+        assert!(read_image_cache_enabled(&conn).expect("read"));
     }
 
     #[test]

@@ -692,6 +692,34 @@ def test_migration_009_adds_attempts_to_an_older_database(tmp_path: Path) -> Non
     assert get_task(tid, db_path=path).attempts == 0
 
 
+def test_migration_011_adds_image_origin_defaulting_to_worker(tmp_path: Path) -> None:
+    """A schema-10 database's queued tasks come up at 11 downloading
+    through the image cache — the same default an older client gets."""
+    path = tmp_path / "old.db"
+    init_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE generation_tasks DROP COLUMN image_origin")
+        conn.execute("PRAGMA user_version = 10")
+    tid = _enqueue_sol_ring_raw(path)
+    init_db(path)  # migrates 10 -> 11
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+    assert get_task(tid, db_path=path).image_origin == "worker"
+
+
+def _enqueue_sol_ring_raw(path: Path) -> int:
+    """Insert a task row with plain SQL, for a database not yet at
+    SCHEMA_VERSION (enqueue_task's connect() refuses those)."""
+    with sqlite3.connect(path) as conn:
+        cur = conn.execute(
+            "INSERT INTO generation_tasks (status, scryfall_id, face_name, card_name, "
+            "dpi, model, output_dir, cache_dir, weights_dir, created_at) "
+            "VALUES ('pending', 'sol-id', 'Sol Ring', 'Sol Ring', 800, 'ultrasharp_v2', "
+            "'out', 'cache', 'weights', '2026-01-01T00:00:00+00:00')"
+        )
+        return int(cur.lastrowid)
+
+
 def test_mark_task_done_and_failed(db_path: Path) -> None:
     tid_done = _enqueue_sol_ring(db_path, collector_number="1")
     tid_failed = _enqueue_sol_ring(db_path, collector_number="2")

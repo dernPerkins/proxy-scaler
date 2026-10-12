@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import AppSettingsModal from "./components/AppSettingsModal";
 import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
@@ -47,7 +48,10 @@ import {
 // dialog over the same cross-tree bridge (PatchNotesPrompt mounts above
 // the gate in main.tsx). Styled to stay "present but ignorable" — see
 // .tabs-version-btn.
-function AppVersion() {
+//
+// The gear beside it opens App Settings (client-side, app-wide
+// preferences); the modal itself is mounted with the other global modals.
+function AppVersion({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [version, setVersion] = useState<string | null>(null);
   const update = useAvailableUpdate();
   useEffect(() => {
@@ -64,6 +68,15 @@ function AppVersion() {
           Update to v{update.latest}
         </button>
       )}
+      <button
+        type="button"
+        className="tabs-settings-btn"
+        title="App Settings"
+        aria-label="App Settings"
+        onClick={onOpenSettings}
+      >
+        ⚙
+      </button>
       {version && (
         <button
           className="tabs-version-btn"
@@ -135,6 +148,8 @@ function TabTutorialButton() {
 // there's nothing about it that a connection change needs to reset.
 export default function App() {
   useTabShortcuts();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   return (
     <ProjectProvider>
       <div className="app">
@@ -167,6 +182,7 @@ export default function App() {
             half-imported corpus would answer printing lookups
             incompletely. Renders nothing otherwise. */}
         <CardDbImportModal />
+        {settingsOpen && <AppSettingsModal onClose={closeSettings} />}
         <ProjectBar />
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual
@@ -177,7 +193,7 @@ export default function App() {
               {tab.label}
             </NavLink>
           ))}
-          <AppVersion />
+          <AppVersion onOpenSettings={() => setSettingsOpen(true)} />
         </nav>
         <Routes>
           <Route path="/" element={<Navigate to="/decklist" replace />} />

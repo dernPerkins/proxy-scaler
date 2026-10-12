@@ -60,7 +60,7 @@ def _patch_pipeline_fakes(monkeypatch) -> None:
     Image.new("RGB", (8, 8), color=(1, 2, 3)).save(buf, format="PNG")
     png_bytes = buf.getvalue()
     monkeypatch.setattr(
-        "proxy_scaler.pipeline.download_png", lambda url, session=None: png_bytes
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: png_bytes
     )
 
     class FakeUpscaler:

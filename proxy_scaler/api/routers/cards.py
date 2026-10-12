@@ -1,22 +1,32 @@
 """Card-corpus endpoints: bulk import lifecycle (status/start/poll/cancel),
 the languages present in the corpus, and the printing-variants listing that
 feeds the client's change-printing picker. Every read here answers from the
-local corpus (carddb.py) — nothing on this router touches the network. The
-one Scryfall call in the card feature lives inside the import job itself
-(card_import.run_import's CHECKING phase), which is where the user has
-actually asked for fresh data."""
+local corpus (carddb.py). Two things here touch the network: the import job
+itself (card_import.run_import's CHECKING phase), which is where the user
+has actually asked for fresh data, and a thumbnail cache miss, which fetches
+one image through the request's image origin (thumbs.py)."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 import threading
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+import requests
+from fastapi import APIRouter, HTTPException, Query, Response
 
-from proxy_scaler import card_import, card_jobs, carddb
+from proxy_scaler import card_import, card_jobs, carddb, thumbs
 from proxy_scaler.api.deps import get_card_db_path
-from proxy_scaler.scryfall import SCRYFALL_LANGUAGES, expected_face_count
+from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
+from proxy_scaler.scryfall import (
+    DEFAULT_IMAGE_ORIGIN,
+    SCRYFALL_LANGUAGES,
+    ImageOrigin,
+    ScryfallError,
+    expected_face_count,
+    printable_face_names,
+)
 from proxy_scaler.api.schemas import (
     CardDbLocalOut,
     CardDbStatusOut,
@@ -154,11 +164,15 @@ def _variant_out(row) -> CardVariantOut:
     # its count is derived from card_json here instead.
     if "face_count" in row.keys():
         face_count = int(row["face_count"])
+        face_names = list(row["face_names"])
     else:
         try:
-            face_count = expected_face_count(json.loads(row["card_json"] or "{}"))
+            card = json.loads(row["card_json"] or "{}")
+            face_count = expected_face_count(card)
+            face_names = printable_face_names(card)
         except (IndexError, KeyError, TypeError, ValueError):
             face_count = 1
+            face_names = [row["name"]]
     return CardVariantOut(
         scryfall_id=row["id"],
         name=row["name"],
@@ -172,6 +186,7 @@ def _variant_out(row) -> CardVariantOut:
         image_status=row["image_status"],
         highres_image=bool(row["highres_image"]),
         face_count=face_count,
+        face_names=face_names,
     )
 
 
@@ -217,4 +232,49 @@ def card_variants(
         anchor=_variant_out(anchor),
         variants=[_variant_out(v) for v in variants],
         total=len(variants),
+    )
+
+
+# A day: the URL carries no version yet, so a scan Scryfall corrects (and
+# the next corpus import picks up) must be able to replace the browser's
+# copy. Once the client puts the version in the URL this can be immutable.
+_THUMB_CACHE_CONTROL = "public, max-age=86400"
+
+
+@router.get("/{scryfall_id}/thumb")
+def card_thumb(
+    scryfall_id: str,
+    face: int = Query(0, ge=0, le=1),
+    via: ImageOrigin = DEFAULT_IMAGE_ORIGIN,
+) -> Response:
+    """One face of one printing as Scryfall's `normal` JPEG — the image
+    grid's tile. Served from the disk cache when present, else fetched
+    through `via` (the client's image-origin choice) and cached; see
+    thumbs.py. 404 for an id the corpus doesn't hold or a face the
+    printing doesn't have; no corpus at all answers like /variants."""
+    conn = carddb.open_if_ready(get_card_db_path())
+    if conn is None:
+        raise HTTPException(status_code=404, detail=_IMPORT_HINT)
+    try:
+        card = carddb.get_card_by_id(conn, scryfall_id)
+    finally:
+        conn.close()
+    if card is None:
+        raise HTTPException(
+            status_code=404, detail="Card not found in the local card database."
+        )
+    try:
+        data = thumbs.get_thumbnail(
+            card, face, cache_dir=Path(DEFAULT_CACHE_DIR), origin=via
+        )
+    except thumbs.NoSuchFace as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ScryfallError, requests.RequestException) as exc:
+        # Offline, or the image cache and Scryfall both failed: the grid
+        # shows its placeholder tile, which still picks the printing.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": _THUMB_CACHE_CONTROL},
     )

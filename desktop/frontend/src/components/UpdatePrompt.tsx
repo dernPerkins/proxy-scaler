@@ -91,7 +91,7 @@ export default function UpdatePrompt() {
     let cancelled = false;
     (async () => {
       try {
-        // The settings sidebar's "Check for updates at launch" switch.
+        // App Settings' "Check for updates at launch" switch.
         // Failing open (an unreadable setting still checks) keeps the
         // default behavior; the check itself stays fail-silent below.
         const enabled = await getUpdateCheckEnabled().catch(() => true);

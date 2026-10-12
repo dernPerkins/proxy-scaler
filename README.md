@@ -29,7 +29,10 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
 
 Click a card's set/collector button in the decklist view to switch it to
 any other printing — set, collector number, and (with the right dataset)
-language. This is powered by a **local card database** imported from
+language. It opens a grid of card images, one per printing, that you can
+filter by language or by set code, set name or printed name, sort, and
+flip to see a double-faced card's back. Arrow keys, Enter and Esc work
+too, and a ✓ marks printings you've already generated. This is powered by a **local card database** imported from
 Scryfall's daily bulk data: the sidebar's "Card database" panel offers
 **English only (~80 MB)** or **All languages (~400 MB)** downloads, kept
 on the generation server (in Remote mode, on the connected machine — each
@@ -44,6 +47,16 @@ the printing picker rather than announcing itself. (Upgrading across a card-data
 change shows "Not imported yet" — just import again.) A first launch with
 no database offers the download in a dialog; declining leaves the sidebar
 panel as the way in, and the same panel can delete the database again.
+
+Card images (the grid's thumbnails and the full-resolution PNGs Generate
+downloads) are fetched by the generation server, by default through the
+**Proxy Scaler image cache** at `img.proxy-scaler.com`, which keeps Proxy
+Scaler from hammering Scryfall's image servers and falls back to Scryfall
+directly whenever it's unavailable. To send requests straight to Scryfall
+with no third party in between, turn off "Use Proxy Scaler image cache"
+in App Settings (the gear in the tab bar). Thumbnails are cached on the
+generation server either way, so a printing you've looked at once loads
+instantly and works offline.
 The same card can be in a deck once per printing *and language* — an
 Italian and an English Sol Ring of the same set import, generate, and
 print as two separate cards.
@@ -593,6 +606,7 @@ python -m proxy_scaler cards.txt --model realesrgan_anime_fast --dpi 800
 | `--cache-dir` | `imgcache/` | Cached native upscales |
 | `--weights-dir` | `weights/` | Model weight files |
 | `--skip-existing` | off | Don't overwrite existing output files |
+| `--direct-scryfall` | off | Download card images straight from Scryfall instead of through the Proxy Scaler image cache |
 
 Filenames include model + DPI, e.g. `Sol_Ring-C21-263-ultrasharp_v2-1200dpi.png`.
 

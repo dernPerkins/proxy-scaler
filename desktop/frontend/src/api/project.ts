@@ -270,6 +270,13 @@ export const projectApi = {
   setShowDigitalPrintings: (show: boolean) =>
     invokeCommand<void>("set_show_digital_printings", { show }),
 
+  // App Settings' "Use Proxy Scaler image cache" — which image origin this
+  // client asks the generation server to fetch card images through (see
+  // imageOrigin.ts). True until switched off.
+  getImageCacheEnabled: () => invokeCommand<boolean>("get_image_cache_enabled"),
+  setImageCacheEnabled: (enabled: boolean) =>
+    invokeCommand<void>("set_image_cache_enabled", { enabled }),
+
   // The PDF tab's registration-mark inset display unit — app-wide, since
   // the stored inset is always mm and this only changes how it reads.
   getCutterInsetUnit: () => invokeCommand<InsetUnit>("get_cutter_inset_unit"),

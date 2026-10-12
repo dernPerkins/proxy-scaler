@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from proxy_scaler.scryfall import DEFAULT_IMAGE_ORIGIN, ImageOrigin
+
 
 class TilePresetOut(BaseModel):
     """One "GPU VRAM" tier of a Vulkan model (upscale.NCNN_TILE_PRESETS).
@@ -176,6 +178,11 @@ class GenerateIn(BaseModel):
     output_dir: str
     cache_dir: str
     weights_dir: str
+    # Where the worker fetches Scryfall images for these tasks (see
+    # scryfall.ImageOrigin): the client's App Settings choice, so in Remote
+    # mode it is the user's, not the server operator's. Defaulted so an
+    # older client goes through the image cache like a new one.
+    image_origin: ImageOrigin = DEFAULT_IMAGE_ORIGIN
 
 
 class LibraryUpscaleIn(BaseModel):
@@ -216,6 +223,7 @@ class RegenerateGalleryItemIn(BaseModel):
     output_dir: str
     cache_dir: str
     weights_dir: str
+    image_origin: ImageOrigin = DEFAULT_IMAGE_ORIGIN  # see GenerateIn
 
 
 class DownloadOriginalsIn(BaseModel):
@@ -233,6 +241,7 @@ class DownloadOriginalsIn(BaseModel):
     output_dir: str
     cache_dir: str
     weights_dir: str
+    image_origin: ImageOrigin = DEFAULT_IMAGE_ORIGIN  # see GenerateIn
 
 
 class RefetchOriginalIn(BaseModel):
@@ -246,6 +255,7 @@ class RefetchOriginalIn(BaseModel):
     output_dir: str
     cache_dir: str
     weights_dir: str
+    image_origin: ImageOrigin = DEFAULT_IMAGE_ORIGIN  # see GenerateIn
 
 
 class GenerateOut(BaseModel):
@@ -754,6 +764,9 @@ class CardVariantOut(BaseModel):
     # indicator compares found gallery-status faces against. Defaulted so
     # older servers' responses still parse.
     face_count: int = 1
+    # The name of each of those faces, in face order — the grid's flip
+    # label for a double-faced printing. Defaulted for older servers.
+    face_names: list[str] = []
 
 
 class CardVariantsOut(BaseModel):

@@ -1,0 +1,3 @@
+node_modules/
+# wrangler dev/deploy scratch state
+.wrangler/
