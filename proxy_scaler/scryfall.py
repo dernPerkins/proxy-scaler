@@ -384,6 +384,28 @@ def printable_face_names(card: dict[str, Any]) -> list[str]:
     return per_face if per_face else [str(card.get("name") or "")]
 
 
+def image_version(png_url: str) -> str:
+    """Scryfall's cache-busting suffix on an image URL (`...png?1706239968`
+    -> "1706239968"), or "" when there is none. It changes whenever Scryfall
+    replaces the scan, so it versions every cache of the image: the
+    thumbnail cache, the Worker's R2 key and the grid's thumbnail URLs."""
+    return urlsplit(png_url).query
+
+
+def card_image_version(card: dict[str, Any]) -> str | None:
+    """image_version of a card's first printable face — what the
+    change-printing grid puts in its thumbnail URLs. None when the card
+    has no image at all. Never raises."""
+    faces = card.get("card_faces") or []
+    for face in faces:
+        if isinstance(face, dict):
+            png = (face.get("image_uris") or {}).get("png")
+            if png:
+                return image_version(png)
+    png = (card.get("image_uris") or {}).get("png")
+    return image_version(png) if png else None
+
+
 def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     """Expand a Scryfall card into one or more printable face images.
 

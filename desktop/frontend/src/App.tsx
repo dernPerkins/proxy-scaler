@@ -68,14 +68,18 @@ function AppVersion({ onOpenSettings }: { onOpenSettings: () => void }) {
           Update to v{update.latest}
         </button>
       )}
+      {/* Same slide-open pill as the Tutorial button beside it. */}
       <button
         type="button"
-        className="tabs-settings-btn"
-        title="App Settings"
+        className="reveal-btn"
         aria-label="App Settings"
         onClick={onOpenSettings}
       >
-        ⚙
+        <span className="reveal-btn-icon" aria-hidden="true">
+          {/* U+FE0E: the text glyph, not the color emoji some webviews pick. */}
+          {"\u2699\uFE0E"}
+        </span>
+        <span className="reveal-btn-label">Settings</span>
       </button>
       {version && (
         <button

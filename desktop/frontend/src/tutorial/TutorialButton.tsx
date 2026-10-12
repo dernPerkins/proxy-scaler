@@ -15,15 +15,15 @@ export default function TutorialButton({
   return (
     <button
       type="button"
-      className={className ? `tutorial-btn ${className}` : "tutorial-btn"}
+      className={className ? `reveal-btn ${className}` : "reveal-btn"}
       aria-label="Show tutorial"
       data-tour="tutorial-button"
       onClick={() => replayTour(tour)}
     >
-      <span className="tutorial-btn-icon" aria-hidden="true">
+      <span className="reveal-btn-icon" aria-hidden="true">
         ?
       </span>
-      <span className="tutorial-btn-label">Tutorial</span>
+      <span className="reveal-btn-label">Tutorial</span>
     </button>
   );
 }

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .scryfall import ScryfallError, download_png, expand_faces
+from .scryfall import ScryfallError, download_png, expand_faces, image_version
 from .upscale import atomic_write_bytes
 
 THUMBS_DIRNAME = "thumbs"
@@ -56,24 +56,26 @@ def normal_jpeg_url(png_url: str) -> str:
 
 
 def thumb_cache_path(cache_dir: Path, scryfall_id: str, face: int, png_url: str) -> Path:
-    version = _SAFE_PART.sub("", urlsplit(png_url).query) or "0"
+    version = _SAFE_PART.sub("", image_version(png_url)) or "0"
     stem = _SAFE_PART.sub("", scryfall_id)
     return cache_dir / THUMBS_DIRNAME / f"{stem}_face{face}_v{version}.jpg"
 
 
 def get_thumbnail(
     card: dict[str, Any], face: int, *, cache_dir: Path, origin: str
-) -> bytes:
+) -> tuple[bytes, str]:
     """The JPEG bytes of one face's thumbnail, from the disk cache or
-    fetched through `origin` and cached. Raises NoSuchFace, or
-    ScryfallError when the image can't be fetched from anywhere."""
+    fetched through `origin` and cached, plus the Scryfall image version
+    they are. Raises NoSuchFace, or ScryfallError when the image can't be
+    fetched from anywhere."""
     png_url = face_png_url(card, face)
+    version = image_version(png_url)
     path = thumb_cache_path(cache_dir, card["id"], face, png_url)
     if path.is_file():
-        return path.read_bytes()
+        return path.read_bytes(), version
     data = download_png(normal_jpeg_url(png_url), origin=origin)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic: the grid requests many thumbnails at once, and two requests
     # for the same face may race; both write complete bytes.
     atomic_write_bytes(path, data)
-    return data
+    return data, version

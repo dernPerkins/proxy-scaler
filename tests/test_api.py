@@ -2394,3 +2394,47 @@ def test_thumb_offline_with_nothing_cached_is_502(
         "cards.scryfall.io": requests.ConnectionError("offline"),
     }
     assert client.get("/api/cards/bolt-lea/thumb").status_code == 502
+
+
+# --- Versioned thumbnail URLs -------------------------------------------------
+
+
+def test_card_variants_carry_scryfalls_image_version(client: TestClient) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    body = client.get("/api/cards/variants", params={"scryfall_id": "bolt-lea"}).json()
+    assert body["anchor"]["image_version"] == "1559591645"
+    assert body["variants"][0]["image_version"] == "1559591645"
+
+
+def test_thumb_with_the_current_version_is_cached_immutably(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get("/api/cards/bolt-lea/thumb", params={"v": "1559591645"})
+    assert resp.status_code == 200
+    cache_control = resp.headers["cache-control"]
+    assert "immutable" in cache_control
+    assert "max-age=31536000" in cache_control
+
+
+def test_thumb_with_a_stale_version_serves_the_current_image_uncached(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    """The client's printings list predates a corpus re-import: the URL
+    names a version the server no longer has. It gets the current image,
+    but nothing may cache it under the old version's URL."""
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get(
+        "/api/cards/bolt-lea/thumb", params={"v": "1000000000", "via": "scryfall"}
+    )
+    assert resp.status_code == 200
+    assert image_session.urls == [_BOLT_NORMAL]
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_thumb_without_a_version_keeps_the_one_day_max_age(
+    client: TestClient, image_session: _ImageSession
+) -> None:
+    _seed_card_db(image_uris={"png": _BOLT_PNG})
+    resp = client.get("/api/cards/bolt-lea/thumb")
+    assert resp.headers["cache-control"] == "public, max-age=86400"

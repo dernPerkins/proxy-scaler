@@ -25,6 +25,7 @@ from proxy_scaler.scryfall import (
     ImageOrigin,
     ScryfallError,
     expected_face_count,
+    card_image_version,
     printable_face_names,
 )
 from proxy_scaler.api.schemas import (
@@ -165,14 +166,17 @@ def _variant_out(row) -> CardVariantOut:
     if "face_count" in row.keys():
         face_count = int(row["face_count"])
         face_names = list(row["face_names"])
+        version = row["image_version"]
     else:
         try:
             card = json.loads(row["card_json"] or "{}")
             face_count = expected_face_count(card)
             face_names = printable_face_names(card)
+            version = card_image_version(card)
         except (IndexError, KeyError, TypeError, ValueError):
             face_count = 1
             face_names = [row["name"]]
+            version = None
     return CardVariantOut(
         scryfall_id=row["id"],
         name=row["name"],
@@ -187,6 +191,7 @@ def _variant_out(row) -> CardVariantOut:
         highres_image=bool(row["highres_image"]),
         face_count=face_count,
         face_names=face_names,
+        image_version=version,
     )
 
 
@@ -235,10 +240,15 @@ def card_variants(
     )
 
 
-# A day: the URL carries no version yet, so a scan Scryfall corrects (and
-# the next corpus import picks up) must be able to replace the browser's
-# copy. Once the client puts the version in the URL this can be immutable.
-_THUMB_CACHE_CONTROL = "public, max-age=86400"
+# A URL naming the image version it serves (`v`, from the variants
+# response) never changes meaning, so it caches forever: a scan Scryfall
+# replaces arrives with a new version, hence a new URL. A URL whose `v` the
+# corpus no longer has (the client's list predates a re-import) gets the
+# current image, which nothing may keep under that stale URL. No `v` at
+# all (an older client): a day, so a corrected scan still gets through.
+_THUMB_CACHE_IMMUTABLE = "public, max-age=31536000, immutable"
+_THUMB_CACHE_STALE_VERSION = "no-cache"
+_THUMB_CACHE_UNVERSIONED = "public, max-age=86400"
 
 
 @router.get("/{scryfall_id}/thumb")
@@ -246,6 +256,7 @@ def card_thumb(
     scryfall_id: str,
     face: int = Query(0, ge=0, le=1),
     via: ImageOrigin = DEFAULT_IMAGE_ORIGIN,
+    v: str | None = None,
 ) -> Response:
     """One face of one printing as Scryfall's `normal` JPEG — the image
     grid's tile. Served from the disk cache when present, else fetched
@@ -264,7 +275,7 @@ def card_thumb(
             status_code=404, detail="Card not found in the local card database."
         )
     try:
-        data = thumbs.get_thumbnail(
+        data, version = thumbs.get_thumbnail(
             card, face, cache_dir=Path(DEFAULT_CACHE_DIR), origin=via
         )
     except thumbs.NoSuchFace as exc:
@@ -273,8 +284,14 @@ def card_thumb(
         # Offline, or the image cache and Scryfall both failed: the grid
         # shows its placeholder tile, which still picks the printing.
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if v is None:
+        cache_control = _THUMB_CACHE_UNVERSIONED
+    elif v == version:
+        cache_control = _THUMB_CACHE_IMMUTABLE
+    else:
+        cache_control = _THUMB_CACHE_STALE_VERSION
     return Response(
         content=data,
         media_type="image/jpeg",
-        headers={"Cache-Control": _THUMB_CACHE_CONTROL},
+        headers={"Cache-Control": cache_control},
     )

@@ -243,7 +243,7 @@ export const LIBRARY_UPSCALE_MIN_SERVER_VERSION = "0.4.0";
 // older server 404s every one, so below this the grid renders text-only
 // tiles and never requests a thumbnail. The release the endpoint ships in;
 // packaging/set-version.py must never rewrite it.
-export const THUMBNAILS_MIN_SERVER_VERSION = "0.4.1";
+export const THUMBNAILS_MIN_SERVER_VERSION = "0.5.0";
 
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");

@@ -335,6 +335,10 @@ export interface CardVariant {
   // The name of each of those faces, in order — the image grid's flip
   // label. Absent from older servers.
   face_names?: string[];
+  // Scryfall's image version for this printing; goes into its thumbnail
+  // URLs so they can be cached forever (a replaced scan is a new version,
+  // so a new URL). Absent from older servers or for a printing with no image.
+  image_version?: string | null;
 }
 
 export interface CardVariantsResult {

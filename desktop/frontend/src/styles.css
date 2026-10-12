@@ -732,22 +732,6 @@ button:disabled {
   color: var(--text);
   background: var(--surface-2);
 }
-/* The App Settings gear: same present-but-ignorable treatment as the
-   version label beside it. */
-.tabs-settings-btn {
-  border: none;
-  background: none;
-  box-shadow: none;
-  padding: 2px 4px;
-  font-size: 15px;
-  line-height: 1;
-  color: inherit;
-}
-.tabs-settings-btn:hover,
-.tabs-settings-btn:focus-visible {
-  color: var(--text);
-  background: var(--surface-2);
-}
 .app-settings-body {
   display: flex;
   flex-direction: column;
@@ -1771,7 +1755,9 @@ tbody tr:last-child td {
 
 /* The ? that replays a screen's tour (tutorial/TutorialButton.tsx): a
    round icon that slides open to read "Tutorial" on hover or focus. */
-.tutorial-btn {
+/* A round icon button that slides open to show its label on hover or
+   keyboard focus: the tab bar's Tutorial (?) and Settings (gear). */
+.reveal-btn {
   display: inline-flex;
   align-items: center;
   height: 24px;
@@ -1782,17 +1768,17 @@ tbody tr:last-child td {
   color: var(--text-muted);
   overflow: hidden;
 }
-.tutorial-btn:hover:not(:disabled),
-.tutorial-btn:focus-visible {
+.reveal-btn:hover:not(:disabled),
+.reveal-btn:focus-visible {
   color: var(--accent);
   border-color: var(--accent);
 }
-.tutorial-btn-icon {
+.reveal-btn-icon {
   display: inline-block;
   width: 12px;
   text-align: center;
 }
-.tutorial-btn-label {
+.reveal-btn-label {
   max-width: 0;
   opacity: 0;
   white-space: nowrap;
@@ -1801,8 +1787,8 @@ tbody tr:last-child td {
     opacity 0.2s ease,
     margin 0.2s ease;
 }
-.tutorial-btn:hover .tutorial-btn-label,
-.tutorial-btn:focus-visible .tutorial-btn-label {
+.reveal-btn:hover .reveal-btn-label,
+.reveal-btn:focus-visible .reveal-btn-label {
   max-width: 70px;
   opacity: 1;
   margin: 0 3px 0 4px;

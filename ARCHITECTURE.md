@@ -222,11 +222,14 @@ again at generate time):
    all), by text (set code, set name, printed name) and by "Show digital",
    sorts newest/oldest/by set, flips double-faced tiles, and marks
    already-generated printings. Each tile is a lazily loaded `<img>` of
-   `GET /api/cards/{id}/thumb?face=&via=`: the generation server derives
+   `GET /api/cards/{id}/thumb?face=&via=&v=`: the generation server derives
    Scryfall's `normal` JPEG URL from the corpus's stored png URL, fetches
    it through the image origin, and caches it under `imgcache/thumbs/`
    keyed by id, face and Scryfall's version suffix (`thumbs.py`), so a
-   printing seen once loads instantly and offline. A tile whose image
+   printing seen once loads instantly and offline. The variants response
+   carries that version (`image_version`) and the grid puts it in the URL
+   as `v`, so each URL names exactly one image and is cached `immutable`;
+   a scan Scryfall replaces arrives as a new version, hence a new URL. A tile whose image
    fails becomes a card-shaped placeholder that still picks; a server
    older than the endpoint (`THUMBNAILS_MIN_SERVER_VERSION` in
    `config.ts`) gets text-only tiles and no thumbnail requests. **"The
@@ -376,8 +379,8 @@ string, not a database relationship.
 | `POST /api/cards/import/{job_id}/cancel` | Ask a running import to stop at its next chunk/batch boundary |
 | `DELETE /api/cards/database` | Remove the imported corpus (file + WAL/SHM); 409 while an import job is running. The sidebar panel's "Delete card database" |
 | `GET /api/cards/languages` | The full Scryfall language list (English first) — the import-language dropdown's options, independent of what corpus is imported: the dropdown is a request, resolution answers from corpus or live API |
-| `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing grid's contents, with `face_count` and `face_names` per printing. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
-| `GET /api/cards/{scryfall_id}/thumb` | One face (`face` 0\|1) of one printing as Scryfall's `normal` JPEG — a grid tile. Disk-cached under `imgcache/thumbs/` by id + face + version suffix (a hit makes no network call), else fetched through `via` (`worker` default \| `scryfall`). 404 for an unknown id or a missing face, the variants hint with no corpus, 502 when the image can't be fetched from anywhere. `Cache-Control: max-age` of a day, not immutable, until the URL carries the version |
+| `GET /api/cards/variants` | Every printing of one card (shared `oracle_id`), anchored by scryfall_id / set+collector / name — the change-printing grid's contents, with `face_count`, `face_names` and `image_version` (Scryfall's image version, for the thumbnail URL) per printing. Corpus-only by design: 404s with an "import first" hint rather than falling back live |
+| `GET /api/cards/{scryfall_id}/thumb` | One face (`face` 0\|1) of one printing as Scryfall's `normal` JPEG — a grid tile. Disk-cached under `imgcache/thumbs/` by id + face + version suffix (a hit makes no network call), else fetched through `via` (`worker` default \| `scryfall`). 404 for an unknown id or a missing face, the variants hint with no corpus, 502 when the image can't be fetched from anywhere. `Cache-Control` follows `v`: `immutable` when it names the current version, `no-cache` when it names one the corpus no longer has (a list from before a re-import), a one-day `max-age` when absent (older clients) |
 | `GET /api/health` | Supervisor readiness probe |
 | `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |
 | `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Upscaling a back is a Backs-tab action (`POST /api/library/upscale`), never part of a project's Generate |

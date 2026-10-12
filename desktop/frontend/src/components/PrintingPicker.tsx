@@ -148,7 +148,7 @@ function PrintingTile(props: {
     image = (
       <img
         key={face}
-        src={generationApi.cardThumbUrl(v.scryfall_id, face, origin)}
+        src={generationApi.cardThumbUrl(v.scryfall_id, face, origin, v.image_version)}
         alt=""
         loading="lazy"
         decoding="async"

@@ -767,6 +767,11 @@ class CardVariantOut(BaseModel):
     # The name of each of those faces, in face order — the grid's flip
     # label for a double-faced printing. Defaulted for older servers.
     face_names: list[str] = []
+    # Scryfall's image version (the png URL's `?1706239968` suffix). The
+    # grid puts it in each thumbnail URL as `v`, so a replaced scan is a
+    # new URL and an unchanged one can be cached forever. None from older
+    # servers and for a printing with no image.
+    image_version: str | None = None
 
 
 class CardVariantsOut(BaseModel):
