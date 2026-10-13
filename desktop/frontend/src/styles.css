@@ -930,52 +930,88 @@ button:disabled {
 .printing-toggle:disabled {
   cursor: default;
 }
-/* The change-printing grid (PrintingPicker.tsx's modal): one card-image
-   tile per printing, auto-fill columns so arrow-key navigation reads the
-   column count off the laid-out grid. */
-/* Two classes: .modal's own width is defined later in this file and
-   would otherwise win. */
+/* The change-printing picker (PrintingPicker.tsx's modal) is a grid: the
+   preview fills the first column top to bottom, and the second stacks
+   Close, notes, the filter row and the scrolling tile grid. The preview is
+   a subgrid of those rows, so its card shares the tile grid's row and the
+   two line up. Two classes: .modal's own width, padding and flex layout
+   are defined later in this file and would otherwise win. */
 .modal.printing-grid-modal {
   width: min(96vw, 1360px);
   height: 90vh;
+  padding: 0;
+  display: grid;
+  grid-template-columns: clamp(300px, 34%, 460px) minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
-/* Preview pane on the left, the scrolling grid beside it. */
-.printing-grid-layout {
-  display: flex;
-  gap: 16px;
-  flex: 1;
-  min-height: 0;
+.modal-head.printing-grid-head {
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: flex-end;
+  padding: 14px 14px 0 16px;
 }
-/* The grid column: its filter row above the scrolling grid. */
-.printing-grid-main {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+.printing-grid-notes {
+  grid-column: 2;
+  grid-row: 2;
+  padding: 0 14px 0 16px;
 }
-.printing-grid-main > .modal-body {
-  flex: 1;
+.printing-grid-modal > .printing-grid-controls {
+  grid-column: 2;
+  grid-row: 3;
+  padding: 0 14px 0 16px;
 }
+.printing-grid-modal > .modal-body {
+  grid-column: 2;
+  grid-row: 4;
+  padding: 0 10px 14px 12px;
+}
+
+/* The preview column: the card on a blurred wash of its own art, its
+   details on a gradient scrim along the bottom. Dark in both themes — it
+   is a stage for the card, not a panel of the app. */
 .printing-preview {
-  flex: 0 0 clamp(240px, 30%, 380px);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  grid-column: 1;
+  grid-row: 1 / -1;
+  display: grid;
+  grid-template-rows: subgrid;
+  position: relative;
   min-height: 0;
-  overflow-y: auto;
-  padding: 4px;
+  /* Inset from the modal's edges. A subgrid's margin only takes space from
+     its first and last rows, so the card still meets the tiles' row. */
+  margin: 14px 0 14px 14px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #0b0b0e;
+  color: #fff;
 }
-/* Card aspect at Scryfall's full size (745x1040), so the frame holds its
-   shape while the full image loads over the thumbnail. */
+.printing-preview-wash {
+  position: absolute;
+  inset: -60px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(42px) saturate(1.5) brightness(0.55);
+}
+/* The tile grid's row. The card's top meets the tiles' image tops (the
+   grid's 4px padding + a tile's 2px border + 6px padding); its size is
+   whatever fits beside the scrim's ~210px, keeping the card's aspect. */
+.printing-preview-stage {
+  grid-row: 4;
+  position: relative;
+  min-height: 0;
+  container-type: size;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12px;
+}
 .printing-preview-frame {
   position: relative;
-  width: 100%;
+  width: min(100cqw - 40px, (100cqh - 222px) * 0.716);
   aspect-ratio: 745 / 1040;
   border-radius: 4.75% / 3.5%;
   overflow: hidden;
-  background: var(--surface-3);
-  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
 }
 .printing-preview-frame img {
   position: absolute;
@@ -987,10 +1023,15 @@ button:disabled {
 .printing-preview-frame .printing-tile-placeholder {
   position: absolute;
   inset: 0;
+  color: rgba(255, 255, 255, 0.85);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+.printing-preview-frame .printing-set-name {
+  color: rgba(255, 255, 255, 0.6);
 }
 .printing-preview-full {
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.2s ease;
 }
 .printing-preview-full.loaded {
   opacity: 1;
@@ -998,34 +1039,87 @@ button:disabled {
 .printing-preview-status {
   position: absolute;
   left: 50%;
-  bottom: 8px;
+  bottom: 10px;
   transform: translateX(-50%);
-  padding: 2px 8px;
+  padding: 2px 9px;
   border-radius: 999px;
   font-size: 11px;
-  color: var(--text-muted);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
   white-space: nowrap;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
 }
-.printing-preview-details {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+/* Frosted glass, for controls and pills on the dark column. */
+.printing-preview-glass,
+.printing-preview-glass:active:not(:disabled) {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px);
+  color: #fff;
 }
+.printing-preview-glass:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.22);
+}
+.printing-preview-flip {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 1;
+  padding: 4px 11px;
+  font-size: 12px;
+}
+.printing-preview-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 56px 18px 18px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.88) 40%);
+}
+/* An h3 for structure; the app's h3 is a small uppercase label. */
 .printing-preview-name {
-  font-weight: 580;
-}
-.printing-preview-badges {
   margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: #fff;
 }
-.printing-preview-actions {
+.printing-preview-meta {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.72);
+}
+/* Two rows of badges (StatusBadge, as in the deck list) tall whatever it
+   holds, scrolling past that, so the scrim keeps its shape from one
+   printing to the next. */
+.printing-preview-versions {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: auto;
+  align-content: flex-start;
+  gap: 6px;
+  height: 54px;
+  overflow-y: auto;
+  margin: 10px 0 12px;
+}
+.printing-preview-none {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.printing-preview-cta,
+.printing-preview-cta:active:not(:disabled) {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111;
+  font-weight: 650;
+}
+.printing-preview-cta:hover:not(:disabled) {
+  background: #fff;
 }
 /* Right-aligned over the grid, the count just left of the filters. */
 .printing-grid-controls {

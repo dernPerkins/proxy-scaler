@@ -237,8 +237,9 @@ again at generate time):
    carries that version (`image_version`) and the grid puts it in the URL
    as `v`, so each URL names exactly one image and is cached `immutable`;
    a scan Scryfall replaces arrives as a new version, hence a new URL.
-   Clicking a tile (or arrowing to it) selects it into a left-hand preview
-   pane showing the full-size PNG Generate would download,
+   Clicking a tile (or arrowing to it) selects it into the preview —
+   the modal's full-height left column, the card on a blurred wash of its own art with its details on a
+   gradient scrim — showing the full-size PNG Generate would download,
    `GET /api/cards/{id}/original` — fetched through the image origin into
    the **originals cache** (`imgcache/originals/`, via
    `pipeline.ensure_cached_original`, the same path the worker's prefetch

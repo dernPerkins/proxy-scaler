@@ -32,7 +32,7 @@ any other printing — set, collector number, and (with the right dataset)
 language. It opens a grid of card images, one per printing, that you can
 filter by one or more languages or sets, sort, and
 flip to see a double-faced card's back. Click a printing to see it at full
-size in the preview on the left, then "Use this printing" (or double-click,
+size in the preview on the left, then "Use This Printing" (or double-click,
 or Enter) to pick it. Arrow keys and Esc work too, and a ✓ marks printings
 you've already generated. Previewing a printing downloads its full-size
 image, so generating it later doesn't download it again. This is powered by a **local card database** imported from

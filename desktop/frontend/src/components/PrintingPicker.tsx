@@ -31,10 +31,10 @@ import {
 import { useProject } from "../context/ProjectContext";
 import { modelDisplayName } from "../constants";
 import { useImageCacheSetting } from "../imageOrigin";
-import StatusBadge from "./StatusBadge";
 import type { CardRow } from "../api/project";
 import type { CardVariant, GeneratedPair, ImageOrigin } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
+import StatusBadge from "./StatusBadge";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
 
 type Pick = {
@@ -337,7 +337,7 @@ function PrintingTile(props: {
 // Every variant already generated for this printing's face — the deck
 // list's badges, minus task states (tasks are per project; the registry is
 // what the picker can see). Registry-wide: an image from any project counts.
-function PreviewBadges({ v, face, enabled }: { v: CardVariant; face: number; enabled: boolean }) {
+function PreviewVersions({ v, face, enabled }: { v: CardVariant; face: number; enabled: boolean }) {
   const query = useQuery({
     queryKey: ["printing-generated", v.scryfall_id],
     queryFn: () => generationApi.galleryStatus([v.scryfall_id]),
@@ -346,20 +346,21 @@ function PreviewBadges({ v, face, enabled }: { v: CardVariant; face: number; ena
   if (!enabled || !query.isSuccess) return null;
   // Single-faced rows carry face_index null; a DFC's rows, its face.
   const faceIndex = (v.face_count ?? 1) > 1 ? face : null;
-  const variants = (query.data.statuses[v.scryfall_id] ?? []).filter(
+  const versions = (query.data.statuses[v.scryfall_id] ?? []).filter(
     (pair) => pair.face_index === faceIndex && pair.model,
   );
-  if (variants.length === 0) {
-    return <p className="hint printing-preview-badges">Not generated yet.</p>;
+  if (versions.length === 0) {
+    return <span className="printing-preview-none">Not generated yet</span>;
   }
+  // The deck list's own badges, so a version reads the same everywhere.
   return (
-    <div className="variants printing-preview-badges">
-      {variants.map((pair) => (
+    <>
+      {versions.map((pair) => (
         <StatusBadge key={`${pair.dpi}-${pair.model}`} status="done">
           {pair.dpi} · {modelDisplayName(pair.model as string)}
         </StatusBadge>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -368,17 +369,22 @@ function PreviewBadges({ v, face, enabled }: { v: CardVariant; face: number; ena
 // arrowing across a row shouldn't download every card on the way.
 const KEYBOARD_PREVIEW_SETTLE_MS = 250;
 
-// The left-hand pane: the selected printing at full size — the exact PNG
-// Generate downloads and upscales — with its details and the button that
-// picks it. The thumbnail (already loaded by its tile, and cached) shows
-// at once; the full image fades in over it once loaded. Loading it is the
-// printing's download: the server keeps it in its originals cache, so a
-// later Generate or Download of this printing skips the fetch.
+// The left-hand column, the modal's full height: the selected printing
+// at full size — the exact PNG Generate downloads and upscales — on a
+// blurred wash of its own art, with its details, versions and the button
+// that picks it on a gradient scrim along the bottom. The thumbnail
+// (already loaded by its tile, and cached) shows at once; the full image
+// fades in over it once loaded. Loading it is the printing's download: the
+// server keeps it in its originals cache, so a later Generate or Download
+// of this printing skips the fetch.
+//
+// The column is a subgrid of the modal's rows, so the card sits in the
+// grid's row: its top lines up with the first row of tiles whatever the
+// header and filter rows measure.
 function PrintingPreview(props: {
   v: CardVariant;
   face: number;
   current: boolean;
-  coverage: Coverage;
   origin: ImageOrigin | null;
   showImages: boolean;
   /** 0 after a click; KEYBOARD_PREVIEW_SETTLE_MS after an arrow key. */
@@ -386,7 +392,7 @@ function PrintingPreview(props: {
   onFlip: () => void;
   onPick: () => void;
 }) {
-  const { v, face, current, coverage, origin, showImages, settleMs } = props;
+  const { v, face, current, origin, showImages, settleMs } = props;
   const queryClient = useQueryClient();
   const faceCount = v.face_count ?? 1;
   const faceName = faceNameOf(v, face);
@@ -409,74 +415,79 @@ function PrintingPreview(props: {
 
   const fullFailed = fullUrl != null && failedUrls.has(fullUrl);
   const fullLoaded = fullUrl != null && loadedUrl === fullUrl;
+  const thumbShown = thumbUrl != null && thumbFailed !== thumbUrl;
 
   return (
     <aside className="printing-preview" aria-label="Selected printing">
-      <div className="printing-preview-frame">
-        {/* Bottom layer: the tile's thumbnail, or the placeholder when
-            there is no image to show. The full image layers over it. */}
-        {thumbUrl && thumbFailed !== thumbUrl ? (
-          <img
-            className="printing-preview-thumb"
-            src={thumbUrl}
-            alt=""
-            draggable={false}
-            onError={() => setThumbFailed(thumbUrl)}
-          />
-        ) : (
-          <TilePlaceholder v={v} faceName={faceName} />
-        )}
-        {fullUrl && requestedUrl === fullUrl && !fullFailed && (
-          <img
-            className={`printing-preview-full${fullLoaded ? " loaded" : ""}`}
-            src={fullUrl}
-            alt={`${faceName}, full size`}
-            draggable={false}
-            onLoad={() => {
-              setLoadedUrl(fullUrl);
-              // Serving it registered the original on the server: show its
-              // "300 · Original" badge now.
-              void queryClient.invalidateQueries({
-                queryKey: ["printing-generated", v.scryfall_id],
-              });
-            }}
-            onError={() => setFailedUrls((prev) => new Set(prev).add(fullUrl))}
-          />
-        )}
-        {canLoad && !fullLoaded && !fullFailed && (
-          <span className="printing-preview-status">Loading full size…</span>
-        )}
-      </div>
-
-      {canLoad && fullFailed && (
-        <p className="hint">Full-size image unavailable. You can still use this printing.</p>
+      {thumbShown && (
+        <div className="printing-preview-wash" style={{ backgroundImage: `url("${thumbUrl}")` }} />
+      )}
+      {faceCount > 1 && (
+        <button
+          type="button"
+          className="printing-preview-glass printing-preview-flip"
+          title={flipTitle(v, face)}
+          onClick={props.onFlip}
+        >
+          ⟲ Flip
+        </button>
       )}
 
-      <div className="printing-preview-details">
-        <span className="printing-preview-name">{faceName}</span>
-        <span className="printing-set-name">
-          {v.set_name ?? v.set_code.toUpperCase()}
-          {variantYear(v)}
-        </span>
-        <span className="printing-tile-label">
-          <span className="mono">
-            {v.set_code.toUpperCase()} #{v.collector_number} · {v.lang.toUpperCase()}
-          </span>
-          {current && <span className="printing-tile-tag">current</span>}
-          {v.digital && <span className="printing-tile-tag">digital</span>}
-          <GenMark coverage={coverage} />
-        </span>
+      <div className="printing-preview-stage">
+        <div className="printing-preview-frame">
+          {/* Bottom layer: the tile's thumbnail, or the placeholder when
+              there is no image to show. The full image layers over it. */}
+          {thumbShown ? (
+            <img
+              src={thumbUrl}
+              alt=""
+              draggable={false}
+              onError={() => setThumbFailed(thumbUrl)}
+            />
+          ) : (
+            <TilePlaceholder v={v} faceName={faceName} />
+          )}
+          {fullUrl && requestedUrl === fullUrl && !fullFailed && (
+            <img
+              className={`printing-preview-full${fullLoaded ? " loaded" : ""}`}
+              src={fullUrl}
+              alt={`${faceName}, full size`}
+              draggable={false}
+              onLoad={() => {
+                setLoadedUrl(fullUrl);
+                // Serving it registered the original on the server: show its
+                // "300 · Original" version now.
+                void queryClient.invalidateQueries({
+                  queryKey: ["printing-generated", v.scryfall_id],
+                });
+              }}
+              onError={() => setFailedUrls((prev) => new Set(prev).add(fullUrl))}
+            />
+          )}
+          {canLoad && !fullLoaded && !fullFailed && (
+            <span className="printing-preview-status">Loading full size…</span>
+          )}
+        </div>
       </div>
 
-      <PreviewBadges v={v} face={face} enabled={showImages} />
-
-      <div className="printing-preview-actions">
-        {faceCount > 1 && (
-          <button type="button" className="btn-sm" title={flipTitle(v, face)} onClick={props.onFlip}>
-            ⟲ Flip
-          </button>
+      <div className="printing-preview-scrim">
+        <h3 className="printing-preview-name">{faceName}</h3>
+        <p className="printing-preview-meta">
+          {v.set_name ?? v.set_code.toUpperCase()}
+          {variantYear(v)} · {v.set_code.toUpperCase()} #{v.collector_number} ·{" "}
+          {v.lang.toUpperCase()}
+          {current ? " · Current" : ""}
+          {v.digital ? " · Digital" : ""}
+        </p>
+        {canLoad && fullFailed && (
+          <p className="printing-preview-meta">Full-size image unavailable.</p>
         )}
-        <button type="button" className="btn-primary" onClick={props.onPick}>
+        {/* A fixed-height row, scrolling when a printing has many versions,
+            so the scrim doesn't change shape from one printing to the next. */}
+        <div className="printing-preview-versions" aria-label="Generated versions">
+          <PreviewVersions v={v} face={face} enabled={showImages} />
+        </div>
+        <button type="button" className="printing-preview-cta" onClick={props.onPick}>
           {current ? "Keep Current Printing" : "Use This Printing"}
         </button>
       </div>
@@ -732,149 +743,152 @@ function PrintingGridModal(props: {
         aria-label={`Change printing: ${card.name}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="modal-head">
-          <span className="modal-title">{card.printed_name ?? card.name}</span>
+        {/* The modal is a grid: the preview fills the first column top to
+            bottom; the right column stacks Close, notes, the filter row and
+            the scrolling grid. */}
+        {selected && (
+          <PrintingPreview
+            key={selected.scryfall_id}
+            v={selected}
+            face={faceOf(selected)}
+            current={isCurrent(selected)}
+            origin={origin}
+            showImages={showImages}
+            settleMs={settleMs}
+            onFlip={() => flip(selected)}
+            onPick={() => pick(selected)}
+          />
+        )}
+
+        {/* No title: the card's name is on the preview. */}
+        <div className="modal-head printing-grid-head">
           <button type="button" className="btn-sm" onClick={onClose}>
             Close
           </button>
         </div>
 
-        {ready && !showImages && (
-          <p className="hint">
-            Previews need a newer generation server (v{PRINTING_IMAGES_MIN_SERVER_VERSION} or
-            later). You can still pick a printing.
-          </p>
-        )}
-        {variantsQuery.isLoading && <p className="hint">Loading printings…</p>}
-        {variantsQuery.isError && (
-          <p className="hint">
-            {variantsQuery.error instanceof ApiError && variantsQuery.error.status === 404
-              ? "No local card database on this server — import it from the sidebar's Card database panel to change printings."
-              : `Couldn't load printings: ${
-                  variantsQuery.error instanceof Error
-                    ? variantsQuery.error.message
-                    : String(variantsQuery.error)
-                }`}
-          </p>
-        )}
+        <div className="printing-grid-notes">
+          {ready && !showImages && (
+            <p className="hint">
+              Previews need a newer generation server (v{PRINTING_IMAGES_MIN_SERVER_VERSION} or
+              later). You can still pick a printing.
+            </p>
+          )}
+          {variantsQuery.isLoading && <p className="hint">Loading printings…</p>}
+          {variantsQuery.isError && (
+            <p className="hint">
+              {variantsQuery.error instanceof ApiError && variantsQuery.error.status === 404
+                ? "No local card database on this server — import it from the sidebar's Card database panel to change printings."
+                : `Couldn't load printings: ${
+                    variantsQuery.error instanceof Error
+                      ? variantsQuery.error.message
+                      : String(variantsQuery.error)
+                  }`}
+            </p>
+          )}
+        </div>
 
         {/* Rendered once the list loads even when it's empty: a card with
             only digital printings needs "Show digital" reachable. */}
         {variantsQuery.isSuccess && (
-          <div className="printing-grid-layout">
-            {selected && (
-              <PrintingPreview
-                key={selected.scryfall_id}
-                v={selected}
-                face={faceOf(selected)}
-                current={isCurrent(selected)}
-                coverage={coverageOf(selected)}
-                origin={origin}
-                showImages={showImages}
-                settleMs={settleMs}
-                onFlip={() => flip(selected)}
-                onPick={() => pick(selected)}
+          <>
+            {/* Above the grid, right-aligned, the count first. */}
+            <div className="printing-grid-controls">
+              <span className="printing-grid-count">
+                {shown.length} of {variants.length}
+              </span>
+              <MultiSelectFilter
+                options={setOptions}
+                selected={setFilter}
+                onChange={setSetFilter}
+                disabled={!ready}
+                allLabel="All Sets"
+                ariaLabel="Sets"
+                findLabel="Find a set"
               />
-            )}
-            <div className="printing-grid-main">
-              {/* Above the grid, right-aligned, the count first. */}
-              <div className="printing-grid-controls">
-                <span className="printing-grid-count">
-                  {shown.length} of {variants.length}
-                </span>
-                <MultiSelectFilter
-                  options={setOptions}
-                  selected={setFilter}
-                  onChange={setSetFilter}
-                  disabled={!ready}
-                  allLabel="All Sets"
-                  ariaLabel="Sets"
-                  findLabel="Find a set"
+              <MultiSelectFilter
+                options={languageOptions}
+                selected={langDefault ? new Set() : effectiveLangs}
+                onChange={(next) => {
+                  setLangDefault(false);
+                  setLangFilter(next);
+                }}
+                disabled={!ready}
+                allLabel="All Languages"
+                ariaLabel="Languages"
+                preset={{
+                  label: `${defaultLang.toUpperCase()} + Exclusives`,
+                  title: `${LANGUAGE_NAMES[defaultLang] ?? defaultLang.toUpperCase()} printings, plus printings that only exist in another language`,
+                  active: langDefault,
+                  onSelect: () => setLangDefault(true),
+                }}
+              />
+              <select
+                aria-label="Sort"
+                value={sortMode}
+                disabled={!ready}
+                onChange={(e) => setSortMode(e.target.value as SortMode)}
+              >
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="set">By set</option>
+              </select>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={includeDigital}
+                  onChange={(e) => setShowDigital.mutate(e.target.checked)}
                 />
-                <MultiSelectFilter
-                  options={languageOptions}
-                  selected={langDefault ? new Set() : effectiveLangs}
-                  onChange={(next) => {
-                    setLangDefault(false);
-                    setLangFilter(next);
-                  }}
-                  disabled={!ready}
-                  allLabel="All Languages"
-                  ariaLabel="Languages"
-                  preset={{
-                    label: `${defaultLang.toUpperCase()} + Exclusives`,
-                    title: `${LANGUAGE_NAMES[defaultLang] ?? defaultLang.toUpperCase()} printings, plus printings that only exist in another language`,
-                    active: langDefault,
-                    onSelect: () => setLangDefault(true),
-                  }}
-                />
-                <select
-                  aria-label="Sort"
-                  value={sortMode}
-                  disabled={!ready}
-                  onChange={(e) => setSortMode(e.target.value as SortMode)}
-                >
-                  <option value="newest">Newest first</option>
-                  <option value="oldest">Oldest first</option>
-                  <option value="set">By set</option>
-                </select>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={includeDigital}
-                    onChange={(e) => setShowDigital.mutate(e.target.checked)}
-                  />
-                  Show digital
-                </label>
-              </div>
-              {/* Mounted for as long as the grid is, even when the filters
-                  match nothing: the tile observer is rooted on this element,
-                  and a remounted one would leave it watching a detached node
-                  (every tile after that would stay blank). */}
-              <div className="modal-body" ref={scrollRef}>
-                {shown.length === 0 ? (
-                  <p className="hint">No printings match this filter.</p>
-                ) : (
-                  /* No virtualisation: ~870 tiles (a basic land) is well
-                     within what a plain CSS grid handles once thumbnails
-                     load only near the view (useTileVisibility). */
-                  <div className="printing-grid" ref={gridRef} onKeyDown={onGridKeyDown}>
-                    {shown.map((v, i) => (
-                      <PrintingTile
-                        key={v.scryfall_id}
-                        v={v}
-                        current={isCurrent(v)}
-                        selected={v.scryfall_id === selectedId}
-                        coverage={coverageOf(v)}
-                        face={faceOf(v)}
-                        origin={origin}
-                        showImages={showImages}
-                        tabIndex={i === clampedFocus ? 0 : -1}
-                        observe={observeTile}
-                        buttonRef={(el) => {
-                          tileRefs.current[i] = el;
-                        }}
-                        onFocus={() => {
-                          setFocusIndex(i);
-                          setSelectedId(v.scryfall_id);
-                        }}
-                        onSelect={() => {
-                          // WKWebView doesn't focus a button on click, so
-                          // selection can't rely on onFocus alone.
-                          setSettleMs(0);
-                          setSelectedId(v.scryfall_id);
-                          setFocusIndex(i);
-                          tileRefs.current[i]?.focus();
-                        }}
-                        onPick={() => pick(v)}
-                        onFlip={() => flip(v)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
+                Show digital
+              </label>
             </div>
-          </div>
+            {/* Mounted for as long as the grid is, even when the filters
+                match nothing: the tile observer is rooted on this element,
+                and a remounted one would leave it watching a detached node
+                (every tile after that would stay blank). */}
+            <div className="modal-body" ref={scrollRef}>
+              {shown.length === 0 ? (
+                <p className="hint">No printings match this filter.</p>
+              ) : (
+                /* No virtualisation: ~870 tiles (a basic land) is well
+                   within what a plain CSS grid handles once thumbnails
+                   load only near the view (useTileVisibility). */
+                <div className="printing-grid" ref={gridRef} onKeyDown={onGridKeyDown}>
+                  {shown.map((v, i) => (
+                    <PrintingTile
+                      key={v.scryfall_id}
+                      v={v}
+                      current={isCurrent(v)}
+                      selected={v.scryfall_id === selectedId}
+                      coverage={coverageOf(v)}
+                      face={faceOf(v)}
+                      origin={origin}
+                      showImages={showImages}
+                      tabIndex={i === clampedFocus ? 0 : -1}
+                      observe={observeTile}
+                      buttonRef={(el) => {
+                        tileRefs.current[i] = el;
+                      }}
+                      onFocus={() => {
+                        setFocusIndex(i);
+                        setSelectedId(v.scryfall_id);
+                      }}
+                      onSelect={() => {
+                        // WKWebView doesn't focus a button on click, so
+                        // selection can't rely on onFocus alone.
+                        setSettleMs(0);
+                        setSelectedId(v.scryfall_id);
+                        setFocusIndex(i);
+                        tileRefs.current[i]?.focus();
+                      }}
+                      onPick={() => pick(v)}
+                      onFlip={() => flip(v)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
     </ModalOverlay>
