@@ -3,8 +3,9 @@
 //
 // The handlers themselves live next to the thing they drive — the tab
 // switcher in App.tsx beside the tab list, New in ProjectBar.tsx beside
-// the New button — so a shortcut can never drift from the click it
-// stands in for.
+// the New button, Import/Generate all/Download all in DecklistPage.tsx —
+// so a shortcut can never drift from the click it stands in for. The
+// first two work on every tab; a page's own exist only while it shows.
 
 // Cmd on macOS, Ctrl everywhere else: the platform's own "app command"
 // key, matching what the browser and every other desktop app on that OS

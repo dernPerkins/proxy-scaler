@@ -29,6 +29,7 @@ import {
 } from "../config";
 import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri";
 import { resolveImageOrigin } from "../imageOrigin";
+import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
@@ -499,6 +500,45 @@ export default function DecklistPage() {
     onError: (err: Error) => setStatus(`Re-fetch failed: ${err.message}`),
   });
 
+  // This tab's own shortcuts: Cmd/Ctrl+Enter imports the pasted decklist,
+  // +G generates all, +D downloads all. Registered by this page, so unlike
+  // the tab switcher and New (App.tsx, ProjectBar.tsx) they exist only
+  // while the Decklist tab is showing — and each fires only when its
+  // button could be clicked. The latest-closure ref keeps one listener
+  // for the page's life while every action sees current state.
+  const shortcutActions = useRef<Record<string, () => void>>({});
+  useEffect(() => {
+    shortcutActions.current = {
+      Enter: () => {
+        if (decklistDraft.trim() && !importing && !serverUnavailable) void handleImport();
+      },
+      KeyG: () => {
+        if (cards.length && !generateAllMutation.isPending && !serverUnavailable) {
+          generateAllMutation.mutate();
+        }
+      },
+      KeyD: () => {
+        if (cards.length && !downloadAllMutation.isPending && !serverUnavailable) {
+          downloadAllMutation.mutate();
+        }
+      },
+    };
+  });
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!hasShortcutModifier(e) || e.shiftKey) return;
+      const action = shortcutActions.current[e.code === "NumpadEnter" ? "Enter" : e.code];
+      if (!action) return;
+      // Claimed even when ignored: the webview's own Cmd+G (find next) and
+      // Cmd/Ctrl+D (bookmark) must never fire on this tab.
+      e.preventDefault();
+      if (isDialogOpen()) return;
+      action();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // ConfirmDialog rather than a checkbox-arm: destructive actions ask
   // their yes/no question in a modal (see ConfirmDialog.tsx for why not
   // window.confirm).
@@ -751,7 +791,7 @@ export default function DecklistPage() {
               title={
                 serverUnavailable
                   ? "Generation server is required to import"
-                  : undefined
+                  : shortcutLabel("Enter")
               }
             >
               {importing ? "Importing…" : "Import cards"}
@@ -870,7 +910,7 @@ export default function DecklistPage() {
               title={
                 serverUnavailable
                   ? "Generation server is unreachable"
-                  : "Download the ~300 DPI Scryfall originals without upscaling"
+                  : `Download the ~300 DPI Scryfall originals without upscaling · ${shortcutLabel("D")}`
               }
             >
               Download images
@@ -879,7 +919,11 @@ export default function DecklistPage() {
               className="btn-primary"
               onClick={() => generateAllMutation.mutate()}
               disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
-              title={serverUnavailable ? "Generation server is unreachable" : undefined}
+              title={
+                serverUnavailable
+                  ? "Generation server is unreachable"
+                  : shortcutLabel("G")
+              }
             >
               Generate upscaled images
             </button>
