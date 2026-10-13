@@ -219,7 +219,7 @@ again at generate time):
    printing from `GET /api/cards/variants` (every printing sharing the
    card's `oracle_id`, from the corpus, newest first). Above the grid,
    right-aligned: multi-selects of the card's languages and of its set
-   codes, a sort (newest/oldest/by set) and "Show digital". The language
+   codes, a sort (newest/oldest/by set) and "Show Digital". The language
    filter starts on "<language> + Exclusives", the way Scryfall lists
    prints: the card's language — or, when the card is currently an
    exclusive itself (no English version of its printing), the Project's

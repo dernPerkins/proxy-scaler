@@ -31,6 +31,7 @@ export type TourId =
   | "connect"
   | "decklist"
   | "decklist-cards"
+  | "decklist-picker"
   | "customs"
   | "customs-card"
   | "backs"
@@ -69,7 +70,7 @@ export const TOURS: Record<TourId, Tour> = {
   },
 
   decklist: {
-    followUps: ["decklist-cards"],
+    followUps: ["decklist-cards", "decklist-picker"],
     steps: [
       {
         target: "import-box",
@@ -151,7 +152,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "printing-picker",
         title: "Pick the printing",
-        body: "Click the set to choose a different printing or art.",
+        body: "Click the set to open the printing picker: every printing of this card as images, to choose a different art or version.",
         placement: "bottom",
       },
       {
@@ -171,6 +172,30 @@ export const TOURS: Record<TourId, Tour> = {
         title: "Versions",
         body: "Every model and DPI you've generated for this card shows up here with its status. Keep what you like. The PDF tab picks which version to print.",
         placement: "bottom",
+      },
+    ],
+  },
+
+  // The printing picker (PrintingPicker.tsx), the first time it opens.
+  "decklist-picker": {
+    steps: [
+      {
+        target: "picker-grid",
+        title: "Pick a printing",
+        body: "Every printing of this card, newest first. Click one to see it full size on the left, or double-click to use it straight away.",
+        placement: "left",
+      },
+      {
+        target: "picker-filters",
+        title: "Narrow it down",
+        body: "Filter by set and by language. By default you see what Scryfall would list for your project's language. Show Digital allows you to see Arena only versions.",
+        placement: "bottom",
+      },
+      {
+        target: "picker-preview-details",
+        title: "Check it, then confirm",
+        body: "The selected printing's details and every version you've already generated, by resolution and model. Use This Printing swaps it in; Keep Current Printing leaves the card as it is.",
+        placement: "right",
       },
     ],
   },

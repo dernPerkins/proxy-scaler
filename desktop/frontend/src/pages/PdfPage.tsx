@@ -167,7 +167,7 @@ export default function PdfPage() {
 
   // The inset's display unit is an app-wide preference (the stored value
   // is always mm), persisted in the client's app_settings store the same
-  // way PrintingPicker's "Show digital" is.
+  // way PrintingPicker's "Show Digital" is.
   const insetUnitQuery = useQuery({
     queryKey: ["cutter-inset-unit"],
     queryFn: () => projectApi.getCutterInsetUnit(),

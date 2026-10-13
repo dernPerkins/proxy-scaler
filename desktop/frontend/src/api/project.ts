@@ -264,7 +264,7 @@ export const projectApi = {
   setQuitPromptSuppressed: (suppressed: boolean) =>
     invokeCommand<void>("set_quit_prompt_suppressed", { suppressed }),
 
-  // The printing picker's "Show digital" — an app-wide user preference
+  // The printing picker's "Show Digital" — an app-wide user preference
   // (same app_settings store), not per-popover state. False until ticked.
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>

@@ -35,6 +35,8 @@ import type { CardRow } from "../api/project";
 import type { CardVariant, GeneratedPair, ImageOrigin } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import StatusBadge from "./StatusBadge";
+import TutorialButton from "../tutorial/TutorialButton";
+import { useTourWhenPresent } from "../tutorial/tutorialStore";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
 
 type Pick = {
@@ -470,7 +472,7 @@ function PrintingPreview(props: {
         </div>
       </div>
 
-      <div className="printing-preview-scrim">
+      <div className="printing-preview-scrim" data-tour="picker-preview-details">
         <h3 className="printing-preview-name">{faceName}</h3>
         <p className="printing-preview-meta">
           {v.set_name ?? v.set_code.toUpperCase()}
@@ -523,7 +525,7 @@ function PrintingGridModal(props: {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // "Show digital" is an app-wide preference persisted in the client's
+  // "Show Digital" is an app-wide preference persisted in the client's
   // app_settings store — every picker instance shares this query entry,
   // so checking it on one card holds for the next and across restarts.
   const showDigitalQuery = useQuery({
@@ -553,7 +555,7 @@ function PrintingGridModal(props: {
         name: card.name,
         include_digital: includeDigital,
       }),
-    // Wait for the saved Show digital choice: fetching with the default
+    // Wait for the saved Show Digital choice: fetching with the default
     // first would load the grid twice and place the initial focus on a
     // list that may not contain the current (digital) printing.
     enabled: showDigitalQuery.isFetched,
@@ -685,6 +687,9 @@ function PrintingGridModal(props: {
   // follows keyboard focus as well as clicks, so arrowing previews too.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = variants.find((v) => v.scryfall_id === selectedId) ?? null;
+  // The picker's first-open tour, once the grid and the preview are filled
+  // in; decklist-cards (the card rows' tour) always comes before it.
+  useTourWhenPresent("decklist-picker", ready && selected != null, "decklist-cards");
   const [settleMs, setSettleMs] = useState(0);
 
   // Keyboard: one tile is in the tab order at a time (a roving tabindex);
@@ -762,6 +767,8 @@ function PrintingGridModal(props: {
 
         {/* No title: the card's name is on the preview. */}
         <div className="modal-head printing-grid-head">
+          {/* The tab bar's ? is behind this modal; replay from here. */}
+          <TutorialButton tour="decklist-picker" />
           <button type="button" className="btn-sm" onClick={onClose}>
             Close
           </button>
@@ -789,11 +796,11 @@ function PrintingGridModal(props: {
         </div>
 
         {/* Rendered once the list loads even when it's empty: a card with
-            only digital printings needs "Show digital" reachable. */}
+            only digital printings needs "Show Digital" reachable. */}
         {variantsQuery.isSuccess && (
           <>
             {/* Above the grid, right-aligned, the count first. */}
-            <div className="printing-grid-controls">
+            <div className="printing-grid-controls" data-tour="picker-filters" data-tour-fit>
               <span className="printing-grid-count">
                 {shown.length} of {variants.length}
               </span>
@@ -839,14 +846,14 @@ function PrintingGridModal(props: {
                   checked={includeDigital}
                   onChange={(e) => setShowDigital.mutate(e.target.checked)}
                 />
-                Show digital
+                Show Digital
               </label>
             </div>
             {/* Mounted for as long as the grid is, even when the filters
                 match nothing: the tile observer is rooted on this element,
                 and a remounted one would leave it watching a detached node
                 (every tile after that would stay blank). */}
-            <div className="modal-body" ref={scrollRef}>
+            <div className="modal-body" ref={scrollRef} data-tour="picker-grid">
               {shown.length === 0 ? (
                 <p className="hint">No printings match this filter.</p>
               ) : (
