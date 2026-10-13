@@ -35,7 +35,7 @@ import StatusBadge from "./StatusBadge";
 import type { CardRow } from "../api/project";
 import type { CardVariant, GeneratedPair, ImageOrigin } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
-import SetFilter, { type SetOption } from "./SetFilter";
+import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
 
 type Pick = {
   scryfallId: string;
@@ -79,6 +79,30 @@ function variantCoverage(
 
 type SortMode = "newest" | "oldest" | "set";
 
+// Scryfall's printed-language codes, named for the language filter's
+// tooltips. Includes the fictional ones (Quenya, Phyrexian) a few promos
+// are printed in.
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  it: "Italian",
+  pt: "Portuguese",
+  ja: "Japanese",
+  ko: "Korean",
+  ru: "Russian",
+  zhs: "Simplified Chinese",
+  zht: "Traditional Chinese",
+  he: "Hebrew",
+  la: "Latin",
+  grc: "Ancient Greek",
+  ar: "Arabic",
+  sa: "Sanskrit",
+  ph: "Phyrexian",
+  qya: "Quenya",
+};
+
 const naturalCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
@@ -102,14 +126,6 @@ function sortVariants(variants: CardVariant[], mode: SortMode): CardVariant[] {
   return [...variants].sort(
     (a, b) => naturalCompare(setName(a), setName(b)) || tail(a, b),
   );
-}
-
-// The name search: the printed name (a foreign printing's own) or the
-// English name. Sets have their own filter (SetFilter).
-function matchesName(v: CardVariant, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return [v.name, v.printed_name].some((field) => field?.toLowerCase().includes(q));
 }
 
 // How many tiles one row of the grid holds, read off the laid-out CSS grid
@@ -474,8 +490,10 @@ function PrintingGridModal(props: {
   const { card, preferredLang, onClose, onPick } = props;
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
-  const [langFilter, setLangFilter] = useState(cardLang);
-  const [nameFilter, setNameFilter] = useState("");
+  // Any number of languages can be ticked; none (the default) means every
+  // language, so printings in fictional ones (Quenya, Phyrexian) are never
+  // hidden by default.
+  const [langFilter, setLangFilter] = useState<ReadonlySet<string>>(() => new Set());
   const [setFilter, setSetFilter] = useState<ReadonlySet<string>>(new Set());
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const serverVersion = useServerVersion();
@@ -555,32 +573,39 @@ function PrintingGridModal(props: {
   });
   const statuses = statusQuery.data?.statuses;
   const coverageOf = (v: CardVariant) => variantCoverage(v, statuses?.[v.scryfall_id], dpis);
-  const languages = useMemo(
-    () => Array.from(new Set(variants.map((v) => v.lang))),
+  // English first, then by code.
+  const languageOptions = useMemo<FilterOption[]>(
+    () =>
+      Array.from(new Set(variants.map((v) => v.lang)))
+        .sort((a, b) => Number(a !== "en") - Number(b !== "en") || a.localeCompare(b))
+        .map((lang) => ({ value: lang, label: lang.toUpperCase(), title: LANGUAGE_NAMES[lang] })),
     [variants],
   );
-  // The preferred filter language may simply not exist among this card's
-  // printings — fall back to showing everything rather than an empty grid.
-  const effectiveLang = languages.includes(langFilter) ? langFilter : null;
-  const setOptions = useMemo<SetOption[]>(() => {
+  // Only languages this card actually has count: if none of the ticked
+  // ones do (after a Show digital change, say), the grid shows every
+  // language rather than nothing.
+  const effectiveLangs = useMemo<ReadonlySet<string>>(
+    () => new Set([...langFilter].filter((l) => languageOptions.some((o) => o.value === l))),
+    [langFilter, languageOptions],
+  );
+  const setOptions = useMemo<FilterOption[]>(() => {
     const byCode = new Map<string, string | null>();
     for (const v of variants) if (!byCode.has(v.set_code)) byCode.set(v.set_code, v.set_name);
     return [...byCode]
-      .map(([code, name]) => ({ code, name }))
-      .sort((a, b) => a.code.localeCompare(b.code));
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([code, name]) => ({ value: code, label: code.toUpperCase(), title: name }));
   }, [variants]);
   const shown = useMemo(
     () =>
       sortVariants(
         variants.filter(
           (v) =>
-            (effectiveLang == null || v.lang === effectiveLang) &&
-            (setFilter.size === 0 || setFilter.has(v.set_code)) &&
-            matchesName(v, nameFilter),
+            (effectiveLangs.size === 0 || effectiveLangs.has(v.lang)) &&
+            (setFilter.size === 0 || setFilter.has(v.set_code)),
         ),
         sortMode,
       ),
-    [variants, effectiveLang, setFilter, nameFilter, sortMode],
+    [variants, effectiveLangs, setFilter, sortMode],
   );
 
   const currentId = card.scryfall_id;
@@ -681,62 +706,6 @@ function PrintingGridModal(props: {
           </button>
         </div>
 
-        <div className="printing-grid-controls">
-          <input
-            type="search"
-            placeholder="Search by name"
-            aria-label="Search by printed or English name"
-            value={nameFilter}
-            disabled={!ready}
-            onChange={(e) => setNameFilter(e.target.value)}
-          />
-          <SetFilter
-            options={setOptions}
-            selected={setFilter}
-            onChange={setSetFilter}
-            disabled={!ready}
-          />
-          <select
-            aria-label="Language"
-            value={ready ? (effectiveLang ?? "all") : "none"}
-            onChange={(e) => setLangFilter(e.target.value)}
-            disabled={!ready || languages.length <= 1}
-          >
-            {!ready && <option value="none">—</option>}
-            {ready && effectiveLang == null && <option value="all">All languages</option>}
-            {ready &&
-              languages.map((lang) => (
-                <option key={lang} value={lang}>
-                  {lang.toUpperCase()}
-                </option>
-              ))}
-          </select>
-          <select
-            aria-label="Sort"
-            value={sortMode}
-            disabled={!ready}
-            onChange={(e) => setSortMode(e.target.value as SortMode)}
-          >
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="set">By set</option>
-          </select>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={includeDigital}
-              disabled={!ready}
-              onChange={(e) => setShowDigital.mutate(e.target.checked)}
-            />
-            Show digital
-          </label>
-          {ready && (
-            <span className="printing-grid-count">
-              {shown.length} of {variants.length}
-            </span>
-          )}
-        </div>
-
         {ready && !showImages && (
           <p className="hint">
             Previews need a newer generation server (v{PRINTING_IMAGES_MIN_SERVER_VERSION} or
@@ -755,11 +724,10 @@ function PrintingGridModal(props: {
                 }`}
           </p>
         )}
-        {variantsQuery.isSuccess && variants.length === 0 && (
-          <p className="hint">No printings match this filter.</p>
-        )}
 
-        {ready && (
+        {/* Rendered once the list loads even when it's empty: a card with
+            only digital printings needs "Show digital" reachable. */}
+        {variantsQuery.isSuccess && (
           <div className="printing-grid-layout">
             {selected && (
               <PrintingPreview
@@ -775,51 +743,94 @@ function PrintingGridModal(props: {
                 onPick={() => pick(selected)}
               />
             )}
-            {/* Mounted for as long as the grid is, even when the filters
-                match nothing: the tile observer is rooted on this element,
-                and a remounted one would leave it watching a detached node
-                (every tile after that would stay blank). */}
-            <div className="modal-body" ref={scrollRef}>
-              {shown.length === 0 ? (
-                <p className="hint">No printings match this filter.</p>
-              ) : (
-                /* No virtualisation: ~870 tiles (a basic land) is well
-                   within what a plain CSS grid handles once thumbnails
-                   load only near the view (useTileVisibility). */
-                <div className="printing-grid" ref={gridRef} onKeyDown={onGridKeyDown}>
-                  {shown.map((v, i) => (
-                    <PrintingTile
-                      key={v.scryfall_id}
-                      v={v}
-                      current={isCurrent(v)}
-                      selected={v.scryfall_id === selectedId}
-                      coverage={coverageOf(v)}
-                      face={faceOf(v)}
-                      origin={origin}
-                      showImages={showImages}
-                      tabIndex={i === clampedFocus ? 0 : -1}
-                      observe={observeTile}
-                      buttonRef={(el) => {
-                        tileRefs.current[i] = el;
-                      }}
-                      onFocus={() => {
-                        setFocusIndex(i);
-                        setSelectedId(v.scryfall_id);
-                      }}
-                      onSelect={() => {
-                        // WKWebView doesn't focus a button on click, so
-                        // selection can't rely on onFocus alone.
-                        setSettleMs(0);
-                        setSelectedId(v.scryfall_id);
-                        setFocusIndex(i);
-                        tileRefs.current[i]?.focus();
-                      }}
-                      onPick={() => pick(v)}
-                      onFlip={() => flip(v)}
-                    />
-                  ))}
-                </div>
-              )}
+            <div className="printing-grid-main">
+              {/* Above the grid, right-aligned, the count first. */}
+              <div className="printing-grid-controls">
+                <span className="printing-grid-count">
+                  {shown.length} of {variants.length}
+                </span>
+                <MultiSelectFilter
+                  options={setOptions}
+                  selected={setFilter}
+                  onChange={setSetFilter}
+                  disabled={!ready}
+                  allLabel="All Sets"
+                  ariaLabel="Sets"
+                  findLabel="Find a set"
+                />
+                <MultiSelectFilter
+                  options={languageOptions}
+                  selected={effectiveLangs}
+                  onChange={setLangFilter}
+                  disabled={!ready}
+                  allLabel="All Languages"
+                  ariaLabel="Languages"
+                />
+                <select
+                  aria-label="Sort"
+                  value={sortMode}
+                  disabled={!ready}
+                  onChange={(e) => setSortMode(e.target.value as SortMode)}
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="set">By set</option>
+                </select>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={includeDigital}
+                    onChange={(e) => setShowDigital.mutate(e.target.checked)}
+                  />
+                  Show digital
+                </label>
+              </div>
+              {/* Mounted for as long as the grid is, even when the filters
+                  match nothing: the tile observer is rooted on this element,
+                  and a remounted one would leave it watching a detached node
+                  (every tile after that would stay blank). */}
+              <div className="modal-body" ref={scrollRef}>
+                {shown.length === 0 ? (
+                  <p className="hint">No printings match this filter.</p>
+                ) : (
+                  /* No virtualisation: ~870 tiles (a basic land) is well
+                     within what a plain CSS grid handles once thumbnails
+                     load only near the view (useTileVisibility). */
+                  <div className="printing-grid" ref={gridRef} onKeyDown={onGridKeyDown}>
+                    {shown.map((v, i) => (
+                      <PrintingTile
+                        key={v.scryfall_id}
+                        v={v}
+                        current={isCurrent(v)}
+                        selected={v.scryfall_id === selectedId}
+                        coverage={coverageOf(v)}
+                        face={faceOf(v)}
+                        origin={origin}
+                        showImages={showImages}
+                        tabIndex={i === clampedFocus ? 0 : -1}
+                        observe={observeTile}
+                        buttonRef={(el) => {
+                          tileRefs.current[i] = el;
+                        }}
+                        onFocus={() => {
+                          setFocusIndex(i);
+                          setSelectedId(v.scryfall_id);
+                        }}
+                        onSelect={() => {
+                          // WKWebView doesn't focus a button on click, so
+                          // selection can't rely on onFocus alone.
+                          setSettleMs(0);
+                          setSelectedId(v.scryfall_id);
+                          setFocusIndex(i);
+                          tileRefs.current[i]?.focus();
+                        }}
+                        onPick={() => pick(v)}
+                        onFlip={() => flip(v)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -830,8 +841,9 @@ function PrintingGridModal(props: {
 
 export default function PrintingPicker(props: {
   card: CardRow;
-  /** The project's import-language preference — the language filter's
-   *  default when the card itself doesn't carry one. */
+  /** The project's import-language preference — taken as the language of
+   *  a card row that doesn't carry its own, when matching the current
+   *  printing. */
   preferredLang: string;
   /** True when the generation server is unreachable — the button still
    *  renders the printing, it just can't open the picker. */

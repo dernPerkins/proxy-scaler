@@ -1004,8 +1004,8 @@ function CardRowView(props: {
   /** Re-download this face's Scryfall original, overwriting the cached
    *  copy — takes any of the face's gallery item ids. */
   onRefetch: (galleryItemId: number) => void;
-  /** The project's import-language preference — PrintingPicker's default
-   *  language filter for cards that don't carry their own. */
+  /** The project's import-language preference — PrintingPicker takes it
+   *  as the language of a card that doesn't carry its own. */
   preferredLang: string;
   onPickPrinting: (printing: {
     scryfallId: string;

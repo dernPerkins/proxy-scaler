@@ -46,6 +46,9 @@
   --ring: 0 0 0 3px rgba(79, 70, 229, 0.25);
   --shadow-sm: 0 1px 2px rgba(16, 16, 24, 0.06);
   --shadow: 0 2px 6px rgba(16, 16, 24, 0.08), 0 12px 32px rgba(16, 16, 24, 0.1);
+  /* The up/down chevron every dropdown draws (select + .select-button), in
+     --text-muted. A data URI can't read a variable, hence one per theme. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 12'%3E%3Cpath d='M1 4.5 4 1.5 7 4.5M1 7.5 4 10.5 7 7.5' fill='none' stroke='%236c6c78' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 @media (prefers-color-scheme: dark) {
@@ -78,6 +81,7 @@
 
     --ring: 0 0 0 3px rgba(125, 117, 240, 0.35);
     --shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.4);
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 12'%3E%3Cpath d='M1 4.5 4 1.5 7 4.5M1 7.5 4 10.5 7 7.5' fill='none' stroke='%23a2a2af' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
 }
 
@@ -142,6 +146,7 @@ button {
 
 input[type="text"],
 input[type="number"],
+input[type="search"],
 input:not([type]),
 select,
 textarea {
@@ -150,6 +155,47 @@ textarea {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   padding: 6px 9px;
+}
+
+/* WebKit draws search fields natively (an inset bevel and its own focus
+   border); this makes them ordinary inputs that take the rules above and
+   the shared :focus-visible ring. */
+input[type="search"] {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* Dropdowns: not drawn natively, so every select is the same height as
+   the inputs and buttons beside it on every platform, and custom
+   dropdowns (.select-button, e.g. the printing grid's set filter) can
+   look exactly like one. */
+select,
+.select-button {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+}
+/* Every state, not just the resting one: button:hover/:active set the
+   `background` shorthand, which resets repeat/position/size too — keeping
+   only the image there tiled the chevron across the whole button. A
+   dropdown keeps its look on hover and only firms its border. */
+select,
+.select-button,
+.select-button:hover:not(:disabled),
+.select-button:active:not(:disabled) {
+  background-color: var(--surface);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 8px 12px;
+}
+.select-button {
+  padding-left: 9px;
+  text-align: left;
+}
+.select-button:hover:not(:disabled),
+.select-button:active:not(:disabled) {
+  border-color: var(--text-faint);
 }
 
 textarea {
@@ -900,7 +946,15 @@ button:disabled {
   flex: 1;
   min-height: 0;
 }
-.printing-grid-layout > .modal-body {
+/* The grid column: its filter row above the scrolling grid. */
+.printing-grid-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.printing-grid-main > .modal-body {
   flex: 1;
 }
 .printing-preview {
@@ -973,32 +1027,29 @@ button:disabled {
   gap: 8px;
   margin-top: auto;
 }
+/* Right-aligned over the grid, the count just left of the filters. */
 .printing-grid-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   margin-bottom: 10px;
   flex-shrink: 0;
 }
-.printing-grid-controls input[type="search"] {
-  flex: 1 1 200px;
-  min-width: 0;
-}
-/* The set multi-select (SetFilter.tsx): a select-styled toggle opening a
-   checkbox list of set codes. */
-.set-filter {
+/* The set/language multi-selects (MultiSelectFilter.tsx): a select-styled
+   toggle opening a checkbox list. The panel hangs from the toggle's right
+   edge, since the filters sit at the grid's right. */
+.multi-filter {
   position: relative;
 }
-.set-filter-toggle {
+.multi-filter-toggle {
   min-width: 110px;
-  text-align: left;
-  white-space: nowrap;
 }
-.set-filter-panel {
+.multi-filter-panel {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  right: 0;
   z-index: 10;
   width: 200px;
   max-height: 340px;
@@ -1011,10 +1062,10 @@ button:disabled {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-.set-filter-panel .btn-sm {
+.multi-filter-panel .btn-sm {
   align-self: flex-start;
 }
-.set-filter-list {
+.multi-filter-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1022,15 +1073,14 @@ button:disabled {
   flex-direction: column;
   gap: 2px;
 }
-.set-filter-option {
+.multi-filter-option {
   padding: 2px 4px;
   border-radius: 4px;
 }
-.set-filter-option:hover {
+.multi-filter-option:hover {
   background: var(--surface-2);
 }
 .printing-grid-count {
-  margin-left: auto;
   color: var(--text-muted);
   font-size: 12px;
 }

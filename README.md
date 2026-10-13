@@ -30,7 +30,7 @@ Fetch Magic: The Gathering card images from [Scryfall](https://scryfall.com), up
 Click a card's set/collector button in the decklist view to switch it to
 any other printing — set, collector number, and (with the right dataset)
 language. It opens a grid of card images, one per printing, that you can
-filter by language, by one or more sets, or by searching the name, sort, and
+filter by one or more languages or sets, sort, and
 flip to see a double-faced card's back. Click a printing to see it at full
 size in the preview on the left, then "Use this printing" (or double-click,
 or Enter) to pick it. Arrow keys and Esc work too, and a ✓ marks printings

@@ -217,11 +217,11 @@ again at generate time):
 4. **Changing a printing**: the card row's set/collector button
    (`PrintingPicker.tsx`) opens a modal grid of card images, one tile per
    printing from `GET /api/cards/variants` (every printing sharing the
-   card's `oracle_id`, from the corpus, newest first). The grid filters by
-   language (defaulting to the card's or the Project's, falling back to
-   all), by set (a multi-select of the set codes the card has printings
-   in), by a name search (printed or English name) and by "Show digital",
-   sorts newest/oldest/by set, flips double-faced tiles, and marks
+   card's `oracle_id`, from the corpus, newest first). Above the grid,
+   right-aligned: multi-selects of the card's languages (defaulting to
+   "All Languages", so printings in fictional ones like Quenya are never
+   hidden) and of its set codes, a sort (newest/oldest/by set) and
+   "Show digital". The grid flips double-faced tiles and marks
    already-generated printings. Each tile is a lazily loaded `<img>` of
    `GET /api/cards/{id}/thumb?face=&via=&v=`: the generation server derives
    Scryfall's `normal` JPEG URL from the corpus's stored png URL, fetches
