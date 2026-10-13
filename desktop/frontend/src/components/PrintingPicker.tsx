@@ -79,6 +79,9 @@ function variantCoverage(
 
 type SortMode = "newest" | "oldest" | "set";
 
+// One printing across languages: its set and collector number.
+const slotOf = (v: CardVariant) => `${v.set_code}|${v.collector_number}`;
+
 // Scryfall's printed-language codes, named for the language filter's
 // tooltips. Includes the fictional ones (Quenya, Phyrexian) a few promos
 // are printed in.
@@ -490,7 +493,7 @@ function PrintingGridModal(props: {
   const { card, preferredLang, onClose, onPick } = props;
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
-  // Starts on "<card's language> + Exclusives" (see shownByDefault); after
+  // Starts on "<defaultLang> + Exclusives" (see shownByDefault); after
   // that, any number of languages can be ticked, none meaning every one.
   const [langDefault, setLangDefault] = useState(true);
   const [langFilter, setLangFilter] = useState<ReadonlySet<string>>(() => new Set());
@@ -595,21 +598,42 @@ function PrintingGridModal(props: {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([code, name]) => ({ value: code, label: code.toUpperCase(), title: name }));
   }, [variants]);
+  const currentId = card.scryfall_id;
+  const isCurrent = (v: CardVariant) =>
+    currentId
+      ? v.scryfall_id === currentId
+      : v.set_code === (card.set_code ?? "").toLowerCase() &&
+        v.collector_number === (card.collector_number ?? "") &&
+        v.lang === cardLang;
+
+  // The default view's language. Normally the card's own; but when the
+  // card is currently an exclusive (a printing with no English version,
+  // e.g. a Japanese-only promo), its language says nothing about what the
+  // user prints in, so the Project's import language stands in — and
+  // follows the import dropdown when that changes.
+  const defaultLang = useMemo(() => {
+    const current = variants.find(isCurrent);
+    if (!current || current.lang === "en") return cardLang;
+    const slot = slotOf(current);
+    const hasEnglish = variants.some((v) => v.lang === "en" && slotOf(v) === slot);
+    return hasEnglish ? cardLang : preferredLang || "en";
+    // isCurrent reads only props that are fixed while the grid is open.
+  }, [variants, cardLang, preferredLang]);
+
   // The default language view, the way Scryfall lists a card's prints:
-  // printings in the card's language (or the Project's), plus every
-  // printing — a set + collector number — that has no version in that
-  // language or in English. Those exclusives are real printings that only
-  // exist in another language (a Japanese-only Spotlight promo, the Quenya
-  // and Dwarvish Collector Booster versions) and would otherwise be hidden.
-  // A card with no printing in its own language shows everything.
+  // printings in defaultLang, plus every printing — a set + collector
+  // number — that has no version in that language or in English. Those
+  // exclusives are real printings that only exist in another language (a
+  // Japanese-only Spotlight promo, the Quenya and Dwarvish Collector
+  // Booster versions) and would otherwise be hidden. A card with no
+  // printing in defaultLang shows everything.
   const shownByDefault = useMemo(() => {
-    const slot = (v: CardVariant) => `${v.set_code}|${v.collector_number}`;
-    if (!variants.some((v) => v.lang === cardLang)) return () => true;
+    if (!variants.some((v) => v.lang === defaultLang)) return () => true;
     const covered = new Set(
-      variants.filter((v) => v.lang === cardLang || v.lang === "en").map(slot),
+      variants.filter((v) => v.lang === defaultLang || v.lang === "en").map(slotOf),
     );
-    return (v: CardVariant) => v.lang === cardLang || !covered.has(slot(v));
-  }, [variants, cardLang]);
+    return (v: CardVariant) => v.lang === defaultLang || !covered.has(slotOf(v));
+  }, [variants, defaultLang]);
   const shown = useMemo(
     () =>
       sortVariants(
@@ -624,14 +648,6 @@ function PrintingGridModal(props: {
       ),
     [variants, langDefault, shownByDefault, effectiveLangs, setFilter, sortMode],
   );
-
-  const currentId = card.scryfall_id;
-  const isCurrent = (v: CardVariant) =>
-    currentId
-      ? v.scryfall_id === currentId
-      : v.set_code === (card.set_code ?? "").toLowerCase() &&
-        v.collector_number === (card.collector_number ?? "") &&
-        v.lang === cardLang;
 
   function pick(v: CardVariant) {
     onClose();
@@ -786,8 +802,8 @@ function PrintingGridModal(props: {
                   allLabel="All Languages"
                   ariaLabel="Languages"
                   preset={{
-                    label: `${cardLang.toUpperCase()} + Exclusives`,
-                    title: `${LANGUAGE_NAMES[cardLang] ?? cardLang.toUpperCase()} printings, plus printings that only exist in another language`,
+                    label: `${defaultLang.toUpperCase()} + Exclusives`,
+                    title: `${LANGUAGE_NAMES[defaultLang] ?? defaultLang.toUpperCase()} printings, plus printings that only exist in another language`,
                     active: langDefault,
                     onSelect: () => setLangDefault(true),
                   }}

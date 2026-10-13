@@ -220,8 +220,10 @@ again at generate time):
    card's `oracle_id`, from the corpus, newest first). Above the grid,
    right-aligned: multi-selects of the card's languages and of its set
    codes, a sort (newest/oldest/by set) and "Show digital". The language
-   filter starts on "<card's language> + Exclusives", the way Scryfall
-   lists prints: the card's language (or the Project's), plus every
+   filter starts on "<language> + Exclusives", the way Scryfall lists
+   prints: the card's language — or, when the card is currently an
+   exclusive itself (no English version of its printing), the Project's
+   import language, following the import dropdown — plus every
    printing (set + collector number) with no version in that language or
    English — language-only printings like a Japanese Spotlight promo or the
    Quenya/Dwarvish Collector Booster versions. Ticking languages or "All
