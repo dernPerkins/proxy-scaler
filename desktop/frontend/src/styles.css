@@ -1062,8 +1062,10 @@ button:disabled {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-.multi-filter-panel .btn-sm {
-  align-self: flex-start;
+.multi-filter-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .multi-filter-list {
   flex: 1;

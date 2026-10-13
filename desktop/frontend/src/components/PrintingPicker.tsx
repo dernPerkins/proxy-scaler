@@ -490,9 +490,9 @@ function PrintingGridModal(props: {
   const { card, preferredLang, onClose, onPick } = props;
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
-  // Any number of languages can be ticked; none (the default) means every
-  // language, so printings in fictional ones (Quenya, Phyrexian) are never
-  // hidden by default.
+  // Starts on "<card's language> + Exclusives" (see shownByDefault); after
+  // that, any number of languages can be ticked, none meaning every one.
+  const [langDefault, setLangDefault] = useState(true);
   const [langFilter, setLangFilter] = useState<ReadonlySet<string>>(() => new Set());
   const [setFilter, setSetFilter] = useState<ReadonlySet<string>>(new Set());
   const [sortMode, setSortMode] = useState<SortMode>("newest");
@@ -582,8 +582,8 @@ function PrintingGridModal(props: {
     [variants],
   );
   // Only languages this card actually has count: if none of the ticked
-  // ones do (after a Show digital change, say), the grid shows every
-  // language rather than nothing.
+  // ones do (the card has no printing in its default language), the grid
+  // shows every language rather than nothing.
   const effectiveLangs = useMemo<ReadonlySet<string>>(
     () => new Set([...langFilter].filter((l) => languageOptions.some((o) => o.value === l))),
     [langFilter, languageOptions],
@@ -595,17 +595,34 @@ function PrintingGridModal(props: {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([code, name]) => ({ value: code, label: code.toUpperCase(), title: name }));
   }, [variants]);
+  // The default language view, the way Scryfall lists a card's prints:
+  // printings in the card's language (or the Project's), plus every
+  // printing — a set + collector number — that has no version in that
+  // language or in English. Those exclusives are real printings that only
+  // exist in another language (a Japanese-only Spotlight promo, the Quenya
+  // and Dwarvish Collector Booster versions) and would otherwise be hidden.
+  // A card with no printing in its own language shows everything.
+  const shownByDefault = useMemo(() => {
+    const slot = (v: CardVariant) => `${v.set_code}|${v.collector_number}`;
+    if (!variants.some((v) => v.lang === cardLang)) return () => true;
+    const covered = new Set(
+      variants.filter((v) => v.lang === cardLang || v.lang === "en").map(slot),
+    );
+    return (v: CardVariant) => v.lang === cardLang || !covered.has(slot(v));
+  }, [variants, cardLang]);
   const shown = useMemo(
     () =>
       sortVariants(
         variants.filter(
           (v) =>
-            (effectiveLangs.size === 0 || effectiveLangs.has(v.lang)) &&
+            (langDefault
+              ? shownByDefault(v)
+              : effectiveLangs.size === 0 || effectiveLangs.has(v.lang)) &&
             (setFilter.size === 0 || setFilter.has(v.set_code)),
         ),
         sortMode,
       ),
-    [variants, effectiveLangs, setFilter, sortMode],
+    [variants, langDefault, shownByDefault, effectiveLangs, setFilter, sortMode],
   );
 
   const currentId = card.scryfall_id;
@@ -760,11 +777,20 @@ function PrintingGridModal(props: {
                 />
                 <MultiSelectFilter
                   options={languageOptions}
-                  selected={effectiveLangs}
-                  onChange={setLangFilter}
+                  selected={langDefault ? new Set() : effectiveLangs}
+                  onChange={(next) => {
+                    setLangDefault(false);
+                    setLangFilter(next);
+                  }}
                   disabled={!ready}
                   allLabel="All Languages"
                   ariaLabel="Languages"
+                  preset={{
+                    label: `${cardLang.toUpperCase()} + Exclusives`,
+                    title: `${LANGUAGE_NAMES[cardLang] ?? cardLang.toUpperCase()} printings, plus printings that only exist in another language`,
+                    active: langDefault,
+                    onSelect: () => setLangDefault(true),
+                  }}
                 />
                 <select
                   aria-label="Sort"
@@ -841,9 +867,9 @@ function PrintingGridModal(props: {
 
 export default function PrintingPicker(props: {
   card: CardRow;
-  /** The project's import-language preference — taken as the language of
-   *  a card row that doesn't carry its own, when matching the current
-   *  printing. */
+  /** The project's import-language preference — the language filter's
+   *  default, and the language of the current printing, for a card row
+   *  that doesn't carry its own. */
   preferredLang: string;
   /** True when the generation server is unreachable — the button still
    *  renders the printing, it just can't open the picker. */
