@@ -312,8 +312,8 @@ generation-server state.
 | `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
 | `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
 | `get_update_skipped_version` / `set_update_skipped_version` | The update prompt's "Skip this version" (`app_settings`) — suppresses exactly one release; the next one supersedes the skip by not matching it |
-| `get_update_check_enabled` / `set_update_check_enabled` | App Settings' "Check for updates at launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
-| `get_image_cache_enabled` / `set_image_cache_enabled` | App Settings' "Use Proxy Scaler image cache" (`app_settings`, default on) — the client's **image origin**, sent on every Generate-family request and thumbnail URL (`imageOrigin.ts`) |
+| `get_update_check_enabled` / `set_update_check_enabled` | App Settings' "Check For Updates At Launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
+| `get_image_cache_enabled` / `set_image_cache_enabled` | App Settings' "Use Proxy Scaler Image Cache" (`app_settings`, default on) — the client's **image origin**, sent on every Generate-family request and thumbnail URL (`imageOrigin.ts`) |
 
 The update mechanism itself lives in `desktop/src-tauri/src/update.rs`
 (`check_for_update` / `download_update` / `launch_installer`, driven by
@@ -433,7 +433,7 @@ string, not a database relationship.
   value, so "off" is never sent as the default) and a hook for the
   grid's thumbnail `via`.
 - `components/AppSettingsModal.tsx` — client-side, app-wide preferences
-  ("Check for updates at launch", the image-cache toggle), opened from
+  ("Check For Updates At Launch", the image-cache toggle), opened from
   the tab bar's gear. Settings that depend on the connected generation
   server stay in the Decklist sidebar.
 - `BacksPage.tsx` — the Back Library: an entirely local list (`invoke`),

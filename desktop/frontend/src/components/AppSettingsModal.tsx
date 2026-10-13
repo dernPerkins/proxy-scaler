@@ -36,7 +36,7 @@ function UpdateCheckToggle() {
           void setUpdateCheckEnabled(next).catch(() => {});
         }}
       />
-      Check for updates at launch
+      Check For Updates At Launch
     </label>
   );
 }
@@ -55,11 +55,11 @@ function ImageCacheToggle() {
           disabled={enabled == null}
           onChange={(e) => setEnabled(e.target.checked)}
         />
-        Use Proxy Scaler image cache (recommended)
+        Use Proxy Scaler Image Cache (Recommended)
       </label>
       <p className="hint">
-        Off sends card image requests straight to Scryfall, with no Proxy Scaler server in
-        between. Images are still cached on your generation server.
+        When Off, sends card image requests straight to Scryfall, with no Proxy Scaler server
+        in between. Images are still cached on your generation server.
       </p>
     </div>
   );

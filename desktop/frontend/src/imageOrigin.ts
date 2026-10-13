@@ -1,4 +1,4 @@
-// App Settings' "Use Proxy Scaler image cache (recommended)". On, the
+// App Settings' "Use Proxy Scaler Image Cache (Recommended)". On, the
 // generation server fetches card images through the Proxy Scaler image
 // cache (a Cloudflare Worker that falls back to Scryfall by itself); off,
 // straight from Scryfall, with the Worker never contacted. The choice is

@@ -270,7 +270,7 @@ export const projectApi = {
   setShowDigitalPrintings: (show: boolean) =>
     invokeCommand<void>("set_show_digital_printings", { show }),
 
-  // App Settings' "Use Proxy Scaler image cache" — which image origin this
+  // App Settings' "Use Proxy Scaler Image Cache" — which image origin this
   // client asks the generation server to fetch card images through (see
   // imageOrigin.ts). True until switched off.
   getImageCacheEnabled: () => invokeCommand<boolean>("get_image_cache_enabled"),

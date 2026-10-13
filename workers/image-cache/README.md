@@ -26,8 +26,13 @@ Why it exists and how it's protected:
 - The edge cache sits in front with `max-age=86400`. Stale copies are never
   put in it. The `X-Image-Cache` response header says which path served a
   request: `HIT`, `MISS`, `REFRESH` or `STALE`.
-- Per-IP rate limiting is a WAF rule in the dashboard (about 300 requests a
-  minute per IP), not Worker code.
+- Per-IP rate limiting is a WAF rate-limiting rule in the dashboard, not
+  Worker code. On the Free plan the rule can't match a hostname, so it
+  matches the cache's path shape: URI Path wildcard `/*/front/*` or
+  `/*/back/*`, per IP, 100 requests per 10 seconds (Free allows only
+  10-second periods; a fresh picker grid fires ~50 thumbnail requests at
+  once from one generation server, so 50 would block normal use). A
+  tripped rule only sends that client to Scryfall directly.
 
 ## Developing
 

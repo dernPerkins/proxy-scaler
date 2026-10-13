@@ -56,7 +56,7 @@ downloads) are fetched by the generation server, by default through the
 **Proxy Scaler image cache** at `img.proxy-scaler.com`, which keeps Proxy
 Scaler from hammering Scryfall's image servers and falls back to Scryfall
 directly whenever it's unavailable. To send requests straight to Scryfall
-with no third party in between, turn off "Use Proxy Scaler image cache"
+with no third party in between, turn off "Use Proxy Scaler Image Cache"
 in App Settings (the gear in the tab bar). Thumbnails are cached on the
 generation server either way, so a printing you've looked at once loads
 instantly and works offline.
