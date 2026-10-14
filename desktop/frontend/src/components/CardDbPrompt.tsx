@@ -31,6 +31,7 @@ import {
   setCardDbSettled,
   subscribeUpdateStore,
 } from "../update";
+import SelectMenu from "./SelectMenu";
 
 // Approximate compressed download sizes — see CardDbPanel's copy of this
 // and card_db_status()'s docstring for why they aren't read live.
@@ -155,18 +156,20 @@ export default function CardDbPrompt() {
           downloads once and updates on demand from the Decklist sidebar.
         </p>
 
-        <select
-          value={dataset}
-          onChange={(e) => setDataset(e.target.value as CardDataset)}
-          style={{ marginBottom: 10 }}
-        >
-          <option value="default_cards">
-            English only (~{APPROX_DOWNLOAD_MB.default_cards} MB)
-          </option>
-          <option value="all_cards">
-            All languages (~{APPROX_DOWNLOAD_MB.all_cards} MB)
-          </option>
-        </select>
+        <div style={{ marginBottom: 10 }}>
+          <SelectMenu
+            ariaLabel="Card data to download"
+            options={[
+              {
+                value: "default_cards",
+                label: `English only (~${APPROX_DOWNLOAD_MB.default_cards} MB)`,
+              },
+              { value: "all_cards", label: `All languages (~${APPROX_DOWNLOAD_MB.all_cards} MB)` },
+            ]}
+            value={dataset}
+            onChange={(value) => setDataset(value as CardDataset)}
+          />
+        </div>
 
         {error && (
           <p className="error-text" style={{ marginBottom: 10 }}>

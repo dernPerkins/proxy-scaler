@@ -46,7 +46,7 @@
   --ring: 0 0 0 3px rgba(79, 70, 229, 0.25);
   --shadow-sm: 0 1px 2px rgba(16, 16, 24, 0.06);
   --shadow: 0 2px 6px rgba(16, 16, 24, 0.08), 0 12px 32px rgba(16, 16, 24, 0.1);
-  /* The up/down chevron every dropdown draws (select + .select-button), in
+  /* The up/down chevron every dropdown toggle (.select-button) draws, in
      --text-muted. A data URI can't read a variable, hence one per theme. */
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 12'%3E%3Cpath d='M1 4.5 4 1.5 7 4.5M1 7.5 4 10.5 7 7.5' fill='none' stroke='%236c6c78' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 
@@ -160,7 +160,6 @@ code,
 /* ---------- form controls ---------- */
 
 input,
-select,
 textarea,
 button {
   font: inherit;
@@ -170,7 +169,6 @@ input[type="text"],
 input[type="number"],
 input[type="search"],
 input:not([type]),
-select,
 textarea {
   color: var(--text);
   background: var(--surface);
@@ -187,11 +185,11 @@ input[type="search"] {
   -webkit-appearance: none;
 }
 
-/* Dropdowns: not drawn natively, so every select is the same height as
-   the inputs and buttons beside it on every platform, and custom
-   dropdowns (.select-button, e.g. the printing grid's set filter) can
-   look exactly like one. */
-select,
+/* Dropdowns: the app has no native <select>s. Every one is drawn by the
+   app (SelectMenu, MultiSelectFilter), because the menu a native select
+   opens is the OS's own and on macOS floats over the control instead of
+   hanging from it. .select-button is the toggle they share: the same
+   height as the inputs and buttons beside it, with our chevron. */
 .select-button {
   appearance: none;
   -webkit-appearance: none;
@@ -201,7 +199,6 @@ select,
    `background` shorthand, which resets repeat/position/size too — keeping
    only the image there tiled the chevron across the whole button. A
    dropdown keeps its look on hover and only firms its border. */
-select,
 .select-button,
 .select-button:hover:not(:disabled),
 .select-button:active:not(:disabled) {
@@ -278,7 +275,7 @@ input[type="range"] {
    and stretch a checkbox to full width if one is ever placed directly
    in a .field. */
 .field > input:not([type="checkbox"]),
-.field > select,
+.field > .select-menu,
 .field > textarea {
   width: 100%;
 }
@@ -1188,21 +1185,17 @@ button:disabled {
   flex-shrink: 0;
 }
 /* The set/language multi-selects (MultiSelectFilter.tsx): a select-styled
-   toggle opening a checkbox list. The panel hangs from the toggle's right
-   edge, since the filters sit at the grid's right. */
-.multi-filter {
-  position: relative;
-}
+   toggle opening a checkbox list. The panel is portalled to <body> and
+   placed by useDropdownPosition, hung from the toggle's right edge since
+   the filters sit at the grid's right. Same layer as SelectMenu's list:
+   above the printing grid's modal (1000). */
 .multi-filter-toggle {
   min-width: 110px;
 }
 .multi-filter-panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 10;
+  z-index: 1100;
+  box-sizing: border-box;
   width: 200px;
-  max-height: 340px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1609,7 +1602,7 @@ tbody tr:last-child td {
   border-bottom: none;
 }
 
-/* Inline "Sort" label + select (SortSelect), for the Decklist and Export
+/* Inline "Sort" label + dropdown (SortSelect), for the Decklist and Export
    action rows. Same label treatment as .field > span. */
 .sort-select {
   display: flex;
@@ -1818,7 +1811,7 @@ tbody tr:last-child td {
 
 /* ---------- settings presets (PresetBar / PresetManagerDialog) ---------- */
 /* The preset dropdown with its Save (+) and Manage (gear) buttons on the
-   same line; the select takes whatever width the buttons leave. */
+   same line; the dropdown takes whatever width the buttons leave. */
 .preset-row {
   display: flex;
   align-items: stretch;
@@ -1828,7 +1821,7 @@ tbody tr:last-child td {
   flex: 1;
   min-width: 0;
 }
-/* A square button sized to the select beside it. */
+/* A square button sized to the dropdown beside it. */
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -1849,60 +1842,129 @@ tbody tr:last-child td {
   width: 14px;
   height: 14px;
 }
-.preset-list {
-  list-style: none;
-  margin: 0 0 4px;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* PresetManagerDialog: the preset table on the left, the selected
+   preset's settings on the right. */
+.modal.preset-manager {
+  width: min(90vw, 680px);
 }
-/* Default radio, name, Delete. */
-.preset-item {
+.preset-split {
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 20px;
+  min-height: 0;
 }
-.preset-builtin {
-  grid-column: 2 / -1;
-  color: var(--text-muted);
-}
-.preset-name {
+.preset-split-list {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 10px;
   min-width: 0;
 }
-.preset-name > input {
+.preset-split-detail {
+  border-left: 1px solid var(--border);
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Capped and scrolling, so a long list scrolls here instead of growing
+   the dialog past the window. vh keeps it inside a short window too. */
+.preset-table-wrap {
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.preset-table {
   width: 100%;
 }
+.preset-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  padding-top: 8px;
+}
+.preset-table tbody tr {
+  cursor: pointer;
+}
+.preset-table tbody tr.selected td,
+.preset-table tbody tr.selected:hover td {
+  background: var(--accent-soft);
+}
+.preset-table tbody tr:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.preset-table-flag {
+  width: 1px;
+  text-align: center;
+  white-space: nowrap;
+}
+.preset-table-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.preset-new {
+  display: flex;
+  gap: 6px;
+}
+.preset-new > input {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .preset-split {
+    grid-template-columns: 1fr;
+  }
+  .preset-split-detail {
+    border-left: none;
+    padding-left: 0;
+  }
+}
 
-/* ---------- SelectMenu (an app-drawn single-choice dropdown) ---------- */
-/* The toggle is a .select-button, so it already looks like every other
-   dropdown; the list hangs from it at the same width. */
+/* ---------- SelectMenu (the app's dropdown — see SelectMenu.tsx) ---------- */
+/* The toggle is a .select-button, so it looks like every other dropdown. */
 .select-menu {
   position: relative;
+  display: inline-block;
+  max-width: 100%;
 }
 .select-menu-toggle {
   width: 100%;
+  font: inherit;
+}
+/* Every option's label stacked in one grid cell (only the current one
+   visible) so the toggle is as wide as the longest, like a native select.
+   minmax(0, auto) lets it shrink below that inside a full-width field,
+   where the current label truncates instead. */
+.select-menu-value {
+  display: grid;
+  grid-template-columns: minmax(0, auto);
+}
+.select-menu-value > * {
+  grid-area: 1 / 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-menu-sizer {
+  visibility: hidden;
 }
 .select-menu-placeholder {
   color: var(--text-muted);
 }
+/* Portalled to <body> and placed by useDropdownPosition (fixed, below or
+   above the toggle). Above modals (1000), below the tour (1500) and
+   toasts (2000). */
 .select-menu-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 10;
-  max-height: 280px;
+  z-index: 1100;
+  box-sizing: border-box;
   overflow-y: auto;
   margin: 0;
   padding: 4px;
   list-style: none;
+  font-size: 14px;
+  color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
@@ -1912,21 +1974,33 @@ tbody tr:last-child td {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px 5px 4px;
+  padding: 5px 10px 5px 4px;
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .select-menu-option.active {
   background: var(--surface-2);
+}
+.select-menu-option.grouped {
+  padding-left: 10px;
 }
 .select-menu-check {
   width: 14px;
   flex-shrink: 0;
   text-align: center;
   color: var(--accent);
+}
+.select-menu-group {
+  padding: 8px 8px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.select-menu-group:first-child {
+  padding-top: 4px;
 }
 
 /* ---------- progress bar ---------- */

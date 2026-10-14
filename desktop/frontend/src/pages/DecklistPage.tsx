@@ -5,6 +5,7 @@ import { projectApi } from "../api/project";
 import type { CardRow, CustomUpscaleMode } from "../api/project";
 import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
+import SelectMenu from "../components/SelectMenu";
 import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import CompareDialog from "../components/CompareDialog";
 import FullImageDialog from "../components/FullImageDialog";
@@ -693,20 +694,18 @@ export default function DecklistPage() {
               prints at its own resolution. */}
           <label className="field" data-tour="custom-upscale-select">
             <span>Custom images</span>
-            <select
+            <SelectMenu
+              options={[
+                { value: "off", label: "Don't upscale" },
+                { value: "target", label: "Upscale to target DPI" },
+                { value: "native", label: "Upscale 4× (up to 2400 DPI)" },
+              ]}
               value={customUpscale}
               disabled={!customUpscaleSupported}
-              onChange={(e) =>
-                setSettings((s) => ({
-                  ...s,
-                  custom_upscale: e.target.value as CustomUpscaleMode,
-                }))
+              onChange={(value) =>
+                setSettings((s) => ({ ...s, custom_upscale: value as CustomUpscaleMode }))
               }
-            >
-              <option value="off">Don't upscale</option>
-              <option value="target">Upscale to target DPI</option>
-              <option value="native">Upscale 4× (up to 2400 DPI)</option>
-            </select>
+            />
           </label>
           <p className="hint">
             {customUpscaleSupported
@@ -836,23 +835,17 @@ export default function DecklistPage() {
                 added), unless "All Languages" hands matching back to
                 best-effort. Options are the full Scryfall list, served by
                 the server regardless of which corpus is imported. */}
-            <select
-              value={settings.preferred_lang}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, preferred_lang: e.target.value }))
-              }
-              disabled={settings.lang_any}
+            <SelectMenu
+              ariaLabel="Card language to import"
               title="Card language to import"
-            >
-              {(languages.includes(settings.preferred_lang)
+              options={(languages.includes(settings.preferred_lang)
                 ? languages
                 : [settings.preferred_lang, ...languages]
-              ).map((lang) => (
-                <option key={lang} value={lang}>
-                  {lang.toUpperCase()}
-                </option>
-              ))}
-            </select>
+              ).map((lang) => ({ value: lang, label: lang.toUpperCase() }))}
+              value={settings.preferred_lang}
+              disabled={settings.lang_any}
+              onChange={(value) => setSettings((s) => ({ ...s, preferred_lang: value }))}
+            />
             <label className="check" title="Match any language, best effort">
               <input
                 type="checkbox"

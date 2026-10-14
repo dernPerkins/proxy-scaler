@@ -5,6 +5,7 @@ import { useProject } from "../context/ProjectContext";
 import { useServerReadiness } from "../config";
 import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import ConfirmDialog from "./ConfirmDialog";
+import SelectMenu from "./SelectMenu";
 
 // Long enough that typing "Krenko Goblins" is one commit rather than two,
 // short enough that the chip flips while the user is still looking at the
@@ -368,19 +369,13 @@ export default function ProjectBar() {
               project — the only "this project" left once selecting means
               loading — and stays off for the unnamed slate, whose way out
               is the New button's discard flow, not deletion. */}
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value) project.load(Number(e.target.value));
-            }}
-          >
-            <option value="">Load project…</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} (#{p.id})
-              </option>
-            ))}
-          </select>
+          <SelectMenu
+            ariaLabel="Load project"
+            options={projects.map((p) => ({ value: String(p.id), label: `${p.name} (#${p.id})` }))}
+            value={null}
+            placeholder="Load project…"
+            onChange={(id) => project.load(Number(id))}
+          />
           <button
             className="btn-danger"
             onClick={() => setConfirmingDelete(true)}

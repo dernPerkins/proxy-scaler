@@ -39,6 +39,7 @@ import TutorialButton from "../tutorial/TutorialButton";
 import { useTourWhenPresent } from "../tutorial/tutorialStore";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
 import SetIcon from "./SetIcon";
+import SelectMenu from "./SelectMenu";
 
 type Pick = {
   scryfallId: string;
@@ -841,16 +842,17 @@ function PrintingGridModal(props: {
                   onSelect: () => setLangDefault(true),
                 }}
               />
-              <select
-                aria-label="Sort"
+              <SelectMenu
+                ariaLabel="Sort"
+                options={[
+                  { value: "newest", label: "Newest first" },
+                  { value: "oldest", label: "Oldest first" },
+                  { value: "set", label: "By set" },
+                ]}
                 value={sortMode}
                 disabled={!ready}
-                onChange={(e) => setSortMode(e.target.value as SortMode)}
-              >
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="set">By set</option>
-              </select>
+                onChange={(value) => setSortMode(value as SortMode)}
+              />
               <label className="check">
                 <input
                   type="checkbox"

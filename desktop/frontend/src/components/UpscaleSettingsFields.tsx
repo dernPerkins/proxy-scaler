@@ -14,6 +14,7 @@ import { generationApi } from "../api/generation";
 import { DPI_OPTIONS } from "../constants";
 import { useServerReadiness } from "../config";
 import ModelSelect, { reconcileTileForModel } from "./ModelSelect";
+import SelectMenu from "./SelectMenu";
 
 export interface UpscaleFields {
   model: string;
@@ -72,7 +73,7 @@ export default function UpscaleSettingsFields({ value, onChange, tourPrefix = ""
       {/* Without this, a stuck/failed local-server start (or any other
           listModels() failure) rendered as a silently empty dropdown —
           indistinguishable from "there really are no models" — since
-          the .map() above just produces zero <option>s either way. */}
+          the model dropdown just has zero options either way. */}
       {modelsQuery.isLoading && (
         <p className="hint">
           {readiness.status === "starting"
@@ -114,22 +115,19 @@ export default function UpscaleSettingsFields({ value, onChange, tourPrefix = ""
       {vramPresets.length > 0 ? (
         <label className="field" data-tour={`${tourPrefix}vram-select`}>
           <span>GPU VRAM</span>
-          <select
+          <SelectMenu
+            options={[
+              ...vramPresets.map((p) => ({ value: p.key, label: p.label })),
+              ...(vramPresets.some((p) => p.tile === value.tile_size)
+                ? []
+                : [{ value: "custom", label: `Custom (${value.tile_size} px tile)` }]),
+            ]}
             value={vramPresets.find((p) => p.tile === value.tile_size)?.key ?? "custom"}
-            onChange={(e) => {
-              const preset = vramPresets.find((p) => p.key === e.target.value);
+            onChange={(key) => {
+              const preset = vramPresets.find((p) => p.key === key);
               if (preset) onChange({ tile_size: preset.tile });
             }}
-          >
-            {vramPresets.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.label}
-              </option>
-            ))}
-            {!vramPresets.some((p) => p.tile === value.tile_size) && (
-              <option value="custom">Custom ({value.tile_size} px tile)</option>
-            )}
-          </select>
+          />
         </label>
       ) : (
         <label className="field" data-tour={`${tourPrefix}vram-select`}>

@@ -1,39 +1,72 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { useProject } from "../context/ProjectContext";
-import { matchingPresetId, useSettingsPresets, type PresetKind } from "../settingsPresets";
+import { getDefaultSettings, useProject } from "../context/ProjectContext";
+import type { ProjectSettings } from "../api/project";
+import {
+  BUILTIN_PRESET_ID,
+  matchingPresetId,
+  pickPresetFields,
+  useSettingsPresets,
+  type PresetKind,
+  type SettingsPreset,
+} from "../settingsPresets";
 import { isTauri } from "../tauri";
 import GearIcon from "./GearIcon";
-import ModalOverlay from "./ModalOverlay";
 import PresetManagerDialog from "./PresetManagerDialog";
 import SelectMenu from "./SelectMenu";
 
-// The first thing in the PDF and ZIP sidebars: pick a saved preset for
-// this tab, save the current settings as one, or open the manager.
+/** "Default" as a preset: this kind's fields from the built-in settings. */
+function builtinPreset(kind: PresetKind): SettingsPreset {
+  return {
+    id: BUILTIN_PRESET_ID,
+    name: "Default",
+    settings: pickPresetFields(kind, getDefaultSettings()),
+  };
+}
+
+/** Which preset the tab is on: a saved one that matches, else Default if
+ *  the built-in values match, else null (Custom). A saved preset wins over
+ *  Default when both match — one saved with the built-in values. */
+function activePresetId(
+  kind: PresetKind,
+  presets: SettingsPreset[],
+  settings: ProjectSettings,
+): string | null {
+  return (
+    matchingPresetId(presets, settings) ??
+    (matchingPresetId([builtinPreset(kind)], settings) ? BUILTIN_PRESET_ID : null)
+  );
+}
+
+// The first thing in the PDF and ZIP sidebars: pick a preset for this
+// tab, or open the manager (the gear) to save, rename, delete, or choose
+// which one new projects start from.
 //
-// Save and Manage sit as icon buttons to the right of the dropdown rather
-// than on a row below it — the layout export-preset pickers (Lightroom,
-// Media Encoder, OBS profiles) use, and one that costs the PDF sidebar no
-// height on a screen where Generate already sits near the fold.
-//
-// The dropdown is a SelectMenu rather than a <select> so its list hangs
-// from it instead of macOS's menu floating over it. It shows whichever
-// preset the settings currently match, and "Custom" when they match none — the same convention as the page-size
+// "Default" is always the first choice — the built-in values, for when
+// you want no preset at all. ★ marks the one new projects start from.
+// The dropdown shows whichever choice the settings currently match, and
+// "Custom" when they match none — the same convention as the page-size
 // dropdown's Custom option, so editing a field after picking a preset
 // reads as having left it rather than having changed it.
+//
+// The gear sits to the right of the dropdown rather than on a row below
+// it — the layout export-preset pickers (Lightroom, Media Encoder, OBS
+// profiles) use, and one that costs the PDF sidebar no height on a screen
+// where Generate already sits near the fold.
 export default function PresetBar({ kind, tourId }: { kind: PresetKind; tourId: string }) {
   const { settings, setSettings } = useProject();
-  const { presets, defaultId, create, rename, remove, setDefault } = useSettingsPresets(kind);
-  const [saveOpen, setSaveOpen] = useState(false);
+  const presetStore = useSettingsPresets(kind);
   const [managerOpen, setManagerOpen] = useState(false);
 
   // Presets live in the desktop app's store; a plain browser tab has none.
   if (!isTauri()) return null;
 
-  const matched = matchingPresetId(presets, settings);
+  const { presets, defaultId } = presetStore;
+  const all = [builtinPreset(kind), ...presets];
+  const title = `${kind.toUpperCase()} Presets`;
 
   function apply(id: string) {
-    const preset = presets.find((p) => p.id === id);
+    const preset = all.find((p) => p.id === id);
     if (preset) setSettings((s) => ({ ...s, ...preset.settings }));
   }
 
@@ -43,137 +76,38 @@ export default function PresetBar({ kind, tourId }: { kind: PresetKind; tourId: 
       <div className="preset-row">
         <SelectMenu
           ariaLabel={`${kind.toUpperCase()} preset`}
-          options={presets.map((p) => ({
+          options={all.map((p) => ({
             value: p.id,
-            label: p.id === defaultId ? `${p.name} (default)` : p.name,
+            label:
+              (p.id === BUILTIN_PRESET_ID ? defaultId == null : p.id === defaultId)
+                ? `★ ${p.name}`
+                : p.name,
           }))}
-          value={matched}
-          placeholder={presets.length === 0 ? "No presets yet" : "Custom"}
-          disabled={presets.length === 0}
+          value={activePresetId(kind, presets, settings)}
+          placeholder="Custom"
           onChange={apply}
         />
         <button
           type="button"
           className="icon-btn"
-          title="Save current settings as a preset"
-          aria-label="Save current settings as a preset"
-          onClick={() => setSaveOpen(true)}
-        >
-          <span aria-hidden="true">+</span>
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          title="Manage presets"
-          aria-label="Manage presets"
+          title={title}
+          aria-label={title}
           onClick={() => setManagerOpen(true)}
         >
           <GearIcon className="icon-btn-svg" />
         </button>
       </div>
 
-      {saveOpen && (
-        <SavePresetDialog
-          kind={kind}
-          isFirst={presets.length === 0}
-          onSave={(name) => {
-            if (create(name, settings)) setSaveOpen(false);
-          }}
-          onCancel={() => setSaveOpen(false)}
-        />
-      )}
       {managerOpen && (
         <PresetManagerDialog
           kind={kind}
-          presets={presets}
-          defaultId={defaultId}
-          rename={rename}
-          remove={remove}
-          setDefault={setDefault}
+          all={all}
+          activeId={activePresetId(kind, presets, settings)}
+          store={presetStore}
+          onApply={apply}
           onClose={() => setManagerOpen(false)}
         />
       )}
     </div>
-  );
-}
-
-function SavePresetDialog({
-  kind,
-  isFirst,
-  onSave,
-  onCancel,
-}: {
-  kind: PresetKind;
-  isFirst: boolean;
-  onSave: (name: string) => void;
-  onCancel: () => void;
-}) {
-  const [name, setName] = useState("");
-  // Shown only once the user has tried to save, so an empty field doesn't
-  // open already scolding them.
-  const [attempted, setAttempted] = useState(false);
-  const error = name.trim() ? null : "Give the preset a name.";
-
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onCancel();
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel]);
-
-  function submit() {
-    setAttempted(true);
-    if (!error) onSave(name);
-  }
-
-  return (
-    <ModalOverlay onClick={onCancel}>
-      <div
-        className="modal modal-sm"
-        role="dialog"
-        aria-label="Save preset"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-head">
-          <span className="modal-title">Save {kind.toUpperCase()} preset</span>
-        </div>
-        <form
-          className="field-group"
-          style={{ marginBottom: 16 }}
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit();
-          }}
-        >
-          <label className="field">
-            <span>Name</span>
-            <input
-              type="text"
-              autoFocus
-              value={name}
-              maxLength={60}
-              placeholder={kind === "pdf" ? "e.g. Home printer, Letter" : "e.g. MakePlayingCards"}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-          {attempted && error && <p className="error-text">{error}</p>}
-          <p className="hint">
-            Saves this tab&apos;s current settings
-            {kind === "pdf" ? " (layout, guides, back printing and cutter)" : " (format and bleed)"}.
-            Source images and card sorting aren&apos;t included.
-            {isFirst && " Your first preset becomes the default for new projects."}
-          </p>
-        </form>
-        <div className="modal-actions">
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-          <button type="button" className="btn-primary" onClick={submit}>
-            Save preset
-          </button>
-        </div>
-      </div>
-    </ModalOverlay>
   );
 }

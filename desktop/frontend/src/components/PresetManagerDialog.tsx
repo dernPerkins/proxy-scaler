@@ -1,48 +1,90 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import type { PresetKind, SettingsPreset } from "../settingsPresets";
+import { useProject } from "../context/ProjectContext";
+import {
+  BUILTIN_PRESET_ID,
+  type PresetKind,
+  type SettingsPreset,
+  type SettingsPresetStore,
+} from "../settingsPresets";
 import ConfirmDialog from "./ConfirmDialog";
 import ModalOverlay from "./ModalOverlay";
 
-// One tab's presets, opened from the gear beside the preset dropdown:
-// rename, choose which one new projects start from, or delete. "Built-in defaults" is a default
-// choice of its own, for going back to the app's shipped values without
-// deleting anything.
+// "PDF Presets" / "ZIP Presets", opened from the gear beside the preset
+// dropdown. Master–detail: the presets in a table on the left, the
+// selected one's settings on the right (today its name and whether new
+// projects start from it).
+//
+// Selecting a row does two things: it puts that preset on the tab, as
+// picking it from the dropdown would, and it shows its settings. Default
+// (the built-in values) is always the first row; it can be chosen for new
+// projects but not renamed or deleted.
+//
+// The table scrolls inside a capped height rather than growing the
+// dialog, so a long list never pushes the dialog past the window.
 export default function PresetManagerDialog({
   kind,
-  presets,
-  defaultId,
-  rename,
-  remove,
-  setDefault,
+  all,
+  activeId,
+  store,
+  onApply,
   onClose,
 }: {
   kind: PresetKind;
-  presets: SettingsPreset[];
-  defaultId: string | null;
-  rename: (id: string, name: string) => void;
-  remove: (id: string) => void;
-  setDefault: (id: string | null) => void;
+  /** Default first, then the saved presets. */
+  all: SettingsPreset[];
+  /** The preset the tab currently matches, or null for Custom. */
+  activeId: string | null;
+  store: SettingsPresetStore;
+  onApply: (id: string) => void;
   onClose: () => void;
 }) {
+  const { settings } = useProject();
+  const [selectedId, setSelectedId] = useState<string | null>(activeId);
   const [deleting, setDeleting] = useState<SettingsPreset | null>(null);
-  const title = `${kind.toUpperCase()} presets`;
+  const [newName, setNewName] = useState("");
+  const tableRef = useRef<HTMLDivElement>(null);
+  const title = `${kind.toUpperCase()} Presets`;
+  const selected = all.find((p) => p.id === selectedId) ?? null;
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      // While the delete confirm is up, Esc is its Cancel, not ours.
-      if (e.key === "Escape" && !deleting) onClose();
+      // While the delete confirm is up, Esc is its Cancel, not ours; an
+      // Esc a dropdown already handled isn't ours either.
+      if (e.key === "Escape" && !deleting && !e.defaultPrevented) onClose();
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose, deleting]);
 
-  const radioName = `preset-default-${kind}`;
+  // A long list opens scrolled to the row that's selected.
+  useLayoutEffect(() => {
+    tableRef.current
+      ?.querySelector<HTMLElement>(`[data-preset-id="${selectedId}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
+
+  function select(id: string) {
+    setSelectedId(id);
+    onApply(id);
+  }
+
+  function createFromCurrent() {
+    // Saved from what the tab shows now, so it is already the tab's
+    // preset — selected, nothing to apply.
+    const preset = store.create(newName, settings);
+    if (!preset) return;
+    setNewName("");
+    setSelectedId(preset.id);
+  }
+
+  const isNewProjectDefault = (id: string) =>
+    id === BUILTIN_PRESET_ID ? store.defaultId == null : id === store.defaultId;
 
   return (
     <ModalOverlay onClick={deleting ? undefined : onClose}>
       <div
-        className="modal modal-sm preset-manager"
+        className="modal preset-manager"
         role="dialog"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
@@ -54,42 +96,90 @@ export default function PresetManagerDialog({
           </button>
         </div>
 
-        <div className="modal-body">
-          {presets.length === 0 ? (
-            <p className="hint" style={{ marginBottom: 12 }}>
-              No presets yet. Use the + beside the preset dropdown to save this tab&apos;s
-              current settings as one.
+        <div className="preset-split">
+          <div className="preset-split-list">
+            <div className="preset-table-wrap" ref={tableRef}>
+              <table className="preset-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th className="preset-table-flag">New projects</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {all.map((p) => (
+                    <tr
+                      key={p.id}
+                      data-preset-id={p.id}
+                      className={p.id === selectedId ? "selected" : undefined}
+                      aria-selected={p.id === selectedId}
+                      tabIndex={0}
+                      onClick={() => select(p.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          select(p.id);
+                        }
+                      }}
+                    >
+                      <td>
+                        {p.name}
+                        {p.id === BUILTIN_PRESET_ID && (
+                          <span className="preset-table-note"> · built-in</span>
+                        )}
+                      </td>
+                      <td className="preset-table-flag">
+                        {isNewProjectDefault(p.id) ? "★" : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <form
+              className="preset-new"
+              onSubmit={(e) => {
+                e.preventDefault();
+                createFromCurrent();
+              }}
+            >
+              <input
+                type="text"
+                aria-label="New preset name"
+                placeholder="New preset from current settings"
+                maxLength={60}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <button type="submit" className="btn-sm" disabled={!newName.trim()}>
+                Save
+              </button>
+            </form>
+            <p className="hint">
+              Saves this tab&apos;s current settings
+              {kind === "pdf" ? " (layout, guides, back printing and cutter)" : " (format and bleed)"}.
+              {" Presets do not save the Source Images related settings."}
+              {store.presets.length === 0 &&
+                " Your first preset becomes the starting point for new projects."}
             </p>
-          ) : (
-            <>
-              <p className="hint" style={{ marginBottom: 10 }}>
-                The selected default is what new projects start with.
-              </p>
-              <ul className="preset-list">
-                <li className="preset-item">
-                  <input
-                    type="radio"
-                    name={radioName}
-                    aria-label="Use built-in defaults for new projects"
-                    checked={defaultId == null}
-                    onChange={() => setDefault(null)}
-                  />
-                  <span className="preset-builtin">Built-in defaults</span>
-                </li>
-                {presets.map((p) => (
-                  <PresetRow
-                    key={p.id}
-                    preset={p}
-                    radioName={radioName}
-                    isDefault={p.id === defaultId}
-                    onSetDefault={() => setDefault(p.id)}
-                    onRename={(name) => rename(p.id, name)}
-                    onDelete={() => setDeleting(p)}
-                  />
-                ))}
-              </ul>
-            </>
-          )}
+          </div>
+
+          <div className="preset-split-detail">
+            <h3>Settings</h3>
+            {selected ? (
+              <PresetSettings
+                key={selected.id}
+                preset={selected}
+                isNewProjectDefault={isNewProjectDefault(selected.id)}
+                onRename={(name) => store.rename(selected.id, name)}
+                onSetDefault={(on) => store.setDefault(on ? selected.id : null)}
+                onDelete={() => setDeleting(selected)}
+              />
+            ) : (
+              <p className="hint">Select a preset to see its settings.</p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -98,14 +188,18 @@ export default function PresetManagerDialog({
           title="Delete preset?"
           confirmLabel="Delete"
           onConfirm={() => {
-            remove(deleting.id);
+            store.remove(deleting.id);
+            // The tab keeps the deleted preset's values, which now match
+            // nothing; leave the settings pane empty rather than point at
+            // a row the tab isn't on.
+            setSelectedId(null);
             setDeleting(null);
           }}
           onCancel={() => setDeleting(null)}
         >
           &ldquo;{deleting.name}&rdquo; will be deleted. Projects that used it keep their
           settings.
-          {deleting.id === defaultId && " New projects will start from the built-in defaults."}
+          {isNewProjectDefault(deleting.id) && " New projects will start from Default."}
         </ConfirmDialog>
       )}
     </ModalOverlay>
@@ -116,25 +210,26 @@ export default function PresetManagerDialog({
 // typing stops, Enter skips the wait.
 const NAME_COMMIT_DEBOUNCE_MS = 500;
 
-function PresetRow({
+/** The selected preset's settings. Keyed by preset id, so switching rows
+ *  starts a fresh name draft (after saving any pending one). */
+function PresetSettings({
   preset,
-  radioName,
-  isDefault,
-  onSetDefault,
+  isNewProjectDefault,
   onRename,
+  onSetDefault,
   onDelete,
 }: {
   preset: SettingsPreset;
-  radioName: string;
-  isDefault: boolean;
-  onSetDefault: () => void;
+  isNewProjectDefault: boolean;
   onRename: (name: string) => void;
+  onSetDefault: (on: boolean) => void;
   onDelete: () => void;
 }) {
+  const builtin = preset.id === BUILTIN_PRESET_ID;
   const [draft, setDraft] = useState(preset.name);
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The name waiting on the timer, so closing the dialog mid-debounce
-  // still saves it rather than dropping what was typed.
+  // The name waiting on the timer, so switching rows or closing the dialog
+  // mid-debounce still saves it rather than dropping what was typed.
   const queuedName = useRef<string | null>(null);
   const onRenameRef = useRef(onRename);
   onRenameRef.current = onRename;
@@ -171,20 +266,14 @@ function PresetRow({
   );
 
   return (
-    <li className="preset-item">
-      <input
-        type="radio"
-        name={radioName}
-        aria-label={`Use ${preset.name} for new projects`}
-        checked={isDefault}
-        onChange={onSetDefault}
-      />
-      <div className="preset-name">
+    <div className="field-group">
+      <label className="field">
+        <span>Name</span>
         <input
           type="text"
-          aria-label="Preset name"
           value={draft}
           maxLength={60}
+          disabled={builtin}
           placeholder="Preset name"
           onChange={(e) => {
             setDraft(e.target.value);
@@ -199,10 +288,27 @@ function PresetRow({
             setDraft(preset.name);
           }}
         />
-      </div>
-      <button type="button" className="btn-sm btn-danger" onClick={onDelete}>
-        Delete
-      </button>
-    </li>
+      </label>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={isNewProjectDefault}
+          // Default is the fallback: it stops being the new-project choice
+          // when another preset is ticked, not by being unticked itself.
+          disabled={builtin && isNewProjectDefault}
+          onChange={(e) => onSetDefault(e.target.checked)}
+        />
+        Use for new projects
+      </label>
+      {builtin ? (
+        <p className="hint">The built-in values. Choose this to have no preset on the tab.</p>
+      ) : (
+        <div>
+          <button type="button" className="btn-sm btn-danger" onClick={onDelete}>
+            Delete preset
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

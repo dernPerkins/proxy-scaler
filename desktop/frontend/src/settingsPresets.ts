@@ -23,6 +23,11 @@ import { isTauri } from "./tauri";
 
 export type PresetKind = "pdf" | "zip";
 
+/** The id "Default" goes by in the preset dropdown and manager. It isn't a
+ *  stored preset: it is the tab's built-in values, i.e. no preset
+ *  (PresetBar.tsx::builtinPreset). */
+export const BUILTIN_PRESET_ID = "__builtin";
+
 export interface SettingsPreset {
   id: string;
   name: string;
@@ -268,3 +273,5 @@ export function useSettingsPresets(kind: PresetKind) {
     setDefault,
   };
 }
+
+export type SettingsPresetStore = ReturnType<typeof useSettingsPresets>;

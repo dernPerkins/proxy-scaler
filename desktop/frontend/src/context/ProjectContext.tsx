@@ -61,7 +61,7 @@ export function recommendedDefaultModel(): string {
 // object, so the last write wins by construction.
 const SETTINGS_WRITE_DEBOUNCE_MS = 400;
 
-function getDefaultSettings(): ProjectSettings {
+export function getDefaultSettings(): ProjectSettings {
   return {
     model: recommendedDefaultModel(),
     dpi_targets: [1200],

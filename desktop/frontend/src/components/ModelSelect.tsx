@@ -1,12 +1,12 @@
-import { Fragment } from "react";
 import type { ModelOption } from "../api/types";
+import SelectMenu from "./SelectMenu";
 
 // The one model dropdown, rendered on the Decklist (generation model), PDF
 // and ZIP (preferred model) pages. One component rather than three
-// copies of the <select> because the grouping below must never drift
+// copies of the dropdown because the grouping below must never drift
 // between pages: the server marks each model with the header it sits
 // under ("Models" for the torch runtime, "Vulkan Models" for ncnn), and
-// every dropdown draws those as <optgroup>s in the server's order.
+// every dropdown draws those as group headers in the server's order.
 //
 // A server older than the `group` field sends none: everything then lands
 // in one unlabeled group, i.e. exactly the pre-grouping dropdown.
@@ -63,23 +63,25 @@ export function reconcileTileForModel(
 export default function ModelSelect({ value, onChange, models, disabled, anyOption }: Props) {
   const groups = groupModels(models ?? []);
   const grouped = groups.length > 1;
+  const options = [
+    ...(anyOption !== undefined ? [{ value: "", label: anyOption }] : []),
+    ...groups.flatMap(({ group, models: members }) =>
+      members.map((m) => ({
+        value: m.value,
+        label: `${m.label} — ${m.speed}`,
+        group: grouped ? group : null,
+      })),
+    ),
+  ];
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
-      {anyOption !== undefined && <option value="">{anyOption}</option>}
-      {groups.map(({ group, models: members }) => {
-        const options = members.map((m) => (
-          <option key={m.value} value={m.value}>
-            {m.label} — {m.speed}
-          </option>
-        ));
-        return grouped && group !== null ? (
-          <optgroup key={group} label={group}>
-            {options}
-          </optgroup>
-        ) : (
-          <Fragment key={group ?? "ungrouped"}>{options}</Fragment>
-        );
-      })}
-    </select>
+    <SelectMenu
+      options={options}
+      value={value}
+      onChange={onChange}
+      disabled={disabled}
+      // Until the list arrives (or for a model this server doesn't
+      // offer), show the stored id rather than a blank box.
+      placeholder={models === undefined ? "Loading models…" : value}
+    />
   );
 }

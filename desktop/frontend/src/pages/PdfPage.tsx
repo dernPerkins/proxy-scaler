@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import ModelSelect from "../components/ModelSelect";
+import SelectMenu from "../components/SelectMenu";
 import PresetBar from "../components/PresetBar";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
@@ -548,20 +549,15 @@ export default function PdfPage() {
 
               <label className="field">
                 <span>Preferred DPI</span>
-                <select
-                  value={layout.preferred_dpi ?? ""}
+                <SelectMenu
+                  options={[
+                    { value: "", label: "Any (highest available)" },
+                    ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
+                  ]}
+                  value={layout.preferred_dpi == null ? "" : String(layout.preferred_dpi)}
                   disabled={useOriginals}
-                  onChange={(e) =>
-                    updateLayout("preferred_dpi", e.target.value ? Number(e.target.value) : null)
-                  }
-                >
-                  <option value="">Any (highest available)</option>
-                  {DPI_OPTIONS.map((dpi) => (
-                    <option key={dpi} value={dpi}>
-                      {dpi}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(value) => updateLayout("preferred_dpi", value ? Number(value) : null)}
+                />
               </label>
 
               {/* An override, not a third "preferred" value: originals are
@@ -600,24 +596,15 @@ export default function PdfPage() {
             <div className="field-group" data-tour="pdf-layout">
               <label className="field">
                 <span>Page size</span>
-                <select
+                {/* Custom is the placeholder, not an option: it shows while
+                    the size matches no preset, and never looks like a size
+                    you could pick. */}
+                <SelectMenu
+                  options={Object.keys(PAGE_PRESETS).map((name) => ({ value: name, label: name }))}
                   value={matchPagePreset(layout.page_width_mm, layout.page_height_mm)}
-                  onChange={(e) => applyPreset(e.target.value)}
-                >
-                  {Object.keys(PAGE_PRESETS).map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                  {/* Only rendered while it applies, so it never looks
-                      like a size you could pick. */}
-                  {matchPagePreset(layout.page_width_mm, layout.page_height_mm) ===
-                    CUSTOM_PAGE_SIZE && (
-                    <option value={CUSTOM_PAGE_SIZE} disabled>
-                      {CUSTOM_PAGE_SIZE}
-                    </option>
-                  )}
-                </select>
+                  placeholder={CUSTOM_PAGE_SIZE}
+                  onChange={applyPreset}
+                />
               </label>
 
               {/* Paired dimensions sit side by side — they're read together and
@@ -721,24 +708,20 @@ export default function PdfPage() {
                   for printing straight from the Scryfall originals. */}
               <label className="field">
                 <span>Export DPI</span>
-                <select
-                  value={layout.export_dpi}
-                  onChange={(e) => updateLayout("export_dpi", Number(e.target.value))}
-                >
-                  {/* A legacy project may hold a hand-typed value from the
-                      free-form era — shown as-is so loading it doesn't
-                      silently change its output; picking any standard value
-                      replaces it for good. */}
-                  {layout.export_dpi != null &&
-                    !EXPORT_DPI_OPTIONS.includes(layout.export_dpi) && (
-                      <option value={layout.export_dpi}>{layout.export_dpi} (custom)</option>
-                    )}
-                  {EXPORT_DPI_OPTIONS.map((dpi) => (
-                    <option key={dpi} value={dpi}>
-                      {dpi}
-                    </option>
-                  ))}
-                </select>
+                {/* A legacy project may hold a hand-typed value from the
+                    free-form era — shown as-is so loading it doesn't
+                    silently change its output; picking any standard value
+                    replaces it for good. */}
+                <SelectMenu
+                  options={[
+                    ...(layout.export_dpi != null && !EXPORT_DPI_OPTIONS.includes(layout.export_dpi)
+                      ? [{ value: String(layout.export_dpi), label: `${layout.export_dpi} (custom)` }]
+                      : []),
+                    ...EXPORT_DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
+                  ]}
+                  value={String(layout.export_dpi)}
+                  onChange={(value) => updateLayout("export_dpi", Number(value))}
+                />
               </label>
 
               <div style={{ display: "flex", gap: 10 }}>
@@ -856,15 +839,14 @@ export default function PdfPage() {
                       in that mode. */}
                   <label className="field">
                     <span>Backs of single-faced cards</span>
-                    <select
-                      value={layout.reverse_fill}
-                      onChange={(e) =>
-                        updateLayout("reverse_fill", e.target.value as ReverseFill)
-                      }
-                    >
-                      <option value="back_image">Use the back image</option>
-                      <option value="blank">Leave blank</option>
-                    </select>
+                    <SelectMenu
+                      options={[
+                        { value: "back_image", label: "Use the back image" },
+                        { value: "blank", label: "Leave blank" },
+                      ]}
+                      value={layout.reverse_fill ?? null}
+                      onChange={(value) => updateLayout("reverse_fill", value as ReverseFill)}
+                    />
                   </label>
 
                   {layout.reverse_fill === "back_image" ? (
@@ -916,24 +898,26 @@ export default function PdfPage() {
                         (?)
                       </span>
                     </span>
-                    <select
-                      value={layout.flip_edge}
-                      onChange={(e) => updateLayout("flip_edge", e.target.value as FlipEdge)}
-                    >
-                      <option value="long">Long edge</option>
-                      <option value="short">Short edge</option>
-                    </select>
+                    <SelectMenu
+                      options={[
+                        { value: "long", label: "Long edge" },
+                        { value: "short", label: "Short edge" },
+                      ]}
+                      value={layout.flip_edge ?? null}
+                      onChange={(value) => updateLayout("flip_edge", value as FlipEdge)}
+                    />
                   </label>
 
                   <label className="field">
                     <span>Page order</span>
-                    <select
-                      value={layout.page_order}
-                      onChange={(e) => updateLayout("page_order", e.target.value as PageOrder)}
-                    >
-                      <option value="duplex">Duplex (front, back, front…)</option>
-                      <option value="fronts_then_backs">All fronts, then all backs</option>
-                    </select>
+                    <SelectMenu
+                      options={[
+                        { value: "duplex", label: "Duplex (front, back, front…)" },
+                        { value: "fronts_then_backs", label: "All fronts, then all backs" },
+                      ]}
+                      value={layout.page_order ?? null}
+                      onChange={(value) => updateLayout("page_order", value as PageOrder)}
+                    />
                   </label>
 
                   {/* Independent of the front offsets rather than added to
@@ -989,14 +973,15 @@ export default function PdfPage() {
                 }
               >
                 <span>Electronic cutter</span>
-                <select
+                <SelectMenu
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "silhouette", label: "Silhouette" },
+                  ]}
                   value={cutter}
                   disabled={!cutterSupported}
-                  onChange={(e) => updateLayout("cutter", e.target.value as Cutter)}
-                >
-                  <option value="none">None</option>
-                  <option value="silhouette">Silhouette</option>
-                </select>
+                  onChange={(value) => updateLayout("cutter", value as Cutter)}
+                />
               </label>
               {!cutterSupported && !serverUnavailable && (
                 <p className="hint" style={{ margin: "-6px 0 0" }}>

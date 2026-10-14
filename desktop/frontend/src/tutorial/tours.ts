@@ -320,7 +320,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "pdf-presets",
         title: "Presets",
-        body: "Save your usual layout, offsets and back printing as a preset, and pick it here next time. Your first preset becomes the starting point for new projects; the gear lets you rename, delete or change the default.",
+        body: "Use the gear to save your usual layout, offsets and back printing as a preset, then pick it here next time. Your first preset becomes the starting point for new projects, and Default puts the built-in settings back.",
         placement: "right",
       },
       {
@@ -402,7 +402,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "export-presets",
         title: "Presets",
-        body: "Save your usual format and bleed as a preset. These are separate from the PDF tab's presets, and your first one becomes the starting point for new projects.",
+        body: "Use the gear to save your usual format and bleed as a preset. These are separate from the PDF tab's presets, and your first one becomes the starting point for new projects.",
         placement: "right",
       },
       {

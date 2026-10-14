@@ -2,6 +2,7 @@ import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slide
 
 import type { CompareSide } from "./CompareMenu";
 import ModalOverlay from "./ModalOverlay";
+import SelectMenu from "./SelectMenu";
 
 interface CompareDialogProps {
   cardName: string;
@@ -42,19 +43,14 @@ export default function CompareDialog({
             {options.length > 1 && (
               <label className="compare-against">
                 <span>Compare against</span>
-                <select
+                <SelectMenu
+                  options={options.map((o) => ({ value: o.key, label: o.label }))}
                   value={against.key}
-                  onChange={(e) => {
-                    const side = options.find((o) => o.key === e.target.value);
+                  onChange={(key) => {
+                    const side = options.find((o) => o.key === key);
                     if (side) onChangeAgainst(side);
                   }}
-                >
-                  {options.map((o) => (
-                    <option key={o.key} value={o.key}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
             )}
             <button onClick={onClose}>Close</button>

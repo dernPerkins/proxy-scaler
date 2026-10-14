@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ModelSelect from "../components/ModelSelect";
+import SelectMenu from "../components/SelectMenu";
 import PresetBar from "../components/PresetBar";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
@@ -267,23 +268,17 @@ export default function ExportPage() {
 
           <label className="field">
             <span>Preferred DPI</span>
-            <select
-              value={settings.preferred_dpi ?? ""}
+            <SelectMenu
+              options={[
+                { value: "", label: "Any (highest available)" },
+                ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
+              ]}
+              value={settings.preferred_dpi == null ? "" : String(settings.preferred_dpi)}
               disabled={useOriginals}
-              onChange={(e) =>
-                setSettings((s) => ({
-                  ...s,
-                  preferred_dpi: e.target.value ? Number(e.target.value) : null,
-                }))
+              onChange={(value) =>
+                setSettings((s) => ({ ...s, preferred_dpi: value ? Number(value) : null }))
               }
-            >
-              <option value="">Any (highest available)</option>
-              {DPI_OPTIONS.map((dpi) => (
-                <option key={dpi} value={dpi}>
-                  {dpi}
-                </option>
-              ))}
-            </select>
+            />
           </label>
 
           {/* Same override, same persisted setting as the PDF tab's

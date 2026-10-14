@@ -4,7 +4,13 @@
 // hundreds of sets); a short list (languages) goes without. A `preset` is a
 // named selection that isn't a set of ticks (the language filter's
 // "EN + Exclusives"); ticking anything or choosing All leaves it.
+//
+// The panel is portalled to <body> and placed like SelectMenu's list
+// (useDropdownPosition): hung from the toggle's right edge, flipped above
+// when there's no room below, never clipped by the printing grid's modal.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useDropdownPosition } from "../useDropdownPosition";
 
 export interface FilterOption {
   value: string;
@@ -39,12 +45,21 @@ export default function MultiSelectFilter({
   const [open, setOpen] = useState(false);
   const [find, setFind] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelStyle = useDropdownPosition(open, toggleRef, panelRef, {
+    align: "end",
+    maxHeight: 340,
+  });
 
-  // Outside clicks close it, like any dropdown.
+  // Outside clicks close it, like any dropdown. The panel lives in a
+  // portal, so "inside" means the toggle or the panel.
   useEffect(() => {
     if (!open) return;
     function onMouseDown(e: MouseEvent) {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
@@ -88,6 +103,7 @@ export default function MultiSelectFilter({
       }}
     >
       <button
+        ref={toggleRef}
         type="button"
         className="select-button multi-filter-toggle"
         aria-label={ariaLabel}
@@ -98,59 +114,61 @@ export default function MultiSelectFilter({
       >
         {summary}
       </button>
-      {open && (
-        <div className="multi-filter-panel">
-          {findLabel && (
-            <input
-              type="search"
-              placeholder={findLabel}
-              aria-label={findLabel}
-              value={find}
-              autoFocus
-              onChange={(e) => setFind(e.target.value)}
-            />
-          )}
-          <div className="multi-filter-presets">
-            {preset && (
+      {open &&
+        createPortal(
+          <div ref={panelRef} className="multi-filter-panel" style={panelStyle}>
+            {findLabel && (
+              <input
+                type="search"
+                placeholder={findLabel}
+                aria-label={findLabel}
+                value={find}
+                autoFocus
+                onChange={(e) => setFind(e.target.value)}
+              />
+            )}
+            <div className="multi-filter-presets">
+              {preset && (
+                <button
+                  type="button"
+                  className="btn-sm"
+                  title={preset.title}
+                  disabled={preset.active}
+                  onClick={preset.onSelect}
+                >
+                  {preset.label}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn-sm"
-                title={preset.title}
-                disabled={preset.active}
-                onClick={preset.onSelect}
+                disabled={selected.size === 0 && !preset?.active}
+                onClick={() => onChange(new Set())}
               >
-                {preset.label}
+                {allLabel}
               </button>
-            )}
-            <button
-              type="button"
-              className="btn-sm"
-              disabled={selected.size === 0 && !preset?.active}
-              onClick={() => onChange(new Set())}
-            >
-              {allLabel}
-            </button>
-          </div>
-          <div className="multi-filter-list" role="listbox" aria-multiselectable="true">
-            {shown.map((o) => (
-              <label
-                key={o.value}
-                className="check multi-filter-option"
-                title={o.title ?? undefined}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.has(o.value)}
-                  onChange={() => toggle(o.value)}
-                />
-                {o.icon}
-                <span className="mono">{o.label}</span>
-              </label>
-            ))}
-            {shown.length === 0 && <p className="hint">No matches.</p>}
-          </div>
-        </div>
-      )}
+            </div>
+            <div className="multi-filter-list" role="listbox" aria-multiselectable="true">
+              {shown.map((o) => (
+                <label
+                  key={o.value}
+                  className="check multi-filter-option"
+                  title={o.title ?? undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(o.value)}
+                    onChange={() => toggle(o.value)}
+                  />
+                  {o.icon}
+                  <span className="mono">{o.label}</span>
+                </label>
+              ))}
+              {shown.length === 0 && <p className="hint">No matches.</p>}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

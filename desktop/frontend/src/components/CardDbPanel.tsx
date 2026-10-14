@@ -15,6 +15,7 @@ import { generationApi } from "../api/generation";
 import type { CardDataset } from "../api/types";
 import { setCardDbImportJobId } from "../cardDbImport";
 import ConfirmDialog from "./ConfirmDialog";
+import SelectMenu from "./SelectMenu";
 
 // Scryfall publishes constantly — Secret Lair drops, convention and
 // tournament exclusives — and a card the corpus has never heard of fails
@@ -122,18 +123,19 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
       )}
       {!importRunning && nudge && <p className="error-text">{nudge}</p>}
 
-      <select
+      <SelectMenu
+        ariaLabel="Card data to download"
+        options={[
+          {
+            value: "default_cards",
+            label: `English only (~${APPROX_DOWNLOAD_MB.default_cards} MB)`,
+          },
+          { value: "all_cards", label: `All languages (~${APPROX_DOWNLOAD_MB.all_cards} MB)` },
+        ]}
         value={dataset}
-        onChange={(e) => setDataset(e.target.value as CardDataset)}
+        onChange={(value) => setDataset(value as CardDataset)}
         disabled={serverUnavailable || importRunning}
-      >
-        <option value="default_cards">
-          English only (~{APPROX_DOWNLOAD_MB.default_cards} MB)
-        </option>
-        <option value="all_cards">
-          All languages (~{APPROX_DOWNLOAD_MB.all_cards} MB)
-        </option>
-      </select>
+      />
       {switching && !importRunning && (
         <p className="hint">Switching dataset replaces the current card database.</p>
       )}

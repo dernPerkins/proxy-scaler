@@ -30,6 +30,7 @@ import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { CustomImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
+import SelectMenu from "../components/SelectMenu";
 import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageViewer";
 import LibraryUpscaleControls from "../components/LibraryUpscaleControls";
 import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
@@ -459,15 +460,14 @@ export default function CustomsPage() {
               />
               <label className="field">
                 <span>Result</span>
-                <select
+                <SelectMenu
+                  options={[
+                    { value: "target", label: "Match target DPI" },
+                    { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                  ]}
                   value={upscaleSettings.mode}
-                  onChange={(e) =>
-                    updateUpscaleSettings({ mode: e.target.value as LibraryUpscaleMode })
-                  }
-                >
-                  <option value="target">Match target DPI</option>
-                  <option value="native">Keep full 4× (up to 2400 DPI)</option>
-                </select>
+                  onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}
+                />
               </label>
               <p className="hint">
                 Only an image below a ticked target is upscaled. One too large for this GPU
