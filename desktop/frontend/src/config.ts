@@ -246,6 +246,12 @@ export const LIBRARY_UPSCALE_MIN_SERVER_VERSION = "0.4.0";
 // endpoints ship in; packaging/set-version.py must never rewrite it.
 export const PRINTING_IMAGES_MIN_SERVER_VERSION = "0.5.0";
 
+// Set symbols come from /api/sets/{code}/icon, and their rarity colors
+// from CardVariant.rarity and /api/cards/rarities. Below this every icon
+// URL 404s, so no symbol is rendered or requested. The release these ship
+// in; packaging/set-version.py must never rewrite it.
+export const SET_ICONS_MIN_SERVER_VERSION = "0.5.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -302,6 +308,14 @@ export function serverSupportsOriginals(serverVersion: string | null): boolean {
 export function serverSupportsPrintingImages(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, PRINTING_IMAGES_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server have /api/sets/{code}/icon and rarities?
+ *  Same null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsSetIcons(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, SET_ICONS_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

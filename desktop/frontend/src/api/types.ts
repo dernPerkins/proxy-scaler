@@ -339,6 +339,10 @@ export interface CardVariant {
   // URLs so they can be cached forever (a replaced scan is a new version,
   // so a new URL). Absent from older servers or for a printing with no image.
   image_version?: string | null;
+  // Scryfall's rarity ("common", "uncommon", "rare", "mythic", "special",
+  // "bonus") — colors the set symbol. Absent from older servers, null for
+  // a corpus imported before rarity was stored.
+  rarity?: string | null;
 }
 
 export interface CardVariantsResult {

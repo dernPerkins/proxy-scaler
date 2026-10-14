@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -23,6 +23,7 @@ import { useConnection } from "../connection";
 import {
   getProbedDevice,
   serverSupportsCustomUpscale,
+  serverSupportsSetIcons,
   subscribeProbedDevice,
   useServerReadiness,
   useServerVersion,
@@ -272,6 +273,22 @@ export default function DecklistPage() {
     staleTime: 5 * 60_000,
   });
   const languages = languagesQuery.data?.languages ?? ["en"];
+
+  // Each pinned printing's rarity, which colors its row's set symbol. One
+  // request per distinct set of printings: keyed on the sorted ids, so a
+  // pick refetches but reordering or a quantity change doesn't.
+  const pinnedIds = useMemo(
+    () => [...new Set(cards.map((c) => c.scryfall_id).filter((id): id is string => !!id))].sort(),
+    [cards],
+  );
+  const raritiesQuery = useQuery({
+    queryKey: ["card-rarities", pinnedIds],
+    queryFn: () => generationApi.cardRarities(pinnedIds),
+    enabled: !serverUnavailable && pinnedIds.length > 0 && serverSupportsSetIcons(serverVersion),
+    staleTime: Infinity,
+    placeholderData: (previous) => previous,
+  });
+  const rarities = raritiesQuery.data?.rarities ?? {};
 
   // On-load re-resolve for legacy rows only: cards imported before the
   // resolve-gated import existed (or by older builds) may be unpinned —
@@ -985,6 +1002,7 @@ export default function DecklistPage() {
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
               preferredLang={settings.preferred_lang}
+              rarity={card.scryfall_id ? rarities[card.scryfall_id] : undefined}
               onPickPrinting={(printing) => {
                 // Persisting the pick changes the card's identity string,
                 // which re-fires the adopt effect above (badges re-bucket
@@ -1051,6 +1069,8 @@ function CardRowView(props: {
   /** The project's import-language preference — PrintingPicker's default
    *  language filter for cards that don't carry their own. */
   preferredLang: string;
+  /** The pinned printing's rarity, for its set symbol's color. */
+  rarity?: string;
   onPickPrinting: (printing: {
     scryfallId: string;
     name: string;
@@ -1078,6 +1098,7 @@ function CardRowView(props: {
     onRegenerate,
     onRefetch,
     preferredLang,
+    rarity,
     onPickPrinting,
     onPickerClosed,
     disabled,
@@ -1135,6 +1156,7 @@ function CardRowView(props: {
           <PrintingPicker
             card={card}
             preferredLang={preferredLang}
+            rarity={rarity}
             disabled={disabled}
             onPick={onPickPrinting}
             onClosed={onPickerClosed}

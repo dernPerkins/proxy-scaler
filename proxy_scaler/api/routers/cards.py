@@ -41,6 +41,8 @@ from proxy_scaler.api.schemas import (
     CardImportStartedOut,
     CardImportStatusOut,
     CardLanguagesOut,
+    CardRaritiesIn,
+    CardRaritiesOut,
     CardVariantOut,
     CardVariantsOut,
 )
@@ -198,6 +200,7 @@ def _variant_out(row) -> CardVariantOut:
         face_count=face_count,
         face_names=face_names,
         image_version=version,
+        rarity=row["rarity"] if "rarity" in row.keys() else None,
     )
 
 
@@ -244,6 +247,20 @@ def card_variants(
         variants=[_variant_out(v) for v in variants],
         total=len(variants),
     )
+
+
+@router.post("/rarities", response_model=CardRaritiesOut)
+def card_rarities(body: CardRaritiesIn) -> CardRaritiesOut:
+    """Rarity for each pinned printing in a deck, in one request — the deck
+    list colors each row's set symbol by it. No corpus is an empty map, not
+    a 404: the rows just show uncolored symbols."""
+    conn = carddb.open_if_ready(get_card_db_path())
+    if conn is None:
+        return CardRaritiesOut(rarities={})
+    try:
+        return CardRaritiesOut(rarities=carddb.rarities_by_id(conn, body.ids))
+    finally:
+        conn.close()
 
 
 # A URL naming the image version it serves (`v`, from the variants

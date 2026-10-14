@@ -132,6 +132,10 @@ def test_prune_card_keeps_expand_faces_fields_drops_baggage() -> None:
         assert dropped not in pruned
 
 
+def test_prune_card_keeps_rarity() -> None:
+    assert card_import.prune_card(_bulk_card(rarity="uncommon"))["rarity"] == "uncommon"
+
+
 def test_prune_card_keeps_per_face_pngs() -> None:
     card = _bulk_card(
         card_faces=[

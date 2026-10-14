@@ -18,6 +18,7 @@ from proxy_scaler.api.routers import (
     misc,
     pdf,
     resolve,
+    sets,
 )
 
 app = FastAPI(title="proxy-scaler API")
@@ -44,3 +45,4 @@ app.include_router(backs.router)
 app.include_router(customs.router)
 app.include_router(export.router)
 app.include_router(library.router)
+app.include_router(sets.router)

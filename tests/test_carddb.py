@@ -466,3 +466,62 @@ def test_init_card_db_rebuilds_outdated_schema(tmp_path: Path) -> None:
         assert carddb.count_cards(conn) == 0  # stale rows gone, new shape
     finally:
         conn.close()
+
+
+def _make_v2(path: Path) -> None:
+    """A v2 corpus with one row: today's schema minus the rarity column."""
+    import sqlite3
+
+    carddb.init_card_db(path)
+    conn = carddb.connect(path)
+    carddb.upsert_cards(conn, [_card()])
+    conn.close()
+    conn = sqlite3.connect(str(path))
+    conn.execute("ALTER TABLE cards DROP COLUMN rarity")
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+
+
+def test_open_upgrades_v2_in_place_keeping_rows(tmp_path: Path) -> None:
+    """v2 -> v3 only adds rarity, so a reader upgrades it rather than
+    reporting "no corpus" and forcing a full reimport."""
+    path = tmp_path / "cards.db"
+    _make_v2(path)
+    conn = carddb.open_if_ready(path)
+    assert conn is not None
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == carddb.CARD_SCHEMA_VERSION
+        row = carddb.find_row_by_id(conn, "id-1")
+        assert row is not None and row["rarity"] is None
+    finally:
+        conn.close()
+
+
+def test_init_upgrades_v2_in_place_keeping_rows(tmp_path: Path) -> None:
+    path = tmp_path / "cards.db"
+    _make_v2(path)
+    carddb.init_card_db(path)
+    conn = carddb.connect(path)
+    try:
+        assert carddb.count_cards(conn) == 1
+    finally:
+        conn.close()
+
+
+def test_upsert_stores_rarity_and_variants_carry_it(conn) -> None:
+    carddb.upsert_cards(conn, [_card(rarity="mythic")])
+    assert carddb.find_row_by_id(conn, "id-1")["rarity"] == "mythic"
+    [variant] = carddb.variants_for_oracle_id(conn, "oracle-1")
+    assert variant["rarity"] == "mythic"
+
+
+def test_rarities_by_id_skips_unknown_and_null(conn) -> None:
+    carddb.upsert_cards(
+        conn,
+        [
+            _card(id="a", collector_number="1", rarity="rare"),
+            _card(id="b", collector_number="2"),  # no rarity (pre-v3 row)
+        ],
+    )
+    assert carddb.rarities_by_id(conn, ["a", "b", "missing", "a"]) == {"a": "rare"}

@@ -117,6 +117,7 @@ def prune_card(card: dict[str, Any]) -> dict[str, Any]:
         "digital",
         "image_status",
         "highres_image",
+        "rarity",
     ):
         if key in card:
             pruned[key] = card[key]

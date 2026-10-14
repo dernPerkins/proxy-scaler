@@ -1657,6 +1657,42 @@ def test_card_variants_by_each_anchor(client: TestClient) -> None:
         assert body["variants"][0]["face_count"] == 1
 
 
+def test_card_variants_carry_rarity(client: TestClient) -> None:
+    _seed_card_db(rarity="common")
+    body = client.get("/api/cards/variants", params={"scryfall_id": "bolt-lea"}).json()
+    assert body["anchor"]["rarity"] == "common"
+    assert body["variants"][0]["rarity"] == "common"
+
+
+def test_card_rarities_maps_known_ids(client: TestClient) -> None:
+    _seed_card_db(rarity="common")
+    resp = client.post("/api/cards/rarities", json={"ids": ["bolt-lea", "nope"]})
+    assert resp.status_code == 200
+    assert resp.json() == {"rarities": {"bolt-lea": "common"}}
+
+
+def test_card_rarities_without_corpus_is_empty(client: TestClient) -> None:
+    resp = client.post("/api/cards/rarities", json={"ids": ["bolt-lea"]})
+    assert resp.json() == {"rarities": {}}
+
+
+def test_set_icon_serves_svg_with_locked_down_headers(client: TestClient, monkeypatch) -> None:
+    from proxy_scaler import set_icons
+
+    svg = b"<svg xmlns='http://www.w3.org/2000/svg'/>"
+    monkeypatch.setattr(
+        set_icons, "get_set_icon", lambda code, cache_dir: svg if code == "dmu" else None
+    )
+    resp = client.get("/api/sets/dmu/icon")
+    assert resp.status_code == 200
+    assert resp.content == svg
+    assert resp.headers["content-type"].startswith("image/svg+xml")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert "default-src 'none'" in resp.headers["content-security-policy"]
+    assert "max-age" in resp.headers["cache-control"]
+    assert client.get("/api/sets/zzz/icon").status_code == 404
+
+
 def test_card_variants_face_count_for_dfc(client: TestClient) -> None:
     """A transform card with per-face images reports face_count 2 — the
     picker's coverage math needs it to tell a half-generated DFC apart

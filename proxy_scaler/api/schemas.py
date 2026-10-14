@@ -772,6 +772,20 @@ class CardVariantOut(BaseModel):
     # new URL and an unchanged one can be cached forever. None from older
     # servers and for a printing with no image.
     image_version: str | None = None
+    # Scryfall's rarity ("common" … "mythic", "special", "bonus"), which
+    # colors the set symbol. None for a corpus imported before v3 and from
+    # older servers.
+    rarity: str | None = None
+
+
+class CardRaritiesIn(BaseModel):
+    ids: list[str] = Field(max_length=2000)
+
+
+class CardRaritiesOut(BaseModel):
+    # scryfall_id -> rarity, for the ids the corpus has a rarity for. Ids it
+    # lacks, or rows from before v3, are simply absent.
+    rarities: dict[str, str]
 
 
 class CardVariantsOut(BaseModel):

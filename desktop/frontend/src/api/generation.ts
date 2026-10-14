@@ -354,6 +354,18 @@ export const generationApi = {
     return `${getApiBaseUrl()}/api/cards/${encodeURIComponent(scryfallId)}/original?${search}`;
   },
 
+  // A set's symbol as a monochrome SVG, used as a CSS mask (SetIcon.tsx).
+  // Only for servers serverSupportsSetIcons() accepts — older ones 404.
+  setIconUrl: (setCode: string) =>
+    `${getApiBaseUrl()}/api/sets/${encodeURIComponent(setCode.toLowerCase())}/icon`,
+  // scryfall_id -> rarity for a deck's pinned printings; ids the corpus
+  // lacks (or holds no rarity for) are absent. Same server floor.
+  cardRarities: (ids: string[]) =>
+    request<{ rarities: Record<string, string> }>("/api/cards/rarities", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+
   health: () => request<{ status: string }>("/api/health"),
 
   // --- Back Images ---------------------------------------------------

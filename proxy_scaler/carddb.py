@@ -42,7 +42,12 @@ DEFAULT_CARD_DB_PATH = _db._DATA_ROOT / "scryfall_cards.db"
 # A v1 corpus lacks the data entirely — prune_card didn't keep the field —
 # so there is nothing to migrate: open_if_ready() treats v1 as "no usable
 # corpus" and the client's status panel offers a reimport.
-CARD_SCHEMA_VERSION = 2
+# v3: added rarity (column and inside the pruned card_json), for the
+# client's rarity-colored set symbols. Unlike v2 this upgrades in place
+# (_upgrade_v2): an ALTER is instant, whereas forcing a reimport would
+# re-download the whole bulk file for one cosmetic field. Upgraded rows
+# keep rarity NULL until the next import fills it in.
+CARD_SCHEMA_VERSION = 3
 
 # Current, latest shape — everything IF NOT EXISTS, safe to re-apply.
 _SCHEMA = """
@@ -60,7 +65,8 @@ CREATE TABLE IF NOT EXISTS cards (
     digital INTEGER NOT NULL DEFAULT 0,
     image_status TEXT,
     highres_image INTEGER NOT NULL DEFAULT 0,
-    card_json TEXT NOT NULL
+    card_json TEXT NOT NULL,
+    rarity TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cards_oracle ON cards(oracle_id);
 CREATE INDEX IF NOT EXISTS idx_cards_set_collector
@@ -104,6 +110,21 @@ def _raw_connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _upgrade_v2(conn: sqlite3.Connection) -> None:
+    """v2 -> v3 in place: add the rarity column (see CARD_SCHEMA_VERSION).
+    Re-checks the version under a write lock, so two readers opening the
+    same v2 file at once don't both try the ALTER."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] == 2:
+            conn.execute("ALTER TABLE cards ADD COLUMN rarity TEXT")
+            conn.execute("PRAGMA user_version = 3")
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def delete_card_db(db_path: Path | str | None = None) -> bool:
     """Remove the corpus database from disk — the file plus SQLite's WAL/
     SHM sidecars. Safe while no import is writing (the API layer refuses
@@ -132,7 +153,9 @@ def init_card_db(db_path: Path | str | None = None) -> Path:
                 f"this build's {CARD_SCHEMA_VERSION}. Delete the file or "
                 "update the server."
             )
-        if 0 < version < CARD_SCHEMA_VERSION:
+        if version == 2:
+            _upgrade_v2(conn)
+        elif 0 < version < CARD_SCHEMA_VERSION:
             # Outdated corpus: rebuild from scratch rather than migrate —
             # the rows' pruned card_json predates the new shape too, so
             # there's nothing worth carrying over. This runs at the start
@@ -156,6 +179,13 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DEFAULT_CARD_DB_PATH
     conn = _raw_connect(path)
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version == 2:
+        try:
+            _upgrade_v2(conn)
+        except sqlite3.Error:
+            conn.close()
+            raise
+        version = CARD_SCHEMA_VERSION
     if version != CARD_SCHEMA_VERSION:
         conn.close()
         raise CardDbVersionMismatch(
@@ -197,8 +227,8 @@ def upsert_cards(conn: sqlite3.Connection, cards: Iterable[dict[str, Any]]) -> i
             INSERT OR REPLACE INTO cards (
                 id, oracle_id, name, printed_name, set_code, set_name,
                 collector_number, lang, released_at, layout, digital,
-                image_status, highres_image, card_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                image_status, highres_image, card_json, rarity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -227,6 +257,7 @@ def _card_to_row(card: dict[str, Any]) -> tuple:
         card.get("image_status"),
         1 if card.get("highres_image") else 0,
         json.dumps(card, separators=(",", ":")),
+        card.get("rarity"),
     )
 
 
@@ -453,6 +484,22 @@ def get_card_by_name(
     return _row_json(find_row_by_name(conn, name, prefer_lang, only_lang=only_lang))
 
 
+def rarities_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str, str]:
+    """scryfall_id -> rarity for whichever of `ids` the corpus holds with a
+    rarity, in chunks under SQLite's bound-parameter limit."""
+    unique = list(dict.fromkeys(ids))
+    out: dict[str, str] = {}
+    for start in range(0, len(unique), 500):
+        chunk = unique[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT id, rarity FROM cards WHERE rarity IS NOT NULL AND id IN ({marks})",
+            chunk,
+        ):
+            out[row["id"]] = row["rarity"]
+    return out
+
+
 def variants_for_oracle_id(
     conn: sqlite3.Connection, oracle_id: str, *, include_digital: bool = False
 ) -> list[dict[str, Any]]:
@@ -467,7 +514,7 @@ def variants_for_oracle_id(
     sql = """
         SELECT id, name, printed_name, set_code, set_name, collector_number,
                lang, released_at, digital, image_status, highres_image,
-               card_json
+               rarity, card_json
         FROM cards WHERE oracle_id = ?
     """
     if not include_digital:

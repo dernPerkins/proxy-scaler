@@ -38,6 +38,7 @@ import StatusBadge from "./StatusBadge";
 import TutorialButton from "../tutorial/TutorialButton";
 import { useTourWhenPresent } from "../tutorial/tutorialStore";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
+import SetIcon from "./SetIcon";
 
 type Pick = {
   scryfallId: string;
@@ -196,6 +197,7 @@ function TilePlaceholder({ v, faceName }: { v: CardVariant; faceName: string }) 
   return (
     <span className="printing-tile-placeholder">
       <span className="mono">
+        <SetIcon setCode={v.set_code} rarity={v.rarity} />
         {v.set_code.toUpperCase()} #{v.collector_number}
       </span>
       <span className="printing-tile-placeholder-name">{faceName}</span>
@@ -312,6 +314,7 @@ function PrintingTile(props: {
         </span>
         <span className="printing-tile-label">
           <span className="mono">
+            <SetIcon setCode={v.set_code} rarity={v.rarity} />
             {v.set_code.toUpperCase()} #{v.collector_number} · {v.lang.toUpperCase()}
           </span>
           {v.digital && <span className="printing-tile-tag">digital</span>}
@@ -475,6 +478,7 @@ function PrintingPreview(props: {
       <div className="printing-preview-scrim" data-tour="picker-preview-details">
         <h3 className="printing-preview-name">{faceName}</h3>
         <p className="printing-preview-meta">
+          <SetIcon setCode={v.set_code} rarity={v.rarity} />
           {v.set_name ?? v.set_code.toUpperCase()}
           {variantYear(v)} · {v.set_code.toUpperCase()} #{v.collector_number} ·{" "}
           {v.lang.toUpperCase()}
@@ -609,7 +613,12 @@ function PrintingGridModal(props: {
     for (const v of variants) if (!byCode.has(v.set_code)) byCode.set(v.set_code, v.set_name);
     return [...byCode]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([code, name]) => ({ value: code, label: code.toUpperCase(), title: name }));
+      .map(([code, name]) => ({
+        value: code,
+        label: code.toUpperCase(),
+        title: name,
+        icon: <SetIcon setCode={code} />,
+      }));
   }, [variants]);
   const currentId = card.scryfall_id;
   const isCurrent = (v: CardVariant) =>
@@ -915,8 +924,10 @@ export default function PrintingPicker(props: {
   /** The grid closed, picked or not. Its previews may have downloaded
    *  originals the deck should now adopt. */
   onClosed?: () => void;
+  /** The pinned printing's rarity, which colors its set symbol. */
+  rarity?: string | null;
 }) {
-  const { card, preferredLang, disabled, onPick, onClosed } = props;
+  const { card, preferredLang, disabled, onPick, onClosed, rarity } = props;
   const [open, setOpen] = useState(false);
 
   // Language always shown, EN included — with several languages of one
@@ -938,6 +949,7 @@ export default function PrintingPicker(props: {
         disabled={disabled}
         onClick={() => setOpen(true)}
       >
+        <SetIcon setCode={card.set_code} rarity={rarity} />
         {label} ▾
       </button>
       {open && (

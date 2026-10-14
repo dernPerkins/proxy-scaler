@@ -4,7 +4,7 @@
 // hundreds of sets); a short list (languages) goes without. A `preset` is a
 // named selection that isn't a set of ticks (the language filter's
 // "EN + Exclusives"); ticking anything or choosing All leaves it.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 export interface FilterOption {
   value: string;
@@ -12,6 +12,8 @@ export interface FilterOption {
   label: string;
   /** The full name, as a tooltip. */
   title?: string | null;
+  /** Shown before the label in the list — the set filter's set symbol. */
+  icon?: ReactNode;
 }
 
 export default function MultiSelectFilter({
@@ -141,6 +143,7 @@ export default function MultiSelectFilter({
                   checked={selected.has(o.value)}
                   onChange={() => toggle(o.value)}
                 />
+                {o.icon}
                 <span className="mono">{o.label}</span>
               </label>
             ))}
