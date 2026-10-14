@@ -2014,6 +2014,74 @@ tbody tr:last-child td {
   max-width: 260px;
 }
 
+/* The Decklist's full-size "View" (FullImageDialog.tsx): the picker
+   preview pane's stage — dark in both themes, the card on a blurred wash
+   of its own art (.printing-preview-wash). Two classes to beat .modal's
+   width, padding and background, defined earlier. */
+.modal.full-image-modal {
+  position: relative;
+  width: auto;
+  max-width: 96vw;
+  max-height: 94vh;
+  padding: 14px 28px 28px;
+  background: #0b0b0e;
+  color: #fff;
+}
+/* Above the wash, which is absolutely positioned and would otherwise
+   paint over these non-positioned siblings. */
+.full-image-head,
+.full-image-stage {
+  position: relative;
+}
+.full-image-head {
+  margin: 0 -14px 14px 0;
+}
+.full-image-dims {
+  margin-right: auto;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap;
+}
+.full-image-close {
+  flex-shrink: 0;
+  padding: 4px 13px;
+  font-size: 12.5px;
+}
+.full-image-stage {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+}
+/* Clipped to the die-cut corners (the same radius as the picker's
+   preview), so transparent PNG corners never show. */
+.full-image-frame {
+  position: relative;
+  line-height: 0;
+  border-radius: 4.75% / 3.5%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+.full-image-frame img {
+  display: block;
+  max-height: min(94vh - 110px, 1040px);
+  max-width: calc(96vw - 56px);
+  width: auto;
+  height: auto;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.full-image-frame img.loaded {
+  opacity: 1;
+}
+.full-image-frame.loading {
+  height: min(94vh - 110px, 1040px);
+  aspect-ratio: 745 / 1040;
+}
+.full-image-frame.loading img {
+  position: absolute;
+}
+
 /* ---------- tutorials ---------- */
 
 /* The tour overlay (tutorial/TutorialOverlay.tsx): above modals (1000),

@@ -7,6 +7,7 @@ import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import CompareDialog from "../components/CompareDialog";
+import FullImageDialog from "../components/FullImageDialog";
 import CompareMenu, { type CompareSide } from "../components/CompareMenu";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
@@ -1116,6 +1117,7 @@ function CardRowView(props: {
   // Show/Hide toggle doesn't vanish while a Regen is in flight.
   const hasImages = faces.some((f) => f.variants.some((v) => v.galleryItemId != null));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
+  const [viewTarget, setViewTarget] = useState<{ title: string; src: string } | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   // Global single-flight lock (see download.ts::runDownload) -- disables
   // every Download button on the page the instant any one download
@@ -1307,6 +1309,17 @@ function CardRowView(props: {
                     >
                       {downloadStatus ? "Downloading…" : "Download"}
                     </button>
+                    <button
+                      className="btn-sm"
+                      onClick={() =>
+                        setViewTarget({
+                          title: `${card.name}${face.faceLabel ? ` (${face.faceLabel})` : ""} — Original`,
+                          src: generationApi.imageUrl(originalSource.galleryItemId, "original"),
+                        })
+                      }
+                    >
+                      View
+                    </button>
                     {/* Nothing to re-fetch from for a Custom Image: its
                         source is the file the user uploaded, and the way
                         to replace it is to upload a different one. The
@@ -1415,6 +1428,14 @@ function CardRowView(props: {
             setCompareTarget((t) => (t ? { ...t, against: side } : t))
           }
           onClose={() => setCompareTarget(null)}
+        />
+      )}
+
+      {viewTarget && (
+        <FullImageDialog
+          title={viewTarget.title}
+          src={viewTarget.src}
+          onClose={() => setViewTarget(null)}
         />
       )}
     </div>
