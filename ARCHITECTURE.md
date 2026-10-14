@@ -306,14 +306,16 @@ generation-server state.
 | `import_resolved_cards` | The second half: insert already-resolved (fully pinned) cards in one transaction, de-duped at every identity tier (set/collector, name+collector, English and printed names); also mirrors the pasted text onto the row |
 | `remove_card` | Drop one parsed line from a project |
 | `set_card_quantity` | Set a card's copy count (clamped to ≥ 1 — removal is `remove_card`'s job) |
-| `set_card_printing` | Change one card to a different printing: pins `scryfall_id` and refreshes the display cache (name/set/collector/lang). The user-chosen twin of a resolution |
+| `set_card_printing` | Change one card to a different printing: pins `scryfall_id` and refreshes the display cache (name/set/collector/lang/rarity). The user-chosen twin of a resolution |
 | `set_cards_resolution` | Batched persist of post-import resolve results — one transaction for the whole decklist (see the resolve → generate flow, step 2) |
+| `set_card_rarities` | Backfills `rarity` (which colors set symbols) for a project's cards stored without one, keyed by `scryfall_id` from `/api/cards/rarities`. New pins carry rarity already, so this only runs once per older row |
 | `get_last_project_id` / `set_last_project_id` | Auto-load-on-launch support (`app_settings`) |
 | `get_quit_prompt_suppressed` / `set_quit_prompt_suppressed` | The quit prompt's "Don't ask again" (`app_settings`, alongside `last_project_id` and `recent_remote_hosts`). Absent means "still offer" |
 | `list_recent_hosts` / `add_recent_host` / `remove_recent_host` | Remembered Remote address+port pairs for the connection screens (`app_settings`) |
 | `get_update_skipped_version` / `set_update_skipped_version` | The update prompt's "Skip this version" (`app_settings`) — suppresses exactly one release; the next one supersedes the skip by not matching it |
 | `get_update_check_enabled` / `set_update_check_enabled` | App Settings' "Check For Updates At Launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
 | `get_image_cache_enabled` / `set_image_cache_enabled` | App Settings' "Use Proxy Scaler Image Cache" (`app_settings`, default on) — the client's **image origin**, sent on every Generate-family request and thumbnail URL (`imageOrigin.ts`) |
+| `get_settings_presets` / `set_settings_presets` | The PDF and ZIP tabs' named settings presets and each tab's default for new projects (`app_settings` keys `pdf_presets` / `zip_presets`, one opaque JSON blob per tab owned by `settingsPresets.ts`). `kind` is `"pdf"` or `"zip"`; the two never mix |
 
 The update mechanism itself lives in `desktop/src-tauri/src/update.rs`
 (`check_for_update` / `download_update` / `launch_installer`, driven by

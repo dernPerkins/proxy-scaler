@@ -47,6 +47,7 @@ type Pick = {
   collectorNumber: string;
   lang: string;
   printedName: string | null;
+  rarity: string | null;
 };
 
 function variantYear(v: CardVariant): string {
@@ -681,6 +682,7 @@ function PrintingGridModal(props: {
         collectorNumber: v.collector_number,
         lang: v.lang,
         printedName: v.printed_name,
+        rarity: v.rarity ?? null,
       });
     }
   }

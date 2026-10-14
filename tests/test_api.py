@@ -394,6 +394,23 @@ def test_resolve_returns_canonical_identity(client: TestClient) -> None:
     assert card["faces"][0]["card_name"] == "Sol Ring"
 
 
+def test_resolve_carries_the_printings_rarity(client: TestClient, monkeypatch) -> None:
+    # The client stores it with the pinned card, so set symbols are
+    # colored on load without a second round-trip.
+    card = {**SOL_RING_CARD, "rarity": "uncommon"}
+    monkeypatch.setattr(
+        ScryfallClient, "resolve_many", lambda self, entries: [(card, [])] * len(entries)
+    )
+    resp = client.post("/api/resolve", json={"entries": [_sol_ring_entry()]})
+    assert resp.status_code == 200
+    assert resp.json()["resolved"][0]["faces"][0]["rarity"] == "uncommon"
+
+
+def test_resolve_rarity_is_null_when_unknown(client: TestClient) -> None:
+    resp = client.post("/api/resolve", json={"entries": [_sol_ring_entry()]})
+    assert resp.json()["resolved"][0]["faces"][0]["rarity"] is None
+
+
 def test_resolve_empty_entries_is_a_noop(client: TestClient) -> None:
     resp = client.post("/api/resolve", json={"entries": []})
     assert resp.status_code == 200

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import ModelSelect from "../components/ModelSelect";
+import PresetBar from "../components/PresetBar";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -519,6 +520,9 @@ export default function PdfPage() {
             The split lands at Guides so the halves come out roughly even.
             Collapses back to one column on a narrow window — see
             .sidebar-split in styles.css. */}
+        {/* Presets first, spanning both columns: picking one sets most of
+            what follows, so it reads top-down. */}
+        <PresetBar kind="pdf" tourId="pdf-presets" />
         <div className="sidebar-cols">
           <div>
             <h3 style={{ marginBottom: 14 }}>Source images</h3>

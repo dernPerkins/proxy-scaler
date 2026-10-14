@@ -318,6 +318,12 @@ export const TOURS: Record<TourId, Tour> = {
     followUps: ["pdf-preview"],
     steps: [
       {
+        target: "pdf-presets",
+        title: "Presets",
+        body: "Save your usual layout, offsets and back printing as a preset, and pick it here next time. Your first preset becomes the starting point for new projects; the gear lets you rename, delete or change the default.",
+        placement: "right",
+      },
+      {
         target: "pdf-source",
         title: "Source images",
         body: "Chooses which of your generated versions go into the PDF. This never generates anything new, it only picks among what you already have.",
@@ -393,6 +399,12 @@ export const TOURS: Record<TourId, Tour> = {
 
   export: {
     steps: [
+      {
+        target: "export-presets",
+        title: "Presets",
+        body: "Save your usual format and bleed as a preset. These are separate from the PDF tab's presets, and your first one becomes the starting point for new projects.",
+        placement: "right",
+      },
       {
         target: "export-source",
         title: "Source images",

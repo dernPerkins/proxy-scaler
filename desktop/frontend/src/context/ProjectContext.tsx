@@ -4,6 +4,7 @@ import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
 import { setProjectSnapshot } from "../syncCustoms";
+import { defaultPresetOverlay, pickPresetFields, presetQueryOptions } from "../settingsPresets";
 import type {
   CardRow,
   LoadedProject,
@@ -192,6 +193,7 @@ interface ProjectContextValue {
       collectorNumber: string;
       lang: string;
       printedName: string | null;
+      rarity: string | null;
     },
   ) => Promise<void>;
   /** Persists post-import resolve results in one batch — pins each card's
@@ -206,8 +208,12 @@ interface ProjectContextValue {
       collector_number: string;
       lang: string;
       printed_name: string | null;
+      rarity: string | null;
     }[],
   ) => Promise<void>;
+  /** Stores rarities (scryfall_id -> rarity) learned for cards that were
+   *  saved without one. See DecklistPage's rarity backfill. */
+  backfillRarities: (rarities: Record<string, string>) => Promise<void>;
   /** Whether the project has a name. Deliberately not "is saved": since
    *  settings began writing through (.scratch/optional-projects/spec.md
    *  §5.2) everything is saved, named or not — what varies is whether you
@@ -333,6 +339,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // the debounce belongs to the field: what is typed is the field's until
   // it commits, and the context only ever holds the stored name.
   const nameCommitFlush = useRef<(() => Promise<void>) | null>(null);
+  // Set while the settings on screen carry a default preset that no row
+  // holds yet. The row a blank slate eventually gets is born from SQL
+  // column defaults (an import creates it without writing settings), so
+  // ensureProjectRow uses this to write the preset's fields into it —
+  // otherwise the project would come back from a relaunch without them.
+  const presetOverlayPending = useRef(false);
 
   function adoptProjectId(id: number | null) {
     projectIdRef.current = id;
@@ -354,6 +366,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setSettings(next);
   }
 
+  // What a new project starts from: the built-in defaults with the PDF
+  // and ZIP tabs' default presets laid over them (settingsPresets.ts).
+  // Reads the preset cache, which is prefetched on mount, so it can run
+  // inside the synchronous createNew().
+  function newProjectSettings(): ProjectSettings {
+    const overlay = defaultPresetOverlay(queryClient);
+    presetOverlayPending.current = Object.keys(overlay).length > 0;
+    return { ...getDefaultSettings(), ...overlay };
+  }
+
   // The row every write needs, created on first demand rather than at
   // launch: the Unnamed Project is born the first time there is something
   // to store — a decklist import, or a settings change with no cards at
@@ -373,6 +395,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // bar's field holds whatever the user is in the middle of typing.
     adoptProjectId(unnamed.id);
     adoptProjectTag(unnamed.tag);
+    // A blank slate started from default presets: the new row holds the
+    // SQL column defaults, not what the PDF/ZIP tabs are showing. Write
+    // just the preset-owned fields over it — the rest of the row, such as
+    // the default back Rust copied in, stays as Rust made it.
+    if (presetOverlayPending.current) {
+      presetOverlayPending.current = false;
+      try {
+        const row = await projectApi.getProject(unnamed.id);
+        await projectApi.updateProject(unnamed.id, "", {
+          ...row.settings,
+          ...pickPresetFields("pdf", settingsRef.current),
+          ...pickPresetFields("zip", settingsRef.current),
+        });
+      } catch {
+        // Best-effort: the next settings change writes everything anyway.
+      }
+    }
     // The Unnamed Project is what the next launch should restore.
     await projectApi.setLastProjectId(unnamed.id);
     return unnamed.id;
@@ -459,6 +498,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     adoptProjectTag(project.tag);
     setProjectName(project.name);
     applySettings(project.settings);
+    presetOverlayPending.current = false;
     // A saved project's stored model is an explicit choice, whatever it
     // happens to be — never second-guess it when the probe lands.
     modelIsDefault.current = false;
@@ -623,6 +663,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         collectorNumber: string;
         lang: string;
         printedName: string | null;
+        rarity: string | null;
       };
     }) => {
       await projectApi.setCardPrinting(args.cardId, args.printing);
@@ -640,6 +681,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 collector_number: printing.collectorNumber,
                 lang: printing.lang,
                 printed_name: printing.printedName,
+                rarity: printing.rarity,
               }
             : c,
         ),
@@ -658,6 +700,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         collector_number: string;
         lang: string;
         printed_name: string | null;
+        rarity: string | null;
       }[],
     ) => {
       await projectApi.setCardsResolution(updates);
@@ -677,6 +720,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 collector_number: u.collector_number,
                 lang: u.lang,
                 printed_name: u.printed_name,
+                rarity: u.rarity,
               }
             : c;
         }),
@@ -815,7 +859,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     adoptProjectId(null);
     adoptProjectTag(null);
     setProjectName("");
-    applySettings(getDefaultSettings());
+    applySettings(newProjectSettings());
     modelIsDefault.current = true;
     setDecklistTextState("");
     setCards([]);
@@ -916,6 +960,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // afterward should never be silently overridden by this.
   useEffect(() => {
     let cancelled = false;
+    // Both preset stores, fetched up front so createNew() can read them
+    // synchronously from the cache.
+    const presetsLoaded = Promise.all([
+      queryClient.fetchQuery(presetQueryOptions("pdf")),
+      queryClient.fetchQuery(presetQueryOptions("zip")),
+    ]).catch(() => undefined);
+    // A launch that lands on a blank slate is a new project too, so it
+    // gets the default presets — unless something has already moved on
+    // (a project loaded, or the user started editing) while they loaded.
+    async function applyDefaultPresetsToBlankSlate() {
+      await presetsLoaded;
+      if (cancelled || projectIdRef.current != null || pendingSettingsWrite.current != null) return;
+      const overlay = defaultPresetOverlay(queryClient);
+      if (Object.keys(overlay).length === 0) return;
+      presetOverlayPending.current = true;
+      applySettings({ ...settingsRef.current, ...overlay });
+    }
     (async () => {
       try {
         const lastId = await projectApi.getLastProjectId();
@@ -927,11 +988,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           } catch {
             // Dead pointer: the project was deleted, and the deletion left
             // a blank slate. Restore it by loading nothing.
+            await applyDefaultPresetsToBlankSlate();
           }
           return;
         }
         const projects = await projectApi.listProjects();
-        if (cancelled || projects.length === 0) return;
+        if (cancelled) return;
+        if (projects.length === 0) {
+          await applyDefaultPresetsToBlankSlate();
+          return;
+        }
         loadMutation.mutate(projects[0].id);
       } catch {
         // Best-effort — if something's wrong with the local store, the
@@ -981,6 +1047,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     applyCardResolutions: async (updates) => {
       await applyCardResolutionsMutation.mutateAsync(updates);
+    },
+    backfillRarities: async (rarities) => {
+      const id = projectIdRef.current;
+      if (id == null || Object.keys(rarities).length === 0) return;
+      await projectApi.setCardRarities(id, rarities);
+      // Only rows still holding no rarity: a printing picked while the
+      // request was out already carries its own.
+      setCards((prev) =>
+        prev.map((c) =>
+          c.rarity == null && c.scryfall_id && rarities[c.scryfall_id]
+            ? { ...c, rarity: rarities[c.scryfall_id] }
+            : c,
+        ),
+      );
     },
     isNamed: projectName.trim().length > 0,
     rename: async (name: string) => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -90,6 +90,7 @@ export default function DecklistPage() {
     setCardQuantity,
     setCardPrinting,
     applyCardResolutions,
+    backfillRarities,
   } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -169,6 +170,7 @@ export default function DecklistPage() {
             collector_number: face.collector_number,
             scryfall_id: face.scryfall_id,
             lang: face.lang ?? "en",
+            rarity: face.rarity ?? null,
           },
         ];
       });
@@ -275,21 +277,35 @@ export default function DecklistPage() {
   });
   const languages = languagesQuery.data?.languages ?? ["en"];
 
-  // Each pinned printing's rarity, which colors its row's set symbol. One
-  // request per distinct set of printings: keyed on the sorted ids, so a
-  // pick refetches but reordering or a quantity change doesn't.
-  const pinnedIds = useMemo(
-    () => [...new Set(cards.map((c) => c.scryfall_id).filter((id): id is string => !!id))].sort(),
-    [cards],
-  );
-  const raritiesQuery = useQuery({
-    queryKey: ["card-rarities", pinnedIds],
-    queryFn: () => generationApi.cardRarities(pinnedIds),
-    enabled: !serverUnavailable && pinnedIds.length > 0 && serverSupportsSetIcons(serverVersion),
-    staleTime: Infinity,
-    placeholderData: (previous) => previous,
-  });
-  const rarities = raritiesQuery.data?.rarities ?? {};
+  // Rarity colors each row's set symbol, and is stored with the card
+  // (import, re-resolve and printing picks all save it) so the colors are
+  // there on load rather than after the server finishes booting. Rows
+  // saved before that — or pinned by a server too old to send it — are
+  // filled in once from the corpus and written back. Attempted ids are
+  // remembered per project so a printing the corpus has no rarity for
+  // isn't asked about on every render.
+  const rarityAttempted = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    rarityAttempted.current = new Set();
+  }, [projectId]);
+  useEffect(() => {
+    if (serverUnavailable || !serverSupportsSetIcons(serverVersion)) return;
+    const missing = [
+      ...new Set(
+        cards
+          .filter((c) => c.scryfall_id && c.rarity == null)
+          .map((c) => c.scryfall_id as string)
+          .filter((id) => !rarityAttempted.current.has(id)),
+      ),
+    ];
+    if (missing.length === 0) return;
+    missing.forEach((id) => rarityAttempted.current.add(id));
+    generationApi
+      .cardRarities(missing)
+      .then((r) => backfillRarities(r.rarities))
+      // A failed request is retried the next time the cards change.
+      .catch(() => missing.forEach((id) => rarityAttempted.current.delete(id)));
+  }, [cards, serverUnavailable, serverVersion, backfillRarities]);
 
   // On-load re-resolve for legacy rows only: cards imported before the
   // resolve-gated import existed (or by older builds) may be unpinned —
@@ -333,6 +349,7 @@ export default function DecklistPage() {
               collector_number: face.collector_number,
               lang: face.lang ?? "en",
               printed_name: face.printed_name ?? null,
+              rarity: face.rarity ?? null,
             },
           ];
         });
@@ -1003,7 +1020,7 @@ export default function DecklistPage() {
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
               preferredLang={settings.preferred_lang}
-              rarity={card.scryfall_id ? rarities[card.scryfall_id] : undefined}
+              rarity={card.rarity ?? undefined}
               onPickPrinting={(printing) => {
                 // Persisting the pick changes the card's identity string,
                 // which re-fires the adopt effect above (badges re-bucket
@@ -1079,6 +1096,7 @@ function CardRowView(props: {
     collectorNumber: string;
     lang: string;
     printedName: string | null;
+    rarity: string | null;
   }) => void;
   /** The printing picker closed (picked or not) — see adoptNonce. */
   onPickerClosed: () => void;

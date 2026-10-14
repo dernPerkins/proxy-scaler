@@ -7,7 +7,7 @@
 // `tag` column (an opaque string minted once per row — naming a project
 // preserves it, deleting the row ends it — and passed to the generation
 // server as `project_tag`: plain scoping, not a foreign key).
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -83,7 +83,13 @@ CREATE TABLE IF NOT EXISTS project_cards (
     -- Localized name as printed on a non-English printing; NULL for
     -- English. Display-only — `name` (English/oracle) stays the matching
     -- and dedup identity.
-    printed_name TEXT
+    printed_name TEXT,
+    -- Scryfall rarity of the pinned printing (common … mythic), which
+    -- colors its set symbol. Stored with the printing because it never
+    -- changes for one, so the deck list can color symbols on load without
+    -- waiting on the server. NULL until known (a pre-rarity row, an older
+    -- server); the frontend backfills it from /api/cards/rarities.
+    rarity TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_project_cards_project_id ON project_cards(project_id);
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -248,6 +254,8 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // outright (see custom_images::delete_custom_image_row) — a card with
     // no art and no way to get any is not a card.
     ("custom_image_id", "INTEGER"),
+    // See the column comment in SCHEMA.
+    ("rarity", "TEXT"),
 ];
 
 // Columns added to the two image libraries after their initial release.
@@ -705,6 +713,8 @@ pub struct CardRow {
     pub scryfall_id: Option<String>,
     pub lang: Option<String>,
     pub printed_name: Option<String>,
+    /// The pinned printing's Scryfall rarity, for its set symbol's color.
+    pub rarity: Option<String>,
     /// Set instead of scryfall_id for a Custom Image card. The frontend
     /// keys off this to render a "Custom" chip in place of the printing
     /// picker, and — importantly — to skip the background re-resolve that
@@ -843,7 +853,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
         .prepare(
             "SELECT c.id, c.sort_order, c.original_import_line, c.quantity, c.name,
                     c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
-                    c.custom_image_id, ci.content_hash
+                    c.custom_image_id, ci.content_hash, c.rarity
              FROM project_cards c
              LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
              WHERE c.project_id = ?1 ORDER BY c.sort_order ASC",
@@ -864,6 +874,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 printed_name: row.get(9)?,
                 custom_image_id: row.get(10)?,
                 custom_hash: row.get(11)?,
+                rarity: row.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1540,6 +1551,9 @@ pub struct ResolvedImportCard {
     pub collector_number: String,
     pub scryfall_id: String,
     pub lang: String,
+    /// Absent from servers that predate rarity on resolve results.
+    #[serde(default)]
+    pub rarity: Option<String>,
 }
 
 /// The second half of the resolve-gated import: inserts already-resolved
@@ -1615,8 +1629,8 @@ fn import_resolved_cards_into(
         tx.execute(
             "INSERT INTO project_cards
              (project_id, sort_order, original_import_line, quantity, name, printed_name,
-              set_code, collector_number, scryfall_id, lang)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              set_code, collector_number, scryfall_id, lang, rarity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 project_id,
                 next_sort_order,
@@ -1628,6 +1642,7 @@ fn import_resolved_cards_into(
                 card.collector_number,
                 card.scryfall_id,
                 card.lang,
+                card.rarity,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1782,12 +1797,17 @@ pub struct CardResolutionUpdate {
     pub lang: String,
     #[serde(default)]
     pub printed_name: Option<String>,
+    /// The new printing's rarity. Written even when absent: a different
+    /// printing can have a different rarity, so the old one is cleared
+    /// rather than kept, and the backfill fills the gap.
+    #[serde(default)]
+    pub rarity: Option<String>,
 }
 
 fn apply_card_resolution(conn: &Connection, update: &CardResolutionUpdate) -> Result<(), String> {
     conn.execute(
         "UPDATE project_cards SET scryfall_id = ?1, name = ?2, set_code = ?3,
-         collector_number = ?4, lang = ?5, printed_name = ?6 WHERE id = ?7",
+         collector_number = ?4, lang = ?5, printed_name = ?6, rarity = ?7 WHERE id = ?8",
         params![
             update.scryfall_id,
             update.name,
@@ -1795,6 +1815,7 @@ fn apply_card_resolution(conn: &Connection, update: &CardResolutionUpdate) -> Re
             update.collector_number,
             update.lang,
             update.printed_name,
+            update.rarity,
             update.card_id,
         ],
     )
@@ -1815,6 +1836,7 @@ pub fn set_card_printing(
     collector_number: String,
     lang: String,
     printed_name: Option<String>,
+    rarity: Option<String>,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
     apply_card_resolution(
@@ -1827,6 +1849,7 @@ pub fn set_card_printing(
             collector_number,
             lang,
             printed_name,
+            rarity,
         },
     )
 }
@@ -1844,6 +1867,37 @@ pub fn set_cards_resolution(
         apply_card_resolution(&tx, update)?;
     }
     tx.commit().map_err(|e| e.to_string())
+}
+
+/// Fills in rarity for a project's cards pinned to the given printings —
+/// the backfill for rows stored before rarity was (cards imported by an
+/// older build, or resolved by an older server). Keyed by scryfall_id
+/// rather than card id because that is what /api/cards/rarities answers
+/// with, and every row of one printing shares its rarity.
+fn set_card_rarities_in(
+    conn: &mut Connection,
+    project_id: i64,
+    rarities: &HashMap<String, String>,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for (scryfall_id, rarity) in rarities {
+        tx.execute(
+            "UPDATE project_cards SET rarity = ?1 WHERE project_id = ?2 AND scryfall_id = ?3",
+            params![rarity, project_id, scryfall_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_card_rarities(
+    app: AppHandle,
+    project_id: i64,
+    rarities: HashMap<String, String>,
+) -> Result<(), String> {
+    let mut conn = open_db(&app)?;
+    set_card_rarities_in(&mut conn, project_id, &rarities)
 }
 
 // --- app_settings ---------------------------------------------------------
@@ -2246,6 +2300,37 @@ pub fn get_library_upscale_settings(app: AppHandle) -> Result<Option<String>, St
 pub fn set_library_upscale_settings(app: AppHandle, json: String) -> Result<(), String> {
     let conn = open_db(&app)?;
     write_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY, &json)
+}
+
+// --- Settings presets -----------------------------------------------------
+//
+// The PDF and ZIP tabs' named settings presets, and which of each is the
+// default a new project starts from. App-global for the same reason the
+// library upscale settings are: a user's printer offsets or vendor bleed
+// belong to them, not to any one project. One opaque JSON string per tab
+// (settingsPresets.ts::PresetStore owns the shape); the two kinds are kept
+// apart on purpose — a PDF preset never applies to the ZIP tab.
+
+fn settings_presets_key(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "pdf" => Ok("pdf_presets"),
+        "zip" => Ok("zip_presets"),
+        other => Err(format!("unknown preset kind: {other}")),
+    }
+}
+
+#[tauri::command]
+pub fn get_settings_presets(app: AppHandle, kind: String) -> Result<Option<String>, String> {
+    let key = settings_presets_key(&kind)?;
+    let conn = open_db(&app)?;
+    read_app_setting(&conn, key)
+}
+
+#[tauri::command]
+pub fn set_settings_presets(app: AppHandle, kind: String, json: String) -> Result<(), String> {
+    let key = settings_presets_key(&kind)?;
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, key, &json)
 }
 
 // --- Recent remote hosts --------------------------------------------------
@@ -2825,6 +2910,7 @@ mod tests {
                 collector_number: "141".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                rarity: None,
             },
         )
         .expect("resolve bolt");
@@ -2838,6 +2924,7 @@ mod tests {
                 collector_number: "263".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                rarity: None,
             },
         )
         .expect("resolve sol ring");
@@ -2857,6 +2944,7 @@ mod tests {
             collector_number: cn.to_string(),
             scryfall_id: format!("{set}-{cn}"),
             lang: "en".to_string(),
+            rarity: None,
         }
     }
 
@@ -2930,6 +3018,7 @@ mod tests {
             collector_number: "210".to_string(),
             scryfall_id: "aang-de".to_string(),
             lang: "de".to_string(),
+            rarity: None,
         };
         let cards =
             import_resolved_cards_into(&mut conn, id, "1 Aang der Luftnomade 210", &[de.clone()])
@@ -3114,6 +3203,76 @@ mod tests {
             read_app_setting(&conn, LIBRARY_UPSCALE_SETTINGS_KEY).expect("read").as_deref(),
             Some("{}")
         );
+    }
+
+    #[test]
+    fn rarity_is_stored_with_the_pinned_printing() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let sol = ResolvedImportCard {
+            rarity: Some("uncommon".to_string()),
+            .._resolved("1 Sol Ring (c21) 263", "Sol Ring", "c21", "263")
+        };
+        let cards = import_resolved_cards_into(&mut conn, id, "x", &[sol]).expect("import");
+        assert_eq!(cards[0].rarity.as_deref(), Some("uncommon"));
+
+        // A printing change replaces the rarity, and one with none known
+        // clears it rather than keeping the old printing's.
+        apply_card_resolution(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "sol-sld".to_string(),
+                name: "Sol Ring".to_string(),
+                set_code: "sld".to_string(),
+                collector_number: "1".to_string(),
+                lang: "en".to_string(),
+                printed_name: None,
+                rarity: None,
+            },
+        )
+        .expect("change printing");
+        assert_eq!(cards_for_project(&conn, id).expect("cards")[0].rarity, None);
+    }
+
+    #[test]
+    fn set_card_rarities_backfills_by_printing_within_the_project() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let other = create_project_row(&conn, "Other").expect("other").id;
+        let bolt = _resolved("1 Lightning Bolt (clu) 141", "Lightning Bolt", "clu", "141");
+        import_resolved_cards_into(&mut conn, id, "x", &[bolt.clone()]).expect("import");
+        import_resolved_cards_into(&mut conn, other, "x", &[bolt]).expect("import other");
+
+        let rarities = HashMap::from([("clu-141".to_string(), "common".to_string())]);
+        set_card_rarities_in(&mut conn, id, &rarities).expect("backfill");
+        assert_eq!(cards_for_project(&conn, id).expect("cards")[0].rarity.as_deref(), Some("common"));
+        assert_eq!(
+            cards_for_project(&conn, other).expect("cards")[0].rarity,
+            None,
+            "another project's rows are left alone"
+        );
+    }
+
+    #[test]
+    fn settings_presets_are_kept_per_kind() {
+        let conn = test_conn();
+        let pdf = settings_presets_key("pdf").expect("pdf");
+        let zip = settings_presets_key("zip").expect("zip");
+        assert_ne!(pdf, zip);
+        assert_eq!(read_app_setting(&conn, pdf).expect("read"), None);
+        write_app_setting(&conn, pdf, r#"{"version":1,"presets":[]}"#).expect("write");
+        assert_eq!(
+            read_app_setting(&conn, pdf).expect("read").as_deref(),
+            Some(r#"{"version":1,"presets":[]}"#)
+        );
+        assert_eq!(read_app_setting(&conn, zip).expect("read"), None);
+    }
+
+    #[test]
+    fn settings_presets_reject_an_unknown_kind() {
+        assert!(settings_presets_key("decklist").is_err());
+        assert!(settings_presets_key("").is_err());
     }
 
     #[test]
@@ -3354,6 +3513,7 @@ mod tests {
                 collector_number: "116".to_string(),
                 lang: "ja".to_string(),
                 printed_name: None,
+                rarity: None,
             },
         )
         .expect("change printing");
@@ -3385,6 +3545,7 @@ mod tests {
                 collector_number: "263".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                rarity: None,
             },
             CardResolutionUpdate {
                 card_id: cards[1].id,
@@ -3394,6 +3555,7 @@ mod tests {
                 collector_number: "141".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                rarity: None,
             },
         ];
         let tx = conn.transaction().expect("tx");

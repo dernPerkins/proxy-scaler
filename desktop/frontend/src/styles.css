@@ -1816,6 +1816,119 @@ tbody tr:last-child td {
   margin-top: 4px;
 }
 
+/* ---------- settings presets (PresetBar / PresetManagerDialog) ---------- */
+/* The preset dropdown with its Save (+) and Manage (gear) buttons on the
+   same line; the select takes whatever width the buttons leave. */
+.preset-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.preset-row > .select-menu {
+  flex: 1;
+  min-width: 0;
+}
+/* A square button sized to the select beside it. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.icon-btn:hover:not(:disabled),
+.icon-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.icon-btn-svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.preset-list {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Default radio, name, Delete. */
+.preset-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.preset-builtin {
+  grid-column: 2 / -1;
+  color: var(--text-muted);
+}
+.preset-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.preset-name > input {
+  width: 100%;
+}
+
+/* ---------- SelectMenu (an app-drawn single-choice dropdown) ---------- */
+/* The toggle is a .select-button, so it already looks like every other
+   dropdown; the list hangs from it at the same width. */
+.select-menu {
+  position: relative;
+}
+.select-menu-toggle {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.select-menu-placeholder {
+  color: var(--text-muted);
+}
+.select-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.select-menu-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.select-menu-option.active {
+  background: var(--surface-2);
+}
+.select-menu-check {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--accent);
+}
+
 /* ---------- progress bar ---------- */
 
 .progress {

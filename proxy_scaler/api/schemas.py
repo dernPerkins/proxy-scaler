@@ -137,6 +137,10 @@ class ResolvedFaceOut(BaseModel):
     # printings. Display-only on the client (English name stays the
     # matching identity).
     printed_name: str | None = None
+    # Scryfall's rarity for the printing — the client stores it with the
+    # pinned card so set symbols are colored without asking again. None
+    # for a corpus imported before rarity was kept.
+    rarity: str | None = None
 
 
 class ResolvedCardOut(BaseModel):

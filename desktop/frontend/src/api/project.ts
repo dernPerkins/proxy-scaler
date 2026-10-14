@@ -121,6 +121,10 @@ export interface CardRow {
   // Localized name as printed on a non-English printing; null for English.
   // Display-only — `name` (English/oracle) stays the matching identity.
   printed_name: string | null;
+  // The pinned printing's Scryfall rarity, which colors its set symbol.
+  // Stored with the card so the deck list can color symbols on load; null
+  // until known (an older row or server), backfilled by setCardRarities.
+  rarity: string | null;
   // Set instead of scryfall_id when this card is a Custom Image — art the
   // user uploaded, which has no Scryfall printing. `custom_image_id` is
   // the local library row; `custom_hash` is the sha256 the *generation
@@ -155,6 +159,7 @@ export interface ResolvedImportCard {
   quantity: number;
   name: string;
   printed_name: string | null;
+  rarity: string | null;
   set_code: string;
   collector_number: string;
   scryfall_id: string;
@@ -227,6 +232,7 @@ export const projectApi = {
       collectorNumber: string;
       lang: string;
       printedName: string | null;
+      rarity: string | null;
     },
   ) =>
     invokeCommand<void>("set_card_printing", {
@@ -237,6 +243,7 @@ export const projectApi = {
       collectorNumber: printing.collectorNumber,
       lang: printing.lang,
       printedName: printing.printedName,
+      rarity: printing.rarity,
     }),
   // Batched persist of post-import resolve results — one transaction for
   // the whole decklist. Field names are the Rust struct's snake_case:
@@ -250,8 +257,13 @@ export const projectApi = {
       collector_number: string;
       lang: string;
       printed_name: string | null;
+      rarity: string | null;
     }[],
   ) => invokeCommand<void>("set_cards_resolution", { updates }),
+  // Backfill for cards stored before rarity was: scryfall_id -> rarity,
+  // applied to every row of this project pinned to that printing.
+  setCardRarities: (projectId: number, rarities: Record<string, string>) =>
+    invokeCommand<void>("set_card_rarities", { projectId, rarities }),
 
   getLastProjectId: () => invokeCommand<number | null>("get_last_project_id"),
   setLastProjectId: (projectId: number) =>
@@ -303,6 +315,13 @@ export const projectApi = {
   getLibraryUpscaleSettings: () => invokeCommand<string | null>("get_library_upscale_settings"),
   setLibraryUpscaleSettings: (json: string) =>
     invokeCommand<void>("set_library_upscale_settings", { json }),
+
+  // The PDF / ZIP tabs' settings presets — one opaque JSON blob per tab
+  // (settingsPresets.ts owns the shape). Null until first written.
+  getSettingsPresets: (kind: "pdf" | "zip") =>
+    invokeCommand<string | null>("get_settings_presets", { kind }),
+  setSettingsPresets: (kind: "pdf" | "zip", json: string) =>
+    invokeCommand<void>("set_settings_presets", { kind, json }),
 
   getCompletedTutorials: () => invokeCommand<string[]>("get_completed_tutorials"),
   markTutorialCompleted: (id: string) =>

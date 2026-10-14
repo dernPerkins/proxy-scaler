@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ModelSelect from "../components/ModelSelect";
+import PresetBar from "../components/PresetBar";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -243,6 +244,8 @@ export default function ExportPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
+        <PresetBar kind="zip" tourId="export-presets" />
+
         <h3 style={{ marginBottom: 14 }}>Source images</h3>
 
         {/* Which already-generated variant to export for each card — the

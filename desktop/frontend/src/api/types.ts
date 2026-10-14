@@ -91,6 +91,9 @@ export interface ResolvedFace {
   // Localized name as printed on a non-English card; null/absent for
   // English printings.
   printed_name?: string | null;
+  // The printing's rarity, stored with the pinned card. Absent from older
+  // servers; null for a corpus imported before rarity was kept.
+  rarity?: string | null;
 }
 
 export interface ResolvedCard {
