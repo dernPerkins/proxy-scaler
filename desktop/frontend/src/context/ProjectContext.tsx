@@ -11,6 +11,7 @@ import type {
   ProjectSettings,
   ResolvedImportCard,
 } from "../api/project";
+import type { BackImage, BackMode } from "../api/types";
 
 // Heavy/quality-first vs. light/fast. Named rather than repeated inline so
 // the branching below reads as "which class of hardware is this."
@@ -196,6 +197,13 @@ interface ProjectContextValue {
       rarity: string | null;
     },
   ) => Promise<void>;
+  /** Chooses what prints on one card's Reverse: the project's Selected
+   *  Back ("inherit"), nothing ("blank"), or a Back Library image. Resolves
+   *  once stored. */
+  setCardBack: (cardId: number, backMode: BackMode, backImageId: number | null) => Promise<void>;
+  /** Every card in the project back to "inherit" — the bulk undo for
+   *  per-card backs. */
+  resetCardBacks: () => Promise<void>;
   /** Persists post-import resolve results in one batch — pins each card's
    *  scryfall_id and fills in concrete set/collector for name-only lines.
    *  See DecklistPage's eager resolve effect. */
@@ -690,6 +698,47 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     onError: (err: Error) => setError(err.message),
   });
 
+  const setCardBackMutation = useMutation({
+    mutationFn: async (args: { cardId: number; backMode: BackMode; backImageId: number | null }) => {
+      await projectApi.setCardBack(args.cardId, args.backMode, args.backImageId);
+      return args;
+    },
+    onSuccess: ({ cardId, backMode, backImageId }) => {
+      // back_hash is joined in by Rust on load; mirror it here from the
+      // library cache so the row is complete without a reload.
+      const library = queryClient.getQueryData<BackImage[]>(["back-images"]);
+      const hash =
+        backMode === "image" ? (library?.find((b) => b.id === backImageId)?.content_hash ?? null) : null;
+      setCards((prev) =>
+        prev.map((c) =>
+          c.id === cardId
+            ? {
+                ...c,
+                back_mode: backMode,
+                back_image_id: backMode === "image" ? backImageId : null,
+                back_hash: hash,
+              }
+            : c,
+        ),
+      );
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const resetCardBacksMutation = useMutation({
+    mutationFn: async () => {
+      const id = projectIdRef.current;
+      if (id == null) return;
+      await projectApi.resetProjectCardBacks(id);
+    },
+    onSuccess: () => {
+      setCards((prev) =>
+        prev.map((c) => ({ ...c, back_mode: "inherit" as const, back_image_id: null, back_hash: null })),
+      );
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
   const applyCardResolutionsMutation = useMutation({
     mutationFn: async (
       updates: {
@@ -1044,6 +1093,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setCardQuantityMutation.mutate({ cardId, quantity }),
     setCardPrinting: async (cardId, printing) => {
       await setCardPrintingMutation.mutateAsync({ cardId, printing });
+    },
+    setCardBack: async (cardId, backMode, backImageId) => {
+      await setCardBackMutation.mutateAsync({ cardId, backMode, backImageId });
+    },
+    resetCardBacks: async () => {
+      await resetCardBacksMutation.mutateAsync();
     },
     applyCardResolutions: async (updates) => {
       await applyCardResolutionsMutation.mutateAsync(updates);

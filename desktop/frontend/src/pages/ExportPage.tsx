@@ -4,15 +4,14 @@ import SelectMenu from "../components/SelectMenu";
 import PresetBar from "../components/PresetBar";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
-import { projectApi } from "../api/project";
 import { DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import {
   EXPORT_OPTIONS_MIN_SERVER_VERSION,
   EXPORT_ZIP_MIN_SERVER_VERSION,
-  getApiBaseUrl,
   serverSupportsExportOptions,
   serverSupportsOriginals,
+  serverSupportsPerCardBacks,
   serverSupportsZipExport,
   useServerReadiness,
   useServerVersion,
@@ -20,6 +19,8 @@ import {
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView } from "../tutorial/tutorialStore";
 import { cardToEntry, sortCards } from "../deckEntries";
+import { backImageRef, referencedBackIds, summarizeCardBacks, useBackImagesSync, useBackLibrary } from "../cardBacks";
+import CardBackSummaryNote from "../components/CardBackSummaryNote";
 import NumberInput from "../components/NumberInput";
 import SortSelect from "../components/SortSelect";
 import { registerCustomCards, waitForTasks } from "../syncCustoms";
@@ -67,22 +68,24 @@ export default function ExportPage() {
   // The project's Selected Back, resolved out of the app-global library —
   // same resolution + sync-to-connected-server dance as PdfPage (the
   // shared queryKeys mean React Query dedupes the two pages' copies).
-  const backLibraryQuery = useQuery({
-    queryKey: ["back-images"],
-    queryFn: () => projectApi.listBackImages(),
-  });
+  const backLibraryQuery = useBackLibrary();
   const selectedBack =
     settings.back_image_id != null
       ? backLibraryQuery.data?.find((b) => b.id === settings.back_image_id)
       : undefined;
-  const backSyncQuery = useQuery({
-    queryKey: ["back-image-sync", selectedBack?.id, getApiBaseUrl()],
-    queryFn: () => projectApi.syncBackImage(selectedBack!.id, getApiBaseUrl()),
-    // Unlike PdfPage there's no "backs off" mode here — any selected back
-    // is wanted in every export, so sync whenever one exists.
-    enabled: selectedBack != null && !serverUnavailable && !serverTooOld,
-  });
-  const backReady = selectedBack == null || backSyncQuery.isSuccess;
+  // The Selected Back plus every card's own back (see cardBacks.ts).
+  // Unlike PdfPage there's no "backs off" mode here — every back is wanted
+  // in every export, so sync whenever the server can take them.
+  const referencedBacks = referencedBackIds(cards, settings)
+    .map((id) => backLibraryQuery.data?.find((b) => b.id === id))
+    .filter((b): b is NonNullable<typeof b> => b != null);
+  const backSync = useBackImagesSync(
+    referencedBacks.map((b) => b.id),
+    !serverUnavailable && !serverTooOld,
+  );
+  const backReady = backSync.ready;
+  const cardBacks = summarizeCardBacks(cards, backLibraryQuery.data);
+  const perCardBacksSupported = serverSupportsPerCardBacks(serverVersion);
 
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -117,6 +120,7 @@ export default function ExportPage() {
       // PDF tab sends — the server cover-fits rather than double-bleeds.
       back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
       back_image_bleed_mm: selectedBack?.includes_bleed ? selectedBack.bleed_mm : null,
+      back_images: referencedBacks.map(backImageRef),
     };
   }
 
@@ -442,10 +446,12 @@ export default function ExportPage() {
               <strong>Export ZIP</strong> packs <strong>{previewQuery.data.fronts}</strong>{" "}
               unique card image{previewQuery.data.fronts === 1 ? "" : "s"} into{" "}
               <code>FRONT/</code>
-              {selectedBack ? (
+              {selectedBack || cardBacks.ownBacks.length > 0 ? (
                 <>
                   {" "}
-                  plus your selected back image as the single <code>BACK/</code> entry
+                  plus {selectedBack && cardBacks.ownBacks.length === 0
+                    ? <>your selected back image as the single <code>BACK/</code> entry</>
+                    : <>each back the deck uses, once, in <code>BACK/</code></>}
                 </>
               ) : (
                 <> (no back image selected, so no {""}<code>BACK/</code> folder)</>
@@ -457,8 +463,22 @@ export default function ExportPage() {
               <strong>{previewQuery.data.paired_fronts}</strong> front/back pair
               {previewQuery.data.paired_fronts === 1 ? "" : "s"} — one per physical card,
               quantities included — with double-faced cards backed by their own transform
-              side and everything else by your selected back image.
+              side, cards with their own back by that back, and everything else by your
+              selected back image.
             </p>
+            {(previewQuery.data.blank_backs_using_universal ?? 0) > 0 && (
+              <p className="hint" style={{ marginTop: 6 }}>
+                {previewQuery.data.blank_backs_using_universal}{" "}
+                {previewQuery.data.blank_backs_using_universal === 1 ? "copy" : "copies"} set to
+                a blank back will get the selected back image instead — TCGPlaytest needs a
+                file for every back.
+              </p>
+            )}
+            <CardBackSummaryNote
+              summary={cardBacks}
+              serverSupports={serverUnavailable || perCardBacksSupported}
+              serverVersion={serverVersion}
+            />
             {/* What the files will be, so the Output settings' effect is
                 visible before the export, not discovered after. */}
             <p className="hint" style={{ marginTop: 6 }}>

@@ -156,6 +156,12 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "bottom",
       },
       {
+        target: "card-back",
+        title: "This card's back",
+        body: "Every card prints with the universal back from the Backs tab unless you say otherwise. Click the little card to give this one its own back, leave it blank, or upload a new back for it. A double-faced card shows a lock here while its transform side is printing on its back.",
+        placement: "bottom",
+      },
+      {
         target: "card-qty",
         title: "Quantity",
         body: "How many copies of this card go into your PDF or ZIP.",

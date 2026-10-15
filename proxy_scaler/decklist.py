@@ -57,6 +57,14 @@ class DeckEntry:
     # identifying it by the sha256 of its bytes. When set, this entry has
     # no printing at all and matches gallery images by hash alone.
     custom_hash: str | None = None
+    # Also client-only: this entry's own choice of what prints on its
+    # Reverse. "inherit" takes the project's default (the Selected Back,
+    # or blank under reverse_fill=BLANK); "blank" and "image" override it,
+    # the latter naming a Back Image by the sha256 of its bytes. Ignored
+    # for a double-faced card whose transform side prints on its own back
+    # — see pdf_layout.build_print_slots.
+    back_mode: str = "inherit"
+    back_hash: str | None = None
 
     @property
     def is_custom(self) -> bool:

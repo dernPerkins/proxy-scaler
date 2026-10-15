@@ -7,7 +7,7 @@ separation used elsewhere in this codebase.
 from __future__ import annotations
 
 import io
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -727,6 +727,32 @@ class PrintUnit:
     # resolution, so this is always False for those — see _pick_dpi_variant
     # for why customs are the deliberate exception.
     dpi_fallback: bool = False
+    # The decklist entries' choice of Reverse for these copies (see
+    # DeckEntry.back_mode). One printing can yield several units that
+    # differ only here, because two lines wanting different backs are two
+    # different physical cards even though their fronts are the same file.
+    back_mode: str = "inherit"
+    back_hash: str | None = None
+
+
+BackKey = tuple[str, str | None]
+"""(back_mode, back_hash) as match_quantities groups copies by it."""
+
+
+def _back_key(entry: DeckEntry) -> BackKey:
+    """Normalise an entry's Reverse choice to the key copies merge on. The
+    hash only means anything in "image" mode, so it is dropped otherwise —
+    two "inherit" lines with stale hashes are still the same card — and an
+    "image" choice with no hash to name has nothing to print and reads as
+    "inherit" rather than as a hole in the sheet."""
+    mode = entry.back_mode or "inherit"
+    if mode == "image":
+        if not entry.back_hash:
+            return ("inherit", None)
+        return ("image", entry.back_hash)
+    if mode == "blank":
+        return ("blank", None)
+    return ("inherit", None)
 
 
 def _describe_face(face: FaceResult) -> str:
@@ -875,6 +901,13 @@ def match_quantities(
     download reads as `missing` for an upscale print run, and originals
     can never silently mix into one via the "highest available" pick.
 
+    Entries matching one face-group merge into one unit as long as they
+    agree on what prints on their Reverse (DeckEntry.back_mode/back_hash):
+    a line asking for a different back is a different physical card, so
+    it gets a unit of its own with the same `best` image, ordered by the
+    first entry that asked for that back. Entries that never say (older
+    clients) all read as "inherit" and merge exactly as before.
+
     Returns (units, missing, missing_at_dpi).
     """
     def _eligible(item: FaceResult) -> bool:
@@ -912,8 +945,18 @@ def match_quantities(
         collector = rep.collector_number
         card_name = (rep.card_name or rep.face_name or "").casefold()
 
-        matched_qty = 0
+        # Copies per Reverse choice, and the first entry index asking for
+        # each — one unit per key below.
+        qty_by_back: dict[BackKey, int] = {}
+        first_index_by_back: dict[BackKey, int] = {}
         matched_indices: set[int] = set()
+
+        def _take(i: int, entry: DeckEntry) -> None:
+            back = _back_key(entry)
+            qty_by_back[back] = qty_by_back.get(back, 0) + entry.quantity
+            first_index_by_back.setdefault(back, i)
+            matched_indices.add(i)
+
         if rep.is_custom:
             # Matched on content hash alone, and never by name: two
             # uploads can easily share a filename, and a custom front
@@ -921,8 +964,7 @@ def match_quantities(
             # Sol Ring line (or vice versa).
             for i, entry in enumerate(entries):
                 if entry.custom_hash == rep.custom_hash:
-                    matched_qty += entry.quantity
-                    matched_indices.add(i)
+                    _take(i, entry)
         elif set_code and collector:
             rep_lang = (rep.lang or "en").lower()
             for i, entry in enumerate(entries):
@@ -935,8 +977,7 @@ def match_quantities(
                     # on both sides, so pre-language decks are unchanged.
                     and (entry.lang or "en").lower() == rep_lang
                 ):
-                    matched_qty += entry.quantity
-                    matched_indices.add(i)
+                    _take(i, entry)
         if not matched_indices and card_name and not rep.is_custom:
             for i, entry in enumerate(entries):
                 if entry.is_custom or entry.has_exact_printing:
@@ -953,8 +994,7 @@ def match_quantities(
                     or card_name in ename
                     or ename.split(" // ")[0] == card_name
                 ):
-                    matched_qty += entry.quantity
-                    matched_indices.add(i)
+                    _take(i, entry)
 
         if not matched_indices:
             # No current decklist entry wants this printing any more (e.g.
@@ -984,10 +1024,18 @@ def match_quantities(
             missing_at_dpi.append(_describe_face(rep))
             continue
 
-        units.append(
-            PrintUnit(face_key=key, quantity=matched_qty, best=best, dpi_fallback=unavailable)
-        )
-        unit_order_keys.append((min(matched_indices), best.face_index or 0))
+        for (back_mode, back_hash), qty in qty_by_back.items():
+            units.append(
+                PrintUnit(
+                    face_key=key,
+                    quantity=qty,
+                    best=best,
+                    dpi_fallback=unavailable,
+                    back_mode=back_mode,
+                    back_hash=back_hash,
+                )
+            )
+            unit_order_keys.append((first_index_by_back[(back_mode, back_hash)], best.face_index or 0))
 
     # Entries order is authoritative for output order (see docstring).
     # Stable, so ties beyond the (entry, face_index) key keep gallery
@@ -1010,21 +1058,30 @@ class PrintSlot:
 
     `reverse` is the Back Face image when this card's transform side is
     being printed on its own back, and None when the Reverse should take
-    the project's Back Image instead. None does NOT mean "nothing gets
-    printed there" — an empty cell on a partial page is represented by the
-    absence of a PrintSlot, not by a PrintSlot with no reverse.
+    a Back Image (or nothing) instead — which one is `resolve_reverse`'s
+    call, from `back_mode`/`back_hash` (this card's own choice, copied
+    from its PrintUnit) and the project's defaults. None does NOT mean
+    "nothing gets printed there" — an empty cell on a partial page is
+    represented by the absence of a PrintSlot, not by a PrintSlot with no
+    reverse.
     """
 
     front: FaceResult
     reverse: FaceResult | None = None
+    back_mode: str = "inherit"
+    back_hash: str | None = None
 
 
-def _pairable_faces(units: list[PrintUnit]) -> dict[str, tuple[PrintUnit, PrintUnit]]:
-    """Find the (front, back) unit pairs eligible to share one card.
+def _pairable_faces(units: list[PrintUnit]) -> dict[str, tuple[list[PrintUnit], list[PrintUnit]]]:
+    """Find the printings whose face units are eligible to share one card:
+    scryfall_id -> (its face-0 units, its face-1 units).
 
     Keyed on scryfall_id, which already identifies a printing *including*
     its language — an Italian and an English copy of the same set/collector
     are different ids, so they can never pair with each other by accident.
+    Several units per face are normal now that match_quantities splits a
+    printing by Reverse choice; they all pair, because the pairing is a
+    property of the printing, not of any one line in the decklist.
 
     A card whose faces don't form a clean 0/1 pair is excluded entirely:
     every one of its faces stays its own card. Scryfall doesn't currently
@@ -1033,18 +1090,18 @@ def _pairable_faces(units: list[PrintUnit]) -> dict[str, tuple[PrintUnit, PrintU
     would be wrong more often than useful. Excluding falls back to exactly
     today's behaviour, which is a safe answer rather than a broken one.
     """
-    by_id: dict[str, dict[int | None, PrintUnit]] = {}
+    by_id: dict[str, dict[int | None, list[PrintUnit]]] = {}
     for unit in units:
-        by_id.setdefault(unit.best.scryfall_id, {})[unit.best.face_index] = unit
+        if unit.best.scryfall_id is None:
+            # A Custom Image has no printing to pair within.
+            continue
+        by_id.setdefault(unit.best.scryfall_id, {}).setdefault(unit.best.face_index, []).append(unit)
 
-    pairs: dict[str, tuple[PrintUnit, PrintUnit]] = {}
+    pairs: dict[str, tuple[list[PrintUnit], list[PrintUnit]]] = {}
     for scryfall_id, faces in by_id.items():
-        if len(faces) != 2:
+        if set(faces) != {0, 1}:
             continue
-        front, back = faces.get(0), faces.get(1)
-        if front is None or back is None:
-            continue
-        pairs[scryfall_id] = (front, back)
+        pairs[scryfall_id] = (faces[0], faces[1])
     return pairs
 
 
@@ -1064,18 +1121,108 @@ def build_print_slots(units: list[PrintUnit], *, pair_back_faces: bool) -> list[
     agree except in the degenerate case where only one face matched an
     entry — and there the front is the one that decides how many cards
     exist to have backs at all.
+
+    A paired card's Reverse is its transform side, full stop: the entry's
+    own back choice (PrintUnit.back_mode/back_hash) is still copied onto
+    the slot, but `resolve_reverse` never consults it while `reverse` is
+    set. That is by design — a per-card back only ever fills a Reverse
+    that would otherwise take the universal one, and a transform face is
+    not that. Unpaired (pairing off, or a half-generated card), every face
+    keeps its choice and prints it.
     """
     pairs = _pairable_faces(units) if pair_back_faces else {}
-    consumed_backs = {id(back) for _front, back in pairs.values()}
+    consumed_backs = {id(back) for _fronts, backs in pairs.values() for back in backs}
+    # Every face-1 unit of one printing shares the same chosen image (they
+    # come from one face group), so any of them names the Back Face.
+    back_face_by_id = {sid: backs[0].best for sid, (_fronts, backs) in pairs.items()}
 
     slots: list[PrintSlot] = []
     for unit in units:
         if id(unit) in consumed_backs:
             continue
-        pair = pairs.get(unit.best.scryfall_id)
-        reverse = pair[1].best if pair is not None and pair[0] is unit else None
-        slots.extend([PrintSlot(front=unit.best, reverse=reverse)] * unit.quantity)
+        # Only a face-0 unit survives for a paired id (its face-1 units
+        # were all consumed above), so this is None for everything else.
+        reverse = back_face_by_id.get(unit.best.scryfall_id) if unit.best.scryfall_id else None
+        slots.extend(
+            [
+                PrintSlot(
+                    front=unit.best,
+                    reverse=reverse,
+                    back_mode=unit.back_mode,
+                    back_hash=unit.back_hash,
+                )
+            ]
+            * unit.quantity
+        )
     return slots
+
+
+@dataclass(frozen=True)
+class BackSource:
+    """A Back Image as the renderer sees it: the file to print, plus the
+    client's declaration about that file's own bleed (see
+    render_back_image). One per content hash — a hash names one set of
+    bytes, so it carries one declaration."""
+
+    path: Path
+    includes_bleed: bool = False
+    bleed_mm: float | None = None
+
+
+# The manifest key the legacy single-back kwargs are filed under, so the
+# old build_pdf/unique_image_count call shape keeps working unchanged.
+_LEGACY_BACK_KEY = "__default__"
+
+
+def _backs_from_legacy(
+    back_image_path: Path | None,
+    includes_bleed: bool = False,
+    bleed_mm: float | None = None,
+) -> tuple[dict[str, BackSource], str | None]:
+    if back_image_path is None:
+        return {}, None
+    return (
+        {_LEGACY_BACK_KEY: BackSource(back_image_path, includes_bleed, bleed_mm)},
+        _LEGACY_BACK_KEY,
+    )
+
+
+def resolve_reverse(
+    slot: PrintSlot,
+    back_images: Mapping[str, BackSource] | None,
+    default_back_hash: str | None,
+    reverse_fill: ReverseFill,
+) -> tuple[Path | None, FaceResult | None, BackSource | None]:
+    """What prints on one slot's Reverse: (path, face, back).
+
+    `path` is None when nothing is drawn there. Otherwise exactly one of
+    `face` (a Back Face, with its generated-image record) and `back` (a
+    Back Image, with its bleed declaration) is set. The one place the
+    precedence lives, shared by the renderer, its progress total and the
+    ZIP export, so none of them can disagree about what a Reverse shows:
+
+    1. A transform side being printed on its own back always wins.
+    2. The card's own choice of "blank" draws nothing.
+    3. The card's own choice of an image prints that image — or nothing
+       if the manifest lacks it, which the routers refuse up front.
+    4. Otherwise the project decides: nothing under reverse_fill=BLANK,
+       else the default back (again nothing if it is missing — the
+       routers report that as reverses_needing_back_image).
+    """
+    if slot.reverse is not None:
+        return slot.reverse.out_path, slot.reverse, None
+    if slot.back_mode == "blank":
+        return None, None, None
+    backs = back_images or {}
+    if slot.back_mode == "image":
+        back = backs.get(slot.back_hash) if slot.back_hash else None
+    elif reverse_fill is ReverseFill.BLANK:
+        return None, None, None
+    else:
+        back = backs.get(default_back_hash) if default_back_hash else None
+    if back is None:
+        return None, None, None
+    return back.path, None, back
 
 
 def paginate(slots: list[PrintSlot], per_page: int) -> list[list[PrintSlot]]:
@@ -1162,6 +1309,8 @@ def unique_image_count(
     back_printing: bool = False,
     back_image_path: Path | None = None,
     reverse_fill: ReverseFill = ReverseFill.BACK_IMAGE,
+    back_images: Mapping[str, BackSource] | None = None,
+    default_back_hash: str | None = None,
 ) -> int:
     """How many source images build_pdf will actually process.
 
@@ -1172,23 +1321,22 @@ def unique_image_count(
     the build.
 
     With back printing on, Back Face images count too (they are distinct
-    images with their own cost), and the Back Image counts once no matter
-    how many Reverses it fills.
+    images with their own cost), and each distinct Back Image actually
+    placed on a Reverse counts once no matter how many Reverses it fills.
+    Takes the same back arguments as build_pdf, legacy `back_image_path`
+    included, and resolves each Reverse exactly as the renderer will.
     """
     paths: set[Path] = {slot.front.out_path for page in pages for slot in page}
     if back_printing:
-        paths |= {
-            slot.reverse.out_path
-            for page in pages
-            for slot in page
-            if slot.reverse is not None
-        }
-        if (
-            reverse_fill is ReverseFill.BACK_IMAGE
-            and back_image_path is not None
-            and any(slot.reverse is None for page in pages for slot in page)
-        ):
-            paths.add(back_image_path)
+        if back_images is None:
+            back_images, default_back_hash = _backs_from_legacy(back_image_path)
+        for page in pages:
+            for slot in page:
+                path, _face, _back = resolve_reverse(
+                    slot, back_images, default_back_hash, reverse_fill
+                )
+                if path is not None:
+                    paths.add(path)
     return len(paths)
 
 
@@ -1342,6 +1490,8 @@ def build_pdf(
     page_order: PageOrder = PageOrder.DUPLEX,
     registration: RegistrationMarks | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    back_images: Mapping[str, BackSource] | None = None,
+    default_back_hash: str | None = None,
 ) -> bytes:
     """Render pages of PrintSlots into a print-ready PDF, in memory.
 
@@ -1362,6 +1512,14 @@ def build_pdf(
     layout when not given. Guides are drawn per page kind (see
     GuideVisibility).
 
+    `back_images` is the manifest of every Back Image the sheet may use,
+    by content hash, and `default_back_hash` names the one a card with no
+    choice of its own inherits; what lands on each Reverse is
+    resolve_reverse's decision. The older `back_image_path` /
+    `back_image_includes_bleed` / `back_image_bleed_mm` trio still works
+    when `back_images` is not given — it becomes a one-entry manifest
+    with that entry as the default — so a single-back caller is unchanged.
+
     `registration` adds cutter registration marks (see RegistrationMarks),
     again per page kind. They depend on the page size alone, so the front
     and back offsets never move them and a Back Page's marks are never
@@ -1378,11 +1536,10 @@ def build_pdf(
     """
     guides = guides or GuideVisibility()
     back_layout = back_layout or layout
-    # One place to collapse "blank" into "no image to draw", so the
-    # drawing code below has a single condition rather than two that can
-    # disagree.
-    if reverse_fill is ReverseFill.BLANK:
-        back_image_path = None
+    if back_images is None:
+        back_images, default_back_hash = _backs_from_legacy(
+            back_image_path, back_image_includes_bleed, back_image_bleed_mm
+        )
 
     # Pre-oriented tuple — always pass orientation="portrait" to fpdf2
     # here, since FPDF._set_orientation() swaps w_pt/h_pt for any
@@ -1394,13 +1551,25 @@ def build_pdf(
 
     cache: dict[tuple[Path, bool], bytes] = {}
     total_images = unique_image_count(
-        pages, back_printing=back_printing, back_image_path=back_image_path
+        pages,
+        back_printing=back_printing,
+        reverse_fill=reverse_fill,
+        back_images=back_images,
+        default_back_hash=default_back_hash,
     )
 
-    def encoded(source: Path, face: FaceResult | None, *, rotate: bool = False) -> bytes:
+    def encoded(
+        source: Path,
+        face: FaceResult | None,
+        back: BackSource | None = None,
+        *,
+        rotate: bool = False,
+    ) -> bytes:
         """Cached bled JPEG bytes for one source image. `face` is None for
-        the Back Image, which has no generated-image record to carry a
-        native DPI and takes the cover-fit path instead.
+        a Back Image, which has no generated-image record to carry a
+        native DPI and takes the cover-fit path instead, steered by its
+        own `back` declaration. Keyed on the path alone is still right:
+        one hash maps to one file and one declaration.
 
         `rotate` draws the image upside down, for Back Pages whose sheet
         turns about a horizontal axis (see back_pages_are_rotated). It is
@@ -1416,12 +1585,13 @@ def build_pdf(
         if face is not None:
             image = _bled_card(face, export_dpi=export_dpi, bleed_mm=layout.bleed_mm)
         else:
+            declared = back or BackSource(source)
             image = render_back_image(
                 source,
                 export_dpi=export_dpi,
                 bleed_mm=layout.bleed_mm,
-                includes_bleed=back_image_includes_bleed,
-                image_bleed_mm=back_image_bleed_mm,
+                includes_bleed=declared.includes_bleed,
+                image_bleed_mm=declared.bleed_mm,
             )
         if rotate:
             image = image.transpose(Image.Transpose.ROTATE_180)
@@ -1444,16 +1614,18 @@ def build_pdf(
         for idx, slot in enumerate(cells):
             if slot is None:
                 continue
+            back: BackSource | None = None
             if is_back:
-                face = slot.reverse
-                source = face.out_path if face is not None else back_image_path
+                source, face, back = resolve_reverse(
+                    slot, back_images, default_back_hash, reverse_fill
+                )
                 if source is None:
                     # Nothing to print on this Reverse. Either deliberate
-                    # (reverse_fill=BLANK — a card with no transform side
-                    # gets an empty back), or the missing-Back-Image case
-                    # the router refuses up front. Both draw nothing; the
-                    # page itself is still emitted, which is what keeps
-                    # the sheet in register.
+                    # (a blank back, by the project's or this card's own
+                    # choice), or the missing-Back-Image case the router
+                    # refuses up front. Both draw nothing; the page itself
+                    # is still emitted, which is what keeps the sheet in
+                    # register.
                     continue
             else:
                 face = slot.front
@@ -1468,7 +1640,7 @@ def build_pdf(
             # to avoid entirely by just re-wrapping the cached immutable
             # bytes.
             pdf.image(
-                io.BytesIO(encoded(source, face, rotate=is_back and rotate_backs)),
+                io.BytesIO(encoded(source, face, back, rotate=is_back and rotate_backs)),
                 x=x,
                 y=y,
                 w=page_layout.bled_card_w_mm,

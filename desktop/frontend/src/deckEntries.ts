@@ -36,5 +36,10 @@ export function cardToEntry(card: CardRow): DeckEntryIn {
     // server matches it on the hash alone, never by name (a custom front
     // called "Sol Ring" must not soak up a real Sol Ring line's quantity).
     custom_hash: card.custom_hash,
+    // The card's own back. An "image" whose library row is gone is sent as
+    // "inherit": Rust already normalizes that, this just keeps the wire
+    // honest if a stale CardRow is still in memory.
+    back_mode: card.back_mode === "image" && card.back_hash == null ? "inherit" : card.back_mode,
+    back_hash: card.back_mode === "image" ? card.back_hash : null,
   };
 }

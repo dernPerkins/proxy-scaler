@@ -4,13 +4,17 @@ Two formats, both built from the same matching pipeline the PDF uses
 (match_quantities -> build_print_slots), so what lands in a ZIP is always
 exactly what would have landed on a sheet:
 
-- "default": every unique matched face once under FRONT/, plus the
-  project's Selected Back (if one is synced) as the single BACK/ entry.
-  Quantities are not expanded — this is an image dump, not a print run.
+- "default": every unique matched face once under FRONT/, plus each
+  distinct Back Image the deck uses once under BACK/ — the Selected Back
+  first, then every per-card choice in first-seen order. Quantities are
+  not expanded — this is an image dump, not a print run.
 - "tcgplaytest": the vendor's paired layout. One FRONT/NNN + BACK/NNN
   file pair per physical copy (quantities expanded), paired by natural
   filename order with equal counts — a card's own Back Face when it has
-  one, the Selected Back otherwise.
+  one, else its own chosen Back Image, else the Selected Back. A card
+  that chose a blank back takes the Selected Back too: the vendor needs
+  a file for every slot, and "no file" is not one (the preview counts
+  these so the client can warn).
 
 Two output options decide whether the stored files are copied or
 re-rendered (see _needs_render):
@@ -45,7 +49,7 @@ import os
 import tempfile
 import threading
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -54,13 +58,15 @@ from fastapi.responses import FileResponse, Response
 from PIL import Image
 from starlette.background import BackgroundTask
 
-from proxy_scaler import backs, db, pdf_jobs
+from proxy_scaler import db, pdf_jobs
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.routers.pdf import (
     _default_pdf_basename,
     _slugify,
     _to_deck_entry,
+    back_manifest,
     gallery_for_print,
+    resolve_back_manifest,
 )
 from proxy_scaler.api.schemas import (
     ExportFormatIn,
@@ -74,13 +80,17 @@ from proxy_scaler.dpi import dpi_at_card_size
 from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler.pdf_layout import (
     _JPEG_QUALITY,
+    BackSource,
     PrintSlot,
+    ReverseFill,
     _bled_card,
+    _describe_face,
     build_print_slots,
     fit_bled_image,
     flatten_corner_alpha,
     match_quantities,
     render_back_image,
+    resolve_reverse,
 )
 from proxy_scaler import customs
 from proxy_scaler.pipeline import FaceResult
@@ -94,16 +104,22 @@ router = APIRouter(prefix="/api/export", tags=["export"])
 _PNG_COMPRESS_LEVEL = 1
 
 
-def _prepare_slots(body: ExportZipIn) -> tuple[list[PrintSlot], list[PrintSlot], list[str], list[str]]:
+def _prepare_slots(
+    body: ExportZipIn,
+) -> tuple[list[PrintSlot], list[PrintSlot], list[str], list[str], list[PrintSlot]]:
     """The _prepare subset the ZIP formats need: matched slots, no
     layout/pagination. Returns (default_slots, paired_slots, missing,
-    missing_at_dpi) — both formats from one matching pass, since only the
-    slot-building step differs.
+    missing_at_dpi, unpaired_slots) — both formats from one matching
+    pass, since only the slot-building step differs.
 
     default_slots is deduped to one slot per unique source image,
     first-seen order: the default format ships each face once regardless
     of quantity. paired_slots keeps the full per-copy expansion the
     vendor's natural-order pairing needs to express quantity at all.
+    unpaired_slots is the same expansion with no pairing — what
+    default_slots was deduped from, kept because the dedupe by front
+    discards the later copies' own back choices, and the default format's
+    BACK/ list is built from every copy's choice.
     """
     if not body.entries:
         raise HTTPException(status_code=400, detail="No cards to export.")
@@ -123,7 +139,8 @@ def _prepare_slots(body: ExportZipIn) -> tuple[list[PrintSlot], list[PrintSlot],
 
     seen: set[str] = set()
     default_slots: list[PrintSlot] = []
-    for slot in build_print_slots(units, pair_back_faces=False):
+    unpaired_slots = build_print_slots(units, pair_back_faces=False)
+    for slot in unpaired_slots:
         key = str(slot.front.out_path)
         if key in seen:
             continue
@@ -131,58 +148,122 @@ def _prepare_slots(body: ExportZipIn) -> tuple[list[PrintSlot], list[PrintSlot],
         default_slots.append(slot)
 
     paired_slots = build_print_slots(units, pair_back_faces=True)
-    return default_slots, paired_slots, missing, missing_at_dpi
+    return default_slots, paired_slots, missing, missing_at_dpi, unpaired_slots
 
 
-def _resolve_back(body: ExportZipIn):
-    """Path of the Selected Back on this server, or None when the request
-    names none. A hash that's invalid or not synced here is a loud 400
-    rather than a silently back-less ZIP — the client believes a back is
-    selected, so shipping without one would be a lie."""
-    if not body.back_image_hash:
-        return None
-    try:
+def _resolve_backs(body: ExportZipIn) -> tuple[dict[str, BackSource], str | None]:
+    """Every Back Image the request names that this server holds, by
+    hash, and the Selected Back's hash (None when the request names
+    none). A Selected Back that is invalid or not synced here is a loud
+    400 rather than a silently back-less ZIP — the client believes a back
+    is selected, so shipping without one would be a lie. A per-card back
+    that is missing is reported by _prepare_export, which knows which
+    cards asked for it."""
+    default_back_hash = body.back_image_hash or None
+    back_images = resolve_back_manifest(
+        back_manifest(
+            body.back_images,
+            back_image_hash=body.back_image_hash,
+            back_image_includes_bleed=body.back_image_includes_bleed,
+            back_image_bleed_mm=body.back_image_bleed_mm,
+        ),
         # Same preferences as the cards (see pdf.py::_prepare).
-        path = backs.resolve_print_source(
-            body.back_image_hash,
-            preferred_dpi=None if body.use_originals else body.preferred_dpi,
-            preferred_model=None if body.use_originals else body.preferred_model,
-            use_originals=body.use_originals,
-            db_path=get_db_path(),
-        )
-    except backs.BackImageError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if path is None:
+        preferred_dpi=None if body.use_originals else body.preferred_dpi,
+        preferred_model=None if body.use_originals else body.preferred_model,
+        use_originals=body.use_originals,
+        db_path=get_db_path(),
+    )
+    if default_back_hash is not None and default_back_hash not in back_images:
         raise HTTPException(
             status_code=400,
             detail="The selected back image is not synced to this server yet.",
         )
-    return path
+    return back_images, default_back_hash
+
+
+def _paired_reverse(
+    slot: PrintSlot, back_images: dict[str, BackSource], default_back_hash: str | None
+) -> tuple[Path | None, FaceResult | None, BackSource | None]:
+    """What a tcgplaytest slot's BACK/ entry is — resolve_reverse's answer,
+    except that a card's own "blank" choice has no file to ship, so it
+    takes the Selected Back like a card with no choice at all."""
+    if slot.back_mode == "blank":
+        slot = replace(slot, back_mode="inherit")
+    return resolve_reverse(slot, back_images, default_back_hash, ReverseFill.BACK_IMAGE)
+
+
+def _blank_backs_using_universal(paired_slots: list[PrintSlot]) -> int:
+    """tcgplaytest slots that asked for a blank back and ship the Selected
+    Back instead — the count the client warns from."""
+    return sum(1 for s in paired_slots if s.reverse is None and s.back_mode == "blank")
+
+
+def _default_backs(
+    slots: list[PrintSlot], back_images: dict[str, BackSource], default_back_hash: str | None
+) -> list[BackSource]:
+    """The default format's BACK/ entries: each distinct Back Image once,
+    the Selected Back first and then each per-card choice in the order
+    the deck first uses it. A blank choice ships nothing."""
+    ordered: dict[str, None] = {}
+    if default_back_hash is not None and default_back_hash in back_images:
+        ordered.setdefault(default_back_hash)
+    for slot in slots:
+        if slot.back_mode == "image" and slot.back_hash in back_images:
+            ordered.setdefault(slot.back_hash)
+    return [back_images[h] for h in ordered]
 
 
 @dataclass(frozen=True)
 class PreparedExport:
     """Everything an archive needs that comes from validating the request:
-    the slots the chosen format ships, the Selected Back's path (None when
-    none is selected), and the deck folder / filename stem."""
+    the slots the chosen format ships, every Back Image it may draw on by
+    hash with the Selected Back's hash (None when none is selected), and
+    the deck folder / filename stem."""
 
     slots: list[PrintSlot]
     paired: bool
-    back_path: Path | None
+    back_images: dict[str, BackSource]
+    default_back_hash: str | None
     deck: str
+    # The default format's BACK/ entries in order (see _default_backs);
+    # empty for the paired format, whose backs are per slot.
+    default_backs: list[BackSource]
+
+    def paired_reverse(self, slot: PrintSlot) -> tuple[Path, FaceResult | None, BackSource | None]:
+        path, face, back = _paired_reverse(slot, self.back_images, self.default_back_hash)
+        assert path is not None  # _prepare_export guarantees
+        return path, face, back
 
 
 def _prepare_export(body: ExportZipIn) -> PreparedExport:
     """Validate and match, raising the 400s a caller wants on the request
     itself rather than later from inside a render thread."""
-    default_slots, paired_slots, _missing, _missing_at_dpi = _prepare_slots(body)
+    default_slots, paired_slots, _missing, _missing_at_dpi, unpaired_slots = _prepare_slots(body)
     paired = body.format is ExportFormatIn.TCGPLAYTEST
     slots = paired_slots if paired else default_slots
     if not slots:
         raise HTTPException(status_code=400, detail="Nothing to export — no matched images.")
 
-    back_path = _resolve_back(body)
-    if paired and back_path is None and any(s.reverse is None for s in slots):
+    back_images, default_back_hash = _resolve_backs(body)
+    # A card that chose its own back must be able to ship it, in either
+    # format — the client believes the choice is in effect. Checked over
+    # every copy, not the deduped fronts, which have lost later choices.
+    unsynced = [
+        _describe_face(s.front)
+        for s in (paired_slots if paired else unpaired_slots)
+        if s.reverse is None and s.back_mode == "image" and s.back_hash not in back_images
+    ]
+    if unsynced:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(unsynced)} card(s) use a back image that isn't synced to this "
+                f"server: {', '.join(dict.fromkeys(unsynced))}"
+            ),
+        )
+    if paired and any(
+        _paired_reverse(s, back_images, default_back_hash)[0] is None for s in slots
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -191,7 +272,16 @@ def _prepare_export(body: ExportZipIn) -> PreparedExport:
             ),
         )
     deck = _slugify(body.project_name or _default_pdf_basename())
-    return PreparedExport(slots=slots, paired=paired, back_path=back_path, deck=deck)
+    return PreparedExport(
+        slots=slots,
+        paired=paired,
+        back_images=back_images,
+        default_back_hash=default_back_hash,
+        deck=deck,
+        default_backs=(
+            [] if paired else _default_backs(unpaired_slots, back_images, default_back_hash)
+        ),
+    )
 
 
 def _needs_render(body: ExportZipIn) -> bool:
@@ -201,25 +291,30 @@ def _needs_render(body: ExportZipIn) -> bool:
 
 def _unique_sources(prepared: PreparedExport) -> list[Path]:
     """Every distinct file the archive draws on, first-seen order — the
-    job's progress denominator and the render cache's key set. The
-    Selected Back counts once however many BACK/ entries it fills."""
+    job's progress denominator and the render cache's key set. A Back
+    Image counts once however many BACK/ entries it fills."""
     sources: dict[Path, None] = {}
     for slot in prepared.slots:
         sources.setdefault(slot.front.out_path)
     if prepared.paired:
         for slot in prepared.slots:
-            if slot.reverse is not None:
-                sources.setdefault(slot.reverse.out_path)
-            elif prepared.back_path is not None:
-                sources.setdefault(prepared.back_path)
-    elif prepared.back_path is not None:
-        sources.setdefault(prepared.back_path)
+            sources.setdefault(prepared.paired_reverse(slot)[0])
+    else:
+        for back in prepared.default_backs:
+            sources.setdefault(back.path)
     return list(sources)
 
 
-def _render_entry(source: Path, face: FaceResult | None, *, body: ExportZipIn) -> Image.Image:
+def _render_entry(
+    source: Path,
+    face: FaceResult | None,
+    *,
+    body: ExportZipIn,
+    back: BackSource | None = None,
+) -> Image.Image:
     """One image as the archive will carry it, decoded and opaque. `face`
-    is None for the Selected Back, which has no generated-image record.
+    is None for a Back Image, which has no generated-image record; `back`
+    then carries the client's declaration of the bleed that file holds.
 
     With bleed this is exactly the PDF's per-card treatment at the image's
     own DPI — a face's recorded dpi (so no resize ever happens), or for
@@ -233,12 +328,13 @@ def _render_entry(source: Path, face: FaceResult | None, *, body: ExportZipIn) -
             return _bled_card(face, export_dpi=face.dpi, bleed_mm=body.bleed_mm)
         with Image.open(source) as raw:
             back_dpi = max(1, round(dpi_at_card_size(*raw.size)))
+        declared = back or BackSource(source)
         return render_back_image(
             source,
             export_dpi=back_dpi,
             bleed_mm=body.bleed_mm,
-            includes_bleed=body.back_image_includes_bleed,
-            image_bleed_mm=body.back_image_bleed_mm,
+            includes_bleed=declared.includes_bleed,
+            image_bleed_mm=declared.bleed_mm,
         )
     with Image.open(source) as raw:
         if face is not None and face.custom_bleed_mm > 0:
@@ -274,7 +370,7 @@ def _write_zip(
     On the verbatim path every entry is the stored file. Otherwise each
     unique source is rendered once into a scratch directory and that file
     is archived under every entry that uses it — the tcgplaytest layout
-    repeats the Selected Back per copy, and a bytes cache of bled 1200 DPI
+    repeats a Back Image per copy, and a bytes cache of bled 1200 DPI
     PNGs would be the whole archive again in RAM. So a rendering export
     transiently uses about twice the archive's size on disk; the scratch
     files go with the `with` block, before this returns.
@@ -301,14 +397,18 @@ def _write_zip(
         ):
             rendered: dict[Path, Path] = {}
 
-            def entry(source: Path, face: FaceResult | None) -> tuple[Path, str]:
+            def entry(
+                source: Path, face: FaceResult | None, back: BackSource | None = None
+            ) -> tuple[Path, str]:
                 """(file to archive, suffix its entry name carries)."""
                 if not render:
                     return source, source.suffix
                 out = rendered.get(source)
                 if out is None:
                     out = Path(scratch) / f"{len(rendered):05d}{rendered_suffix}"
-                    _encode(_render_entry(source, face, body=body), body.image_format, out)
+                    _encode(
+                        _render_entry(source, face, body=body, back=back), body.image_format, out
+                    )
                     rendered[source] = out
                     if on_progress is not None:
                         on_progress(len(rendered), total)
@@ -319,15 +419,13 @@ def _write_zip(
                 archive.write(path, f"{deck}/FRONT/{i:0{width}d}{suffix}")
             if prepared.paired:
                 for i, slot in enumerate(slots, start=1):
-                    if slot.reverse is not None:
-                        path, suffix = entry(slot.reverse.out_path, slot.reverse)
-                    else:
-                        assert prepared.back_path is not None  # _prepare_export guarantees
-                        path, suffix = entry(prepared.back_path, None)
+                    source, face, back = prepared.paired_reverse(slot)
+                    path, suffix = entry(source, face, back)
                     archive.write(path, f"{deck}/BACK/{i:0{width}d}{suffix}")
-            elif prepared.back_path is not None:
-                path, suffix = entry(prepared.back_path, None)
-                archive.write(path, f"{deck}/BACK/{1:0{width}d}{suffix}")
+            else:
+                for i, back in enumerate(prepared.default_backs, start=1):
+                    path, suffix = entry(back.path, None, back)
+                    archive.write(path, f"{deck}/BACK/{i:0{width}d}{suffix}")
         tmp.close()
     except BaseException:
         tmp.close()
@@ -338,13 +436,18 @@ def _write_zip(
 
 @router.post("/zip/preview", response_model=ExportZipPreviewOut)
 def export_zip_preview(body: ExportZipIn) -> ExportZipPreviewOut:
-    default_slots, paired_slots, missing, missing_at_dpi = _prepare_slots(body)
+    default_slots, paired_slots, missing, missing_at_dpi, _unpaired = _prepare_slots(body)
     return ExportZipPreviewOut(
         fronts=len(default_slots),
         paired_fronts=len(paired_slots),
         missing=missing,
         missing_at_dpi=missing_at_dpi,
-        reverses_needing_back_image=sum(1 for s in paired_slots if s.reverse is None),
+        # A card that chose its own image never needs the Selected Back;
+        # one that chose blank does, in this format (see _paired_reverse).
+        reverses_needing_back_image=sum(
+            1 for s in paired_slots if s.reverse is None and s.back_mode != "image"
+        ),
+        blank_backs_using_universal=_blank_backs_using_universal(paired_slots),
     )
 
 

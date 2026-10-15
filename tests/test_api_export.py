@@ -400,6 +400,7 @@ def test_preview_reports_counts_and_reverses_needing_back(
         "missing": [],
         "missing_at_dpi": [],
         "reverses_needing_back_image": 4,
+        "blank_backs_using_universal": 0,
     }
 
 
@@ -930,3 +931,175 @@ def test_with_bleed_back_with_an_amount_is_trimmed_not_shrunk(
     assert img.size == _bled_pixels(back_dpi, 3.0)
     assert _close(img.getpixel((4, img.height // 2)), (0, 200, 0))
     assert _close(img.getpixel((20, img.height // 2)), (255, 0, 255))
+
+
+# --- Per-card backs --------------------------------------------------------
+
+
+def _per_card_back(color: tuple[int, int, int] = (30, 30, 200)) -> tuple[str, bytes]:
+    return _seed_back(Image.new("RGB", SEED_SIZE, color))
+
+
+def test_tcgplaytest_pairs_each_slot_with_its_own_back(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Three copies of one card: inheriting, choosing its own back, and
+    choosing blank. The vendor needs a file per slot, so the blank one
+    ships the Selected Back — and the preview says how many did."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    universal_hash, universal_bytes = _seed_back()
+    per_card_hash, per_card_bytes = _per_card_back()
+
+    body = _body(
+        format="tcgplaytest",
+        back_image_hash=universal_hash,
+        back_images=[{"hash": universal_hash}, {"hash": per_card_hash}],
+        entries=[
+            _entry(),
+            _entry(back_mode="image", back_hash=per_card_hash),
+            _entry(back_mode="blank"),
+        ],
+    )
+    preview = client.post("/api/export/zip/preview", json=body).json()
+    assert preview["paired_fronts"] == 3
+    assert preview["reverses_needing_back_image"] == 2
+    assert preview["blank_backs_using_universal"] == 1
+
+    archive = _open_zip(client.post("/api/export/zip", json=body))
+    assert archive.namelist() == [
+        *(f"Deck/FRONT/{i:03d}.png" for i in range(1, 4)),
+        *(f"Deck/BACK/{i:03d}.png" for i in range(1, 4)),
+    ]
+    assert archive.read("Deck/BACK/001.png") == universal_bytes
+    assert archive.read("Deck/BACK/002.png") == per_card_bytes
+    assert archive.read("Deck/BACK/003.png") == universal_bytes
+
+
+def test_default_format_ships_each_distinct_back_once(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Selected Back first, then per-card backs in first-use order, each
+    once; a blank choice has nothing to ship. The front is still deduped
+    to one file — it is the same image three times."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    universal_hash, universal_bytes = _seed_back()
+    second_hash, second_bytes = _per_card_back((30, 30, 200))
+    first_hash, first_bytes = _per_card_back((30, 200, 30))
+
+    body = _body(
+        back_image_hash=universal_hash,
+        back_images=[{"hash": universal_hash}, {"hash": first_hash}, {"hash": second_hash}],
+        entries=[
+            _entry(back_mode="blank"),
+            _entry(back_mode="image", back_hash=first_hash),
+            _entry(),
+            _entry(back_mode="image", back_hash=second_hash),
+            _entry(back_mode="image", back_hash=first_hash),
+        ],
+    )
+    preview = client.post("/api/export/zip/preview", json=body).json()
+    assert preview["fronts"] == 1
+    assert preview["blank_backs_using_universal"] == 1
+    archive = _open_zip(client.post("/api/export/zip", json=body))
+    assert archive.namelist() == [
+        "Deck/FRONT/001.png",
+        "Deck/BACK/001.png",
+        "Deck/BACK/002.png",
+        "Deck/BACK/003.png",
+    ]
+    assert archive.read("Deck/BACK/001.png") == universal_bytes
+    assert archive.read("Deck/BACK/002.png") == first_bytes
+    assert archive.read("Deck/BACK/003.png") == second_bytes
+
+
+def test_per_card_backs_need_no_selected_back(client: TestClient, tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    per_card_hash, per_card_bytes = _per_card_back()
+    entries = [_entry(back_mode="image", back_hash=per_card_hash)]
+    manifest = [{"hash": per_card_hash}]
+
+    paired = _open_zip(
+        client.post(
+            "/api/export/zip",
+            json=_body(format="tcgplaytest", back_images=manifest, entries=entries),
+        )
+    )
+    assert paired.read("Deck/BACK/001.png") == per_card_bytes
+    flat = _open_zip(client.post("/api/export/zip", json=_body(back_images=manifest, entries=entries)))
+    assert flat.namelist() == ["Deck/FRONT/001.png", "Deck/BACK/001.png"]
+    assert flat.read("Deck/BACK/001.png") == per_card_bytes
+
+
+def test_unsynced_per_card_back_is_400_naming_the_card(
+    client: TestClient, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    unsynced = "cd" * 32
+    for fmt in ("default", "tcgplaytest"):
+        resp = client.post(
+            "/api/export/zip",
+            json=_body(
+                format=fmt,
+                back_images=[{"hash": unsynced}],
+                entries=[_entry(back_mode="image", back_hash=unsynced)],
+            ),
+        )
+        assert resp.status_code == 400
+        assert "1 card(s) use a back image that isn't synced" in resp.json()["detail"]
+        assert "Sol Ring [C21 263]" in resp.json()["detail"]
+
+
+def test_tcgplaytest_blank_choice_without_a_selected_back_is_400(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Blank has no file to fall back on when no Selected Back exists —
+    the same refusal as a deck with no back at all."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    resp = client.post(
+        "/api/export/zip",
+        json=_body(format="tcgplaytest", entries=[_entry(back_mode="blank")]),
+    )
+    assert resp.status_code == 400
+    assert "back image" in resp.json()["detail"]
+
+
+def test_per_card_back_is_bled_by_its_own_declaration(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Each manifest entry carries its own bleed declaration: the Selected
+    Back (plain) is edge-extended, the per-card back (declared pre-bled)
+    is fitted to the bled box with its own border as the bleed."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    universal_hash, _stored = _seed_back(_bordered_back())
+    per_card_hash, _stored = _seed_back(_pre_bled((218, 296), 3.175))
+    universal_dpi = round(dpi_at_card_size(*SEED_SIZE))
+    per_card_dpi = round(dpi_at_card_size(218, 296))
+
+    resp = client.post(
+        "/api/export/zip",
+        json=_body(
+            format="tcgplaytest",
+            with_bleed=True,
+            bleed_mm=3.0,
+            back_image_hash=universal_hash,
+            back_images=[
+                {"hash": universal_hash},
+                {"hash": per_card_hash, "includes_bleed": True, "bleed_mm": 3.175},
+            ],
+            entries=[_entry(), _entry(back_mode="image", back_hash=per_card_hash)],
+        ),
+    )
+    archive = _open_zip(resp)
+    universal = _decode(archive, "Deck/BACK/001.png")
+    assert universal.size == _bled_size(target_pixels(universal_dpi), universal_dpi, 3.0)
+    assert _close(universal.getpixel((12, universal.height // 2)), (0, 200, 0))
+    per_card = _decode(archive, "Deck/BACK/002.png")
+    assert per_card.size == _bled_pixels(per_card_dpi, 3.0)
+    assert _close(per_card.getpixel((4, per_card.height // 2)), (0, 200, 0))
+    assert _close(per_card.getpixel((20, per_card.height // 2)), (255, 0, 255))

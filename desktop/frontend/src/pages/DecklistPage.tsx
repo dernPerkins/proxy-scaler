@@ -13,6 +13,7 @@ import CompareMenu, { type CompareSide } from "../components/CompareMenu";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
+import CardBackPicker from "../components/CardBackPicker";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import {
@@ -90,9 +91,13 @@ export default function DecklistPage() {
     removeCard,
     setCardQuantity,
     setCardPrinting,
+    resetCardBacks,
     applyCardResolutions,
     backfillRarities,
   } = useProject();
+  // Per-card backs: how many rows have chosen one, for the bulk reset.
+  const ownBackCount = cards.filter((c) => c.back_mode !== "inherit").length;
+  const [confirmResetBacks, setConfirmResetBacks] = useState(false);
   const readiness = useServerReadiness();
   const connection = useConnection();
   useTourOnFirstView("decklist");
@@ -932,6 +937,14 @@ export default function DecklistPage() {
           </h2>
           <div className="decklist-actions" data-tour="deck-actions">
             <SortSelect />
+            {ownBackCount > 0 && (
+              <button
+                onClick={() => setConfirmResetBacks(true)}
+                title="Set every card back to the universal back"
+              >
+                Reset backs ({ownBackCount})
+              </button>
+            )}
             <button
               onClick={() => downloadAllMutation.mutate()}
               disabled={!cards.length || downloadAllMutation.isPending || serverUnavailable}
@@ -999,11 +1012,20 @@ export default function DecklistPage() {
               };
             })
             .filter((face) => face.variants.length > 0);
+          // Known only once the card's faces have been generated or
+          // downloaded: a double-faced card's "back" face is what prints
+          // on its Reverse while the PDF tab pairs faces, so the per-card
+          // back control shows locked for it (CardBackPicker).
+          const transformOnBack =
+            settings.back_printing &&
+            settings.back_faces_as_reverse &&
+            faces.some((f) => f.faceLabel === "back");
           return (
             <CardRowView
               key={card.id}
               card={card}
               faces={faces}
+              transformOnBack={transformOnBack}
               expandedFaces={expandedFaces}
               onToggleExpand={toggleExpanded}
               onRemove={() => removeCard(card.id)}
@@ -1030,6 +1052,22 @@ export default function DecklistPage() {
           );
         })}
       </main>
+      {confirmResetBacks && (
+        <ConfirmDialog
+          title="Reset per-card backs?"
+          confirmLabel="Reset backs"
+          onConfirm={() => {
+            setConfirmResetBacks(false);
+            void resetCardBacks();
+          }}
+          onCancel={() => setConfirmResetBacks(false)}
+        >
+          <p>
+            {ownBackCount === 1 ? "1 card" : `${ownBackCount} cards`} will go back to the
+            universal back. The backs themselves stay in the library.
+          </p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }
@@ -1065,6 +1103,8 @@ interface CompareTarget {
 function CardRowView(props: {
   card: CardRow;
   faces: DisplayFace[];
+  /** This card's transform side prints on its back — see CardBackPicker. */
+  transformOnBack: boolean;
   expandedFaces: Set<string>;
   onToggleExpand: (key: string) => void;
   onRemove: () => void;
@@ -1101,6 +1141,7 @@ function CardRowView(props: {
   const {
     card,
     faces,
+    transformOnBack,
     expandedFaces,
     onToggleExpand,
     onRemove,
@@ -1175,6 +1216,7 @@ function CardRowView(props: {
             onClosed={onPickerClosed}
           />
         )}
+        <CardBackPicker card={card} transformOnBack={transformOnBack} />
         <span className="card-qty-stepper" data-tour="card-qty">
           <button
             className="btn-sm"

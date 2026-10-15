@@ -256,6 +256,17 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("custom_image_id", "INTEGER"),
     // See the column comment in SCHEMA.
     ("rarity", "TEXT"),
+    // This card's own back. back_mode is NULL/'inherit' (take the project's
+    // Selected Back and its PDF-tab rules), 'blank' (print nothing on this
+    // card's Reverse) or 'image' (print the back_images row back_image_id
+    // points at). An explicit mode wins over the project's reverse_fill; a
+    // paired double-faced card ignores it, because its transform side
+    // already owns the Reverse. Not a real foreign key for the same ALTER
+    // TABLE reason as projects.back_image_id — deleting a back resets
+    // referencing cards to 'inherit' (see back_images::delete_back_image_row):
+    // unlike a project, a card has a sane fallback, the universal back.
+    ("back_mode", "TEXT"),
+    ("back_image_id", "INTEGER"),
 ];
 
 // Columns added to the two image libraries after their initial release.
@@ -726,6 +737,15 @@ pub struct CardRow {
     /// (customs.identity_key / mergeCardStatus.cardIdentity), and deriving
     /// it in the frontend would mean a second lookup on every render.
     pub custom_hash: Option<String>,
+    /// "inherit" | "blank" | "image" — see the back_mode column comment.
+    /// Never NULL on the way out: an unset column reads as "inherit".
+    pub back_mode: String,
+    /// The back_images row this card prints when back_mode is "image".
+    pub back_image_id: Option<i64>,
+    /// That back's content hash, joined in from the library — the identity
+    /// the server uses (back_hash on a deck entry), carried alongside the
+    /// local id for the same reason custom_hash is.
+    pub back_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -853,9 +873,11 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
         .prepare(
             "SELECT c.id, c.sort_order, c.original_import_line, c.quantity, c.name,
                     c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
-                    c.custom_image_id, ci.content_hash, c.rarity
+                    c.custom_image_id, ci.content_hash, c.rarity,
+                    c.back_mode, c.back_image_id, bi.content_hash
              FROM project_cards c
              LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
+             LEFT JOIN back_images bi ON bi.id = c.back_image_id
              WHERE c.project_id = ?1 ORDER BY c.sort_order ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -875,6 +897,9 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 custom_image_id: row.get(10)?,
                 custom_hash: row.get(11)?,
                 rarity: row.get(12)?,
+                back_mode: normalize_back_mode(row.get(13)?, row.get(14)?),
+                back_image_id: row.get(14)?,
+                back_hash: row.get(15)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1852,6 +1877,74 @@ pub fn set_card_printing(
             rarity,
         },
     )
+}
+
+/// The three back modes a card can store. Validated here rather than typed
+/// as an enum across IPC so an unknown value from a newer frontend is a
+/// loud error, not a silently-coerced default.
+pub const BACK_MODES: &[&str] = &["inherit", "blank", "image"];
+
+/// What a stored back_mode means once read back: a NULL (row predates the
+/// column) is "inherit", and an "image" whose pointer is gone is "inherit"
+/// too — "print the image I don't have" has no useful rendering.
+fn normalize_back_mode(mode: Option<String>, back_image_id: Option<i64>) -> String {
+    match mode.as_deref() {
+        Some("image") if back_image_id.is_some() => "image".to_string(),
+        Some("blank") => "blank".to_string(),
+        _ => "inherit".to_string(),
+    }
+}
+
+/// Choose what prints on one card's Reverse. `back_image_id` is required
+/// for "image" and ignored (stored as NULL) otherwise, so the two columns
+/// can never disagree about whether a back is in use.
+pub fn set_card_back_row(
+    conn: &Connection,
+    card_id: i64,
+    back_mode: &str,
+    back_image_id: Option<i64>,
+) -> Result<(), String> {
+    if !BACK_MODES.contains(&back_mode) {
+        return Err(format!("unknown back mode: {back_mode}"));
+    }
+    let stored_id = match back_mode {
+        "image" => Some(back_image_id.ok_or("back mode \"image\" needs a back image")?),
+        _ => None,
+    };
+    let changed = conn
+        .execute(
+            "UPDATE project_cards SET back_mode = ?1, back_image_id = ?2 WHERE id = ?3",
+            params![back_mode, stored_id, card_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("card {card_id} not found"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_card_back(
+    app: AppHandle,
+    card_id: i64,
+    back_mode: String,
+    back_image_id: Option<i64>,
+) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    set_card_back_row(&conn, card_id, &back_mode, back_image_id)
+}
+
+/// Every card in a project back to the project's Selected Back — the
+/// Decklist tab's bulk escape hatch after experimenting with per-card backs.
+#[tauri::command]
+pub fn reset_project_card_backs(app: AppHandle, project_id: i64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    conn.execute(
+        "UPDATE project_cards SET back_mode = NULL, back_image_id = NULL WHERE project_id = ?1",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Batched persist of post-import resolve results — one transaction for
@@ -3527,6 +3620,65 @@ mod tests {
             card.original_import_line, "1 Sol Ring (c21) 263",
             "the original pasted line is history, not display state — untouched"
         );
+    }
+
+    #[test]
+    fn card_back_defaults_to_inherit_and_roundtrips() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263").expect("import");
+        assert_eq!(cards[0].back_mode, "inherit", "a fresh card follows the project");
+        assert_eq!(cards[0].back_image_id, None);
+        assert_eq!(cards[0].back_hash, None);
+
+        set_card_back_row(&conn, cards[0].id, "blank", None).expect("blank");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "blank");
+
+        // "image" needs a real pointer; the hash comes along from the library.
+        conn.execute(
+            "INSERT INTO back_images (content_hash, label, original_filename, file_name,
+                 thumb_name, includes_bleed, width, height, created_at)
+             VALUES ('abc123', 'Dragon', 'dragon.png', 'abc123.png', 'abc123_thumb.jpg',
+                 0, 100, 140, '0')",
+            [],
+        )
+        .expect("insert back");
+        let back_id: i64 = conn
+            .query_row("SELECT id FROM back_images WHERE content_hash = 'abc123'", [], |r| r.get(0))
+            .expect("back id");
+        assert!(
+            set_card_back_row(&conn, cards[0].id, "image", None).is_err(),
+            "image mode without a back image is rejected"
+        );
+        set_card_back_row(&conn, cards[0].id, "image", Some(back_id)).expect("image");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "image");
+        assert_eq!(card.back_image_id, Some(back_id));
+        assert_eq!(card.back_hash.as_deref(), Some("abc123"));
+
+        // Back to inherit clears the pointer too, so the columns can't disagree.
+        set_card_back_row(&conn, cards[0].id, "inherit", Some(back_id)).expect("inherit");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "inherit");
+        assert_eq!(card.back_image_id, None);
+
+        assert!(set_card_back_row(&conn, cards[0].id, "sideways", None).is_err());
+    }
+
+    #[test]
+    fn card_back_image_with_missing_pointer_reads_as_inherit() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263").expect("import");
+        // A row an older build (or a partial write) left as "image" with no id.
+        conn.execute(
+            "UPDATE project_cards SET back_mode = 'image', back_image_id = NULL WHERE id = ?1",
+            params![cards[0].id],
+        )
+        .expect("corrupt row");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "inherit");
     }
 
     #[test]

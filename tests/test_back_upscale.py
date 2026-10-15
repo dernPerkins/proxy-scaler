@@ -406,15 +406,19 @@ def test_resolve_print_source_ranks_variants_like_a_custom(
 def test_zip_export_ships_the_preferred_back_variant(
     client: TestClient, tmp_path: Path, db_path: Path, monkeypatch
 ) -> None:
-    from proxy_scaler.api.routers.export import _resolve_back
+    from proxy_scaler.api.routers.export import _resolve_backs
+
+    def selected(body: ExportZipIn):
+        back_images, default_back_hash = _resolve_backs(body)
+        return back_images[default_back_hash].path
 
     content_hash, results = _print(client, tmp_path, db_path, monkeypatch)
     body = ExportZipIn(project_tag="t", entries=[], back_image_hash=content_hash, preferred_dpi=1200)
-    assert _resolve_back(body) == results[("ultrasharp_v2", 1200)].out_path
+    assert selected(body) == results[("ultrasharp_v2", 1200)].out_path
     body = ExportZipIn(project_tag="t", entries=[], back_image_hash=content_hash, preferred_dpi=600)
-    assert _resolve_back(body) == results[("ultrasharp_v2", 600)].out_path
+    assert selected(body) == results[("ultrasharp_v2", 600)].out_path
     body = ExportZipIn(project_tag="t", entries=[], back_image_hash=content_hash, use_originals=True)
-    assert _resolve_back(body) == backs.original_path(content_hash)
+    assert selected(body) == backs.original_path(content_hash)
 
 
 def test_deleting_the_back_removes_its_derivatives(

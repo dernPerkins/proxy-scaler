@@ -11,16 +11,18 @@ import { DPI_OPTIONS, EXPORT_DPI_OPTIONS } from "../constants";
 import { useConnection } from "../connection";
 import {
   BACK_PRINTING_MIN_SERVER_VERSION,
-  getApiBaseUrl,
   serverSupportsBackPrinting,
   serverSupportsCutterMarks,
   serverSupportsOriginals,
+  serverSupportsPerCardBacks,
   useServerReadiness,
   useServerVersion,
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import { cardToEntry, sortCards } from "../deckEntries";
+import { backImageRef, referencedBackIds, summarizeCardBacks, useBackImagesSync, useBackLibrary } from "../cardBacks";
+import CardBackSummaryNote from "../components/CardBackSummaryNote";
 import SortSelect from "../components/SortSelect";
 import { hasCustomCards, registerCustomCards, waitForTasks } from "../syncCustoms";
 import { UploadCanceled } from "../uploadProgress";
@@ -183,29 +185,26 @@ export default function PdfPage() {
   // The project's Selected Back, resolved out of the app-global library.
   // Library reads are local invokes — they work with no server reachable,
   // which is the whole point of the client owning it (docs/adr/0003).
-  const backLibraryQuery = useQuery({
-    queryKey: ["back-images"],
-    queryFn: () => projectApi.listBackImages(),
-  });
+  const backLibraryQuery = useBackLibrary();
   const selectedBack =
     settings.back_image_id != null
       ? backLibraryQuery.data?.find((b) => b.id === settings.back_image_id)
       : undefined;
-
-  // Make sure the CONNECTED server holds this back's bytes before anything
-  // asks it to render with them. Keyed on the base URL as well as the
-  // back, so switching to a server that has never seen this file re-syncs
-  // rather than silently previewing a back that isn't there. Rust GETs
-  // first and only uploads on a miss, so the steady-state cost is one
-  // small request.
-  const backSyncQuery = useQuery({
-    queryKey: ["back-image-sync", selectedBack?.id, getApiBaseUrl()],
-    queryFn: () => projectApi.syncBackImage(selectedBack!.id, getApiBaseUrl()),
-    enabled: selectedBack != null && layoutWantsBacks && !serverUnavailable,
-  });
-  // Only gates the queries when a back is actually needed: an all-DFC
-  // sheet, or back printing off, has nothing to wait for.
-  const backReady = selectedBack == null || !layoutWantsBacks || backSyncQuery.isSuccess;
+  // Every back this print can land on: the Selected Back plus each card's
+  // own (CardRow.back_mode). All of them are synced to the CONNECTED
+  // server before anything asks it to render — see cardBacks.ts. Only
+  // gated while a back is actually needed: back printing off has nothing
+  // to wait for.
+  const referencedBacks = referencedBackIds(cards, settings)
+    .map((id) => backLibraryQuery.data?.find((b) => b.id === id))
+    .filter((b): b is NonNullable<typeof b> => b != null);
+  const backSync = useBackImagesSync(
+    referencedBacks.map((b) => b.id),
+    layoutWantsBacks && !serverUnavailable,
+  );
+  const backReady = backSync.ready;
+  const cardBacks = summarizeCardBacks(cards, backLibraryQuery.data);
+  const perCardBacksSupported = serverSupportsPerCardBacks(serverVersion);
 
   // Which side of page 1 the visual preview shows. Local state, not a
   // persisted setting — it's a way of looking at the sheet, not a
@@ -259,6 +258,7 @@ export default function PdfPage() {
     back_image_hash: selectedBack?.content_hash ?? null,
     back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
     back_image_bleed_mm: selectedBack?.includes_bleed ? selectedBack.bleed_mm : null,
+    back_images: referencedBacks.map(backImageRef),
   };
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -866,6 +866,11 @@ export default function PdfPage() {
                       image needed.
                     </p>
                   )}
+                  <CardBackSummaryNote
+                    summary={cardBacks}
+                    serverSupports={serverUnavailable || perCardBacksSupported}
+                    serverVersion={serverVersion}
+                  />
 
                   {/* Changes the print-slot count and therefore the page
                       count, which is why it lives here rather than with the

@@ -73,6 +73,26 @@ export interface DeckEntryIn {
   // identifies the uploaded art by. `name` is then a display name and
   // set_code/collector_number are absent. See proxy_scaler/customs.py.
   custom_hash?: string | null;
+  // This card's own back (see project.ts::CardRow.back_mode). "inherit"
+  // (or absent) takes the request's universal back_image_hash and the
+  // project's reverse_fill; "blank" prints nothing; "image" prints the
+  // back whose sha256 is back_hash, which must also appear in the
+  // request's back_images manifest. Servers before 0.6.0 ignore both.
+  back_mode?: BackMode;
+  back_hash?: string | null;
+}
+
+/** What a card's Reverse takes when it isn't a transform face. Mirrors
+ *  project_cards.back_mode (Rust) and DeckEntryIn.back_mode (server). */
+export type BackMode = "inherit" | "blank" | "image";
+
+/** One back a print request may draw on, with the Back Library's own
+ *  declaration about its bleed — per back, because a themed token back and
+ *  the universal back needn't agree. Mirrors BackImageIn. */
+export interface BackImageRef {
+  hash: string;
+  includes_bleed: boolean;
+  bleed_mm: number | null;
 }
 
 export interface ResolvedFace {
@@ -438,6 +458,10 @@ export interface PdfLayoutRequest {
    *  declares some. Servers before 0.3.3 ignore it and fit the whole file
    *  to the bled box instead. */
   back_image_bleed_mm?: number | null;
+  /** Every back this request may use: the universal one and each distinct
+   *  per-card back, each with its own bleed declaration. Servers before
+   *  0.6.0 ignore it and print back_image_hash everywhere. */
+  back_images?: BackImageRef[];
   /** Preview only: render page 1's Back Page, mirrored. */
   preview_back_page?: boolean;
 }
@@ -627,6 +651,8 @@ export interface ExportZipRequest {
    *  declares some. Servers before 0.3.3 ignore it and fit the whole file
    *  to the bled box instead. */
   back_image_bleed_mm?: number | null;
+  /** Same manifest as PdfLayoutRequest.back_images. */
+  back_images?: BackImageRef[];
 }
 
 /** The export job routes reuse the PDF job shapes — same registry
@@ -648,6 +674,10 @@ export interface ExportZipPreview {
   /** TCGPlaytest backs that would be the Selected Back rather than the
    *  card's own Back Face. */
   reverses_needing_back_image: number;
+  /** TCGPlaytest copies whose card asked for a blank back: the vendor
+   *  needs a file for every back, so these get the universal back instead.
+   *  Absent from servers before 0.6.0. */
+  blank_backs_using_universal?: number;
 }
 
 // --- The Back Library ------------------------------------------------------
@@ -671,6 +701,13 @@ export interface BackImage {
   /** Effective print DPI at card size. Warned about below ~300, never
    *  blocked — plenty of people knowingly print a flat logo at low DPI. */
   source_dpi: number;
+}
+
+/** Mirrors back_images::BackImageUsage (Rust). */
+export interface BackImageUsage {
+  projects: number;
+  cards: number;
+  cards_in_project: number;
 }
 
 /** What the connected generation server holds for one Back Image — just

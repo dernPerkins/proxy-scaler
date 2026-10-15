@@ -906,7 +906,7 @@ button:disabled {
      carry an extra "Show" button and would shift the printing/qty columns
      of every such row out of alignment with the rest. 216px fits the full
      Show + Generate + Remove set. */
-  grid-template-columns: minmax(0, 1fr) 158px 106px 216px;
+  grid-template-columns: minmax(0, 1fr) 158px 36px 106px 216px;
   gap: 12px;
   align-items: center;
 }
@@ -924,6 +924,212 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* --- Per-card back swatch + picker (CardBackPicker.tsx) --- */
+.card-back-cell {
+  display: inline-flex;
+  justify-content: center;
+}
+/* A card-shaped miniature of what this card's Reverse takes. The border
+   style IS the state: dashed = following the project, solid accent = its
+   own back, dotted = locked (transform side prints there). Same aspect as
+   a card so the image reads as a back and not a color chip. */
+.card-back-swatch {
+  position: relative;
+  width: 26px;
+  height: 36px;
+  padding: 0;
+  border-radius: 3px;
+  border: 1.5px dashed var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+}
+.card-back-swatch:hover,
+.card-back-swatch:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.card-back-swatch-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* Faded while merely inherited, so a chosen back stands out beside it. */
+.card-back-swatch.is-universal .card-back-swatch-img {
+  opacity: 0.45;
+}
+.card-back-swatch.is-image {
+  border: 2px solid var(--accent);
+}
+.card-back-swatch.is-locked {
+  border-style: dotted;
+  cursor: help;
+}
+.card-back-swatch svg {
+  position: relative;
+}
+
+.modal.card-back-modal {
+  width: min(90vw, 640px);
+}
+.card-back-head {
+  align-items: flex-start;
+}
+.card-back-subtitle {
+  margin-top: 2px;
+  white-space: normal;
+}
+.card-back-banner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  background: var(--wait-soft);
+  color: var(--wait);
+  font-size: 12.5px;
+  line-height: 1.45;
+  flex-shrink: 0;
+}
+.card-back-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.card-back-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
+  align-content: start;
+  padding: 2px;
+}
+.card-back-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+  min-width: 0;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+}
+.card-back-tile:hover,
+.card-back-tile:focus-visible {
+  border-color: var(--border-strong);
+}
+.card-back-tile.is-selected {
+  border: 2px solid var(--accent);
+  /* Compensate the thicker border so the tile doesn't grow a pixel. */
+  padding: 6.5px;
+}
+.card-back-tile-art {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 63 / 88;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+.card-back-tile-art > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* The Universal tile shows the universal back behind a link glyph: the
+   image says which, the glyph says "follows the project". */
+.card-back-tile-glyph {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+.card-back-tile-glyph svg {
+  width: 16px;
+  height: 16px;
+}
+.card-back-tile-badge {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  background: var(--surface);
+}
+.card-back-tile .thumb-zoom {
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+}
+.card-back-tile-label {
+  font-size: 12.5px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-back-tile-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-back-tile-upload {
+  border-style: dashed;
+}
+.card-back-dropzone {
+  /* The dropzone's own padding/gap are for the full-size tile; here the
+     art box is the whole target. */
+  padding: 0;
+  gap: 0;
+  border-width: 1.5px;
+  background: var(--surface-2);
+}
+.card-back-tile-upload:hover .card-back-dropzone {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.card-back-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+.card-back-foot .linklike {
+  text-decoration: none;
+}
+.card-back-foot .linklike:hover {
+  text-decoration: underline;
 }
 
 /* --- Change-printing picker (PrintingPicker.tsx) --- */

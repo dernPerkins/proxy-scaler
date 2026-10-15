@@ -2726,3 +2726,149 @@ def test_gallery_status_with_a_model_still_filters_and_names_the_model(
     }
     body = {"scryfall_ids": ["sol-id"], "model": "realesrgan_anime_fast", "dpis": [800]}
     assert client.post("/api/gallery/status", json=body).json()["statuses"] == {}
+
+
+# --- Per-card backs --------------------------------------------------------
+
+
+def _coloured_back_png(color: tuple[int, int, int], size: tuple[int, int] = (600, 840)) -> tuple[bytes, str]:
+    import hashlib
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    data = buf.getvalue()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def test_deck_entry_in_defaults_to_inheriting_the_back() -> None:
+    """An older client never sends either field, so the defaults have to
+    mean "exactly the sheet you always got"."""
+    import pydantic
+
+    from proxy_scaler.api.routers.pdf import _to_deck_entry
+    from proxy_scaler.api.schemas import DeckEntryIn
+
+    plain = DeckEntryIn(name="Sol Ring")
+    assert (plain.back_mode, plain.back_hash) == ("inherit", None)
+    chosen = _to_deck_entry(DeckEntryIn(name="Sol Ring", back_mode="image", back_hash="ab" * 32))
+    assert (chosen.back_mode, chosen.back_hash) == ("image", "ab" * 32)
+    with pytest.raises(pydantic.ValidationError):
+        DeckEntryIn(name="Sol Ring", back_mode="sideways")
+
+
+def test_per_card_back_renders_from_the_manifest(client: TestClient, tmp_path: Path) -> None:
+    """Two copies of one card, one inheriting the Selected Back and one
+    choosing its own: both previews show a back, they differ, the render
+    succeeds, and the job's progress total counts the extra image."""
+    pdf_jobs._reset_for_tests()
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    universal, universal_hash = _coloured_back_png((200, 30, 30))
+    per_card, per_card_hash = _coloured_back_png((30, 30, 200))
+    assert client.post(f"/api/backs/{universal_hash}", content=universal).status_code == 200
+    assert client.post(f"/api/backs/{per_card_hash}", content=per_card).status_code == 200
+
+    body = _pdf_layout_body(
+        back_printing=True,
+        back_image_hash=universal_hash,
+        back_images=[{"hash": universal_hash}, {"hash": per_card_hash}],
+        entries=[
+            _sol_ring_entry(),
+            _sol_ring_entry(back_mode="image", back_hash=per_card_hash),
+        ],
+    )
+    preview = client.post("/api/pdf/preview", json=body).json()
+    assert preview["units"] == 2
+    assert preview["reverses_needing_back_image"] == 1
+    assert preview["missing_back_image"] is False
+
+    back = client.post("/api/pdf/preview/page", json={**body, "preview_back_page": True}).json()
+    # Front positions 0 and 1 mirror to 2 and 1 on a long-edge portrait sheet.
+    occupied = {i: s for i, s in enumerate(back["slots"]) if s["thumbnail_data_url"]}
+    assert set(occupied) == {1, 2}
+    assert all(s["is_back_image"] for s in occupied.values())
+    assert occupied[1]["thumbnail_data_url"] != occupied[2]["thumbnail_data_url"]
+
+    render = client.post("/api/pdf", json=body)
+    assert render.status_code == 200
+    assert render.content.startswith(b"%PDF")
+
+    started = client.post("/api/pdf/jobs", json=body)
+    assert started.status_code == 202
+    job_id = started.json()["job_id"]
+    assert started.json()["total"] == 3  # the front plus two distinct backs
+    final = _await_pdf_job(client, job_id)
+    assert final["status"] == "done"
+    assert client.get(f"/api/pdf/jobs/{job_id}/result").status_code == 200
+
+
+def test_per_card_back_not_synced_is_400_naming_the_card(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The client believes the card's back is in effect, so printing the
+    Selected Back in its place would be a silent lie; the 400 names the
+    card so the user knows which one to re-sync."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    universal, universal_hash = _coloured_back_png((200, 30, 30))
+    client.post(f"/api/backs/{universal_hash}", content=universal)
+    unsynced = "cd" * 32
+
+    for manifest in ([{"hash": universal_hash}, {"hash": unsynced}], [{"hash": universal_hash}]):
+        body = _pdf_layout_body(
+            back_printing=True,
+            back_image_hash=universal_hash,
+            back_images=manifest,
+            entries=[_sol_ring_entry(quantity=2, back_mode="image", back_hash=unsynced)],
+        )
+        # The preview still answers — it is how the client learns the
+        # page count — but every render route refuses.
+        assert client.post("/api/pdf/preview", json=body).status_code == 200
+        for route in ("/api/pdf", "/api/pdf/jobs"):
+            resp = client.post(route, json=body)
+            assert resp.status_code == 400
+            assert "2 card(s) use a back image that isn't synced" in resp.json()["detail"]
+            assert "Sol Ring [C21 263]" in resp.json()["detail"]
+
+
+def test_per_card_blank_beats_the_selected_back(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    universal, universal_hash = _coloured_back_png((200, 30, 30))
+    client.post(f"/api/backs/{universal_hash}", content=universal)
+
+    body = _pdf_layout_body(
+        back_printing=True,
+        back_image_hash=universal_hash,
+        entries=[_sol_ring_entry(), _sol_ring_entry(back_mode="blank")],
+    )
+    preview = client.post("/api/pdf/preview", json=body).json()
+    assert preview["units"] == 2
+    assert preview["reverses_needing_back_image"] == 1
+    back = client.post("/api/pdf/preview/page", json={**body, "preview_back_page": True}).json()
+    assert back["slots"][2]["is_back_image"] is True  # the inheriting copy
+    assert back["slots"][1]["card_name"] == ""  # the blank one previews empty
+
+
+def test_per_card_image_needs_no_selected_back(client: TestClient, tmp_path: Path) -> None:
+    """A deck where every card chose its own back prints without the
+    project selecting one — and under reverse_fill=BLANK the explicit
+    choice still prints."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    per_card, per_card_hash = _coloured_back_png((30, 30, 200))
+    client.post(f"/api/backs/{per_card_hash}", content=per_card)
+
+    for reverse_fill in ("back_image", "blank"):
+        body = _pdf_layout_body(
+            back_printing=True,
+            reverse_fill=reverse_fill,
+            back_images=[{"hash": per_card_hash, "includes_bleed": True, "bleed_mm": 2.0}],
+            entries=[_sol_ring_entry(back_mode="image", back_hash=per_card_hash)],
+        )
+        preview = client.post("/api/pdf/preview", json=body).json()
+        assert preview["reverses_needing_back_image"] == 0
+        assert preview["missing_back_image"] is False
+        back = client.post("/api/pdf/preview/page", json={**body, "preview_back_page": True}).json()
+        assert back["slots"][2]["is_back_image"] is True
+        assert client.post("/api/pdf", json=body).status_code == 200

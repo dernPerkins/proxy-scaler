@@ -200,3 +200,11 @@ def test_expand_faces_split_single_image():
     faces = expand_faces(card)
     assert len(faces) == 1
     assert faces[0].face_index is None
+
+
+def test_deck_entry_defaults_to_inheriting_the_back():
+    """Nothing in decklist text can choose a back, so a parsed entry (and
+    any entry built without saying) inherits the project's default."""
+    e = parse_line("1 Sol Ring (c21) 263")
+    assert e is not None
+    assert (e.back_mode, e.back_hash) == ("inherit", None)

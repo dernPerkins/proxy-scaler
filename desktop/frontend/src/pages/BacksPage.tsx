@@ -27,7 +27,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
-import type { BackImage } from "../api/types";
+import type { BackImage, BackImageUsage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import SelectMenu from "../components/SelectMenu";
 import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageViewer";
@@ -191,16 +191,43 @@ function BackSettingsFields({
   );
 }
 
+/** The delete confirm's body: who loses what. Projects are left with NO
+ *  back (back printing then asks for one — recoverable); cards that chose
+ *  this back for themselves fall back to their project's Selected Back. */
+function deleteWarning(uses: BackImageUsage): string {
+  const parts: string[] = [];
+  if (uses.projects > 0) {
+    parts.push(
+      `${uses.projects} project${uses.projects === 1 ? "" : "s"} use${uses.projects === 1 ? "s" : ""} this back and will be left with no back image — back printing will ask you to pick one before it prints.`,
+    );
+  }
+  if (uses.cards > 0) {
+    const here = uses.cards_in_project > 0 ? ` (${uses.cards_in_project} in this project)` : "";
+    parts.push(
+      `${uses.cards} card${uses.cards === 1 ? "" : "s"}${here} chose it individually and will go back to their project's universal back.`,
+    );
+  }
+  if (parts.length === 0) {
+    return "This removes it from your library and from the connected generation server.";
+  }
+  return parts.join(" ");
+}
+
 function BackTile({
   back,
   selected,
   isDefault,
+  cardsHere,
   onSelect,
   onView,
 }: {
   back: BackImage;
   selected: boolean;
   isDefault: boolean;
+  /** Cards in the current project that chose this back for themselves
+   *  (CardBackPicker) — the tile says so, since the Selected Back
+   *  highlight alone would make such a back look unused. */
+  cardsHere: number;
   onSelect: () => void;
   onView: () => void;
 }) {
@@ -293,13 +320,14 @@ function BackTile({
         {back.source_dpi < LOW_DPI && " · low resolution"}
         {back.includes_bleed && " · bleed included"}
         {isDefault && " · default"}
+        {cardsHere > 0 && ` · ${cardsHere} card${cardsHere === 1 ? "" : "s"} here`}
       </div>
     </div>
   );
 }
 
 export default function BacksPage() {
-  const { settings, setSettings } = useProject();
+  const { projectId, cards, settings, setSettings } = useProject();
   const queryClient = useQueryClient();
   const connection = useConnection();
   const readiness = useServerReadiness();
@@ -318,7 +346,7 @@ export default function BacksPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [viewingId, setViewingId] = useState<number | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ back: BackImage; uses: number } | null>(
+  const [pendingDelete, setPendingDelete] = useState<{ back: BackImage; uses: BackImageUsage } | null>(
     null,
   );
   // Drag events fire for every child element entered, so a plain boolean
@@ -435,7 +463,7 @@ export default function BacksPage() {
   }, [settings.back_image_id, libraryQuery.isSuccess, selected, setSettings]);
 
   async function confirmDelete(back: BackImage) {
-    const uses = await projectApi.countProjectsUsingBackImage(back.id);
+    const uses = await projectApi.backImageUsage(back.id, projectId);
     setPendingDelete({ back, uses });
   }
 
@@ -624,6 +652,7 @@ export default function BacksPage() {
               back={back}
               selected={back.id === settings.back_image_id}
               isDefault={defaultQuery.data === back.id}
+              cardsHere={cards.filter((c) => c.back_mode === "image" && c.back_image_id === back.id).length}
               onSelect={() => setSettings((s) => ({ ...s, back_image_id: back.id }))}
               onView={() => setViewingId(back.id)}
             />
@@ -681,9 +710,7 @@ export default function BacksPage() {
           onConfirm={() => deleteMutation.mutate(pendingDelete.back)}
           onCancel={() => setPendingDelete(null)}
         >
-          {pendingDelete.uses > 0
-            ? `${pendingDelete.uses} project(s) use this back. They'll be left with no back image, and back printing will ask you to pick one before it prints.`
-            : "This removes it from your library and from the connected generation server."}
+          {deleteWarning(pendingDelete.uses)}
         </ConfirmDialog>
       )}
     </div>

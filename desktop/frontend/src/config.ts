@@ -252,6 +252,13 @@ export const PRINTING_IMAGES_MIN_SERVER_VERSION = "0.5.0";
 // in; packaging/set-version.py must never rewrite it.
 export const SET_ICONS_MIN_SERVER_VERSION = "0.5.0";
 
+// Per-card backs: DeckEntryIn.back_mode/back_hash and the back_images
+// manifest on PDF/ZIP requests. Below this the server ignores both and
+// prints the universal back on every Reverse, so the PDF/ZIP tabs warn
+// when any card has chosen its own. The release these ship in;
+// packaging/set-version.py must never rewrite it.
+export const PER_CARD_BACKS_MIN_SERVER_VERSION = "0.5.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -347,6 +354,14 @@ export function serverSupportsCustomBleed(serverVersion: string | null): boolean
 export function serverSupportsCustomUpscale(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, CUSTOM_UPSCALE_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server honour per-card back choices? Same
+ *  null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsPerCardBacks(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, PER_CARD_BACKS_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

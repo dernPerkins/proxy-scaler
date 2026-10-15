@@ -14,10 +14,10 @@ from PIL import Image
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.schemas import (
+    BackImageIn,
     CutterIn,
     DeckEntryIn,
     RectOut,
-    ReverseFillIn,
     PdfJobOut,
     PdfJobStatusOut,
     PdfLayoutIn,
@@ -34,6 +34,7 @@ from proxy_scaler.pdf_layout import (
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
     MM_PER_IN,
+    BackSource,
     CutterMarkStyle,
     CutterOrientation,
     FlipEdge,
@@ -44,6 +45,7 @@ from proxy_scaler.pdf_layout import (
     Rect,
     RegistrationMarks,
     ReverseFill,
+    _describe_face,
     back_pages_are_rotated,
     add_bleed,
     back_page_cells,
@@ -56,6 +58,7 @@ from proxy_scaler.pdf_layout import (
     registration_keep_out,
     registration_mark_rects,
     resolve_page_layout,
+    resolve_reverse,
     unique_image_count,
 )
 from proxy_scaler import customs
@@ -91,7 +94,68 @@ def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         scryfall_id=e.scryfall_id,
         lang=e.lang,
         custom_hash=e.custom_hash,
+        back_mode=e.back_mode,
+        back_hash=e.back_hash,
     )
+
+
+def back_manifest(
+    back_images: list[BackImageIn],
+    *,
+    back_image_hash: str | None,
+    back_image_includes_bleed: bool,
+    back_image_bleed_mm: float | None,
+) -> list[BackImageIn]:
+    """The request's Back Image manifest with the universal back folded
+    in. A client that predates per-card backs sends only the legacy trio,
+    and a current one may still leave its Selected Back out of the list;
+    either way the inherit target has to be resolvable, so it is
+    synthesized from those fields when the list lacks it. The manifest
+    wins where both name the same hash — it is the newer declaration."""
+    manifest = list(back_images)
+    if back_image_hash and all(b.hash != back_image_hash for b in manifest):
+        manifest.append(
+            BackImageIn(
+                hash=back_image_hash,
+                includes_bleed=back_image_includes_bleed,
+                bleed_mm=back_image_bleed_mm,
+            )
+        )
+    return manifest
+
+
+def resolve_back_manifest(
+    manifest: list[BackImageIn],
+    *,
+    preferred_dpi: int | None,
+    preferred_model: str | None,
+    use_originals: bool,
+    db_path,
+) -> dict[str, BackSource]:
+    """Every manifest hash this server holds, as the file to print plus
+    the client's bleed declaration for it. A hash not synced here is
+    simply absent — whether that is an error depends on who needs it,
+    which is the caller's call (see _prepare / export._prepare_export).
+    A malformed hash is a 400: it reaches the filesystem."""
+    resolved: dict[str, BackSource] = {}
+    for back in manifest:
+        try:
+            # The same preferences the cards are matched with: an
+            # upscaled back is picked like an upscaled custom.
+            path = backs.resolve_print_source(
+                back.hash,
+                preferred_dpi=preferred_dpi,
+                preferred_model=preferred_model,
+                use_originals=use_originals,
+                db_path=db_path,
+            )
+        except backs.BackImageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if path is not None:
+            resolved[back.hash] = BackSource(
+                path, includes_bleed=back.includes_bleed, bleed_mm=back.bleed_mm
+            )
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -108,8 +172,23 @@ class PreparedRender:
     pages: list[list[PrintSlot]]
     missing: list[str]
     missing_at_dpi: list[str]
-    back_image_path: Path | None
+    # Every Back Image the request named that this server holds, by
+    # content hash, and the hash a card with no choice of its own
+    # inherits (the Selected Back). See pdf_layout.resolve_reverse.
+    back_images: dict[str, BackSource]
+    default_back_hash: str | None
     reverses_needing_back_image: int
+    # Cards that chose their own Back Image but whose hash this server
+    # doesn't hold (not in the manifest, or never synced). Human
+    # descriptions, for the 400.
+    missing_per_card_backs: list[str]
+
+    @property
+    def back_image_path(self) -> Path | None:
+        """The Selected Back's file, if the request named one and this
+        server holds it."""
+        back = self.back_images.get(self.default_back_hash) if self.default_back_hash else None
+        return back.path if back is not None else None
 
     @property
     def missing_back_image(self) -> bool:
@@ -221,28 +300,38 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     )
     pages = paginate(slots, layout.cards_per_page)
 
-    back_image_path: Path | None = None
+    back_images: dict[str, BackSource] = {}
+    default_back_hash = body.back_image_hash or None
     reverses_needing_back_image = 0
-    # Counted only when a Back Image is what would actually go there. With
-    # reverse_fill=BLANK those same Reverses are meant to be empty, so
-    # they need nothing and must not be reported as missing anything.
-    if body.back_printing and body.reverse_fill is ReverseFillIn.BACK_IMAGE:
-        reverses_needing_back_image = sum(
-            1 for page in pages for slot in page if slot.reverse is None
+    missing_per_card_backs: list[str] = []
+    if body.back_printing:
+        back_images = resolve_back_manifest(
+            back_manifest(
+                body.back_images,
+                back_image_hash=body.back_image_hash,
+                back_image_includes_bleed=body.back_image_includes_bleed,
+                back_image_bleed_mm=body.back_image_bleed_mm,
+            ),
+            preferred_dpi=None if body.use_originals else body.preferred_dpi,
+            preferred_model=None if body.use_originals else body.preferred_model,
+            use_originals=body.use_originals,
+            db_path=db_path,
         )
-        if reverses_needing_back_image and body.back_image_hash:
-            try:
-                # The same preferences the cards were just matched with:
-                # an upscaled back is picked like an upscaled custom.
-                back_image_path = backs.resolve_print_source(
-                    body.back_image_hash,
-                    preferred_dpi=None if body.use_originals else body.preferred_dpi,
-                    preferred_model=None if body.use_originals else body.preferred_model,
-                    use_originals=body.use_originals,
-                    db_path=db_path,
-                )
-            except backs.BackImageError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        reverse_fill = ReverseFill(body.reverse_fill.value)
+        for page in pages:
+            for slot in page:
+                if slot.reverse is not None or slot.back_mode == "blank":
+                    continue
+                if slot.back_mode == "image":
+                    if slot.back_hash not in back_images:
+                        missing_per_card_backs.append(_describe_face(slot.front))
+                    continue
+                # Counted only when a Back Image is what would actually go
+                # there. With reverse_fill=BLANK those same Reverses are
+                # meant to be empty, so they need nothing and must not be
+                # reported as missing anything.
+                if reverse_fill is ReverseFill.BACK_IMAGE:
+                    reverses_needing_back_image += 1
 
     return PreparedRender(
         layout=layout,
@@ -250,8 +339,10 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         pages=pages,
         missing=missing,
         missing_at_dpi=missing_at_dpi,
-        back_image_path=back_image_path,
+        back_images=back_images,
+        default_back_hash=default_back_hash,
         reverses_needing_back_image=reverses_needing_back_image,
+        missing_per_card_backs=missing_per_card_backs,
     )
 
 
@@ -262,9 +353,8 @@ def _render_kwargs(body: PdfLayoutIn, prepared: PreparedRender) -> dict:
         guides=_guides(body),
         back_printing=body.back_printing,
         back_layout=prepared.back_layout,
-        back_image_path=prepared.back_image_path,
-        back_image_includes_bleed=body.back_image_includes_bleed,
-        back_image_bleed_mm=body.back_image_bleed_mm,
+        back_images=prepared.back_images,
+        default_back_hash=prepared.default_back_hash,
         flip_edge=FlipEdge(body.flip_edge.value),
         page_order=PageOrder(body.page_order.value),
         reverse_fill=ReverseFill(body.reverse_fill.value),
@@ -278,6 +368,17 @@ def _guard_printable(prepared: PreparedRender) -> None:
     either way, but this way it costs no cardstock."""
     if not prepared.pages:
         raise HTTPException(status_code=400, detail="Nothing to print — no matched cards.")
+    if prepared.missing_per_card_backs:
+        # Distinct names, in sheet order: one card printed four times is
+        # one thing for the user to fix, not four.
+        names = list(dict.fromkeys(prepared.missing_per_card_backs))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(prepared.missing_per_card_backs)} card(s) use a back image that "
+                f"isn't synced to this server: {', '.join(names)}"
+            ),
+        )
     if prepared.missing_back_image:
         raise HTTPException(
             status_code=400,
@@ -310,17 +411,20 @@ def preview(body: PdfLayoutIn) -> PdfPreviewOut:
 
 
 def _preview_cell(
-    cell: PrintSlot | None, *, is_back: bool, back_image_path: Path | None
-) -> tuple[FaceResult | None, bool]:
-    """What one grid position shows in the page preview: (face, is_back_image).
-    (None, False) is a genuinely empty position."""
+    cell: PrintSlot | None, *, is_back: bool, prepared: PreparedRender, reverse_fill: ReverseFill
+) -> tuple[FaceResult | None, BackSource | None]:
+    """What one grid position shows in the page preview: (face, back_image).
+    (None, None) is a genuinely empty position — no card there, or a
+    Reverse that prints blank. Decided by resolve_reverse so the preview
+    can never disagree with the sheet about which back a card gets."""
     if cell is None:
-        return None, False
+        return None, None
     if not is_back:
-        return cell.front, False
-    if cell.reverse is not None:
-        return cell.reverse, False
-    return None, back_image_path is not None
+        return cell.front, None
+    _path, face, back = resolve_reverse(
+        cell, prepared.back_images, prepared.default_back_hash, reverse_fill
+    )
+    return face, back
 
 
 def _preview_bled(
@@ -346,13 +450,13 @@ def _preview_bled(
 def _back_image_thumbnail(
     path: Path | None, *, bleed_mm: float, image_bleed_mm: float | None
 ) -> str | None:
-    """A small preview of the Back Image, built on the fly.
+    """A small preview of a Back Image, built on the fly.
 
     Unlike a card, a Back Image has no cached original thumbnail to reuse
     (nothing generated it), so this decodes and downsamples the stored
-    original each call. Bounded work: it happens at most once per preview
-    request no matter how many Reverses the Back Image fills, because
-    every one of them shows the same picture.
+    original each call. Bounded work: preview_page memoizes it per file,
+    so each distinct back costs one decode per request no matter how many
+    Reverses it fills.
     """
     if path is None or not path.is_file():
         return None
@@ -405,47 +509,43 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         cells = []
 
     slots: list[PdfPageSlotOut] = []
+    back_thumbnails: dict[Path, str | None] = {}
     for cell in cells:
-        # Three states per grid position, not two: a card, the Back Image
+        # Three states per grid position, not two: a card, a Back Image
         # filling a Reverse that has no Back Face, or a position no card
-        # occupies at all (a partial last page). The empty one has to be
-        # rendered as an empty cell rather than skipped, or every slot
-        # after it shifts and the mirrored preview stops matching the
-        # sheet it is previewing.
-        face, is_back_image = _preview_cell(
+        # occupies at all (a partial last page, or a Reverse that prints
+        # blank — which previews as exactly what it will print as). The
+        # empty one has to be rendered as an empty cell rather than
+        # skipped, or every slot after it shifts and the mirrored preview
+        # stops matching the sheet it is previewing.
+        face, back_image = _preview_cell(
             cell,
             is_back=show_back,
-            # None under reverse_fill=BLANK, so a card with no transform
-            # side previews as an empty position — which is exactly what
-            # it will print as.
-            back_image_path=(
-                prepared.back_image_path
-                if body.reverse_fill is ReverseFillIn.BACK_IMAGE
-                else None
-            ),
+            prepared=prepared,
+            reverse_fill=ReverseFill(body.reverse_fill.value),
         )
-        if face is None and not is_back_image:
+        if face is None and back_image is None:
             slots.append(PdfPageSlotOut(card_name="", face_label=None, model="", dpi=0))
             continue
-        if is_back_image:
+        if back_image is not None:
+            if back_image.path not in back_thumbnails:
+                back_thumbnails[back_image.path] = _back_image_thumbnail(
+                    back_image.path,
+                    bleed_mm=body.bleed_mm,
+                    # Only a declared-and-quantified back is trimmed; a
+                    # bare flag (old clients) previews edge-extended like
+                    # the render's fit-to-box does, near enough.
+                    image_bleed_mm=(
+                        back_image.bleed_mm if back_image.includes_bleed else None
+                    ),
+                )
             slots.append(
                 PdfPageSlotOut(
                     card_name="Card back",
                     face_label=None,
                     model="",
                     dpi=0,
-                    thumbnail_data_url=_back_image_thumbnail(
-                        prepared.back_image_path,
-                        bleed_mm=body.bleed_mm,
-                        # Only a declared-and-quantified back is trimmed;
-                        # a bare flag (old clients) previews edge-extended
-                        # like the render's fit-to-box does, near enough.
-                        image_bleed_mm=(
-                            body.back_image_bleed_mm
-                            if body.back_image_includes_bleed
-                            else None
-                        ),
-                    ),
+                    thumbnail_data_url=back_thumbnails[back_image.path],
                     is_back_image=True,
                 )
             )
@@ -627,7 +727,8 @@ def start_pdf_job(body: PdfLayoutIn) -> PdfJobOut:
         total=unique_image_count(
             prepared.pages,
             back_printing=body.back_printing,
-            back_image_path=prepared.back_image_path,
+            back_images=prepared.back_images,
+            default_back_hash=prepared.default_back_hash,
             reverse_fill=ReverseFill(body.reverse_fill.value),
         ),
     )

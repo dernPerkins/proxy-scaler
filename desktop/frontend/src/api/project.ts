@@ -5,6 +5,8 @@
 import { invokeCommand } from "../tauri";
 import type {
   BackImage,
+  BackImageUsage,
+  BackMode,
   BackSyncResult,
   CustomImage,
   CustomSyncResult,
@@ -138,6 +140,16 @@ export interface CardRow {
   // before a generate or an export.
   custom_image_id: number | null;
   custom_hash: string | null;
+  // This card's own back. "inherit" follows the project's Selected Back
+  // and PDF-tab rules; "blank" prints nothing on its Reverse; "image"
+  // prints the Back Library row back_image_id points at, whose sha256 is
+  // joined in as back_hash (the identity the server uses, same reason as
+  // custom_hash). A paired double-faced card ignores all three — its
+  // transform side owns the Reverse. Rust never returns "image" without
+  // an id: a dangling pointer reads back as "inherit".
+  back_mode: BackMode;
+  back_image_id: number | null;
+  back_hash: string | null;
 }
 
 // A parsed-but-unresolved decklist line, as returned by the Rust parser
@@ -245,6 +257,13 @@ export const projectApi = {
       printedName: printing.printedName,
       rarity: printing.rarity,
     }),
+  // Choose what prints on one card's Reverse. backImageId is required for
+  // "image" (Rust rejects the call otherwise) and ignored for the rest.
+  setCardBack: (cardId: number, backMode: BackMode, backImageId: number | null) =>
+    invokeCommand<void>("set_card_back", { cardId, backMode, backImageId }),
+  // Every card in the project back to "inherit".
+  resetProjectCardBacks: (projectId: number) =>
+    invokeCommand<void>("reset_project_card_backs", { projectId }),
   // Batched persist of post-import resolve results — one transaction for
   // the whole decklist. Field names are the Rust struct's snake_case:
   // Tauri only camelCases top-level command arguments, not struct fields.
@@ -381,6 +400,12 @@ export const projectApi = {
    *  than inheriting a replacement. */
   countProjectsUsingBackImage: (id: number) =>
     invokeCommand<number>("count_projects_using_back_image", { id }),
+  /** Projects AND cards that would notice this back going away; cards_in_
+   *  project narrows the card count to the project the user is looking
+   *  at. Cards fall back to the project's Selected Back on delete, so for
+   *  them it's a warning rather than a loss. */
+  backImageUsage: (id: number, projectId: number | null) =>
+    invokeCommand<BackImageUsage>("back_image_usage", { id, projectId }),
 
   deleteBackImage: (id: number) =>
     invokeCommand<void>("delete_back_image", { id }),

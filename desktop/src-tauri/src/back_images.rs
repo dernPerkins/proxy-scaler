@@ -268,6 +268,60 @@ pub fn count_projects_using_back_image(app: AppHandle, id: i64) -> Result<i64, S
     .map_err(|e| e.to_string())
 }
 
+/// Who would notice if this back disappeared: projects whose Selected Back
+/// it is, cards anywhere that chose it individually, and — for the delete
+/// confirm's "here" wording — how many of those cards are in the project
+/// the user is looking at.
+#[derive(Debug, Serialize)]
+pub struct BackImageUsage {
+    pub projects: i64,
+    pub cards: i64,
+    pub cards_in_project: i64,
+}
+
+pub fn back_image_usage_row(
+    conn: &Connection,
+    id: i64,
+    project_id: Option<i64>,
+) -> Result<BackImageUsage, String> {
+    let projects: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM projects WHERE back_image_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let cards: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM project_cards WHERE back_image_id = ?1 AND back_mode = 'image'",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let cards_in_project: i64 = match project_id {
+        Some(pid) => conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_cards
+                 WHERE back_image_id = ?1 AND back_mode = 'image' AND project_id = ?2",
+                params![id, pid],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?,
+        None => 0,
+    };
+    Ok(BackImageUsage { projects, cards, cards_in_project })
+}
+
+#[tauri::command]
+pub fn back_image_usage(
+    app: AppHandle,
+    id: i64,
+    project_id: Option<i64>,
+) -> Result<BackImageUsage, String> {
+    let conn = open_db(&app)?;
+    back_image_usage_row(&conn, id, project_id)
+}
+
 /// Remove a back from the library, from every project that selected it,
 /// and from the app default if it held that job.
 ///
@@ -291,6 +345,14 @@ fn delete_back_image_row(conn: &Connection, id: i64) -> Result<Option<(String, S
 
     conn.execute(
         "UPDATE projects SET back_image_id = NULL WHERE back_image_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    // Cards, unlike projects, DO fall back: 'inherit' means the project's
+    // Selected Back, which is what the card printed before it was given
+    // its own — so this is a return to a known state, not a silent swap.
+    conn.execute(
+        "UPDATE project_cards SET back_mode = NULL, back_image_id = NULL WHERE back_image_id = ?1",
         params![id],
     )
     .map_err(|e| e.to_string())?;
@@ -585,6 +647,41 @@ mod tests {
         assert_eq!(back_id_of(&conn, project), None);
         // The app default was a different back, so it survives untouched.
         assert_eq!(read_default_back_image_id(&conn).expect("default"), Some(other));
+    }
+
+    #[test]
+    fn deleting_a_back_resets_cards_that_chose_it_to_inherit() {
+        let conn = test_conn();
+        let back = insert_back(&conn, &"d".repeat(64));
+        let other = insert_back(&conn, &"e".repeat(64));
+        let project = insert_project_with_back(&conn, "Tokens", Some(other));
+        conn.execute(
+            "INSERT INTO project_cards (project_id, sort_order, original_import_line, quantity, name,
+                 back_mode, back_image_id)
+             VALUES (?1, 0, '1 Goblin', 1, 'Goblin', 'image', ?2),
+                    (?1, 1, '1 Elf', 1, 'Elf', 'image', ?3),
+                    (?1, 2, '1 Orc', 1, 'Orc', 'blank', NULL)",
+            params![project, back, other],
+        )
+        .expect("cards");
+
+        let usage = back_image_usage_row(&conn, back, Some(project)).expect("usage");
+        assert_eq!((usage.projects, usage.cards, usage.cards_in_project), (0, 1, 1));
+        let usage = back_image_usage_row(&conn, other, None).expect("usage");
+        assert_eq!((usage.projects, usage.cards, usage.cards_in_project), (1, 1, 0));
+
+        delete_back_image_row(&conn, back).expect("delete");
+
+        let modes: Vec<(String, Option<String>, Option<i64>)> = conn
+            .prepare("SELECT name, back_mode, back_image_id FROM project_cards ORDER BY sort_order")
+            .expect("prep")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(modes[0], ("Goblin".to_string(), None, None), "reset to inherit");
+        assert_eq!(modes[1], ("Elf".to_string(), Some("image".to_string()), Some(other)));
+        assert_eq!(modes[2], ("Orc".to_string(), Some("blank".to_string()), None));
     }
 
     #[test]

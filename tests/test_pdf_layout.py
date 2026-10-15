@@ -2046,3 +2046,240 @@ def test_card_guides_sit_on_each_placed_card_with_spacing(spacing) -> None:
         want_y.add(round(img_y + layout.bled_card_h_mm - layout.bleed_mm + half, 6))
     assert rec.green_vertical_x == want_x
     assert rec.green_horizontal_y == want_y
+
+
+# --- Per-card backs --------------------------------------------------------
+
+
+from proxy_scaler.pdf_layout import BackSource, resolve_reverse  # noqa: E402
+
+_HASH_A = "a" * 64
+_HASH_B = "b" * 64
+
+
+def _sol_entry(quantity: int = 1, **overrides) -> DeckEntry:
+    return DeckEntry(
+        quantity=quantity, name="Sol Ring", set_code="c21", collector_number="263", **overrides
+    )
+
+
+def test_match_quantities_splits_a_printing_by_back_choice() -> None:
+    """Two lines of the same printing asking for different backs are two
+    different physical cards: same front image, one unit each, with the
+    quantity each line asked for and the choice it made."""
+    gallery = [_face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800)]
+    entries = [
+        _sol_entry(2),
+        _sol_entry(3, back_mode="image", back_hash=_HASH_A),
+        _sol_entry(1, back_mode="blank"),
+    ]
+    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert missing == []
+    assert [(u.quantity, u.back_mode, u.back_hash) for u in units] == [
+        (2, "inherit", None),
+        (3, "image", _HASH_A),
+        (1, "blank", None),
+    ]
+    assert all(u.best is units[0].best for u in units)
+
+
+def test_match_quantities_merges_entries_that_agree_on_a_back() -> None:
+    """Agreeing lines still collapse into one unit exactly as they always
+    did — the split is only ever by a genuine difference in the Reverse."""
+    gallery = [_face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800)]
+    entries = [
+        _sol_entry(2, back_mode="image", back_hash=_HASH_A),
+        _sol_entry(3, back_mode="image", back_hash=_HASH_A),
+    ]
+    units, _missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert [(u.quantity, u.back_mode, u.back_hash) for u in units] == [(5, "image", _HASH_A)]
+
+
+def test_match_quantities_image_mode_without_a_hash_reads_as_inherit() -> None:
+    gallery = [_face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800)]
+    entries = [_sol_entry(1), _sol_entry(1, back_mode="image", back_hash=None)]
+    units, _missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert [(u.quantity, u.back_mode, u.back_hash) for u in units] == [(2, "inherit", None)]
+
+
+def test_match_quantities_split_units_follow_entries_order() -> None:
+    """A split unit sorts by the first line that asked for its back, so a
+    deck ordered [Sol Ring, Counterspell, Sol Ring (other back)] prints in
+    exactly that order rather than pulling the second Sol Ring forward."""
+    gallery = [
+        _face("counter-id", None, "Counterspell", "Counterspell", "lea", "55", 800),
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+    ]
+    entries = [
+        _sol_entry(1),
+        DeckEntry(quantity=1, name="Counterspell", set_code="lea", collector_number="55"),
+        _sol_entry(1, back_mode="image", back_hash=_HASH_A),
+    ]
+    units, _missing, _missing_at_dpi = match_quantities(entries, gallery)
+    assert [(u.best.card_name, u.back_mode) for u in units] == [
+        ("Sol Ring", "inherit"),
+        ("Counterspell", "inherit"),
+        ("Sol Ring", "image"),
+    ]
+
+
+def test_paired_dfc_ignores_the_per_card_back() -> None:
+    """A transform side printed on its own back wins over any per-card
+    choice: every face-0 unit of the printing pairs, however many ways
+    the decklist split it, and every face-1 unit is consumed."""
+    front, back = _dfc_pair()
+    units = [
+        PrintUnit(face_key="f", quantity=2, best=front, back_mode="image", back_hash=_HASH_A),
+        PrintUnit(face_key="f", quantity=1, best=front, back_mode="blank"),
+        PrintUnit(face_key="b", quantity=3, best=back, back_mode="image", back_hash=_HASH_A),
+    ]
+    slots = build_print_slots(units, pair_back_faces=True)
+    assert len(slots) == 3
+    assert all(s.front is front and s.reverse is back for s in slots)
+    # The choice rides along on the slot, but the resolver never reads it
+    # while a transform side is there.
+    assert slots[0].back_mode == "image"
+    path, face, source = resolve_reverse(
+        slots[0], {_HASH_A: BackSource(Path("/backs/a.png"))}, None, ReverseFill.BACK_IMAGE
+    )
+    assert (path, face, source) == (back.out_path, back, None)
+
+
+def test_unpaired_dfc_faces_carry_their_back_choice() -> None:
+    """With pairing off (or a back face that never generated), each face
+    is its own card and prints the Reverse its line asked for."""
+    front, back = _dfc_pair()
+    units = [
+        PrintUnit(face_key="f", quantity=1, best=front, back_mode="image", back_hash=_HASH_A),
+        PrintUnit(face_key="b", quantity=1, best=back, back_mode="blank"),
+    ]
+    slots = build_print_slots(units, pair_back_faces=False)
+    assert [(s.front, s.reverse, s.back_mode, s.back_hash) for s in slots] == [
+        (front, None, "image", _HASH_A),
+        (back, None, "blank", None),
+    ]
+    half = build_print_slots([units[0]], pair_back_faces=True)
+    assert [(s.reverse, s.back_mode, s.back_hash) for s in half] == [(None, "image", _HASH_A)]
+
+
+@pytest.mark.parametrize("with_reverse", [False, True])
+@pytest.mark.parametrize("reverse_fill", [ReverseFill.BACK_IMAGE, ReverseFill.BLANK])
+@pytest.mark.parametrize("back_mode", ["inherit", "blank", "image"])
+@pytest.mark.parametrize("hash_present", [False, True])
+def test_resolve_reverse_precedence(
+    with_reverse: bool, reverse_fill: ReverseFill, back_mode: str, hash_present: bool
+) -> None:
+    """The one precedence table every Reverse is decided by: transform
+    side, then the card's own choice, then the project's default."""
+    front = _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800)
+    transform = _face("sol-id", 1, "Back", "Sol Ring", "c21", "263", 800)
+    universal = BackSource(Path("/backs/universal.png"))
+    per_card = BackSource(Path("/backs/per-card.png"), includes_bleed=True, bleed_mm=3.0)
+    back_images = {"u": universal}
+    if hash_present:
+        back_images["p"] = per_card
+    slot = PrintSlot(
+        front=front,
+        reverse=transform if with_reverse else None,
+        back_mode=back_mode,
+        back_hash="p" if back_mode == "image" else None,
+    )
+
+    if with_reverse:
+        expected = (transform.out_path, transform, None)
+    elif back_mode == "blank":
+        expected = (None, None, None)
+    elif back_mode == "image":
+        expected = (per_card.path, None, per_card) if hash_present else (None, None, None)
+    elif reverse_fill is ReverseFill.BLANK:
+        expected = (None, None, None)
+    else:
+        expected = (universal.path, None, universal)
+    assert resolve_reverse(slot, back_images, "u", reverse_fill) == expected
+
+
+def test_resolve_reverse_with_no_default_back_at_all() -> None:
+    """A card inheriting from a project that selected no back gets
+    nothing — the routers turn that into reverses_needing_back_image."""
+    slot = _slot(_face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800))
+    assert resolve_reverse(slot, {}, None, ReverseFill.BACK_IMAGE) == (None, None, None)
+    assert resolve_reverse(slot, None, None, ReverseFill.BACK_IMAGE) == (None, None, None)
+
+
+def test_build_pdf_legacy_back_kwargs_are_a_one_entry_manifest(tmp_path: Path) -> None:
+    """The old single-back call shape must keep producing the sheet it
+    always did: the same pages, the same images, the same bleed handling
+    — it is simply a manifest with one entry that every card inherits."""
+    pages = [[_slot(_pdf_source_face(tmp_path, "a")), _slot(_pdf_source_face(tmp_path, "b"))]]
+    layout = _a4_portrait_layout(cols=2, rows=1)
+    back = _back_image(tmp_path)
+    common = dict(layout=layout, export_dpi=600, back_printing=True)
+    legacy_calls: list[tuple[int, int]] = []
+    legacy = build_pdf(
+        pages,
+        back_image_path=back,
+        back_image_includes_bleed=True,
+        back_image_bleed_mm=2.0,
+        on_progress=lambda c, t: legacy_calls.append((c, t)),
+        **common,
+    )
+    manifest_calls: list[tuple[int, int]] = []
+    manifest = build_pdf(
+        pages,
+        back_images={_HASH_A: BackSource(back, includes_bleed=True, bleed_mm=2.0)},
+        default_back_hash=_HASH_A,
+        on_progress=lambda c, t: manifest_calls.append((c, t)),
+        **common,
+    )
+    assert _page_count(legacy) == _page_count(manifest) == 2
+    assert len(legacy) == len(manifest)
+    assert legacy_calls == manifest_calls == [(1, 3), (2, 3), (3, 3)]
+    assert unique_image_count(pages, back_printing=True, back_image_path=back) == 3
+
+
+def test_build_pdf_prints_each_distinct_back_once(tmp_path: Path) -> None:
+    """Two copies of one front with different backs: the per-card back is
+    one more image of real work, a blank one is none, and the Back Page
+    exists either way."""
+    front = _pdf_source_face(tmp_path, "front")
+    universal = _back_image(tmp_path)
+    per_card = tmp_path / "per-card.png"
+    Image.new("RGB", (300, 420), (20, 200, 30)).save(per_card, format="PNG")
+    back_images = {_HASH_A: BackSource(universal), _HASH_B: BackSource(per_card)}
+    pages = [
+        [
+            _slot(front),
+            PrintSlot(front=front, back_mode="image", back_hash=_HASH_B),
+            PrintSlot(front=front, back_mode="blank"),
+        ]
+    ]
+    common = dict(
+        layout=_a4_portrait_layout(cols=3, rows=1),
+        export_dpi=600,
+        back_printing=True,
+        back_images=back_images,
+        default_back_hash=_HASH_A,
+    )
+    assert (
+        unique_image_count(
+            pages, back_printing=True, back_images=back_images, default_back_hash=_HASH_A
+        )
+        == 3
+    )
+    calls: list[tuple[int, int]] = []
+    pdf = build_pdf(pages, on_progress=lambda c, t: calls.append((c, t)), **common)
+    assert _page_count(pdf) == 2
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+    # A per-card image still prints under reverse_fill=BLANK: the explicit
+    # choice beats the project default, and only the inheriting copy goes
+    # blank.
+    assert (
+        unique_image_count(
+            pages,
+            back_printing=True,
+            back_images=back_images,
+            default_back_hash=_HASH_A,
+            reverse_fill=ReverseFill.BLANK,
+        )
+        == 2
+    )

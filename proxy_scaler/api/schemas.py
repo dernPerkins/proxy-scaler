@@ -92,6 +92,24 @@ class DeckEntryIn(BaseModel):
     # display name (normally the filename stem) and set_code/
     # collector_number are absent. See proxy_scaler/customs.py.
     custom_hash: str | None = None
+    # This entry's own Reverse (see DeckEntry.back_mode). Defaulted to
+    # "inherit" so an older client, which never sends either, prints
+    # exactly the sheet it always did. `back_hash` is only read in "image"
+    # mode and must then also appear in the request's `back_images`
+    # manifest, which carries the bleed declaration.
+    back_mode: Literal["inherit", "blank", "image"] = "inherit"
+    back_hash: str | None = None
+
+
+class BackImageIn(BaseModel):
+    """One Back Image a print/export request may draw on — the project's
+    Selected Back or a per-card choice — with its own bleed declaration.
+    The bytes are synced separately (POST /api/backs/{hash}); this names
+    them by content hash, the same way back_image_hash always has."""
+
+    hash: str
+    includes_bleed: bool = False
+    bleed_mm: float | None = Field(default=None, ge=0, le=10)
 
 
 class ResolveIn(BaseModel):
@@ -481,6 +499,13 @@ class PdfLayoutIn(BaseModel):
     # (older clients) the flag alone means "fit the whole file to the
     # bled box", the pre-0.3.3 behaviour.
     back_image_bleed_mm: float | None = Field(default=None, ge=0, le=10)
+    # Every Back Image this request may print — the Selected Back and each
+    # distinct per-card choice (DeckEntryIn.back_mode == "image") — each
+    # with its own bleed declaration. The three legacy fields above still
+    # name the universal back on their own: a client that predates per-
+    # card backs sends only those, and the router synthesizes its manifest
+    # entry from them. A per-card hash absent from this list is a 400.
+    back_images: list[BackImageIn] = []
     # Preview-only: render the Back Page of page 1 instead of its front,
     # mirrored exactly as the renderer would. Ignored by the render routes.
     preview_back_page: bool = False
@@ -603,8 +628,9 @@ class PdfPagePreviewOut(BaseModel):
 
 
 class ExportFormatIn(str, Enum):
-    # "default": every unique matched face once in FRONT/, plus the
-    # project's Selected Back (if any) as the only BACK/ entry.
+    # "default": every unique matched face once in FRONT/, plus each
+    # distinct back the deck uses once in BACK/ — the project's Selected
+    # Back first, then any per-card choices.
     # "tcgplaytest": the vendor's paired layout — one FRONT/BACK file pair
     # per physical copy, matched by natural filename order, counts equal.
     DEFAULT = "default"
@@ -655,6 +681,10 @@ class ExportZipIn(BaseModel):
     # the bled size instead of edge-extending a second border.
     back_image_includes_bleed: bool = False
     back_image_bleed_mm: float | None = Field(default=None, ge=0, le=10)
+    # Same manifest as PdfLayoutIn.back_images: every back the archive may
+    # ship, each with its own bleed declaration. The legacy trio above
+    # still names the universal back for clients that send only those.
+    back_images: list[BackImageIn] = []
 
 
 class ExportZipPreviewOut(BaseModel):
@@ -672,6 +702,11 @@ class ExportZipPreviewOut(BaseModel):
     # deck — but the tcgplaytest export still requires a Selected Back
     # only when this is non-zero.
     reverses_needing_back_image: int
+    # tcgplaytest slots whose card asked for a blank back. The vendor
+    # pairs every front with a file, so there is no way to ship "nothing"
+    # — those slots take the Selected Back instead, and the client warns
+    # from this count. Always zero for the default format.
+    blank_backs_using_universal: int = 0
 
 
 class ClearGeneratedIn(BaseModel):

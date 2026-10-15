@@ -366,11 +366,25 @@ is a lottery: VLC commonly claims it on Linux).
 `list_back_images`, `add_back_image`, `set_back_image_label`,
 `set_back_image_includes_bleed`, `count_projects_using_back_image`,
 `delete_back_image`, `back_image_thumbnail`, `get_default_back_image_id`,
-`set_default_back_image_id`, `sync_back_image`. App-global rather than
-per-project; a project holds a nullable `back_image_id` pointing into it,
-copied once from the app default at creation and never live-followed. See
-the module comment in `proxy_scaler/backs.py`. Backs are upscaled only from
+`set_default_back_image_id`, `sync_back_image`, `back_image_usage`. App-global
+rather than per-project; a project holds a nullable `back_image_id` pointing
+into it, copied once from the app default at creation and never live-followed.
+See the module comment in `proxy_scaler/backs.py`. Backs are upscaled only from
 the Backs tab (`/api/library/upscale`), never by a project's Generate.
+
+**Per-card backs** (`project_cards.back_mode` + `back_image_id`,
+`set_card_back`, `reset_project_card_backs`): a card may override the
+project's universal back with `blank` (nothing on its Reverse) or `image`
+(another library back); `inherit`/NULL follows the project. The frontend
+sends each entry's `back_mode`/`back_hash` plus a `back_images` manifest
+(every hash the request may use, with its bleed declaration) on PDF/ZIP
+requests; the server resolves a Reverse as transform face > the card's own
+mode > `reverse_fill` + the universal `back_image_hash`
+(`pdf_layout.resolve_reverse`). A paired double-faced card therefore ignores
+its per-card choice. Deleting a back resets cards that chose it to
+`inherit` (a project, by contrast, is left back-less). UI:
+`components/CardBackPicker.tsx`, the swatch column on each Decklist row;
+`cardBacks.ts` syncs every referenced back to the connected server.
 
 ### HTTP (generation server — `proxy_scaler/api/`)
 
