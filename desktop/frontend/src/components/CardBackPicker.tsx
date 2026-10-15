@@ -166,6 +166,7 @@ export default function CardBackPicker({
 function CardBackTile({
   selected,
   onSelect,
+  onPickAndClose,
   onView,
   art,
   label,
@@ -174,7 +175,11 @@ function CardBackTile({
   tour,
 }: {
   selected: boolean;
+  /** Single click / Space: pick and stay open, so backs can be compared. */
   onSelect: () => void;
+  /** Double click / Enter: pick and close — the common case once the
+   *  user knows which one they want. */
+  onPickAndClose: () => void;
   onView?: () => void;
   art: ReactNode;
   label: string;
@@ -192,8 +197,12 @@ function CardBackTile({
       className={`card-back-tile${selected ? " is-selected" : ""}`}
       data-tour={tour}
       onClick={onSelect}
+      onDoubleClick={onPickAndClose}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onPickAndClose();
+        } else if (e.key === " ") {
           e.preventDefault();
           onSelect();
         }
@@ -213,6 +222,7 @@ function CardBackTile({
               e.stopPropagation();
               onView();
             }}
+            onDoubleClick={(e) => e.stopPropagation()}
           >
             <MagnifierIcon />
           </button>
@@ -266,6 +276,15 @@ function CardBackModal({
     onSuccess: () => setError(null),
     onError: (err: Error) => setError(err.message),
   });
+  // Closes only once the choice is stored; a failure keeps the picker
+  // open with onError's message, rather than closing on a choice that
+  // didn't take.
+  function pickAndClose(mode: BackMode, id: number | null) {
+    pickMutation
+      .mutateAsync({ mode, id })
+      .then(onClose)
+      .catch(() => {});
+  }
 
   // Same path as the Backs tab's add: the file joins the app-global
   // library (so it can be reused, renamed, given a bleed declaration
@@ -332,6 +351,7 @@ function CardBackModal({
           <CardBackTile
             selected={card.back_mode === "inherit"}
             onSelect={() => pickMutation.mutate({ mode: "inherit", id: null })}
+            onPickAndClose={() => pickAndClose("inherit", null)}
             art={
               <>
                 {universal && <LibraryTileArt back={universal} />}
@@ -347,6 +367,7 @@ function CardBackModal({
           <CardBackTile
             selected={card.back_mode === "blank"}
             onSelect={() => pickMutation.mutate({ mode: "blank", id: null })}
+            onPickAndClose={() => pickAndClose("blank", null)}
             art={
               <span className="card-back-tile-glyph">
                 <BlankIcon />
@@ -360,6 +381,7 @@ function CardBackModal({
               key={back.id}
               selected={card.back_mode === "image" && card.back_image_id === back.id}
               onSelect={() => pickMutation.mutate({ mode: "image", id: back.id })}
+              onPickAndClose={() => pickAndClose("image", back.id)}
               onView={() => void view(back)}
               art={<LibraryTileArt back={back} />}
               label={back.label}
@@ -408,7 +430,8 @@ function CardBackModal({
           <span className="hint">
             {ownCount === 0
               ? "Every card takes the universal back."
-              : `${ownCount} of ${cards.length} cards use their own back setting.`}
+              : `${ownCount} of ${cards.length} cards use their own back setting.`}{" "}
+            Double-click a back to pick it and close.
           </span>
           <Link to="/backs" className="linklike" onClick={onClose}>
             Manage the library on the Backs tab ↗

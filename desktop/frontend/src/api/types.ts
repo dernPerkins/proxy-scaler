@@ -653,6 +653,12 @@ export interface ExportZipRequest {
   back_image_bleed_mm?: number | null;
   /** Same manifest as PdfLayoutRequest.back_images. */
   back_images?: BackImageRef[];
+  /** The ZIP's own back rules (ProjectSettings.export_reverse_fill /
+   *  export_back_faces_as_reverse), same meanings as the PDF's. Servers
+   *  before 0.5.0 ignore both: they always pair and always fill with the
+   *  back image. */
+  reverse_fill?: ReverseFill;
+  back_faces_as_reverse?: boolean;
 }
 
 /** The export job routes reuse the PDF job shapes — same registry
@@ -674,10 +680,11 @@ export interface ExportZipPreview {
   /** TCGPlaytest backs that would be the Selected Back rather than the
    *  card's own Back Face. */
   reverses_needing_back_image: number;
-  /** TCGPlaytest copies whose card asked for a blank back: the vendor
-   *  needs a file for every back, so these get the universal back instead.
-   *  Absent from servers before 0.6.0. */
-  blank_backs_using_universal?: number;
+  /** TCGPlaytest backs shipped as a plain white card — a card's own
+   *  "blank", or a single-faced card under "Leave blank". The vendor needs
+   *  a file for every back, and white is what "nothing" prints as. Absent
+   *  from servers before 0.5.0. */
+  blank_backs?: number;
 }
 
 // --- The Back Library ------------------------------------------------------

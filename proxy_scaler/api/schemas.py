@@ -685,6 +685,17 @@ class ExportZipIn(BaseModel):
     # ship, each with its own bleed declaration. The legacy trio above
     # still names the universal back for clients that send only those.
     back_images: list[BackImageIn] = []
+    # The PDF's back rules, applied to the tcgplaytest pairing (the default
+    # format ships unique faces and has no per-slot back to decide).
+    # reverse_fill is what a card with no choice of its own gets: the
+    # Selected Back, or a plain white card — the vendor needs a file per
+    # slot, and white is how "nothing" is spelled as one. The defaults
+    # are what the export always did, so an older client sees no change.
+    reverse_fill: ReverseFillIn = ReverseFillIn.BACK_IMAGE
+    # Same as PdfLayoutIn.back_faces_as_reverse: a transform side pairs
+    # onto its own card's BACK/ entry. Off, both faces are their own
+    # fronts and every BACK/ follows the per-card / project back choice.
+    back_faces_as_reverse: bool = True
 
 
 class ExportZipPreviewOut(BaseModel):
@@ -697,16 +708,16 @@ class ExportZipPreviewOut(BaseModel):
     # Same meanings as PdfPreviewOut.missing / missing_at_dpi.
     missing: list[str]
     missing_at_dpi: list[str]
-    # tcgplaytest slots whose BACK/ entry would be the Selected Back
-    # rather than the card's own Back Face. Zero for an all-double-faced
-    # deck — but the tcgplaytest export still requires a Selected Back
-    # only when this is non-zero.
+    # tcgplaytest slots whose BACK/ entry would be the Selected Back —
+    # no Back Face paired there, no choice of their own, and the project
+    # filling with a back image. The tcgplaytest export requires a
+    # Selected Back only when this is non-zero.
     reverses_needing_back_image: int
-    # tcgplaytest slots whose card asked for a blank back. The vendor
-    # pairs every front with a file, so there is no way to ship "nothing"
-    # — those slots take the Selected Back instead, and the client warns
-    # from this count. Always zero for the default format.
-    blank_backs_using_universal: int = 0
+    # tcgplaytest slots whose BACK/ entry is a plain white card: the card
+    # chose blank, or inherits under reverse_fill=blank. The vendor pairs
+    # every front with a file, so white is how "nothing" ships; the client
+    # tells the user how many. Always zero for the default format.
+    blank_backs: int = 0
 
 
 class ClearGeneratedIn(BaseModel):

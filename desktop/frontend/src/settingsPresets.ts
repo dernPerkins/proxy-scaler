@@ -90,6 +90,8 @@ const ZIP_FIELDS = {
   export_image_format: oneOf("png", "jpg"),
   export_with_bleed: isBool,
   export_bleed_mm: isNumber,
+  export_reverse_fill: oneOf("back_image", "blank"),
+  export_back_faces_as_reverse: isBool,
 } satisfies Partial<Record<keyof ProjectSettings, Validator>>;
 
 const FIELDS: Record<PresetKind, Partial<Record<keyof ProjectSettings, Validator>>> = {

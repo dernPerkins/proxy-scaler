@@ -1225,6 +1225,20 @@ def resolve_reverse(
     return back.path, None, back
 
 
+def reverse_is_blank(slot: PrintSlot, reverse_fill: ReverseFill) -> bool:
+    """True when this slot's Reverse is empty *by choice* — the card chose
+    blank, or inherits under reverse_fill=BLANK. resolve_reverse answers
+    None for these and equally for a slot whose back image is missing;
+    callers that must tell "nothing on purpose" from "nothing because the
+    Selected Back is absent" (the ZIP ships a white card for the former
+    and refuses on the latter) ask here."""
+    if slot.reverse is not None:
+        return False
+    if slot.back_mode == "blank":
+        return True
+    return slot.back_mode == "inherit" and reverse_fill is ReverseFill.BLANK
+
+
 def paginate(slots: list[PrintSlot], per_page: int) -> list[list[PrintSlot]]:
     """Chunk into per-page lists; last page may be shorter."""
     if per_page <= 0:

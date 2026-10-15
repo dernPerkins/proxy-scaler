@@ -9,6 +9,7 @@ import { useConnection } from "../connection";
 import {
   EXPORT_OPTIONS_MIN_SERVER_VERSION,
   EXPORT_ZIP_MIN_SERVER_VERSION,
+  PER_CARD_BACKS_MIN_SERVER_VERSION,
   serverSupportsExportOptions,
   serverSupportsOriginals,
   serverSupportsPerCardBacks,
@@ -32,7 +33,7 @@ import {
   setDownloadPhase,
 } from "../download";
 import { zipFilename } from "../zipFilename";
-import type { ExportImageFormat, ExportZipFormat } from "../api/types";
+import type { ExportImageFormat, ExportZipFormat, ReverseFill } from "../api/types";
 import tcgplaytestLogo from "../assets/tcgplaytest.webp";
 
 // Same cadence as the PDF tab's job polling.
@@ -121,6 +122,11 @@ export default function ExportPage() {
       back_image_includes_bleed: selectedBack?.includes_bleed ?? false,
       back_image_bleed_mm: selectedBack?.includes_bleed ? selectedBack.bleed_mm : null,
       back_images: referencedBacks.map(backImageRef),
+      // The ZIP's own back rules. Older servers ignore both and do what
+      // they always did (pair, fill with the back image); the Back export
+      // controls are disabled against them so the settings can't lie.
+      reverse_fill: settings.export_reverse_fill,
+      back_faces_as_reverse: settings.export_back_faces_as_reverse,
     };
   }
 
@@ -137,6 +143,10 @@ export default function ExportPage() {
       imageFormat,
       withBleed,
       settings.export_bleed_mm,
+      // These two DO change the counts: pairing halves the vendor
+      // format's slots, and the fill decides which backs are blank.
+      settings.export_reverse_fill,
+      settings.export_back_faces_as_reverse,
     ],
     queryFn: () => generationApi.exportZipPreview(requestBody("default")),
     enabled:
@@ -235,12 +245,18 @@ export default function ExportPage() {
     : serverTooOld
       ? `This server needs to be v${EXPORT_ZIP_MIN_SERVER_VERSION} or newer`
       : undefined;
-  // The vendor format pairs every front with a back, so it always needs a
-  // Selected Back — even an all-DFC deck waits for one, by design.
-  const tcgNeedsBack = settings.back_image_id == null;
+  // The vendor format pairs every front with a back, so a Selected Back is
+  // needed exactly when some back would be it: not when every single-faced
+  // card is blank or has its own, and not for an all-DFC deck with pairing
+  // on. Until the preview has answered, assume it is needed — the server
+  // refuses the export either way, this only decides the button's state.
+  const tcgNeedsBack =
+    settings.back_image_id == null &&
+    (previewQuery.data == null || previewQuery.data.reverses_needing_back_image > 0);
   const tcgWaitingOnSync = !tcgNeedsBack && !backReady;
 
   const optionsTooOldTitle = "The connected generation server is too old for this — update it.";
+  const backsTooOldTitle = `Back export settings need a generation server v${PER_CARD_BACKS_MIN_SERVER_VERSION} or newer — update it.`;
   const bledSizeNote =
     settings.export_bleed_mm === MPC_BLEED_MM
       ? " (69 × 94 mm — MakePlayingCards.com's size)"
@@ -320,6 +336,78 @@ export default function ExportPage() {
           Both exports share these with the PDF tab — they pick which
           already-generated image is used, and never trigger generation.
         </p>
+
+        <h3 style={{ margin: "18px 0 14px" }}>Back export</h3>
+
+        {/* The PDF tab's "Back printing" rules, for the ZIP. Separate
+            settings on purpose (export_reverse_fill / export_back_faces_as_
+            reverse): a vendor upload and a home print can want different
+            answers, and each tab's presets carry their own. Both exports
+            resolve a card's back the same way the PDF does — transform
+            side, then the card's own choice, then these two. */}
+        <div className="field-group" data-tour="export-backs">
+          <label
+            className="field"
+            title={perCardBacksSupported || serverUnavailable ? undefined : backsTooOldTitle}
+          >
+            <span>Backs of single-faced cards</span>
+            <SelectMenu
+              options={[
+                { value: "back_image", label: "Use the back image" },
+                { value: "blank", label: "Leave blank" },
+              ]}
+              value={settings.export_reverse_fill}
+              disabled={!perCardBacksSupported && !serverUnavailable}
+              onChange={(value) =>
+                setSettings((s) => ({ ...s, export_reverse_fill: value as ReverseFill }))
+              }
+            />
+          </label>
+          {settings.export_reverse_fill === "back_image" ? (
+            <p className="hint" style={{ margin: "2px 0 8px" }}>
+              {selectedBack ? (
+                <>
+                  Using <strong>{selectedBack.label}</strong> — change it on the Backs tab.
+                </>
+              ) : (
+                <>No back selected. Pick one on the Backs tab.</>
+              )}
+            </p>
+          ) : (
+            <p className="hint" style={{ margin: "2px 0 8px" }}>
+              Single-faced cards get a plain white back in the TCGPlaytest ZIP, and no{" "}
+              <code>BACK/</code> file in the plain ZIP.
+            </p>
+          )}
+          <CardBackSummaryNote
+            summary={cardBacks}
+            serverSupports={serverUnavailable || perCardBacksSupported}
+            serverVersion={serverVersion}
+          />
+
+          <label
+            className="check"
+            title={perCardBacksSupported || serverUnavailable ? undefined : backsTooOldTitle}
+          >
+            <input
+              type="checkbox"
+              checked={settings.export_back_faces_as_reverse}
+              disabled={!perCardBacksSupported && !serverUnavailable}
+              onChange={(e) =>
+                setSettings((s) => ({ ...s, export_back_faces_as_reverse: e.target.checked }))
+              }
+            />
+            Pair a double-faced card&apos;s transform side as its back
+          </label>
+          <p className="hint" style={{ margin: "-2px 0 8px" }}>
+            {settings.export_back_faces_as_reverse
+              ? "A double-faced card is one front/back pair in the TCGPlaytest ZIP."
+              : settings.export_reverse_fill === "blank"
+                ? "Each face is its own card with a blank back (unless the card chose one)."
+                : "Each face is its own card, and both get the back image."}{" "}
+            The plain ZIP always ships every face once.
+          </p>
+        </div>
 
         <h3 style={{ margin: "18px 0 14px" }}>Output</h3>
 
@@ -462,23 +550,22 @@ export default function ExportPage() {
               <strong>Export TCGPlaytest ZIP</strong> packs{" "}
               <strong>{previewQuery.data.paired_fronts}</strong> front/back pair
               {previewQuery.data.paired_fronts === 1 ? "" : "s"} — one per physical card,
-              quantities included — with double-faced cards backed by their own transform
-              side, cards with their own back by that back, and everything else by your
-              selected back image.
+              quantities included — with{" "}
+              {settings.export_back_faces_as_reverse
+                ? "double-faced cards backed by their own transform side"
+                : "each face of a double-faced card as its own pair"}
+              , cards with their own back by that back, and everything else by{" "}
+              {settings.export_reverse_fill === "blank"
+                ? "a plain white back"
+                : "your selected back image"}
+              .
             </p>
-            {(previewQuery.data.blank_backs_using_universal ?? 0) > 0 && (
+            {(previewQuery.data.blank_backs ?? 0) > 0 && (
               <p className="hint" style={{ marginTop: 6 }}>
-                {previewQuery.data.blank_backs_using_universal}{" "}
-                {previewQuery.data.blank_backs_using_universal === 1 ? "copy" : "copies"} set to
-                a blank back will get the selected back image instead — TCGPlaytest needs a
-                file for every back.
+                {previewQuery.data.blank_backs} back
+                {previewQuery.data.blank_backs === 1 ? "" : "s"} will be a plain white card.
               </p>
             )}
-            <CardBackSummaryNote
-              summary={cardBacks}
-              serverSupports={serverUnavailable || perCardBacksSupported}
-              serverVersion={serverVersion}
-            />
             {/* What the files will be, so the Output settings' effect is
                 visible before the export, not discovered after. */}
             <p className="hint" style={{ marginTop: 6 }}>

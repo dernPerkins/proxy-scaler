@@ -120,6 +120,10 @@ export function getDefaultSettings(): ProjectSettings {
     export_image_format: "jpg",
     export_with_bleed: false,
     export_bleed_mm: 3.0,
+    // Same defaults as the PDF tab's reverse_fill / back_faces_as_reverse,
+    // which is also what the ZIP export always did before it had settings.
+    export_reverse_fill: "back_image",
+    export_back_faces_as_reverse: true,
     custom_upscale: "off",
   };
 }

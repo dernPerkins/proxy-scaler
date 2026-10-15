@@ -10,11 +10,15 @@ exactly what would have landed on a sheet:
   not expanded — this is an image dump, not a print run.
 - "tcgplaytest": the vendor's paired layout. One FRONT/NNN + BACK/NNN
   file pair per physical copy (quantities expanded), paired by natural
-  filename order with equal counts — a card's own Back Face when it has
-  one, else its own chosen Back Image, else the Selected Back. A card
-  that chose a blank back takes the Selected Back too: the vendor needs
-  a file for every slot, and "no file" is not one (the preview counts
-  these so the client can warn).
+  filename order with equal counts. What fills BACK/ follows the PDF's
+  rules exactly (pdf_layout.resolve_reverse, driven by the request's
+  back_faces_as_reverse and reverse_fill): a card's own Back Face when
+  it is paired there, else its own chosen Back Image, else the project's
+  fill — the Selected Back, or nothing. The vendor needs a file for
+  every slot and "no file" is not one, so a Reverse that is empty by
+  choice (a per-card blank, or inheriting under reverse_fill=blank)
+  ships as a generated plain white card (the preview counts these as
+  blank_backs so the client can say so).
 
 Two output options decide whether the stored files are copied or
 re-rendered (see _needs_render):
@@ -49,7 +53,7 @@ import os
 import tempfile
 import threading
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -76,7 +80,7 @@ from proxy_scaler.api.schemas import (
     PdfJobOut,
     PdfJobStatusOut,
 )
-from proxy_scaler.dpi import dpi_at_card_size
+from proxy_scaler.dpi import bled_target_pixels, dpi_at_card_size
 from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler.pdf_layout import (
     _JPEG_QUALITY,
@@ -91,6 +95,7 @@ from proxy_scaler.pdf_layout import (
     match_quantities,
     render_back_image,
     resolve_reverse,
+    reverse_is_blank,
 )
 from proxy_scaler import customs
 from proxy_scaler.pipeline import FaceResult
@@ -147,7 +152,7 @@ def _prepare_slots(
         seen.add(key)
         default_slots.append(slot)
 
-    paired_slots = build_print_slots(units, pair_back_faces=True)
+    paired_slots = build_print_slots(units, pair_back_faces=body.back_faces_as_reverse)
     return default_slots, paired_slots, missing, missing_at_dpi, unpaired_slots
 
 
@@ -182,30 +187,36 @@ def _resolve_backs(body: ExportZipIn) -> tuple[dict[str, BackSource], str | None
 
 
 def _paired_reverse(
-    slot: PrintSlot, back_images: dict[str, BackSource], default_back_hash: str | None
+    slot: PrintSlot,
+    back_images: dict[str, BackSource],
+    default_back_hash: str | None,
+    reverse_fill: ReverseFill,
 ) -> tuple[Path | None, FaceResult | None, BackSource | None]:
-    """What a tcgplaytest slot's BACK/ entry is — resolve_reverse's answer,
-    except that a card's own "blank" choice has no file to ship, so it
-    takes the Selected Back like a card with no choice at all."""
-    if slot.back_mode == "blank":
-        slot = replace(slot, back_mode="inherit")
-    return resolve_reverse(slot, back_images, default_back_hash, ReverseFill.BACK_IMAGE)
-
-
-def _blank_backs_using_universal(paired_slots: list[PrintSlot]) -> int:
-    """tcgplaytest slots that asked for a blank back and ship the Selected
-    Back instead — the count the client warns from."""
-    return sum(1 for s in paired_slots if s.reverse is None and s.back_mode == "blank")
+    """What a tcgplaytest slot's BACK/ entry is: exactly what the PDF would
+    print on that Reverse. None is "nothing" — a white card once it is
+    by choice (reverse_is_blank), a 400 from _prepare_export otherwise."""
+    return resolve_reverse(slot, back_images, default_back_hash, reverse_fill)
 
 
 def _default_backs(
-    slots: list[PrintSlot], back_images: dict[str, BackSource], default_back_hash: str | None
+    slots: list[PrintSlot],
+    back_images: dict[str, BackSource],
+    default_back_hash: str | None,
+    reverse_fill: ReverseFill,
 ) -> list[BackSource]:
     """The default format's BACK/ entries: each distinct Back Image once,
     the Selected Back first and then each per-card choice in the order
-    the deck first uses it. A blank choice ships nothing."""
+    the deck first uses it. The Selected Back ships only when some card
+    would actually take it — one inherits and the project fills with a
+    back image. Blank ships nothing: this format has no per-slot pairing
+    to hold a white card's place."""
     ordered: dict[str, None] = {}
-    if default_back_hash is not None and default_back_hash in back_images:
+    if (
+        reverse_fill is ReverseFill.BACK_IMAGE
+        and default_back_hash is not None
+        and default_back_hash in back_images
+        and any(s.reverse is None and s.back_mode == "inherit" for s in slots)
+    ):
         ordered.setdefault(default_back_hash)
     for slot in slots:
         if slot.back_mode == "image" and slot.back_hash in back_images:
@@ -224,15 +235,18 @@ class PreparedExport:
     paired: bool
     back_images: dict[str, BackSource]
     default_back_hash: str | None
+    reverse_fill: ReverseFill
     deck: str
     # The default format's BACK/ entries in order (see _default_backs);
     # empty for the paired format, whose backs are per slot.
     default_backs: list[BackSource]
 
-    def paired_reverse(self, slot: PrintSlot) -> tuple[Path, FaceResult | None, BackSource | None]:
-        path, face, back = _paired_reverse(slot, self.back_images, self.default_back_hash)
-        assert path is not None  # _prepare_export guarantees
-        return path, face, back
+    def paired_reverse(
+        self, slot: PrintSlot
+    ) -> tuple[Path | None, FaceResult | None, BackSource | None]:
+        """A paired slot's BACK/ source. None means "ship a white card" —
+        _prepare_export has already refused every other way to get None."""
+        return _paired_reverse(slot, self.back_images, self.default_back_hash, self.reverse_fill)
 
 
 def _prepare_export(body: ExportZipIn) -> PreparedExport:
@@ -245,6 +259,7 @@ def _prepare_export(body: ExportZipIn) -> PreparedExport:
         raise HTTPException(status_code=400, detail="Nothing to export — no matched images.")
 
     back_images, default_back_hash = _resolve_backs(body)
+    reverse_fill = ReverseFill(body.reverse_fill.value)
     # A card that chose its own back must be able to ship it, in either
     # format — the client believes the choice is in effect. Checked over
     # every copy, not the deduped fronts, which have lost later choices.
@@ -261,8 +276,12 @@ def _prepare_export(body: ExportZipIn) -> PreparedExport:
                 f"server: {', '.join(dict.fromkeys(unsynced))}"
             ),
         )
+    # Only a Reverse that wanted the Selected Back and found none is a
+    # refusal; one that is empty by choice ships as a white card.
     if paired and any(
-        _paired_reverse(s, back_images, default_back_hash)[0] is None for s in slots
+        _paired_reverse(s, back_images, default_back_hash, reverse_fill)[0] is None
+        and not reverse_is_blank(s, reverse_fill)
+        for s in slots
     ):
         raise HTTPException(
             status_code=400,
@@ -277,9 +296,12 @@ def _prepare_export(body: ExportZipIn) -> PreparedExport:
         paired=paired,
         back_images=back_images,
         default_back_hash=default_back_hash,
+        reverse_fill=reverse_fill,
         deck=deck,
         default_backs=(
-            [] if paired else _default_backs(unpaired_slots, back_images, default_back_hash)
+            []
+            if paired
+            else _default_backs(unpaired_slots, back_images, default_back_hash, reverse_fill)
         ),
     )
 
@@ -289,16 +311,23 @@ def _needs_render(body: ExportZipIn) -> bool:
     return body.with_bleed or body.image_format is ExportImageFormatIn.JPG
 
 
+# Stands in for the generated white card in _unique_sources: not a file
+# anywhere, but it is one more thing the archive has to make, so the
+# progress total counts it like any other source.
+_BLANK_SOURCE = Path("<blank back>")
+
+
 def _unique_sources(prepared: PreparedExport) -> list[Path]:
     """Every distinct file the archive draws on, first-seen order — the
     job's progress denominator and the render cache's key set. A Back
-    Image counts once however many BACK/ entries it fills."""
+    Image counts once however many BACK/ entries it fills, and so does
+    the white card every blank Reverse shares."""
     sources: dict[Path, None] = {}
     for slot in prepared.slots:
         sources.setdefault(slot.front.out_path)
     if prepared.paired:
         for slot in prepared.slots:
-            sources.setdefault(prepared.paired_reverse(slot)[0])
+            sources.setdefault(prepared.paired_reverse(slot)[0] or _BLANK_SOURCE)
     else:
         for back in prepared.default_backs:
             sources.setdefault(back.path)
@@ -375,6 +404,13 @@ def _write_zip(
     transiently uses about twice the archive's size on disk; the scratch
     files go with the `with` block, before this returns.
 
+    A blank Reverse has no stored file, so its white card is generated
+    into the scratch directory on either path, once, the first time a
+    slot needs it. It is sized to the deck's highest DPI (with the bleed
+    the cards carry): one size for every blank in the archive, and never
+    smaller than the card it is paired with, so the vendor's pairing sees
+    nothing it would scale.
+
     `on_progress(completed, total)` fires after each unique render, and
     may raise to abort (pdf_jobs.PdfRenderCanceled does) — the half-built
     archive is deleted on the way out and nothing is returned.
@@ -396,6 +432,11 @@ def _write_zip(
             zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as archive,
         ):
             rendered: dict[Path, Path] = {}
+            blank_file: Path | None = None
+
+            def progress() -> None:
+                if on_progress is not None:
+                    on_progress(len(rendered) + (blank_file is not None), total)
 
             def entry(
                 source: Path, face: FaceResult | None, back: BackSource | None = None
@@ -410,9 +451,19 @@ def _write_zip(
                         _render_entry(source, face, body=body, back=back), body.image_format, out
                     )
                     rendered[source] = out
-                    if on_progress is not None:
-                        on_progress(len(rendered), total)
+                    progress()
                 return out, rendered_suffix
+
+            def blank_entry() -> tuple[Path, str]:
+                """The white card, made on first use (see the docstring)."""
+                nonlocal blank_file
+                if blank_file is None:
+                    dpi = max(s.front.dpi for s in slots)
+                    size = bled_target_pixels(dpi, body.bleed_mm if body.with_bleed else 0.0)
+                    blank_file = Path(scratch) / f"blank{rendered_suffix}"
+                    _encode(Image.new("RGB", size, (255, 255, 255)), body.image_format, blank_file)
+                    progress()
+                return blank_file, rendered_suffix
 
             for i, slot in enumerate(slots, start=1):
                 path, suffix = entry(slot.front.out_path, slot.front)
@@ -420,7 +471,7 @@ def _write_zip(
             if prepared.paired:
                 for i, slot in enumerate(slots, start=1):
                     source, face, back = prepared.paired_reverse(slot)
-                    path, suffix = entry(source, face, back)
+                    path, suffix = blank_entry() if source is None else entry(source, face, back)
                     archive.write(path, f"{deck}/BACK/{i:0{width}d}{suffix}")
             else:
                 for i, back in enumerate(prepared.default_backs, start=1):
@@ -437,17 +488,23 @@ def _write_zip(
 @router.post("/zip/preview", response_model=ExportZipPreviewOut)
 def export_zip_preview(body: ExportZipIn) -> ExportZipPreviewOut:
     default_slots, paired_slots, missing, missing_at_dpi, _unpaired = _prepare_slots(body)
+    reverse_fill = ReverseFill(body.reverse_fill.value)
     return ExportZipPreviewOut(
         fronts=len(default_slots),
         paired_fronts=len(paired_slots),
         missing=missing,
         missing_at_dpi=missing_at_dpi,
-        # A card that chose its own image never needs the Selected Back;
-        # one that chose blank does, in this format (see _paired_reverse).
+        # Counted the way pdf.py does: only a Reverse that would actually
+        # take the Selected Back. A card's own image needs none, and under
+        # reverse_fill=blank an inheriting card is meant to be white.
         reverses_needing_back_image=sum(
-            1 for s in paired_slots if s.reverse is None and s.back_mode != "image"
+            1
+            for s in paired_slots
+            if s.reverse is None
+            and s.back_mode == "inherit"
+            and reverse_fill is ReverseFill.BACK_IMAGE
         ),
-        blank_backs_using_universal=_blank_backs_using_universal(paired_slots),
+        blank_backs=sum(1 for s in paired_slots if reverse_is_blank(s, reverse_fill)),
     )
 
 

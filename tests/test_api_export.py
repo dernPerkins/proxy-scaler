@@ -19,7 +19,7 @@ from PIL import Image
 
 from proxy_scaler import backs, customs, db, pdf_jobs
 from proxy_scaler.api.routers import export as export_router
-from proxy_scaler.dpi import dpi_at_card_size, target_pixels
+from proxy_scaler.dpi import bled_target_pixels, dpi_at_card_size, target_pixels
 from proxy_scaler.pdf_layout import _bled_pixels
 from proxy_scaler.pipeline import FaceResult
 
@@ -400,7 +400,7 @@ def test_preview_reports_counts_and_reverses_needing_back(
         "missing": [],
         "missing_at_dpi": [],
         "reverses_needing_back_image": 4,
-        "blank_backs_using_universal": 0,
+        "blank_backs": 0,
     }
 
 
@@ -940,12 +940,16 @@ def _per_card_back(color: tuple[int, int, int] = (30, 30, 200)) -> tuple[str, by
     return _seed_back(Image.new("RGB", SEED_SIZE, color))
 
 
+def _is_white(image: Image.Image) -> bool:
+    return image.convert("RGB").getextrema() == ((255, 255), (255, 255), (255, 255))
+
+
 def test_tcgplaytest_pairs_each_slot_with_its_own_back(
     client: TestClient, tmp_path: Path
 ) -> None:
     """Three copies of one card: inheriting, choosing its own back, and
     choosing blank. The vendor needs a file per slot, so the blank one
-    ships the Selected Back — and the preview says how many did."""
+    ships a white card at the deck's size — and the preview counts it."""
     db_path = tmp_path / "test.db"
     _seed_face(tmp_path, db_path, "tag-a")
     universal_hash, universal_bytes = _seed_back()
@@ -963,8 +967,8 @@ def test_tcgplaytest_pairs_each_slot_with_its_own_back(
     )
     preview = client.post("/api/export/zip/preview", json=body).json()
     assert preview["paired_fronts"] == 3
-    assert preview["reverses_needing_back_image"] == 2
-    assert preview["blank_backs_using_universal"] == 1
+    assert preview["reverses_needing_back_image"] == 1
+    assert preview["blank_backs"] == 1
 
     archive = _open_zip(client.post("/api/export/zip", json=body))
     assert archive.namelist() == [
@@ -973,7 +977,9 @@ def test_tcgplaytest_pairs_each_slot_with_its_own_back(
     ]
     assert archive.read("Deck/BACK/001.png") == universal_bytes
     assert archive.read("Deck/BACK/002.png") == per_card_bytes
-    assert archive.read("Deck/BACK/003.png") == universal_bytes
+    blank = _decode(archive, "Deck/BACK/003.png")
+    assert blank.size == bled_target_pixels(SEED_DPI, 0)
+    assert _is_white(blank)
 
 
 def test_default_format_ships_each_distinct_back_once(
@@ -1001,7 +1007,7 @@ def test_default_format_ships_each_distinct_back_once(
     )
     preview = client.post("/api/export/zip/preview", json=body).json()
     assert preview["fronts"] == 1
-    assert preview["blank_backs_using_universal"] == 1
+    assert preview["blank_backs"] == 1
     archive = _open_zip(client.post("/api/export/zip", json=body))
     assert archive.namelist() == [
         "Deck/FRONT/001.png",
@@ -1053,19 +1059,20 @@ def test_unsynced_per_card_back_is_400_naming_the_card(
         assert "Sol Ring [C21 263]" in resp.json()["detail"]
 
 
-def test_tcgplaytest_blank_choice_without_a_selected_back_is_400(
+def test_tcgplaytest_blank_choice_needs_no_selected_back(
     client: TestClient, tmp_path: Path
 ) -> None:
-    """Blank has no file to fall back on when no Selected Back exists —
-    the same refusal as a deck with no back at all."""
+    """A card's own blank choice never wanted the Selected Back, so its
+    absence is no reason to refuse: the slot ships a white card."""
     db_path = tmp_path / "test.db"
     _seed_face(tmp_path, db_path, "tag-a")
     resp = client.post(
         "/api/export/zip",
         json=_body(format="tcgplaytest", entries=[_entry(back_mode="blank")]),
     )
-    assert resp.status_code == 400
-    assert "back image" in resp.json()["detail"]
+    archive = _open_zip(resp)
+    assert archive.namelist() == ["Deck/FRONT/001.png", "Deck/BACK/001.png"]
+    assert _is_white(_decode(archive, "Deck/BACK/001.png"))
 
 
 def test_per_card_back_is_bled_by_its_own_declaration(
@@ -1103,3 +1110,224 @@ def test_per_card_back_is_bled_by_its_own_declaration(
     assert per_card.size == _bled_pixels(per_card_dpi, 3.0)
     assert _close(per_card.getpixel((4, per_card.height // 2)), (0, 200, 0))
     assert _close(per_card.getpixel((20, per_card.height // 2)), (255, 0, 255))
+
+
+# --- ZIP back export settings ---------------------------------------------
+#
+# The tcgplaytest pairing follows the PDF's reverse_fill and
+# back_faces_as_reverse; a body without them is the historical export.
+
+
+def _seed_dfc(tmp_path: Path, db_path: Path) -> tuple[Path, Path]:
+    front = _seed_face(
+        tmp_path, db_path, "tag-a",
+        scryfall_id="dfc-id", face_index=0, name="Delver of Secrets",
+        set_code="isd", collector_number="51",
+        color=(1, 2, 3, 255), total_faces=2,
+    )
+    back_face = _seed_face(
+        tmp_path, db_path, "tag-a",
+        scryfall_id="dfc-id", face_index=1, name="Insectile Aberration",
+        set_code="isd", collector_number="51",
+        color=(4, 5, 6, 255), total_faces=2,
+    )
+    return front, back_face
+
+
+def _dfc_entry(**overrides) -> dict:
+    return _entry(
+        quantity=2, name="Delver of Secrets", set_code="isd",
+        collector_number="51", raw_line="2 Delver of Secrets (isd) 51",
+        **overrides,
+    )
+
+
+def test_tcgplaytest_unpaired_dfc_faces_each_take_the_selected_back(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """With pairing off a DFC is two fronts per copy, each backed by the
+    project's back — the PDF's back_faces_as_reverse=false, as files."""
+    db_path = tmp_path / "test.db"
+    _seed_dfc(tmp_path, db_path)
+    universal_hash, universal_bytes = _seed_back()
+
+    resp = client.post(
+        "/api/export/zip",
+        json=_body(
+            entries=[_dfc_entry()],
+            format="tcgplaytest",
+            back_faces_as_reverse=False,
+            back_image_hash=universal_hash,
+        ),
+    )
+    archive = _open_zip(resp)
+    assert archive.namelist() == [
+        *(f"Deck/FRONT/{i:03d}.png" for i in range(1, 5)),
+        *(f"Deck/BACK/{i:03d}.png" for i in range(1, 5)),
+    ]
+    for i in range(1, 5):
+        assert archive.read(f"Deck/BACK/{i:03d}.png") == universal_bytes
+
+
+def test_tcgplaytest_pairing_decides_whether_a_dfcs_own_back_applies(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A DFC with its own Back Image: unpaired, every face takes that
+    image; paired, the transform face is the back and the choice is
+    moot, exactly as on the PDF."""
+    db_path = tmp_path / "test.db"
+    _front, back_face = _seed_dfc(tmp_path, db_path)
+    per_card_hash, per_card_bytes = _per_card_back()
+    body = _body(
+        entries=[_dfc_entry(back_mode="image", back_hash=per_card_hash)],
+        format="tcgplaytest",
+        back_images=[{"hash": per_card_hash}],
+    )
+
+    unpaired = _open_zip(
+        client.post("/api/export/zip", json={**body, "back_faces_as_reverse": False})
+    )
+    assert len(unpaired.namelist()) == 8
+    for i in range(1, 5):
+        assert unpaired.read(f"Deck/BACK/{i:03d}.png") == per_card_bytes
+
+    paired = _open_zip(
+        client.post("/api/export/zip", json={**body, "back_faces_as_reverse": True})
+    )
+    assert paired.namelist() == [
+        "Deck/FRONT/001.png", "Deck/FRONT/002.png",
+        "Deck/BACK/001.png", "Deck/BACK/002.png",
+    ]
+    for i in (1, 2):
+        assert paired.read(f"Deck/BACK/{i:03d}.png") == back_face.read_bytes()
+
+
+def test_tcgplaytest_blank_fill_ships_white_cards_without_a_selected_back(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """reverse_fill=blank asks for nothing on the Reverse, so no Selected
+    Back is needed; the vendor still gets a file per slot — a white card
+    at the cards' own size — and the preview says so."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    body = _body(
+        format="tcgplaytest", reverse_fill="blank", entries=[_entry(quantity=2)]
+    )
+
+    preview = client.post("/api/export/zip/preview", json=body).json()
+    assert preview["paired_fronts"] == 2
+    assert preview["blank_backs"] == 2
+    assert preview["reverses_needing_back_image"] == 0
+
+    archive = _open_zip(client.post("/api/export/zip", json=body))
+    assert archive.namelist() == [
+        "Deck/FRONT/001.png", "Deck/FRONT/002.png",
+        "Deck/BACK/001.png", "Deck/BACK/002.png",
+    ]
+    for name in ("Deck/BACK/001.png", "Deck/BACK/002.png"):
+        blank = _decode(archive, name)
+        assert blank.size == bled_target_pixels(SEED_DPI, 0)
+        assert _is_white(blank)
+
+
+def test_tcgplaytest_blank_fill_white_card_carries_the_bleed(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """With bleed on, the white card is the bled card size, in the chosen
+    format, so it pairs 1:1 with the bled fronts beside it."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    resp = client.post(
+        "/api/export/zip",
+        json=_body(
+            format="tcgplaytest",
+            reverse_fill="blank",
+            with_bleed=True,
+            bleed_mm=3.0,
+            image_format="jpg",
+        ),
+    )
+    archive = _open_zip(resp)
+    assert archive.namelist() == ["Deck/FRONT/001.jpg", "Deck/BACK/001.jpg"]
+    blank = _decode(archive, "Deck/BACK/001.jpg")
+    assert blank.format == "JPEG"
+    assert blank.size == bled_target_pixels(SEED_DPI, 3.0)
+    assert _is_white(blank)
+
+
+def test_tcgplaytest_blank_fill_still_ships_per_card_images(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The project's fill only decides inheriting cards; one with its own
+    image keeps it under reverse_fill=blank."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    per_card_hash, per_card_bytes = _per_card_back()
+    body = _body(
+        format="tcgplaytest",
+        reverse_fill="blank",
+        back_images=[{"hash": per_card_hash}],
+        entries=[_entry(), _entry(back_mode="image", back_hash=per_card_hash)],
+    )
+    preview = client.post("/api/export/zip/preview", json=body).json()
+    assert preview["blank_backs"] == 1
+    assert preview["reverses_needing_back_image"] == 0
+    archive = _open_zip(client.post("/api/export/zip", json=body))
+    assert _is_white(_decode(archive, "Deck/BACK/001.png"))
+    assert archive.read("Deck/BACK/002.png") == per_card_bytes
+
+
+def test_tcgplaytest_blank_fill_job_counts_the_white_card_once(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The white card is one more thing to make, so the job total counts
+    it once however many slots share it."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    resp = client.post(
+        "/api/export/zip/jobs",
+        json=_body(format="tcgplaytest", reverse_fill="blank", entries=[_entry(quantity=3)]),
+    )
+    assert resp.status_code == 202
+    assert resp.json()["total"] == 2
+    status = _await_export_job(client, resp.json()["job_id"])
+    assert status["status"] == "done"
+    assert status["completed"] == 2
+
+
+def test_default_format_blank_fill_ships_only_per_card_backs(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The default format has no slots to hold a white card's place: under
+    reverse_fill=blank BACK/ is just the per-card images — and absent
+    entirely when there are none, even with a Selected Back named."""
+    db_path = tmp_path / "test.db"
+    _seed_face(tmp_path, db_path, "tag-a")
+    universal_hash, _universal_bytes = _seed_back()
+    per_card_hash, per_card_bytes = _per_card_back()
+
+    none = _open_zip(
+        client.post(
+            "/api/export/zip",
+            json=_body(
+                reverse_fill="blank",
+                back_image_hash=universal_hash,
+                back_images=[{"hash": universal_hash}],
+            ),
+        )
+    )
+    assert none.namelist() == ["Deck/FRONT/001.png"]
+
+    some = _open_zip(
+        client.post(
+            "/api/export/zip",
+            json=_body(
+                reverse_fill="blank",
+                back_image_hash=universal_hash,
+                back_images=[{"hash": universal_hash}, {"hash": per_card_hash}],
+                entries=[_entry(), _entry(back_mode="image", back_hash=per_card_hash)],
+            ),
+        )
+    )
+    assert some.namelist() == ["Deck/FRONT/001.png", "Deck/BACK/001.png"]
+    assert some.read("Deck/BACK/001.png") == per_card_bytes

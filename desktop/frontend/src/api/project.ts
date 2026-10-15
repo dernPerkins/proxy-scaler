@@ -98,6 +98,11 @@ export interface ProjectSettings {
   export_image_format: ExportImageFormat;
   export_with_bleed: boolean;
   export_bleed_mm: number;
+  // The ZIP export's own back rules — the PDF tab's reverse_fill and
+  // back_faces_as_reverse, kept separate so a vendor ZIP and a home print
+  // can differ and each tab's presets carry its own.
+  export_reverse_fill: ReverseFill;
+  export_back_faces_as_reverse: boolean;
   // Whether Generate upscales Custom Images. "off" registers the upload
   // only; "target" upscales to each selected DPI the upload doesn't
   // already reach; "native" keeps the model's own 4x result, capped at

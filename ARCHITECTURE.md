@@ -384,7 +384,12 @@ mode > `reverse_fill` + the universal `back_image_hash`
 its per-card choice. Deleting a back resets cards that chose it to
 `inherit` (a project, by contrast, is left back-less). UI:
 `components/CardBackPicker.tsx`, the swatch column on each Decklist row;
-`cardBacks.ts` syncs every referenced back to the connected server.
+`cardBacks.ts` syncs every referenced back to the connected server. The ZIP
+tab carries its own `export_reverse_fill` / `export_back_faces_as_reverse`
+(sent as `ExportZipIn.reverse_fill` / `back_faces_as_reverse`) so a ZIP
+follows the same rules as the PDF; a Reverse that resolves to blank ships
+as a generated plain white card in the TCGPlaytest format and as no
+`BACK/` file in the plain one.
 
 ### HTTP (generation server — `proxy_scaler/api/`)
 

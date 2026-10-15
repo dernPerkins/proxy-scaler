@@ -418,6 +418,12 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "right",
       },
       {
+        target: "export-backs",
+        title: "Back export",
+        body: "The same back rules as the PDF tab, kept separately for the ZIP: what single-faced cards get on their back, and whether a double-faced card is one front/back pair or two cards. Each card's own back from the Decklist tab is honoured either way.",
+        placement: "right",
+      },
+      {
         target: "export-output",
         title: "Output",
         body: "Image format and bleed. JPG keeps files small for uploading to vendors. Most print shops want bleed included.",
@@ -426,7 +432,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "export-buttons",
         title: "Export",
-        body: "A plain ZIP of your images, or a ready-to-upload ZIP for TCGPlaytest (that one needs a back chosen on the Backs tab).",
+        body: "A plain ZIP of your images, or a ready-to-upload ZIP for TCGPlaytest (that one needs a back for every card — the one from the Backs tab, a card's own, or blank).",
         placement: "top",
       },
     ],

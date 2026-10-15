@@ -234,6 +234,16 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("export_image_format", "TEXT NOT NULL DEFAULT 'jpg'"),
     ("export_with_bleed", "INTEGER NOT NULL DEFAULT 0"),
     ("export_bleed_mm", "REAL NOT NULL DEFAULT 3.0"),
+    // The ZIP export's own back rules — what a single-faced card's back
+    // is ('back_image' | 'blank') and whether a double-faced card's
+    // transform side is paired as its back. Counterparts of the PDF tab's
+    // reverse_fill / back_faces_as_reverse, deliberately separate columns
+    // like the export bleed above: the two outputs are set up on two tabs
+    // with two preset sets, and a ZIP for a vendor may legitimately want
+    // different answers than a home print. Defaults are what the ZIP
+    // export always did before the settings existed.
+    ("export_reverse_fill", "TEXT NOT NULL DEFAULT 'back_image'"),
+    ("export_back_faces_as_reverse", "INTEGER NOT NULL DEFAULT 1"),
     // Whether Generate upscales Custom Images: 'off' | 'target' | 'native'.
     // Opaque like sort_primary; the generation server validates it
     // (proxy_scaler/dpi.py CUSTOM_UPSCALE_MODES). 'off' keeps every
@@ -602,6 +612,12 @@ pub struct ProjectSettings {
     pub export_with_bleed: bool,
     #[serde(default = "default_export_bleed_mm")]
     pub export_bleed_mm: f64,
+    // The ZIP export's back rules — see PROJECTS_ADDED_COLUMNS. Same
+    // defaulting reason as the output options above.
+    #[serde(default = "default_reverse_fill")]
+    pub export_reverse_fill: String,
+    #[serde(default = "default_true")]
+    pub export_back_faces_as_reverse: bool,
     // Whether Generate upscales Custom Images — see PROJECTS_ADDED_COLUMNS.
     // Defaulted on deserialize so a frontend build that predates it
     // can't wipe it.
@@ -707,6 +723,8 @@ impl Default for ProjectSettings {
             export_image_format: default_export_image_format(),
             export_with_bleed: false,
             export_bleed_mm: default_export_bleed_mm(),
+            export_reverse_fill: default_reverse_fill(),
+            export_back_faces_as_reverse: true,
             custom_upscale: default_custom_upscale(),
         }
     }
@@ -957,6 +975,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         export_image_format: String,
         export_with_bleed: bool,
         export_bleed_mm: f64,
+        export_reverse_fill: String,
+        export_back_faces_as_reverse: bool,
         custom_upscale: String,
         created_at: String,
         updated_at: String,
@@ -977,6 +997,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     cutter, cutter_mark_style, cutter_orientation, cutter_inset_mm,
                     hide_cutter_marks_front, hide_cutter_marks_back,
                     export_image_format, export_with_bleed, export_bleed_mm,
+                    export_reverse_fill, export_back_faces_as_reverse,
                     custom_upscale,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
@@ -1029,6 +1050,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     export_image_format: row.get("export_image_format")?,
                     export_with_bleed: row.get("export_with_bleed")?,
                     export_bleed_mm: row.get("export_bleed_mm")?,
+                    export_reverse_fill: row.get("export_reverse_fill")?,
+                    export_back_faces_as_reverse: row.get("export_back_faces_as_reverse")?,
                     custom_upscale: row.get("custom_upscale")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
@@ -1089,6 +1112,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             export_image_format: loaded.export_image_format,
             export_with_bleed: loaded.export_with_bleed,
             export_bleed_mm: loaded.export_bleed_mm,
+            export_reverse_fill: loaded.export_reverse_fill,
+            export_back_faces_as_reverse: loaded.export_back_faces_as_reverse,
             custom_upscale: loaded.custom_upscale,
         },
         cards: cards_for_project(conn, project_id)?,
@@ -1338,6 +1363,7 @@ fn update_project_row(
          hide_cutter_marks_back = ?43,
          export_image_format = ?44, export_with_bleed = ?45, export_bleed_mm = ?46,
          custom_upscale = ?47,
+         export_reverse_fill = ?48, export_back_faces_as_reverse = ?49,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1388,6 +1414,8 @@ fn update_project_row(
             settings.export_with_bleed,
             settings.export_bleed_mm,
             settings.custom_upscale,
+            settings.export_reverse_fill,
+            settings.export_back_faces_as_reverse,
         ],
     )
     .map_err(|e| {
@@ -3267,11 +3295,15 @@ mod tests {
         assert_eq!(loaded.export_image_format, "jpg");
         assert!(!loaded.export_with_bleed);
         assert_eq!(loaded.export_bleed_mm, 3.0);
+        assert_eq!(loaded.export_reverse_fill, "back_image");
+        assert!(loaded.export_back_faces_as_reverse);
 
         let settings = ProjectSettings {
             export_image_format: "png".to_string(),
             export_with_bleed: true,
             export_bleed_mm: 2.5,
+            export_reverse_fill: "blank".to_string(),
+            export_back_faces_as_reverse: false,
             ..ProjectSettings::default()
         };
         update_project_row(&conn, id, "", &settings).expect("update");
@@ -3279,6 +3311,8 @@ mod tests {
         assert_eq!(loaded.export_image_format, "png");
         assert!(loaded.export_with_bleed);
         assert_eq!(loaded.export_bleed_mm, 2.5);
+        assert_eq!(loaded.export_reverse_fill, "blank");
+        assert!(!loaded.export_back_faces_as_reverse);
     }
 
     #[test]
@@ -3396,10 +3430,14 @@ mod tests {
         obj.remove("export_image_format");
         obj.remove("export_with_bleed");
         obj.remove("export_bleed_mm");
+        obj.remove("export_reverse_fill");
+        obj.remove("export_back_faces_as_reverse");
         let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
         assert_eq!(settings.export_image_format, "jpg");
         assert!(!settings.export_with_bleed);
         assert_eq!(settings.export_bleed_mm, 3.0);
+        assert_eq!(settings.export_reverse_fill, "back_image");
+        assert!(settings.export_back_faces_as_reverse);
     }
 
     #[test]
