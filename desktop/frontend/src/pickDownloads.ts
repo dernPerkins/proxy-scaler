@@ -25,10 +25,29 @@ import { cardToEntry } from "./deckEntries";
 import { importMpcArt } from "./mpcFill";
 import { registerCustomCards, waitForTasks } from "./syncCustoms";
 
-/** Queue the full-size download of a card's (newly picked) printing on
- *  the server. Best-effort: Download/Generate cover it later otherwise. */
-export function downloadPickedPrinting(card: CardRow, projectTag: string | null): void {
+/**
+ * Download a card's newly picked printing on the server, as a queued
+ * download task (what the Download button queues). The card shows as
+ * downloading from now until that task is done and the Decklist has
+ * re-read the status, so its badge goes straight to "300 · Original".
+ * Best-effort: Download/Generate cover it later if this fails.
+ */
+export function downloadPickedPrinting(
+  card: CardRow,
+  projectTag: string | null,
+  refreshStatus: () => Promise<unknown>,
+): void {
   if (projectTag == null || card.scryfall_id == null) return;
+  const key = pendingPrintingKey(card.id);
+  const mine: PendingFaceArt = {
+    cardId: card.id,
+    face: 0,
+    totalFaces: 1,
+    name: card.name,
+    status: "downloading",
+    source: "scryfall",
+  };
+  publish(new Map(pending).set(key, mine));
   void generationApi
     .downloadOriginals({
       project_tag: projectTag,
@@ -37,15 +56,24 @@ export function downloadPickedPrinting(card: CardRow, projectTag: string | null)
       cache_dir: DEFAULT_GEN_PATHS.cache_dir,
       weights_dir: DEFAULT_GEN_PATHS.weights_dir,
     })
-    .catch(() => {});
+    .then((result) => waitForTasks(result.task_ids))
+    .then(refreshStatus)
+    .catch(() => {})
+    .finally(() => {
+      // Unless the card was picked again meanwhile.
+      if (pending.get(key) === mine) update(key, null);
+    });
 }
 
+/** Something just picked for a card that is still on its way: MPC Fill
+ *  art for one face, or (source "scryfall") a whole new printing. */
 export interface PendingFaceArt {
   cardId: number;
   face: number;
   totalFaces: number;
   name: string;
   status: "queued" | "downloading" | "failed";
+  source: "mpc" | "scryfall";
   error?: string;
 }
 
@@ -162,6 +190,7 @@ export function queueFaceArtPick(args: {
         totalFaces: args.totalFaces,
         name: args.art.name,
         status: "queued",
+        source: "mpc",
       },
       resolve,
     };
@@ -201,6 +230,11 @@ export function usePendingFaceArt(): ReadonlyMap<string, PendingFaceArt> {
 
 export function pendingFaceArtKey(cardId: number, face: number): string {
   return keyOf(cardId, face);
+}
+
+/** The key a picked printing's download is pending under. */
+export function pendingPrintingKey(cardId: number): string {
+  return `${cardId}:printing`;
 }
 
 export interface AutoPickResult {

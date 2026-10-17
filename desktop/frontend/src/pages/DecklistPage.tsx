@@ -46,6 +46,7 @@ import {
   dismissPendingFaceArt,
   downloadPickedPrinting,
   pendingFaceArtKey,
+  pendingPrintingKey,
   queueFaceArtPick,
   usePendingFaceArt,
   type PendingFaceArt,
@@ -104,6 +105,10 @@ function withPendingPicks(
   cardId: number,
   pendingArt: ReadonlyMap<string, PendingFaceArt>,
 ): DisplayFace[] {
+  // A new printing on its way replaces the whole row: none of what's
+  // shown belongs to it.
+  const printing = pendingArt.get(pendingPrintingKey(cardId));
+  if (printing) return [{ faceLabel: null, variants: [], pick: printing }];
   const picks = [0, 1]
     .map((face) => pendingArt.get(pendingFaceArtKey(cardId, face)))
     .filter((p): p is PendingFaceArt => p != null);
@@ -1325,8 +1330,8 @@ export default function DecklistPage() {
                         face_art: [],
                       },
                       projectTag,
+                      refetchStatus,
                     );
-                    invalidateStatus();
                   })
                   .catch(() => {});
               }}
@@ -1598,12 +1603,12 @@ function CardRowView(props: {
                 }
                 title={face.pick.error ?? face.pick.name}
               >
-                MPC ·{" "}
                 {face.pick.status === "failed"
-                  ? "download failed"
+                  ? "Download failed"
                   : face.pick.status === "downloading"
-                    ? "downloading"
-                    : "queued"}
+                    ? "Downloading"
+                    : "Queued"}{" "}
+                · {face.pick.source === "scryfall" ? "Original" : "MPC"}
               </StatusBadge>
             )}
             {face.art && !face.pick && face.variants.length === 0 && (
