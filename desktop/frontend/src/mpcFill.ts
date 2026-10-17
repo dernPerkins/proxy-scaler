@@ -9,8 +9,8 @@
 // then finds the server already holding them and uploads nothing.
 import { generationApi } from "./api/generation";
 import { projectApi } from "./api/project";
-import type { CustomCardItem } from "./api/project";
-import type { BackImage, CustomImage, MpcCard } from "./api/types";
+import type { CardRow, CustomCardItem } from "./api/project";
+import type { BackImage, CustomImage, MpcBestResult, MpcCard } from "./api/types";
 import { readPickedImage } from "./imageUpload";
 import { orderArtName, type OrderArt, type ParsedOrder } from "./mpcOrder";
 
@@ -174,4 +174,69 @@ export async function importMpcOrder(
     errors,
     canceled: false,
   };
+}
+
+export interface AutoPickResult {
+  /** Faces that now print MPC Fill art. */
+  picked: number;
+  /** Cards for which MPC Fill had nothing, on any face. */
+  unmatched: string[];
+  errors: string[];
+  canceled: boolean;
+}
+
+// One /api/mpcfill/best call covers this many cards (the server's cap).
+const BEST_BATCH = 300;
+
+/**
+ * Give freshly imported Scryfall cards MPC Fill art: the top match for
+ * every face (one search per 300 cards on the server), each downloaded
+ * into the library and set as that face's art, one at a time. Faces MPC
+ * Fill has nothing for keep their Scryfall art. Cards that already have
+ * face art are left alone. Throws only if the matching itself fails.
+ */
+export async function autoPickMpcArt(
+  cards: CardRow[],
+  setFaceArt: (cardId: number, face: number, totalFaces: number, image: CustomImage) => Promise<void>,
+  onProgress: (done: number, total: number, name: string) => void,
+  isCanceled: () => boolean,
+): Promise<AutoPickResult> {
+  const eligible = cards.filter(
+    (c) => c.scryfall_id != null && c.custom_image_id == null && !(c.face_art?.length),
+  );
+  const ids = [...new Set(eligible.map((c) => c.scryfall_id as string))];
+  const best = new Map<string, MpcBestResult["results"][number]>();
+  for (let i = 0; i < ids.length; i += BEST_BATCH) {
+    const resp = await generationApi.mpcBest({ scryfall_ids: ids.slice(i, i + BEST_BATCH) });
+    for (const r of resp.results) best.set(r.scryfall_id, r);
+  }
+
+  const jobs: { card: CardRow; face: number; total: number; art: MpcCard }[] = [];
+  const unmatched: string[] = [];
+  for (const card of eligible) {
+    const match = best.get(card.scryfall_id as string);
+    const faces = match?.faces ?? [];
+    if (!faces.some((f) => f != null)) unmatched.push(card.name);
+    faces.forEach((art, face) => {
+      if (art && match) jobs.push({ card, face, total: match.total_faces, art });
+    });
+  }
+
+  const errors: string[] = [];
+  let picked = 0;
+  for (const [i, job] of jobs.entries()) {
+    if (isCanceled()) return { picked, unmatched, errors, canceled: true };
+    onProgress(i, jobs.length, job.art.name);
+    try {
+      // The library check inside importMpcArt makes a repeat (four copies
+      // of a basic land on four lines) cost nothing.
+      const image = await importMpcArt("custom", job.art);
+      await setFaceArt(job.card.id, job.face, job.total, image);
+      picked += 1;
+    } catch (err) {
+      errors.push(`${job.card.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  onProgress(jobs.length, jobs.length, "");
+  return { picked, unmatched, errors, canceled: false };
 }

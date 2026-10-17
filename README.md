@@ -317,6 +317,13 @@ Google Drives — can go anywhere your own uploads can:
   printing — its name, its back, its pairing — and only that face prints
   the MPC art; **Use Scryfall art** undoes it. Changing the printing goes
   back to Scryfall art.
+- **Art from Scryfall | MPC Fill**, under the Decklist tab's Import cards
+  button, decides where an import's art comes from. On MPC Fill, each
+  imported card is still matched to its Scryfall printing, then every face
+  gets MPC Fill's top match (downloaded one at a time — Stop leaves the
+  rest on Scryfall art). Cards MPC Fill has nothing for keep their
+  Scryfall art, and any pick can be changed from the card's printing
+  button. The choice is saved per project.
 - **Import the order (.xml)** under the Decklist tab's custom-art box reads
   an order file from MPC Fill's *Download XML* button: every front and
   back is fetched into your libraries, and the order's cards are added

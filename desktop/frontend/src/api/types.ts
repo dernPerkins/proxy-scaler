@@ -821,6 +821,12 @@ export interface MpcSearchResult {
   cards: MpcCard[];
 }
 
+/** Mirrors MpcBestOut: MPC Fill's top match for each face of each card
+ *  (null where there is none). */
+export interface MpcBestResult {
+  results: { scryfall_id: string; total_faces: number; faces: (MpcCard | null)[] }[];
+}
+
 export interface MpcSearchParams {
   q?: string;
   type?: MpcCardType;

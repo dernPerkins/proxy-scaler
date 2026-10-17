@@ -395,6 +395,67 @@ input[type="range"] {
   background: var(--accent-hover);
 }
 
+/* A two-way choice of equals (SplitPill.tsx): one pill, a thumb that
+   slides under the chosen half. The thumb is half the track wide and moves
+   by its own width, so the halves stay equal whatever the labels say. */
+.split-pill {
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  padding: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  isolation: isolate;
+}
+.split-pill-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: -1;
+}
+.split-pill-option,
+.split-pill-option:active:not(:disabled) {
+  min-width: 84px;
+  padding: 4px 14px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  transition: color 220ms ease;
+}
+.split-pill-option:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+.split-pill-option.is-active,
+.split-pill-option.is-active:hover:not(:disabled) {
+  color: var(--on-accent);
+}
+.split-pill-option:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+.split-pill.is-disabled {
+  opacity: 0.55;
+}
+@media (prefers-reduced-motion: reduce) {
+  .split-pill-thumb,
+  .split-pill-option {
+    transition: none;
+  }
+}
+
 button {
   padding: 6px 12px;
   border-radius: var(--radius);
@@ -1651,6 +1712,13 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+/* The import box's "Art from Scryfall | MPC Fill" row, under the button. */
+.import-actions.import-art-source {
+  margin-top: 8px;
+}
+.import-art-source .hint {
+  margin: 0;
 }
 /* Per-line failures from the resolve-gated import. */
 .import-failures {

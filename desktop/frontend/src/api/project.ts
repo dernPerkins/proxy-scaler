@@ -133,9 +133,14 @@ export interface ProjectSettings {
   // already reach; "native" keeps the model's own 4x result, capped at
   // 2400 DPI. Mirrors proxy_scaler/dpi.py CUSTOM_UPSCALE_MODES.
   custom_upscale: CustomUpscaleMode;
+  // Where a decklist import's art comes from: each card's Scryfall
+  // printing, or MPC Fill art picked automatically for every face (as
+  // face_art — the printing still identifies the card).
+  import_art_source: ImportArtSource;
 }
 
 export type CustomUpscaleMode = "off" | "target" | "native";
+export type ImportArtSource = "scryfall" | "mpc";
 
 export interface CardRow {
   id: number;

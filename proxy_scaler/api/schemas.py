@@ -994,6 +994,26 @@ class MpcCardsOut(BaseModel):
     cards: list[MpcCardOut]
 
 
+class MpcBestIn(BaseModel):
+    """POST /api/mpcfill/best: MPC Fill's top match for each card's faces."""
+
+    scryfall_ids: list[str] = Field(max_length=300)
+    lang: str | None = None
+    nsfw: bool = False
+    min_dpi: int = Field(default=0, ge=0, le=1500)
+
+
+class MpcBestCardOut(BaseModel):
+    scryfall_id: str
+    # The printing's face count, and the top match per face (null: none).
+    total_faces: int
+    faces: list[MpcCardOut | None]
+
+
+class MpcBestOut(BaseModel):
+    results: list[MpcBestCardOut]
+
+
 class MpcImportIn(BaseModel):
     """POST /api/mpcfill/import: download one piece of art and store it as
     a Custom Image (`custom`) or Back Image (`back`) on this server. The

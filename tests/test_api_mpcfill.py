@@ -202,6 +202,46 @@ def test_art_source_failure_is_a_502(client, source) -> None:
     assert "MPC Fill is down" in resp.json()["detail"]
 
 
+def test_best_returns_the_top_match_per_face_in_one_search(client, source) -> None:
+    _seed(
+        [
+            _card(),
+            _card(
+                id="delver",
+                name="Delver of Secrets // Insectile Aberration",
+                layout="transform",
+                image_uris=None,
+                card_faces=[
+                    {"name": "Delver of Secrets", "image_uris": {"png": "https://img.example/a.png"}},
+                    {"name": "Insectile Aberration", "image_uris": {"png": "https://img.example/b.png"}},
+                ],
+            ),
+            _card(id="tok", name="Treasure", layout="token"),
+        ]
+    )
+    body = client.post(
+        "/api/mpcfill/best",
+        json={"scryfall_ids": ["bolt-lea", "delver", "tok", "unknown", "bolt-lea"], "lang": "en"},
+    ).json()
+    by_id = {r["scryfall_id"]: r for r in body["results"]}
+    assert set(by_id) == {"bolt-lea", "delver", "tok"}
+    assert by_id["delver"]["total_faces"] == 2
+    assert [f["drive_id"] for f in by_id["delver"]["faces"]] == [source.ids[0], source.ids[0]]
+    # Every face of every card in one search call, TOKEN for the token.
+    assert len(source.searches) == 1
+    queries, filters, _ = source.searches[0]
+    assert ArtQuery("Treasure", "TOKEN") in queries
+    assert ArtQuery("Insectile Aberration", "CARD") in queries
+    assert filters.languages == ("EN",)
+
+
+def test_best_leaves_faces_without_a_match_null(client, source) -> None:
+    _seed([_card()])
+    source.ids = []
+    body = client.post("/api/mpcfill/best", json={"scryfall_ids": ["bolt-lea"]}).json()
+    assert body["results"][0]["faces"] == [None]
+
+
 def test_cards_hydrates_in_request_order(client, source) -> None:
     ids = [source.ids[65], source.ids[61], "unknown-id-0000000000000"]
     body = client.post("/api/mpcfill/cards", json={"ids": ids}).json()

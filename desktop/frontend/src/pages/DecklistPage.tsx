@@ -38,8 +38,9 @@ import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
-import { registerCustomCards, syncCustomImages } from "../syncCustoms";
-import { importMpcOrder } from "../mpcFill";
+import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { autoPickMpcArt, importMpcOrder } from "../mpcFill";
+import SplitPill from "../components/SplitPill";
 import { parseMpcOrder } from "../mpcOrder";
 import type { BackImage } from "../api/types";
 import { UploadCanceled } from "../uploadProgress";
@@ -152,6 +153,7 @@ export default function DecklistPage() {
   const handleImport = async () => {
     setStatus(null);
     setImportFailures([]);
+    setArtNote(null);
     setImporting(true);
     try {
       const parsed = await projectApi.parseDecklist(decklistDraft);
@@ -188,8 +190,16 @@ export default function DecklistPage() {
           },
         ];
       });
+      let importedCards: CardRow[] = [];
       if (resolvedCards.length > 0) {
-        await importResolvedCards(decklistDraft, resolvedCards);
+        const before = new Set(cards.map((c) => c.id));
+        const after = await importResolvedCards(decklistDraft, resolvedCards);
+        importedCards = after.filter((c) => !before.has(c.id));
+      }
+      if (importedCards.length > 0 && settings.import_art_source === "mpc" && mpcSupported) {
+        // After the import's own bookkeeping, so the cards are in the list
+        // (with their Scryfall identity) while their MPC art downloads.
+        void pickMpcArtFor(importedCards);
       }
       const failures = result.failed.map((f) => ({ line: f.raw_line, error: f.error }));
       if (failures.length > 0) {
@@ -401,6 +411,51 @@ export default function DecklistPage() {
   const [orderNote, setOrderNote] = useState<string | null>(null);
   const [orderCardback, setOrderCardback] = useState<BackImage | null>(null);
   const mpcSupported = serverSupportsMpcFill(serverVersion);
+
+  // The import toggle's "MPC Fill": every face of each newly imported
+  // card gets MPC Fill's top match as its face art, downloaded one at a
+  // time with a cancel. Faces with no match keep their Scryfall art.
+  const artCanceled = useRef(false);
+  const [artProgress, setArtProgress] = useState<{
+    done: number;
+    total: number;
+    name: string;
+  } | null>(null);
+  const [artNote, setArtNote] = useState<string | null>(null);
+  async function pickMpcArtFor(imported: CardRow[]) {
+    artCanceled.current = false;
+    setArtProgress({ done: 0, total: 0, name: "" });
+    try {
+      const result = await autoPickMpcArt(
+        imported,
+        setCardFaceArt,
+        (done, total, name) => setArtProgress({ done, total, name }),
+        () => artCanceled.current,
+      );
+      const parts = [
+        result.canceled
+          ? `Stopped after ${result.picked} face(s) of MPC Fill art; the rest keep Scryfall art.`
+          : `MPC Fill art on ${result.picked} face(s).`,
+      ];
+      if (result.unmatched.length) {
+        parts.push(`No MPC Fill art for: ${result.unmatched.join(", ")} (Scryfall art kept).`);
+      }
+      if (result.errors.length) parts.push(`Couldn't fetch: ${result.errors.join(" ")}`);
+      setArtNote(parts.join(" "));
+      if (result.picked > 0 && !serverUnavailable) {
+        void registerCustomCards(getProjectSnapshot().cards, projectTag, serverVersion)
+          .then(() => invalidateStatus())
+          .catch(() => {});
+      }
+      invalidateStatus();
+    } catch (err) {
+      setArtNote(
+        `Couldn't pick MPC Fill art: ${err instanceof Error ? err.message : String(err)} Scryfall art kept.`,
+      );
+    } finally {
+      setArtProgress(null);
+    }
+  }
   const importOrderMutation = useMutation({
     mutationFn: async (file: File) => {
       const order = parseMpcOrder(await file.text());
@@ -929,6 +984,51 @@ export default function DecklistPage() {
               All Languages
             </label>
           </div>
+          {/* Where imported cards' art comes from. MPC Fill still matches
+              each line against Scryfall (that's the card), then prints
+              MPC Fill's top art for every face in its place. */}
+          <div className="import-actions import-art-source">
+            <span className="hint">Art from</span>
+            <SplitPill
+              ariaLabel="Where imported cards' art comes from"
+              value={settings.import_art_source}
+              onChange={(value) => setSettings((s) => ({ ...s, import_art_source: value }))}
+              options={[
+                {
+                  value: "scryfall",
+                  label: "Scryfall",
+                  title: "Each card's own printing (upscaled when you Generate)",
+                },
+                {
+                  value: "mpc",
+                  label: "MPC Fill",
+                  title: mpcSupported
+                    ? "MPC Fill's top community art for every face, picked automatically on import. Change any of them from the card's printing button."
+                    : "Needs a newer generation server",
+                  disabled: !mpcSupported && settings.import_art_source !== "mpc",
+                },
+              ]}
+            />
+          </div>
+          {artProgress && (
+            <p className="hint">
+              {artProgress.total === 0
+                ? "Finding MPC Fill art…"
+                : `Fetching MPC Fill art ${Math.min(artProgress.done + 1, artProgress.total)} of ${artProgress.total}${
+                    artProgress.name ? ` — ${artProgress.name}` : ""
+                  }…`}{" "}
+              <button
+                type="button"
+                className="linklike"
+                onClick={() => {
+                  artCanceled.current = true;
+                }}
+              >
+                Stop
+              </button>
+            </p>
+          )}
+          {artNote && <p className="hint">{artNote}</p>}
           {serverUnavailable && (
             <p className="hint">
               Importing needs the generation server — cards are matched

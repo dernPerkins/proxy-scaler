@@ -34,6 +34,7 @@ import type {
   PdfPreview,
   RefetchOriginalRequest,
   RegenerateGalleryItemRequest,
+  MpcBestResult,
   MpcCard,
   MpcSearchParams,
   MpcSearchResult,
@@ -372,6 +373,12 @@ export const generationApi = {
     }
     return request<MpcSearchResult>(`/api/mpcfill/search?${search}`);
   },
+  // MPC Fill's top match for every face of up to 300 cards, in one search.
+  mpcBest: (body: { scryfall_ids: string[]; lang?: string | null; min_dpi?: number }) =>
+    request<MpcBestResult>("/api/mpcfill/best", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   mpcCards: (ids: string[]) =>
     request<{ cards: MpcCard[] }>("/api/mpcfill/cards", {
       method: "POST",

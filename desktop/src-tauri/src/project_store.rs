@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS projects (
     export_with_bleed INTEGER NOT NULL DEFAULT 0,
     export_bleed_mm REAL NOT NULL DEFAULT 3.0,
     custom_upscale TEXT NOT NULL DEFAULT 'off',
+    import_art_source TEXT NOT NULL DEFAULT 'scryfall',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -249,6 +250,11 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // (proxy_scaler/dpi.py CUSTOM_UPSCALE_MODES). 'off' keeps every
     // existing project doing what it did before the setting existed.
     ("custom_upscale", "TEXT NOT NULL DEFAULT 'off'"),
+    // Where a decklist import's art comes from: 'scryfall' (each card's
+    // printing) or 'mpc' (MPC Fill art picked automatically for each face,
+    // as face_art; the printing still identifies the card). Opaque; the
+    // Decklist tab's import toggle reads it.
+    ("import_art_source", "TEXT NOT NULL DEFAULT 'scryfall'"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -629,6 +635,14 @@ pub struct ProjectSettings {
     // can't wipe it.
     #[serde(default = "default_custom_upscale")]
     pub custom_upscale: String,
+    // The Decklist import toggle — see PROJECTS_ADDED_COLUMNS. Defaulted
+    // on deserialize for the same reason as custom_upscale.
+    #[serde(default = "default_import_art_source")]
+    pub import_art_source: String,
+}
+
+fn default_import_art_source() -> String {
+    "scryfall".to_string()
 }
 
 fn default_custom_upscale() -> String {
@@ -732,6 +746,7 @@ impl Default for ProjectSettings {
             export_reverse_fill: default_reverse_fill(),
             export_back_faces_as_reverse: true,
             custom_upscale: default_custom_upscale(),
+            import_art_source: default_import_art_source(),
         }
     }
 }
@@ -1001,6 +1016,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         export_reverse_fill: String,
         export_back_faces_as_reverse: bool,
         custom_upscale: String,
+        import_art_source: String,
         created_at: String,
         updated_at: String,
     }
@@ -1021,7 +1037,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     hide_cutter_marks_front, hide_cutter_marks_back,
                     export_image_format, export_with_bleed, export_bleed_mm,
                     export_reverse_fill, export_back_faces_as_reverse,
-                    custom_upscale,
+                    custom_upscale, import_art_source,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -1076,6 +1092,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     export_reverse_fill: row.get("export_reverse_fill")?,
                     export_back_faces_as_reverse: row.get("export_back_faces_as_reverse")?,
                     custom_upscale: row.get("custom_upscale")?,
+                    import_art_source: row.get("import_art_source")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -1138,6 +1155,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             export_reverse_fill: loaded.export_reverse_fill,
             export_back_faces_as_reverse: loaded.export_back_faces_as_reverse,
             custom_upscale: loaded.custom_upscale,
+            import_art_source: loaded.import_art_source,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1387,6 +1405,7 @@ fn update_project_row(
          export_image_format = ?44, export_with_bleed = ?45, export_bleed_mm = ?46,
          custom_upscale = ?47,
          export_reverse_fill = ?48, export_back_faces_as_reverse = ?49,
+         import_art_source = ?50,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1439,6 +1458,7 @@ fn update_project_row(
             settings.custom_upscale,
             settings.export_reverse_fill,
             settings.export_back_faces_as_reverse,
+            settings.import_art_source,
         ],
     )
     .map_err(|e| {
@@ -3614,6 +3634,23 @@ mod tests {
     fn settings_presets_reject_an_unknown_kind() {
         assert!(settings_presets_key("decklist").is_err());
         assert!(settings_presets_key("").is_err());
+    }
+
+    #[test]
+    fn import_art_source_roundtrips_and_defaults_to_scryfall() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        assert_eq!(load_project(&conn, id).expect("load").settings.import_art_source, "scryfall");
+        let settings = ProjectSettings {
+            import_art_source: "mpc".to_string(),
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        assert_eq!(load_project(&conn, id).expect("load").settings.import_art_source, "mpc");
+        let mut json = serde_json::to_value(ProjectSettings::default()).expect("serialize");
+        json.as_object_mut().expect("object").remove("import_art_source");
+        let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(settings.import_art_source, "scryfall");
     }
 
     #[test]

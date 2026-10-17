@@ -126,6 +126,7 @@ export function getDefaultSettings(): ProjectSettings {
     export_reverse_fill: "back_image",
     export_back_faces_as_reverse: true,
     custom_upscale: "off",
+    import_art_source: "scryfall",
   };
 }
 
@@ -160,7 +161,8 @@ interface ProjectContextValue {
    *  importDecklistText, and remembers `text` as decklistText. Creates the
    *  Unnamed Project on first use the same way. The caller (DecklistPage)
    *  owns the parse + resolve halves. */
-  importResolvedCards: (text: string, cards: ResolvedImportCard[]) => Promise<void>;
+  /** Resolves with the project's whole card list after the import. */
+  importResolvedCards: (text: string, cards: ResolvedImportCard[]) => Promise<CardRow[]>;
   importingResolvedCards: boolean;
   /** Adds one card per Custom Image (user-uploaded art — see
    *  custom_images.rs), appended after the existing cards. Creates the
@@ -1157,7 +1159,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     importingDecklistText: importDecklistMutation.isPending,
     importResolvedCards: async (text, resolvedCards) => {
-      await importResolvedCardsMutation.mutateAsync({ text, cards: resolvedCards });
+      const { newCards } = await importResolvedCardsMutation.mutateAsync({
+        text,
+        cards: resolvedCards,
+      });
+      return newCards;
     },
     importingResolvedCards: importResolvedCardsMutation.isPending,
     addCustomCards: async (customImageIds) => {

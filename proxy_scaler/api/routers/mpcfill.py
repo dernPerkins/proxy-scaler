@@ -23,6 +23,9 @@ from proxy_scaler.api.deps import get_card_db_path
 from proxy_scaler.api.routers.customs import store_custom_bytes
 from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
 from proxy_scaler.api.schemas import (
+    MpcBestCardOut,
+    MpcBestIn,
+    MpcBestOut,
     MpcCardOut,
     MpcCardsIn,
     MpcCardsOut,
@@ -111,34 +114,39 @@ def _out(card: ArtCard) -> MpcCardOut:
     )
 
 
+_NO_CORPUS = "No local card database — import it from the Card database panel first."
+
+
+def card_faces(card: dict) -> tuple[list[str], MpcCardType]:
+    """The name to search for each face of a corpus card, in face order,
+    and whether MPC Fill files it as a CARD or a TOKEN. A DFC has one
+    image, so one MPC Fill file, per face; a card with one image for both
+    halves (split, adventure, flip ...) is named after its front."""
+    card_type: MpcCardType = "TOKEN" if card.get("layout") in TOKEN_LAYOUTS else "CARD"
+    faces = [f for f in card.get("card_faces") or [] if isinstance(f, dict)]
+    with_images = [f for f in faces if (f.get("image_uris") or {}).get("png")]
+    if with_images:
+        return [str(f.get("name") or card.get("name") or "") for f in with_images], card_type
+    if faces and faces[0].get("name"):
+        return [str(faces[0]["name"])], card_type
+    return [str(card.get("name") or "")], card_type
+
+
 def _corpus_face(scryfall_id: str, face: int) -> tuple[str, MpcCardType]:
-    """The name to search for one face of a corpus card, and whether MPC
-    Fill files it as a CARD or a TOKEN."""
+    """The name to search for one face of a corpus card, and its type."""
     conn = carddb.open_if_ready(get_card_db_path())
     if conn is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No local card database — import it from the Card database panel first.",
-        )
+        raise HTTPException(status_code=404, detail=_NO_CORPUS)
     try:
         card = carddb.get_card_by_id(conn, scryfall_id)
     finally:
         conn.close()
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found in the local card database.")
-    card_type: MpcCardType = "TOKEN" if card.get("layout") in TOKEN_LAYOUTS else "CARD"
-    faces = [f for f in card.get("card_faces") or [] if isinstance(f, dict)]
-    with_images = [f for f in faces if (f.get("image_uris") or {}).get("png")]
-    if with_images:
-        # A DFC: each face is its own image, and MPC Fill has one per face.
-        if face >= len(with_images):
-            raise HTTPException(status_code=404, detail=f"{card.get('name')} has no face {face}.")
-        return str(with_images[face].get("name") or card.get("name") or ""), card_type
-    # One image for the whole card (split, adventure, flip ...): MPC Fill
-    # names those after the front face.
-    if faces and faces[0].get("name"):
-        return str(faces[0]["name"]), card_type
-    return str(card.get("name") or ""), card_type
+    names, card_type = card_faces(card)
+    if face >= len(names):
+        raise HTTPException(status_code=404, detail=f"{card.get('name')} has no face {face}.")
+    return names[face], card_type
 
 
 def _hydrate(ids: list[str]) -> list[MpcCardOut]:
@@ -199,6 +207,54 @@ def cards(body: MpcCardsIn) -> MpcCardsOut:
     """Details for more of a search's ids, in request order."""
     ids = [i for i in body.ids if isinstance(i, str)]
     return MpcCardsOut(cards=_hydrate(ids))
+
+
+@router.post("/best", response_model=MpcBestOut)
+def best(body: MpcBestIn) -> MpcBestOut:
+    """MPC Fill's top match for every face of each card, for importing a
+    whole decklist with MPC Fill art. One search request per 300 faces
+    (and a day-long cache behind that), one hydration request for the
+    winners. A face with no match comes back null and keeps its Scryfall
+    art; a card the corpus doesn't hold is left out."""
+    conn = carddb.open_if_ready(get_card_db_path())
+    if conn is None:
+        raise HTTPException(status_code=404, detail=_NO_CORPUS)
+    plans: list[tuple[str, list[ArtQuery]]] = []
+    try:
+        for scryfall_id in dict.fromkeys(body.scryfall_ids):
+            card = carddb.get_card_by_id(conn, scryfall_id)
+            if card is None:
+                continue
+            names, card_type = card_faces(card)
+            plans.append((scryfall_id, [ArtQuery(name, card_type) for name in names]))
+    finally:
+        conn.close()
+    language = mpc_language(body.lang)
+    filters = ArtFilters(
+        languages=(language,) if language else (),
+        include_nsfw=body.nsfw,
+        min_dpi=body.min_dpi,
+    )
+    queries = list(dict.fromkeys(q for _sid, qs in plans for q in qs if q.query))
+    try:
+        found = _source().search(queries, filters) if queries else {}
+    except ArtSourceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    top_ids = list(dict.fromkeys(ids[0] for ids in found.values() if ids))
+    hydrated = {c.drive_id: c for c in _hydrate(top_ids)}
+
+    def winner(q: ArtQuery) -> MpcCardOut | None:
+        ids = found.get(q) or []
+        return hydrated.get(ids[0]) if ids else None
+
+    return MpcBestOut(
+        results=[
+            MpcBestCardOut(
+                scryfall_id=sid, total_faces=len(qs), faces=[winner(q) for q in qs]
+            )
+            for sid, qs in plans
+        ]
+    )
 
 
 @router.get("/thumb/{drive_id}")
