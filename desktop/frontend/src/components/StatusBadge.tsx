@@ -9,12 +9,15 @@ import type { ReactNode } from "react";
 export default function StatusBadge({
   status,
   children,
+  title,
 }: {
   status: string;
   children?: ReactNode;
+  /** Tooltip; the status itself by default. */
+  title?: string;
 }) {
   return (
-    <span className={`badge badge-${status}`} title={status}>
+    <span className={`badge badge-${status}`} title={title ?? status}>
       <span className="dot" />
       {children ?? status}
     </span>

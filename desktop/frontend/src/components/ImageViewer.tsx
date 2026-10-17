@@ -12,18 +12,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ModalOverlay from "./ModalOverlay";
+import { TRIM_CORNER_RADIUS, pct, trimGeometry } from "../cardTrim";
 
 // Mirrors proxy_scaler/dpi.py::MAX_BLEED_MM.
 export const MAX_BLEED_MM = 10;
-// Card trim size, mm — proxy_scaler/dpi.py::CARD_WIDTH_MM / CARD_HEIGHT_MM.
-const CARD_W_MM = 63;
-const CARD_H_MM = 88;
-// The die-cut corner radius Scryfall renders (and a corner punch makes):
-// 2.7 mm. Drawn on the trim line as a horizontal/vertical percentage pair
-// of the 63:88 trim box, which comes out circular at any display size.
-const CORNER_RADIUS_MM = 2.7;
-const TRIM_CORNER_RADIUS = `${(CORNER_RADIUS_MM / CARD_W_MM) * 100}% / ${(CORNER_RADIUS_MM / CARD_H_MM) * 100}%`;
-
 /** A magnifier with a plus: "zoom in / view at full size". Not a bare
  *  plus, which on a tile that also has "Add to project" would read as add. */
 export function MagnifierIcon() {
@@ -84,41 +76,11 @@ export default function ImageViewer({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // Geometry, in percent of the displayed image so it survives any
-  // resize. The upload is cover-cropped to the bled aspect
-  // ((63+2b):(88+2b)) about its centre — that box is the crop outline;
-  // inset by the declared bleed on each side it is the trim line. With
-  // no declaration b is 0 and the two coincide: the file's edge is the
-  // card's edge and bleed will be generated outside it.
-  const b = includesBleed ? bleedMm : 0;
-  const boxAspect = (CARD_W_MM + 2 * b) / (CARD_H_MM + 2 * b);
-  let box = { left: 0, top: 0, width: 100, height: 100 };
-  if (natural) {
-    const a = natural.w / natural.h;
-    if (a > boxAspect) {
-      const width = (boxAspect / a) * 100;
-      box = { left: (100 - width) / 2, top: 0, width, height: 100 };
-    } else {
-      const height = (a / boxAspect) * 100;
-      box = { left: 0, top: (100 - height) / 2, width: 100, height };
-    }
-  }
-  const insetX = (b / (CARD_W_MM + 2 * b)) * box.width;
-  const insetY = (b / (CARD_H_MM + 2 * b)) * box.height;
-  const trim = {
-    left: box.left + insetX,
-    top: box.top + insetY,
-    width: box.width - 2 * insetX,
-    height: box.height - 2 * insetY,
-  };
-  const pct = (r: { left: number; top: number; width: number; height: number }) => ({
-    left: `${r.left}%`,
-    top: `${r.top}%`,
-    width: `${r.width}%`,
-    height: `${r.height}%`,
-  });
-  const cropped =
-    natural != null && (Math.abs(box.width - 100) > 0.05 || Math.abs(box.height - 100) > 0.05);
+  // The upload is cover-cropped to the bled aspect about its centre: that
+  // box is the crop outline; inset by the declared bleed it is the trim
+  // line. With no declaration the two coincide: the file's edge is the
+  // card's edge and bleed is generated outside it.
+  const { box, trim, cropped } = trimGeometry(natural, includesBleed ? bleedMm : 0);
 
   return (
     <ModalOverlay onClick={onClose}>

@@ -194,49 +194,39 @@ pub fn add_back_image(
     add_image(&app, &bytes, &thumbnail, &original_filename, &label, width, height, None, None)
 }
 
-/// Add a Back Image picked on MPC Fill: the bytes the generation server's
-/// /api/mpcfill/import returned, plus where they came from. A new row
-/// takes the bleed declaration given; a row already holding these bytes
-/// keeps its own label and bleed and only learns its provenance.
+/// Put a Back Image picked on MPC Fill in the library, the way
+/// custom_images::import_mpc_custom_image does: the generation server
+/// downloads it (keeping a copy) and hands the bytes straight to Rust.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn add_mpc_back_image(
+pub async fn import_mpc_back_image(
     app: AppHandle,
-    bytes: Vec<u8>,
-    thumbnail: Vec<u8>,
-    original_filename: String,
-    width: i64,
-    height: i64,
-    label: String,
-    includes_bleed: bool,
-    bleed_mm: f64,
+    server_base_url: String,
     drive_id: String,
     mpc_source: String,
     mpc_name: String,
+    bleed_mm: f64,
 ) -> Result<BackImage, String> {
     let mpc = MpcProvenance::new(&drive_id, &mpc_source, &mpc_name)?;
     let bleed_mm = crate::custom_images::validate_bleed_mm(bleed_mm)?;
+    if let Some(found) = find_by_drive_id(&open_db(&app)?, &mpc.drive_id)? {
+        return Ok(found);
+    }
+    let art = mpc_art::fetch_from_server(&server_base_url, &mpc.drive_id, "back", bleed_mm).await?;
+    let filename = mpc_art::library_filename(&mpc.name, art.extension);
     add_image(
         &app,
-        &bytes,
-        &thumbnail,
-        &original_filename,
-        &label,
-        width,
-        height,
-        Some((includes_bleed, bleed_mm)),
+        &art.bytes,
+        &art.thumbnail,
+        &filename,
+        &mpc.name,
+        art.width,
+        art.height,
+        Some((art.declared_bleed_mm > 0.0, bleed_mm)),
         Some(&mpc),
     )
 }
 
-/// The Back Image for an MPC Fill file, if one was already picked, so a
-/// repeat pick never downloads it again.
-#[tauri::command]
-pub fn find_back_image_by_drive_id(
-    app: AppHandle,
-    drive_id: String,
-) -> Result<Option<BackImage>, String> {
-    let conn = open_db(&app)?;
+fn find_by_drive_id(conn: &Connection, drive_id: &str) -> Result<Option<BackImage>, String> {
     conn.query_row(
         "SELECT * FROM back_images WHERE mpc_drive_id = ?1 ORDER BY id LIMIT 1",
         params![drive_id],

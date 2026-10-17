@@ -1671,6 +1671,21 @@ button:disabled {
 .mpc-sentinel {
   height: 1px;
 }
+/* MPC Fill art carries its bleed: a tile shows the card as cut, the
+   image scaled so its trim box fills the frame (geometry set inline). */
+.mpc-tile-frame {
+  position: relative;
+}
+/* The preview pane crops it the same way (MpcArtPicker.tsx). */
+.mpc-tile-frame img.mpc-trimmed {
+  position: absolute;
+  max-width: none;
+  object-fit: fill;
+}
+.printing-preview-frame img.mpc-trimmed {
+  max-width: none;
+  object-fit: fill;
+}
 .mpc-attribution {
   margin-top: 12px;
   font-size: 11px;
@@ -1681,16 +1696,6 @@ button:disabled {
   display: flex;
   gap: 8px;
   margin-right: auto;
-}
-/* On a card row's printing button when a face prints MPC Fill art. */
-.mpc-mark {
-  margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-soft, rgba(80, 120, 255, 0.12));
 }
 /* The "From MPC Fill" tile beside the Customs/Backs drop zones. */
 .mpc-library-tile {
@@ -1713,9 +1718,12 @@ button:disabled {
   align-items: center;
   gap: 10px;
 }
-/* The import box's "Art from Scryfall | MPC Fill" row, under the button. */
-.import-actions.import-art-source {
-  margin-top: 8px;
+/* The import row's "Art from Scryfall | MPC Fill" pill, right-aligned. */
+.import-art-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 .import-art-source .hint {
   margin: 0;

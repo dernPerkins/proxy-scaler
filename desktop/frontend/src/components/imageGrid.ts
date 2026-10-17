@@ -39,6 +39,19 @@ export function useTileVisibility(scrollRef: React.RefObject<HTMLElement | null>
   );
   return useCallback(
     (el, onVisible) => {
+      // Rebuilt when the scroll container itself is a new element: the
+      // change-printing modal swaps its whole grid out for the MPC Fill
+      // browser and back, and an observer still rooted on the old,
+      // detached container never reports anything — every tile stayed
+      // blank until the modal was reopened.
+      const root = scrollRef.current;
+      if (observerRef.current && observerRef.current.root !== root) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+        for (const watched of callbacks.current.keys()) {
+          if (!watched.isConnected) callbacks.current.delete(watched);
+        }
+      }
       if (!observerRef.current) {
         observerRef.current = new IntersectionObserver(
           (entries, observer) => {
@@ -50,15 +63,17 @@ export function useTileVisibility(scrollRef: React.RefObject<HTMLElement | null>
             }
           },
           // About two rows ahead, so scrolling rarely meets an empty frame.
-          { root: scrollRef.current, rootMargin: "600px 0px" },
+          { root, rootMargin: "600px 0px" },
         );
+        // Tiles still on screen from before the rebuild keep watching.
+        for (const watched of callbacks.current.keys()) observerRef.current.observe(watched);
       }
-      const observer = observerRef.current;
       callbacks.current.set(el, onVisible);
-      observer.observe(el);
+      observerRef.current.observe(el);
       return () => {
         callbacks.current.delete(el);
-        observer.unobserve(el);
+        // The current observer, which may not be the one that started.
+        observerRef.current?.unobserve(el);
       };
     },
     [scrollRef],

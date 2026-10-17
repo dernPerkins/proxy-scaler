@@ -1,12 +1,15 @@
 // MPC Fill provenance for library images, shared by the Custom Image and
 // Back Image libraries.
 //
-// An image picked from MPC Fill is an ordinary library image (its bytes
-// came from the generation server's /api/mpcfill/import) plus where it
+// An image picked from MPC Fill is an ordinary library image plus where it
 // came from: the Google Drive file id, the uploader and MPC Fill's name
-// for it. The id is what lets a *different* generation server fill its
-// copy straight from Google (POST /api/{customs|backs}/{hash}/fetch)
-// instead of this machine uploading the file — see sync_step below.
+// for it. Its bytes come from the generation server's /api/mpcfill/import
+// (fetch_from_server, below), which downloads the file from Google, keeps
+// a copy and returns it — straight into Rust, so a 25 MB original never
+// crosses into the webview as a JSON array of numbers. The Drive id is
+// also what lets a *different* generation server fill its copy straight
+// from Google (POST /api/{customs|backs}/{hash}/fetch) instead of this
+// machine uploading the file — see sync_step below.
 //
 // Nothing here talks to MPC Fill or Google; the client never does.
 use rusqlite::{params, Connection};
@@ -85,6 +88,116 @@ pub(crate) fn attach_provenance_row(
     Ok(())
 }
 
+// Same cap as a dropped file (custom_images.rs / back_images.rs MAX_BYTES).
+const MAX_IMPORT_BYTES: usize = 50 * 1024 * 1024;
+
+/// One MPC Fill image as the generation server handed it over.
+pub(crate) struct FetchedArt {
+    pub bytes: Vec<u8>,
+    pub thumbnail: Vec<u8>,
+    pub width: i64,
+    pub height: i64,
+    /// The bleed the server stored it under: the requested amount, or 0
+    /// for a file whose aspect says it has none.
+    pub declared_bleed_mm: f64,
+    pub extension: &'static str,
+}
+
+fn header_f64(resp: &reqwest::Response, name: &str) -> Option<f64> {
+    resp.headers().get(name)?.to_str().ok()?.trim().parse().ok()
+}
+
+/// FastAPI's `detail` message, or the status line.
+async fn error_detail(resp: reqwest::Response) -> String {
+    let status = resp.status();
+    let body = resp.bytes().await.unwrap_or_default();
+    serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_string))
+        .unwrap_or_else(|| format!("The generation server answered {status}."))
+}
+
+/// Ask the generation server at `base` to download one MPC Fill image
+/// (POST /api/mpcfill/import), plus its small preview for the library
+/// thumbnail (GET /api/mpcfill/thumb). `kind` is "custom" or "back".
+pub(crate) async fn fetch_from_server(
+    base: &str,
+    drive_id: &str,
+    kind: &str,
+    bleed_mm: f64,
+) -> Result<FetchedArt, String> {
+    let base = base.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "drive_id": drive_id,
+        "kind": kind,
+        "bleed_mm": bleed_mm,
+    }))
+    .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{base}/api/mpcfill/import"))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach the generation server: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(error_detail(resp).await);
+    }
+    let extension = match resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+    {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    let width = header_f64(&resp, "x-image-width").unwrap_or(0.0) as i64;
+    let height = header_f64(&resp, "x-image-height").unwrap_or(0.0) as i64;
+    let declared_bleed_mm = header_f64(&resp, "x-declared-bleed-mm").unwrap_or(bleed_mm);
+    let bytes = resp.bytes().await.map_err(|e| format!("The download was cut off: {e}"))?;
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err("That image is larger than 50MB.".to_string());
+    }
+    let thumb = client
+        .get(format!("{base}/api/mpcfill/thumb/{drive_id}?size=small"))
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't load the image's preview: {e}"))?;
+    if !thumb.status().is_success() {
+        return Err(error_detail(thumb).await);
+    }
+    let thumbnail = thumb
+        .bytes()
+        .await
+        .map_err(|e| format!("Couldn't load the image's preview: {e}"))?;
+    Ok(FetchedArt {
+        bytes: bytes.to_vec(),
+        thumbnail: thumbnail.to_vec(),
+        width,
+        height,
+        declared_bleed_mm,
+        extension,
+    })
+}
+
+/// A library file name for MPC Fill's name: path-safe, with the extension
+/// the bytes are (the stored file and the viewer's MIME type go by it).
+pub(crate) fn library_filename(name: &str, extension: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { ' ' } else { c })
+        .collect();
+    let stem = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let stem = if stem.is_empty() { "MPC art".to_string() } else { stem };
+    format!("{stem}.{extension}")
+}
+
 /// What a sync does after asking the server whether it has an image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SyncStep {
@@ -141,6 +254,13 @@ mod tests {
         assert!(validate_drive_id("short").is_err());
         assert!(validate_drive_id("../../etc/passwd/aaaaaaaaaaaaaaaa").is_err());
         assert!(validate_drive_id(&"a".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn library_filenames_are_path_safe() {
+        assert_eq!(library_filename("Fire // Ice", "png"), "Fire Ice.png");
+        assert_eq!(library_filename("Bolt (Full Art) [x]", "jpg"), "Bolt (Full Art) [x].jpg");
+        assert_eq!(library_filename(" :: ", "png"), "MPC art.png");
     }
 
     #[test]

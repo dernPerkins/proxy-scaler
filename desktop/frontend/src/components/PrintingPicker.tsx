@@ -28,13 +28,12 @@ import {
   serverSupportsPrintingImages,
   useServerVersion,
 } from "../config";
-import { importMpcArt } from "../mpcFill";
 import { MpcArtBrowser } from "./MpcArtPicker";
 import { useProject } from "../context/ProjectContext";
 import { modelDisplayName } from "../constants";
 import { useImageCacheSetting } from "../imageOrigin";
 import type { CardRow } from "../api/project";
-import type { CardVariant, CustomImage, GeneratedPair, ImageOrigin } from "../api/types";
+import type { CardVariant, GeneratedPair, ImageOrigin, MpcCard } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import StatusBadge from "./StatusBadge";
 import TutorialButton from "../tutorial/TutorialButton";
@@ -459,10 +458,11 @@ export interface PickerOpenRequest {
 
 type PickerSource = "scryfall" | "mpc";
 
-/** Face art callbacks: print a library image (just picked on MPC Fill) in
- *  place of a face, or go back to the printing's own art. */
+/** Face art callbacks: print MPC Fill art in place of a face (it
+ *  downloads in the background — pickDownloads.ts — so the modal closes at
+ *  once), or go back to the printing's own art. */
 export interface FaceArtHandlers {
-  onSetFaceArt: (face: number, totalFaces: number, image: CustomImage) => Promise<void>;
+  onPickArt: (face: number, totalFaces: number, art: MpcCard) => void;
   onClearFaceArt: (face: number) => Promise<void>;
 }
 
@@ -785,12 +785,9 @@ function PrintingGridModal(props: {
             pickLabel={totalFaces > 1 ? `Use for the ${mpcFace === 0 ? "front" : "back"}` : "Use this art"}
             currentLabel="Keep this art"
             onPick={async (picked) => {
-              if (art?.mpc_drive_id === picked.drive_id) {
-                onClose();
-                return;
+              if (art?.mpc_drive_id !== picked.drive_id) {
+                faceArt.onPickArt(mpcFace, totalFaces, picked);
               }
-              const image = await importMpcArt("custom", picked);
-              await faceArt.onSetFaceArt(mpcFace, totalFaces, image);
               onClose();
             }}
             head={
@@ -949,9 +946,9 @@ function PrintingGridModal(props: {
               </label>
             </div>
             {/* Mounted for as long as the grid is, even when the filters
-                match nothing: the tile observer is rooted on this element,
-                and a remounted one would leave it watching a detached node
-                (every tile after that would stay blank). */}
+                match nothing: the tile observer is rooted on this element.
+                (Switching to MPC Fill and back does remount it; the
+                observer rebuilds on the new element — imageGrid.ts.) */}
             <div className="modal-body" ref={scrollRef} data-tour="picker-grid">
               {shown.length === 0 ? (
                 <p className="hint">No printings match this filter.</p>
@@ -1048,16 +1045,18 @@ export default function PrintingPicker(props: {
         className="card-meta mono printing-toggle"
         title={disabled ? "Generation server is unreachable" : "Change printing"}
         disabled={disabled}
-        onClick={() => setOpen({ source: "scryfall", face: 0 })}
+        // A card printing MPC Fill art opens on that art, at its first
+        // overridden face; everything else on its printings.
+        onClick={() =>
+          setOpen(
+            card.face_art?.length && props.faceArt
+              ? { source: "mpc", face: card.face_art[0].face }
+              : { source: "scryfall", face: 0 },
+          )
+        }
       >
         <SetIcon setCode={card.set_code} rarity={rarity} />
-        {label}
-        {card.face_art?.length ? (
-          <span className="mpc-mark" title="Prints MPC Fill art on a face">
-            MPC
-          </span>
-        ) : null}{" "}
-        ▾
+        {label} ▾
       </button>
       {open && (
         <PrintingGridModal

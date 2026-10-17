@@ -23,6 +23,8 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError, generationApi } from "../api/generation";
 import type { MpcCard, MpcCardType } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
+import { fillFrameWith, looksBled, trimGeometry } from "../cardTrim";
+import { MPC_IMPORT_BLEED_MM } from "../mpcFill";
 import SelectMenu from "./SelectMenu";
 import {
   KEYBOARD_PREVIEW_SETTLE_MS,
@@ -34,6 +36,9 @@ import {
 // How many previews are hydrated (name, uploader, DPI) at a time as the
 // grid scrolls; the search response carries the first page.
 const PAGE = 60;
+// How many the search response itself hydrates (api/routers/mpcfill.py
+// FIRST_PAGE).
+const FIRST_HYDRATED = 60;
 
 // MPC Fill's languages (GET /2/languages/), and the Scryfall codes that
 // map onto them for a card's own default.
@@ -93,6 +98,18 @@ function sizeLabel(bytes: number): string {
     : `${Math.round(bytes / 1024)} KB`;
 }
 
+// MakePlayingCards' template, the shape almost all MPC Fill art has:
+// assumed until a preview has loaded and said otherwise.
+const MPC_TEMPLATE_SIZE = { w: 816, h: 1110 };
+
+/** Where to draw a tile's image so only the card as cut shows (null: the
+ *  art has no bleed to crop). */
+function mpcTrimStyle(natural: { w: number; h: number } | null) {
+  const shape = natural ?? MPC_TEMPLATE_SIZE;
+  if (!looksBled(shape.w, shape.h)) return null;
+  return fillFrameWith(trimGeometry(shape, MPC_IMPORT_BLEED_MM).trim);
+}
+
 function MpcTile(props: {
   card: MpcCard;
   selected: boolean;
@@ -108,6 +125,9 @@ function MpcTile(props: {
   const frameRef = useRef<HTMLSpanElement>(null);
   const [nearView, setNearView] = useState(false);
   const [failed, setFailed] = useState(false);
+  // MPC Fill art carries its bleed; the tile shows the card as cut.
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const trimmed = mpcTrimStyle(natural);
   useEffect(() => {
     if (!frameRef.current) return;
     return observe(frameRef.current, () => setNearView(true));
@@ -131,7 +151,7 @@ function MpcTile(props: {
         aria-pressed={selected}
         title={`${card.name} — ${card.source_name}`}
       >
-        <span className="printing-tile-frame" ref={frameRef}>
+        <span className="printing-tile-frame mpc-tile-frame" ref={frameRef}>
           {failed ? (
             <span className="printing-tile-placeholder">
               <span className="printing-tile-placeholder-name">{card.name}</span>
@@ -143,6 +163,11 @@ function MpcTile(props: {
               alt=""
               decoding="async"
               draggable={false}
+              className={trimmed ? "mpc-trimmed" : undefined}
+              style={trimmed ?? undefined}
+              onLoad={(e) =>
+                setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
+              }
               onError={() => setFailed(true)}
             />
           ) : null}
@@ -174,16 +199,21 @@ function MpcPreview(props: {
   const [requested, setRequested] = useState(false);
   const [largeLoaded, setLargeLoaded] = useState(false);
   const [largeFailed, setLargeFailed] = useState(false);
+  // Shown as cut, like the tiles: the bleed is cropped off.
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const trimmed = mpcTrimStyle(natural);
   useEffect(() => {
     const timer = setTimeout(() => setRequested(true), settleMs);
     return () => clearTimeout(timer);
   }, [settleMs]);
 
+  // The size is the full file's, which downloads only once picked: the
+  // pane shows Google's 800 px preview, so browsing downloads nothing.
   const details = [
     card.source_name,
     `${card.dpi} DPI`,
-    card.language,
     sizeLabel(card.size_bytes),
+    card.language,
     card.extension.toUpperCase(),
   ].filter(Boolean);
 
@@ -192,10 +222,22 @@ function MpcPreview(props: {
       <div className="printing-preview-wash" style={{ backgroundImage: `url("${smallUrl}")` }} />
       <div className="printing-preview-stage">
         <div className="printing-preview-frame">
-          <img src={smallUrl} alt="" draggable={false} />
+          <img
+            src={smallUrl}
+            alt=""
+            draggable={false}
+            className={trimmed ? "mpc-trimmed" : undefined}
+            style={trimmed ?? undefined}
+            onLoad={(e) =>
+              setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
+            }
+          />
           {requested && !largeFailed && (
             <img
-              className={`printing-preview-full${largeLoaded ? " loaded" : ""}`}
+              className={`printing-preview-full${largeLoaded ? " loaded" : ""}${
+                trimmed ? " mpc-trimmed" : ""
+              }`}
+              style={trimmed ?? undefined}
               src={largeUrl}
               alt={card.name}
               draggable={false}
@@ -298,9 +340,16 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
   const ids = useMemo(() => search.data?.ids ?? [], [search.data]);
   const [cards, setCards] = useState<ReadonlyMap<string, MpcCard>>(new Map());
   const [pages, setPages] = useState(1);
-  const [hydrating, setHydrating] = useState(false);
+  const [inFlight, setInFlight] = useState(0);
+  const hydrating = inFlight > 0;
   const [hydrateError, setHydrateError] = useState<string | null>(null);
+  // Ids already asked for, so each is requested once: one MPC Fill no
+  // longer knows comes back missing and must not be asked for again.
+  const requested = useRef(new Set<string>());
+  const searchData = useRef(search.data);
   useEffect(() => {
+    searchData.current = search.data;
+    requested.current = new Set((search.data?.ids ?? []).slice(0, FIRST_HYDRATED));
     setCards(new Map((search.data?.cards ?? []).map((c) => [c.drive_id, c])));
     setPages(1);
     setHydrateError(null);
@@ -308,14 +357,15 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
 
   // Hydrate the page the grid has scrolled to.
   useEffect(() => {
-    const wanted = ids.slice(0, pages * PAGE).filter((id) => !cards.has(id));
-    if (wanted.length === 0 || hydrating || hydrateError) return;
-    let cancelled = false;
-    setHydrating(true);
+    const wanted = ids.slice(0, pages * PAGE).filter((id) => !requested.current.has(id));
+    if (wanted.length === 0 || hydrateError) return;
+    for (const id of wanted) requested.current.add(id);
+    const forSearch = searchData.current;
+    setInFlight((n) => n + 1);
     generationApi
       .mpcCards(wanted)
       .then((resp) => {
-        if (cancelled) return;
+        if (searchData.current !== forSearch) return;
         setCards((prev) => {
           const next = new Map(prev);
           for (const card of resp.cards) next.set(card.drive_id, card);
@@ -323,16 +373,15 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         });
       })
       .catch((err: unknown) => {
-        if (!cancelled) setHydrateError(err instanceof Error ? err.message : String(err));
+        if (searchData.current !== forSearch) return;
+        for (const id of wanted) requested.current.delete(id);
+        setHydrateError(err instanceof Error ? err.message : String(err));
       })
-      .finally(() => {
-        if (!cancelled) setHydrating(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // `hydrating` is deliberately not a dependency: it is set here.
-  }, [ids, pages, cards, hydrateError]);
+      // Always, even for a search since replaced: this count is the
+      // spinner, and a request that never decrements it is a spinner
+      // that never stops.
+      .finally(() => setInFlight((n) => n - 1));
+  }, [ids, pages, hydrateError]);
 
   const shown = useMemo(
     () =>

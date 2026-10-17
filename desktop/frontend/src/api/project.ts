@@ -21,29 +21,22 @@ import type {
   SortPrimary,
 } from "./types";
 
-/** add_mpc_custom_image / add_mpc_back_image arguments: the file the
- *  generation server's /api/mpcfill/import returned, read by
- *  readPickedImage, plus its declarations and provenance. */
-export interface MpcLibraryAddArgs {
-  bytes: number[];
-  thumbnail: number[];
-  originalFilename: string;
-  width: number;
-  height: number;
-  label: string;
-  includesBleed: boolean;
-  bleedMm: number;
-  driveId: string;
-  mpcSource: string;
-  mpcName: string;
-}
-
 /** Mirrors project_store::CustomCardItem (Rust). */
 export interface CustomCardItem {
   custom_image_id: number;
   quantity: number;
   back_mode: BackMode;
   back_image_id: number | null;
+}
+
+/** import_mpc_custom_image / import_mpc_back_image arguments. */
+export interface MpcImportArgs {
+  serverBaseUrl: string;
+  driveId: string;
+  mpcSource: string;
+  mpcName: string;
+  /** Declared unless the file's aspect says it has no bleed. */
+  bleedMm: number;
 }
 
 export interface ProjectSummary {
@@ -434,15 +427,12 @@ export const projectApi = {
     height: number;
   }) => invokeCommand<BackImage>("add_back_image", { ...args }),
 
-  /** Add a back picked on MPC Fill (the bytes /api/mpcfill/import
-   *  returned) with its provenance. If the library already holds these
-   *  bytes, that entry keeps its own label and bleed. */
-  addMpcBackImage: (args: MpcLibraryAddArgs) =>
-    invokeCommand<BackImage>("add_mpc_back_image", { ...args }),
-
-  /** The library back for an MPC Fill file, if it was picked before. */
-  findBackImageByDriveId: (driveId: string) =>
-    invokeCommand<BackImage | null>("find_back_image_by_drive_id", { driveId }),
+  /** Put a back picked on MPC Fill in the library. The generation
+   *  server downloads it (keeping a copy) and Rust takes the bytes
+   *  straight from there; art picked before comes back without another
+   *  download. */
+  importMpcBackImage: (args: MpcImportArgs) =>
+    invokeCommand<BackImage>("import_mpc_back_image", { ...args }),
 
   setBackImageLabel: (id: number, label: string) =>
     invokeCommand<void>("set_back_image_label", { id, label }),
@@ -512,15 +502,9 @@ export const projectApi = {
     height: number;
   }) => invokeCommand<CustomImage>("add_custom_image", { ...args }),
 
-  /** Add a card front picked on MPC Fill (the bytes /api/mpcfill/import
-   *  returned) with its provenance. If the library already holds these
-   *  bytes, that entry keeps its own label and bleed. */
-  addMpcCustomImage: (args: MpcLibraryAddArgs) =>
-    invokeCommand<CustomImage>("add_mpc_custom_image", { ...args }),
-
-  /** The library image for an MPC Fill file, if it was picked before. */
-  findCustomImageByDriveId: (driveId: string) =>
-    invokeCommand<CustomImage | null>("find_custom_image_by_drive_id", { driveId }),
+  /** importMpcBackImage for a card front. */
+  importMpcCustomImage: (args: MpcImportArgs) =>
+    invokeCommand<CustomImage>("import_mpc_custom_image", { ...args }),
 
   setCustomImageLabel: (id: number, label: string) =>
     invokeCommand<void>("set_custom_image_label", { id, label }),

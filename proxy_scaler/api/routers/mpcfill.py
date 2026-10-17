@@ -287,19 +287,28 @@ def import_art(body: MpcImportIn) -> Response:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     content_hash = hashlib.sha256(data).hexdigest()
     try:
+        with Image.open(io.BytesIO(data)) as img:
+            width, height = img.size
+    except (OSError, ValueError):
+        width = height = 0  # the store says why below
+    declared = declared_bleed_mm(width, height, body.bleed_mm)
+    try:
         if body.kind == "custom":
-            try:
-                with Image.open(io.BytesIO(data)) as img:
-                    width, height = img.size
-            except (OSError, ValueError):
-                width = height = 0  # store_original says why below
-            store_custom_bytes(
-                content_hash, data, declared_bleed_mm(width, height, body.bleed_mm)
-            )
+            store_custom_bytes(content_hash, data, declared)
         else:
             backs.store_original(data, expected_hash=content_hash)
     except (customs.CustomImageError, backs.BackImageError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # The client's Rust side reads these instead of decoding the file (it
+    # has no image decoder): its library row needs the dimensions, and the
+    # bleed it was stored under so the two agree.
     return Response(
-        content=data, media_type=f"image/{fmt}", headers={"Cache-Control": "no-store"}
+        content=data,
+        media_type=f"image/{fmt}",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Image-Width": str(width),
+            "X-Image-Height": str(height),
+            "X-Declared-Bleed-Mm": f"{declared:g}",
+        },
     )

@@ -38,8 +38,18 @@ import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
-import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
-import { autoPickMpcArt, importMpcOrder } from "../mpcFill";
+import { registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { importMpcOrder } from "../mpcFill";
+import {
+  autoPickMpcArt,
+  cancelPendingFaceArt,
+  dismissPendingFaceArt,
+  downloadPickedPrinting,
+  pendingFaceArtKey,
+  queueFaceArtPick,
+  usePendingFaceArt,
+  type PendingFaceArt,
+} from "../pickDownloads";
 import SplitPill from "../components/SplitPill";
 import { parseMpcOrder } from "../mpcOrder";
 import type { BackImage } from "../api/types";
@@ -82,10 +92,37 @@ function localCardIdentity(card: CardRow): string {
 }
 
 // One face of a row; `art` when it prints MPC Fill art (face_art).
-type DisplayFace = CardFaceStatus<CardFaceArt>;
+type DisplayFace = CardFaceStatus<CardFaceArt> & {
+  /** MPC Fill art picked for this face and still on its way. */
+  pick?: PendingFaceArt;
+};
+
+/** Faces with MPC art still downloading show that instead of what they
+ *  print today. Positions: 0 for a single face or a front, 1 for a back. */
+function withPendingPicks(
+  faces: DisplayFace[],
+  cardId: number,
+  pendingArt: ReadonlyMap<string, PendingFaceArt>,
+): DisplayFace[] {
+  const picks = [0, 1]
+    .map((face) => pendingArt.get(pendingFaceArtKey(cardId, face)))
+    .filter((p): p is PendingFaceArt => p != null);
+  if (picks.length === 0) return faces;
+  const position = (f: DisplayFace) => f.art?.face ?? (f.faceLabel === "back" ? 1 : 0);
+  const picked = new Set(picks.map((p) => p.face));
+  return [
+    ...faces.filter((f) => !picked.has(position(f))),
+    ...picks.map((pick) => ({
+      faceLabel: pick.totalFaces > 1 ? (pick.face === 0 ? "front" : "back") : null,
+      variants: [],
+      pick,
+    })),
+  ].sort((a, b) => (a.pick?.face ?? position(a)) - (b.pick?.face ?? position(b)));
+}
 
 export default function DecklistPage() {
   const queryClient = useQueryClient();
+  const pendingArt = usePendingFaceArt();
   const {
     projectId,
     projectTag,
@@ -254,6 +291,10 @@ export default function DecklistPage() {
   function invalidateStatus() {
     queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] });
   }
+  /** invalidateStatus, resolving once the new status has arrived. */
+  function refetchStatus() {
+    return queryClient.refetchQueries({ queryKey: ["generation-status", projectTag] });
+  }
 
   // Reconcile the gallery with the server's disk on import/load (and
   // again once the server comes up). Adoption: images generated under
@@ -415,42 +456,32 @@ export default function DecklistPage() {
   // The import toggle's "MPC Fill": every face of each newly imported
   // card gets MPC Fill's top match as its face art, downloaded one at a
   // time with a cancel. Faces with no match keep their Scryfall art.
-  const artCanceled = useRef(false);
-  const [artProgress, setArtProgress] = useState<{
-    done: number;
-    total: number;
-    name: string;
-  } | null>(null);
+  const [artProgress, setArtProgress] = useState<{ done: number; total: number } | null>(null);
   const [artNote, setArtNote] = useState<string | null>(null);
   async function pickMpcArtFor(imported: CardRow[]) {
-    artCanceled.current = false;
-    setArtProgress({ done: 0, total: 0, name: "" });
+    setArtProgress({ done: 0, total: 0 });
     try {
-      const result = await autoPickMpcArt(
-        imported,
-        setCardFaceArt,
-        (done, total, name) => setArtProgress({ done, total, name }),
-        () => artCanceled.current,
-      );
-      const parts = [
-        result.canceled
-          ? `Stopped after ${result.picked} face(s) of MPC Fill art; the rest keep Scryfall art.`
-          : `MPC Fill art on ${result.picked} face(s).`,
-      ];
+      const result = await autoPickMpcArt(imported, {
+        setFaceArt: setCardFaceArt,
+        projectTag,
+        serverVersion,
+        refreshStatus: refetchStatus,
+        onProgress: (done, total) => setArtProgress({ done, total }),
+      });
+      // Only what needs the user's attention; each card's row already
+      // shows its own art arriving.
+      const parts: string[] = [];
       if (result.unmatched.length) {
-        parts.push(`No MPC Fill art for: ${result.unmatched.join(", ")} (Scryfall art kept).`);
+        parts.push(`No MPC Fill art for ${result.unmatched.join(", ")} — kept Scryfall art.`);
       }
-      if (result.errors.length) parts.push(`Couldn't fetch: ${result.errors.join(" ")}`);
-      setArtNote(parts.join(" "));
-      if (result.picked > 0 && !serverUnavailable) {
-        void registerCustomCards(getProjectSnapshot().cards, projectTag, serverVersion)
-          .then(() => invalidateStatus())
-          .catch(() => {});
+      if (result.failed) {
+        parts.push(`${result.failed} download(s) failed — those faces kept Scryfall art.`);
       }
+      setArtNote(parts.length ? parts.join(" ") : null);
       invalidateStatus();
     } catch (err) {
       setArtNote(
-        `Couldn't pick MPC Fill art: ${err instanceof Error ? err.message : String(err)} Scryfall art kept.`,
+        `Couldn't pick MPC Fill art (${err instanceof Error ? err.message : String(err)}) — kept Scryfall art.`,
       );
     } finally {
       setArtProgress(null);
@@ -983,47 +1014,39 @@ export default function DecklistPage() {
               />
               All Languages
             </label>
-          </div>
-          {/* Where imported cards' art comes from. MPC Fill still matches
-              each line against Scryfall (that's the card), then prints
-              MPC Fill's top art for every face in its place. */}
-          <div className="import-actions import-art-source">
-            <span className="hint">Art from</span>
-            <SplitPill
-              ariaLabel="Where imported cards' art comes from"
-              value={settings.import_art_source}
-              onChange={(value) => setSettings((s) => ({ ...s, import_art_source: value }))}
-              options={[
-                {
-                  value: "scryfall",
-                  label: "Scryfall",
-                  title: "Each card's own printing (upscaled when you Generate)",
-                },
-                {
-                  value: "mpc",
-                  label: "MPC Fill",
-                  title: mpcSupported
-                    ? "MPC Fill's top community art for every face, picked automatically on import. Change any of them from the card's printing button."
-                    : "Needs a newer generation server",
-                  disabled: !mpcSupported && settings.import_art_source !== "mpc",
-                },
-              ]}
-            />
+            {/* Where imported cards' art comes from. MPC Fill still matches
+                each line against Scryfall (that's the card), then prints
+                MPC Fill's top art for every face in its place. */}
+            <span className="import-art-source">
+              <span className="hint">Art from</span>
+              <SplitPill
+                ariaLabel="Where imported cards' art comes from"
+                value={settings.import_art_source}
+                onChange={(value) => setSettings((s) => ({ ...s, import_art_source: value }))}
+                options={[
+                  {
+                    value: "scryfall",
+                    label: "Scryfall",
+                    title: "Each card's own printing (upscaled when you Generate)",
+                  },
+                  {
+                    value: "mpc",
+                    label: "MPC Fill",
+                    title: mpcSupported
+                      ? "MPC Fill's top community art for every face, picked automatically on import. Change any of them from the card's printing button."
+                      : "Needs a newer generation server",
+                    disabled: !mpcSupported,
+                  },
+                ]}
+              />
+            </span>
           </div>
           {artProgress && (
             <p className="hint">
               {artProgress.total === 0
                 ? "Finding MPC Fill art…"
-                : `Fetching MPC Fill art ${Math.min(artProgress.done + 1, artProgress.total)} of ${artProgress.total}${
-                    artProgress.name ? ` — ${artProgress.name}` : ""
-                  }…`}{" "}
-              <button
-                type="button"
-                className="linklike"
-                onClick={() => {
-                  artCanceled.current = true;
-                }}
-              >
+                : `Fetching MPC Fill art ${Math.min(artProgress.done + 1, artProgress.total)} of ${artProgress.total}…`}{" "}
+              <button type="button" className="linklike" onClick={cancelPendingFaceArt}>
                 Stop
               </button>
             </p>
@@ -1250,11 +1273,10 @@ export default function DecklistPage() {
             .filter(({ face }) => face.variants.length > 0);
           // A face printing MPC Fill art shows that image's variants in
           // its place (they live under the image's own identity).
-          const faces: DisplayFace[] = applyFaceArt(
-            scryfallFaces,
-            card.face_art ?? [],
-            galleryByCard,
-            tasksByCard,
+          const faces: DisplayFace[] = withPendingPicks(
+            applyFaceArt(scryfallFaces, card.face_art ?? [], galleryByCard, tasksByCard),
+            card.id,
+            pendingArt,
           );
           // Known only once the card's faces have been generated or
           // downloaded: a double-faced card's "back" face is what prints
@@ -1287,33 +1309,43 @@ export default function DecklistPage() {
                 // query refresh makes that visible without waiting for the
                 // 3s poll.
                 setCardPrinting(card.id, printing)
-                  .then(invalidateStatus)
+                  .then(() => {
+                    // Fetch the picked printing's full-size image now, as
+                    // a queued download task (the Download button's), so
+                    // its "300 · Original" lands without another click.
+                    downloadPickedPrinting(
+                      {
+                        ...card,
+                        scryfall_id: printing.scryfallId,
+                        name: printing.name,
+                        set_code: printing.setCode,
+                        collector_number: printing.collectorNumber,
+                        lang: printing.lang,
+                        printed_name: printing.printedName,
+                        face_art: [],
+                      },
+                      projectTag,
+                    );
+                    invalidateStatus();
+                  })
                   .catch(() => {});
               }}
               onPickerClosed={() => setAdoptNonce((n) => n + 1)}
               faceArt={{
-                onSetFaceArt: async (face, totalFaces, image) => {
-                  await setCardFaceArt(card.id, face, totalFaces, image);
-                  // Ready to print straight away, like a dropped custom:
-                  // register it now (best-effort; Generate/PDF/ZIP rerun
-                  // the same idempotent step).
-                  const withArt: CardRow = {
-                    ...card,
-                    face_art: [
-                      {
-                        face,
-                        total_faces: totalFaces,
-                        custom_image_id: image.id,
-                        custom_hash: image.content_hash,
-                        label: image.label,
-                        mpc_drive_id: image.mpc?.drive_id ?? null,
-                      },
-                    ],
-                  };
-                  void registerCustomCards([withArt], projectTag, serverVersion)
-                    .then(() => invalidateStatus())
-                    .catch(() => {});
-                  invalidateStatus();
+                // Downloads in the background (pickDownloads.ts); the row
+                // shows the face as downloading meanwhile.
+                onPickArt: (face, totalFaces, art) => {
+                  dismissPendingFaceArt(card.id, face);
+                  void queueFaceArtPick({
+                    card,
+                    face,
+                    totalFaces,
+                    art,
+                    setFaceArt: setCardFaceArt,
+                    projectTag,
+                    serverVersion,
+                    refreshStatus: refetchStatus,
+                  });
                 },
                 onClearFaceArt: async (face) => {
                   await clearCardFaceArt(card.id, face);
@@ -1555,9 +1587,31 @@ function CardRowView(props: {
         faces.map((face, i) => (
           <div key={i} className="variants" data-tour="card-variants">
             {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
-            {face.art && face.variants.length === 0 && (
-              <StatusBadge status="canceled">
-                {face.art.mpc_drive_id ? "MPC" : "Custom"} · not on the server yet
+            {face.pick && (
+              <StatusBadge
+                status={
+                  face.pick.status === "failed"
+                    ? "failed"
+                    : face.pick.status === "downloading"
+                      ? "running"
+                      : "pending"
+                }
+                title={face.pick.error ?? face.pick.name}
+              >
+                MPC ·{" "}
+                {face.pick.status === "failed"
+                  ? "download failed"
+                  : face.pick.status === "downloading"
+                    ? "downloading"
+                    : "queued"}
+              </StatusBadge>
+            )}
+            {face.art && !face.pick && face.variants.length === 0 && (
+              <StatusBadge
+                status="canceled"
+                title="Download or Generate fetches it onto the generation server"
+              >
+                {face.art.mpc_drive_id ? "MPC" : "Custom"} · not downloaded yet
               </StatusBadge>
             )}
             {face.variants.map((v) => (

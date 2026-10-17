@@ -1,48 +1,22 @@
 // Picking MPC Fill art into the Custom Image or Back Image library.
 //
 // The generation server does all the talking to MPC Fill and Google Drive
-// (api/routers/mpcfill.py); the client never does. A pick asks the server
-// to download the art (/api/mpcfill/import), which stores it on the server
-// and hands the same bytes back, and those go through the exact path a
-// dropped file does — readPickedImage for the dimensions and preview, then
-// Rust for hashing and storage — plus where they came from. The next sync
-// then finds the server already holding them and uploads nothing.
+// (api/routers/mpcfill.py); the client never does. A pick asks Rust to
+// import the art (custom_images.rs / back_images.rs import_mpc_*), which
+// has the server download it — keeping a copy, so the next sync uploads
+// nothing — and takes the bytes straight from the server. Nothing large
+// crosses into the webview.
 import { generationApi } from "./api/generation";
 import { projectApi } from "./api/project";
-import type { CardRow, CustomCardItem } from "./api/project";
-import type { BackImage, CustomImage, MpcBestResult, MpcCard } from "./api/types";
-import { readPickedImage } from "./imageUpload";
+import type { CustomCardItem } from "./api/project";
+import type { BackImage, CustomImage, MpcCard } from "./api/types";
+import { getApiBaseUrl } from "./config";
 import { orderArtName, type OrderArt, type ParsedOrder } from "./mpcOrder";
 
 /** The bleed MPC Fill art is declared with: MakePlayingCards' 1/8 in per
- *  side, the same default every library image starts from. */
+ *  side, the same default every library image starts from. The server
+ *  declares a file whose aspect says it has none at 0 instead. */
 export const MPC_IMPORT_BLEED_MM = 3.175;
-
-// Mirrors proxy_scaler/api/routers/mpcfill.py::declared_bleed_mm: a file
-// this close to the bare card's 63:88 carries no bleed. The server stores
-// the import under the same rule, so the two agree without asking.
-const BLEED_FREE_ASPECT = 63 / 88;
-const BLEED_FREE_TOLERANCE = 0.006;
-
-export function declaredBleedMm(width: number, height: number, bleedMm: number): number {
-  if (width <= 0 || height <= 0) return bleedMm;
-  const aspect = Math.min(width, height) / Math.max(width, height);
-  return Math.abs(aspect - BLEED_FREE_ASPECT) <= BLEED_FREE_TOLERANCE ? 0 : bleedMm;
-}
-
-const EXTENSIONS: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-};
-
-/** A filename for the library: MPC Fill's name made safe for a path, with
- *  the extension the bytes actually are (Rust names the stored file, and
- *  the viewer picks its MIME type, by that extension). */
-export function mpcFilename(card: MpcCard, mime: string): string {
-  const stem = card.name.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "MPC art";
-  return `${stem}.${EXTENSIONS[mime] ?? card.extension ?? "png"}`;
-}
 
 export type MpcLibraryKind = "custom" | "back";
 
@@ -57,34 +31,16 @@ export async function importMpcArt(
   kind: MpcLibraryKind,
   card: MpcCard,
 ): Promise<CustomImage | BackImage> {
-  const existing =
-    kind === "custom"
-      ? await projectApi.findCustomImageByDriveId(card.drive_id)
-      : await projectApi.findBackImageByDriveId(card.drive_id);
-  if (existing) return existing;
-
-  const blob = await generationApi.mpcImport({
-    drive_id: card.drive_id,
-    kind,
-    bleed_mm: MPC_IMPORT_BLEED_MM,
-  });
-  const file = new File([blob], mpcFilename(card, blob.type), { type: blob.type });
-  const picked = await readPickedImage(file);
-  const bleed = declaredBleedMm(picked.width, picked.height, MPC_IMPORT_BLEED_MM);
   const args = {
-    ...picked,
-    originalFilename: file.name,
-    label: card.name,
-    includesBleed: bleed > 0,
-    // Kept while unticked, so ticking the box later restores the amount.
-    bleedMm: MPC_IMPORT_BLEED_MM,
+    serverBaseUrl: getApiBaseUrl(),
     driveId: card.drive_id,
     mpcSource: card.source_name,
     mpcName: card.name,
+    bleedMm: MPC_IMPORT_BLEED_MM,
   };
   return kind === "custom"
-    ? projectApi.addMpcCustomImage(args)
-    : projectApi.addMpcBackImage(args);
+    ? projectApi.importMpcCustomImage(args)
+    : projectApi.importMpcBackImage(args);
 }
 
 export interface OrderImportResult {
@@ -174,69 +130,4 @@ export async function importMpcOrder(
     errors,
     canceled: false,
   };
-}
-
-export interface AutoPickResult {
-  /** Faces that now print MPC Fill art. */
-  picked: number;
-  /** Cards for which MPC Fill had nothing, on any face. */
-  unmatched: string[];
-  errors: string[];
-  canceled: boolean;
-}
-
-// One /api/mpcfill/best call covers this many cards (the server's cap).
-const BEST_BATCH = 300;
-
-/**
- * Give freshly imported Scryfall cards MPC Fill art: the top match for
- * every face (one search per 300 cards on the server), each downloaded
- * into the library and set as that face's art, one at a time. Faces MPC
- * Fill has nothing for keep their Scryfall art. Cards that already have
- * face art are left alone. Throws only if the matching itself fails.
- */
-export async function autoPickMpcArt(
-  cards: CardRow[],
-  setFaceArt: (cardId: number, face: number, totalFaces: number, image: CustomImage) => Promise<void>,
-  onProgress: (done: number, total: number, name: string) => void,
-  isCanceled: () => boolean,
-): Promise<AutoPickResult> {
-  const eligible = cards.filter(
-    (c) => c.scryfall_id != null && c.custom_image_id == null && !(c.face_art?.length),
-  );
-  const ids = [...new Set(eligible.map((c) => c.scryfall_id as string))];
-  const best = new Map<string, MpcBestResult["results"][number]>();
-  for (let i = 0; i < ids.length; i += BEST_BATCH) {
-    const resp = await generationApi.mpcBest({ scryfall_ids: ids.slice(i, i + BEST_BATCH) });
-    for (const r of resp.results) best.set(r.scryfall_id, r);
-  }
-
-  const jobs: { card: CardRow; face: number; total: number; art: MpcCard }[] = [];
-  const unmatched: string[] = [];
-  for (const card of eligible) {
-    const match = best.get(card.scryfall_id as string);
-    const faces = match?.faces ?? [];
-    if (!faces.some((f) => f != null)) unmatched.push(card.name);
-    faces.forEach((art, face) => {
-      if (art && match) jobs.push({ card, face, total: match.total_faces, art });
-    });
-  }
-
-  const errors: string[] = [];
-  let picked = 0;
-  for (const [i, job] of jobs.entries()) {
-    if (isCanceled()) return { picked, unmatched, errors, canceled: true };
-    onProgress(i, jobs.length, job.art.name);
-    try {
-      // The library check inside importMpcArt makes a repeat (four copies
-      // of a basic land on four lines) cost nothing.
-      const image = await importMpcArt("custom", job.art);
-      await setFaceArt(job.card.id, job.face, job.total, image);
-      picked += 1;
-    } catch (err) {
-      errors.push(`${job.card.name}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  onProgress(jobs.length, jobs.length, "");
-  return { picked, unmatched, errors, canceled: false };
 }

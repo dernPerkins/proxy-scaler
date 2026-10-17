@@ -388,19 +388,6 @@ export const generationApi = {
   // from Google via the server's disk cache.
   mpcThumbUrl: (driveId: string, size: "small" | "large" = "small") =>
     `${getApiBaseUrl()}/api/mpcfill/thumb/${encodeURIComponent(driveId)}?size=${size}`,
-  // Download one piece of art onto the server (as a Custom or Back Image)
-  // and get the original file back for the library. A Blob whose type is
-  // the image's real MIME type.
-  mpcImport: async (body: { drive_id: string; kind: "custom" | "back"; bleed_mm: number }) => {
-    await waitForServerReady();
-    const resp = await fetch(`${getApiBaseUrl()}/api/mpcfill/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) await throwApiError(resp);
-    return resp.blob();
-  },
 
   // A set's symbol as a monochrome SVG, used as a CSS mask (SetIcon.tsx).
   // Only for servers serverSupportsSetIcons() accepts — older ones 404.

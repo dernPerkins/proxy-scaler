@@ -250,52 +250,45 @@ pub fn add_custom_image(
     add_image(&app, &bytes, &thumbnail, &original_filename, width, height, None, None)
 }
 
-/// Add a Custom Image picked on MPC Fill: the bytes the generation
-/// server's /api/mpcfill/import returned, plus where they came from.
+/// Put a Custom Image picked on MPC Fill in the library: the generation
+/// server at `server_base_url` downloads it (and keeps a copy, so the next
+/// sync uploads nothing) and hands the bytes straight to Rust. Art picked
+/// before comes back from the library without another download.
 ///
-/// A new row takes `label` (MPC Fill's name) and the bleed declaration
-/// given. If the library already holds these bytes, that row keeps its
-/// own label and bleed — the user's declarations win — and only learns
-/// its provenance if it had none.
+/// A new row is named after MPC Fill's name and declared with the bleed
+/// the server stored it under. If the library already holds these bytes,
+/// that row keeps its own label and bleed — the user's declarations win —
+/// and only learns its provenance if it had none.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn add_mpc_custom_image(
+pub async fn import_mpc_custom_image(
     app: AppHandle,
-    bytes: Vec<u8>,
-    thumbnail: Vec<u8>,
-    original_filename: String,
-    width: i64,
-    height: i64,
-    label: String,
-    includes_bleed: bool,
-    bleed_mm: f64,
+    server_base_url: String,
     drive_id: String,
     mpc_source: String,
     mpc_name: String,
+    bleed_mm: f64,
 ) -> Result<CustomImage, String> {
     let mpc = MpcProvenance::new(&drive_id, &mpc_source, &mpc_name)?;
     let bleed_mm = validate_bleed_mm(bleed_mm)?;
+    if let Some(found) = find_by_drive_id(&open_db(&app)?, &mpc.drive_id)? {
+        return Ok(found);
+    }
+    let art = mpc_art::fetch_from_server(&server_base_url, &mpc.drive_id, "custom", bleed_mm).await?;
+    let filename = mpc_art::library_filename(&mpc.name, art.extension);
     add_image(
         &app,
-        &bytes,
-        &thumbnail,
-        &original_filename,
-        width,
-        height,
-        Some((label, includes_bleed, bleed_mm)),
+        &art.bytes,
+        &art.thumbnail,
+        &filename,
+        art.width,
+        art.height,
+        // Kept while unticked, so ticking the box later restores it.
+        Some((mpc.name.clone(), art.declared_bleed_mm > 0.0, bleed_mm)),
         Some(&mpc),
     )
 }
 
-/// The library image for an MPC Fill file, if one was already picked.
-/// The client checks this before importing, so picking the same art
-/// twice never downloads it twice.
-#[tauri::command]
-pub fn find_custom_image_by_drive_id(
-    app: AppHandle,
-    drive_id: String,
-) -> Result<Option<CustomImage>, String> {
-    let conn = open_db(&app)?;
+fn find_by_drive_id(conn: &Connection, drive_id: &str) -> Result<Option<CustomImage>, String> {
     conn.query_row(
         "SELECT * FROM custom_images WHERE mpc_drive_id = ?1 ORDER BY id LIMIT 1",
         params![drive_id],

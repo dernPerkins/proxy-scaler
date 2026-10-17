@@ -277,6 +277,8 @@ def test_import_custom_returns_the_original_and_stores_it(client, downloads) -> 
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "image/png"
     assert resp.content == _png()
+    assert (resp.headers["x-image-width"], resp.headers["x-image-height"]) == ("816", "1110")
+    assert resp.headers["x-declared-bleed-mm"] == "3.175"
     content_hash = hashlib.sha256(resp.content).hexdigest()
     status = client.get(f"/api/customs/{content_hash}").json()
     assert status["present"] is True
@@ -289,6 +291,7 @@ def test_import_of_a_bleed_free_file_declares_no_bleed(client, monkeypatch) -> N
     resp = client.post(
         "/api/mpcfill/import", json={"drive_id": DRIVE_ID, "kind": "custom", "bleed_mm": 3.175}
     )
+    assert resp.headers["x-declared-bleed-mm"] == "0"
     content_hash = hashlib.sha256(resp.content).hexdigest()
     assert client.get(f"/api/customs/{content_hash}").json()["bleed_mm"] == 0.0
 
