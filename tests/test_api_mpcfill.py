@@ -235,6 +235,20 @@ def test_best_returns_the_top_match_per_face_in_one_search(client, source) -> No
     assert filters.languages == ("EN",)
 
 
+def test_best_filters_to_the_import_language(client, source) -> None:
+    _seed([_card()])
+    client.post("/api/mpcfill/best", json={"scryfall_ids": ["bolt-lea"], "lang": "ja"})
+    assert source.searches[-1][1].languages == ("JA",)
+
+
+def test_best_with_a_language_mpc_fill_lacks_matches_nothing(client, source) -> None:
+    _seed([_card()])
+    body = client.post("/api/mpcfill/best", json={"scryfall_ids": ["bolt-lea"], "lang": "ko"}).json()
+    # Kept on its Korean printing, not given English art.
+    assert body["results"][0]["faces"] == [None]
+    assert source.searches == []
+
+
 def test_best_leaves_faces_without_a_match_null(client, source) -> None:
     _seed([_card()])
     source.ids = []

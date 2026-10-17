@@ -263,6 +263,9 @@ export async function autoPickMpcArt(
     projectTag: string | null;
     serverVersion: string | null;
     refreshStatus: Job["refreshStatus"];
+    /** The import's language (Scryfall code): only MPC Fill art in it
+     *  counts, so a card without any keeps its printing. null: any. */
+    lang: string | null;
     onProgress: (done: number, total: number) => void;
   },
 ): Promise<AutoPickResult> {
@@ -272,7 +275,10 @@ export async function autoPickMpcArt(
   const ids = [...new Set(eligible.map((c) => c.scryfall_id as string))];
   const best = new Map<string, MpcBestResult["results"][number]>();
   for (let i = 0; i < ids.length; i += BEST_BATCH) {
-    const resp = await generationApi.mpcBest({ scryfall_ids: ids.slice(i, i + BEST_BATCH) });
+    const resp = await generationApi.mpcBest({
+      scryfall_ids: ids.slice(i, i + BEST_BATCH),
+      lang: opts.lang,
+    });
     for (const r of resp.results) best.set(r.scryfall_id, r);
   }
 

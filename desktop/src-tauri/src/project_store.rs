@@ -2309,6 +2309,44 @@ pub fn set_show_digital_printings(app: AppHandle, show: bool) -> Result<(), Stri
     write_show_digital_printings(&conn, show)
 }
 
+// The MPC Fill browser's language filter, remembered app-wide: whatever
+// was last chosen in its dropdown is where the next one starts. "any"
+// (the default: MPC Fill is nearly all English), "card" (the card's own
+// language, where the browser has a card), or an MPC Fill language code.
+
+const MPC_FILL_LANGUAGE_KEY: &str = "mpc_fill_language";
+
+fn valid_mpc_fill_language(value: &str) -> bool {
+    value == "any"
+        || value == "card"
+        || (value.len() == 2 && value.chars().all(|c| c.is_ascii_uppercase()))
+}
+
+fn read_mpc_fill_language(conn: &Connection) -> Result<String, String> {
+    Ok(read_app_setting(conn, MPC_FILL_LANGUAGE_KEY)?
+        .filter(|v| valid_mpc_fill_language(v))
+        .unwrap_or_else(|| "any".to_string()))
+}
+
+fn write_mpc_fill_language(conn: &Connection, value: &str) -> Result<(), String> {
+    if !valid_mpc_fill_language(value) {
+        return Err(format!("Unknown MPC Fill language {value:?}."));
+    }
+    write_app_setting(conn, MPC_FILL_LANGUAGE_KEY, value)
+}
+
+#[tauri::command]
+pub fn get_mpc_fill_language(app: AppHandle) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    read_mpc_fill_language(&conn)
+}
+
+#[tauri::command]
+pub fn set_mpc_fill_language(app: AppHandle, language: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_mpc_fill_language(&conn, &language)
+}
+
 // --- App Settings' "Use Proxy Scaler image cache" ---------------------------
 //
 // Which image origin this client asks the generation server to fetch card
@@ -3634,6 +3672,21 @@ mod tests {
     fn settings_presets_reject_an_unknown_kind() {
         assert!(settings_presets_key("decklist").is_err());
         assert!(settings_presets_key("").is_err());
+    }
+
+    #[test]
+    fn mpc_fill_language_defaults_to_any_and_roundtrips() {
+        let conn = test_conn();
+        assert_eq!(read_mpc_fill_language(&conn).expect("read"), "any");
+        for value in ["card", "JA", "any"] {
+            write_mpc_fill_language(&conn, value).expect("write");
+            assert_eq!(read_mpc_fill_language(&conn).expect("read"), value);
+        }
+        assert!(write_mpc_fill_language(&conn, "ja").is_err());
+        assert!(write_mpc_fill_language(&conn, "klingon").is_err());
+        // Garbage already stored reads as the default.
+        write_app_setting(&conn, MPC_FILL_LANGUAGE_KEY, "??").expect("raw");
+        assert_eq!(read_mpc_fill_language(&conn).expect("read"), "any");
     }
 
     #[test]

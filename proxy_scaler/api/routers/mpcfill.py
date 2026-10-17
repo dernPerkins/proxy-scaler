@@ -215,7 +215,12 @@ def best(body: MpcBestIn) -> MpcBestOut:
     whole decklist with MPC Fill art. One search request per 300 faces
     (and a day-long cache behind that), one hydration request for the
     winners. A face with no match comes back null and keeps its Scryfall
-    art; a card the corpus doesn't hold is left out."""
+    art; a card the corpus doesn't hold is left out.
+
+    `lang` is the import's language: only art in it counts. Unlike
+    /search, a language MPC Fill doesn't have at all (Korean, Phyrexian
+    ...) matches nothing rather than everything, so those cards keep their
+    printing instead of getting English art."""
     conn = carddb.open_if_ready(get_card_db_path())
     if conn is None:
         raise HTTPException(status_code=404, detail=_NO_CORPUS)
@@ -235,7 +240,12 @@ def best(body: MpcBestIn) -> MpcBestOut:
         include_nsfw=body.nsfw,
         min_dpi=body.min_dpi,
     )
-    queries = list(dict.fromkeys(q for _sid, qs in plans for q in qs if q.query))
+    unsupported = bool(body.lang) and language is None
+    queries = (
+        []
+        if unsupported
+        else list(dict.fromkeys(q for _sid, qs in plans for q in qs if q.query))
+    )
     try:
         found = _source().search(queries, filters) if queries else {}
     except ArtSourceError as exc:

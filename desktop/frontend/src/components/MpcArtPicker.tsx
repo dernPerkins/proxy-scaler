@@ -19,8 +19,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, generationApi } from "../api/generation";
+import { projectApi } from "../api/project";
 import type { MpcCard, MpcCardType } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import { fillFrameWith, looksBled, trimGeometry } from "../cardTrim";
@@ -83,7 +84,9 @@ interface Submitted {
   face: number;
   /** null until known: a search by card lets the server say CARD or TOKEN. */
   type: MpcCardType | null;
-  lang: string;
+  /** The language filter as chosen: "any", "card" or an MPC Fill code.
+   *  null follows the remembered default (getMpcFillLanguage). */
+  langChoice: string | null;
   minDpi: number;
   nsfw: boolean;
   fuzzy: boolean;
@@ -302,7 +305,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     scryfallId: initial.query ? null : (initial.scryfallId ?? null),
     face: initial.face ?? 0,
     type: initial.query || !initial.scryfallId ? cardTypes[0] : null,
-    lang: mpcLanguage(props.defaultLang),
+    langChoice: null,
     minDpi: 0,
     nsfw: false,
     fuzzy: false,
@@ -311,23 +314,55 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
   const browsing = submitted.type === "CARDBACK" && !submitted.q;
   const canSearch = Boolean(submitted.q || submitted.scryfallId || submitted.type === "CARDBACK");
 
+  // The language filter starts where it was last left, app-wide (like the
+  // printing grid's Show Digital). "card" means the card's own language,
+  // which only the change-printing modal has; elsewhere it reads as any.
+  const queryClient = useQueryClient();
+  const hasCard = props.defaultLang !== undefined;
+  const savedLanguage = useQuery({
+    queryKey: ["mpc-fill-language"],
+    queryFn: () => projectApi.getMpcFillLanguage(),
+    staleTime: Infinity,
+  });
+  const languageReady = savedLanguage.isFetched;
+  const langChoice = submitted.langChoice ?? savedLanguage.data ?? "any";
+  const shownChoice = langChoice === "card" && !hasCard ? "any" : langChoice;
+  const lang =
+    shownChoice === "any"
+      ? ""
+      : shownChoice === "card"
+        ? mpcLanguage(props.defaultLang)
+        : mpcLanguage(shownChoice);
+  const languageName = MPC_LANGUAGES.find((l) => l.code === lang)?.name ?? lang;
+  const cardLanguageName = hasCard
+    ? MPC_LANGUAGES.find((l) => l.code === mpcLanguage(props.defaultLang))?.name
+    : undefined;
+
+  function chooseLanguage(choice: string) {
+    submit({ langChoice: choice });
+    queryClient.setQueryData(["mpc-fill-language"], choice);
+    void projectApi.setMpcFillLanguage(choice).catch(() => {});
+  }
+
   // Searches run when asked (open, Search, a filter change), never per
   // keystroke; each distinct search is one cached request on the server.
   const search = useQuery({
-    queryKey: ["mpc-search", submitted],
+    queryKey: ["mpc-search", submitted, lang],
     queryFn: () =>
       generationApi.mpcSearch({
         q: submitted.q || undefined,
         scryfall_id: submitted.q ? undefined : (submitted.scryfallId ?? undefined),
         face: submitted.face,
         type: submitted.type ?? undefined,
-        lang: submitted.lang || undefined,
+        lang: lang || undefined,
         min_dpi: submitted.minDpi || undefined,
         nsfw: submitted.nsfw || undefined,
         fuzzy: submitted.fuzzy || undefined,
         refresh: submitted.refresh > 0 || undefined,
       }),
-    enabled: canSearch,
+    // After the remembered language has loaded, so the first search is
+    // the right one rather than one that is immediately replaced.
+    enabled: canSearch && languageReady,
     staleTime: Infinity,
     retry: false,
   });
@@ -533,12 +568,21 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         )}
         <SelectMenu
           ariaLabel="Language"
+          title="Remembered for every MPC Fill search"
           options={[
-            { value: "", label: "Any language" },
+            { value: "any", label: "Any language" },
+            ...(hasCard
+              ? [
+                  {
+                    value: "card",
+                    label: cardLanguageName ? `Card's language (${cardLanguageName})` : "Card's language",
+                  },
+                ]
+              : []),
             ...MPC_LANGUAGES.map((l) => ({ value: l.code, label: l.name })),
           ]}
-          value={submitted.lang}
-          onChange={(value) => submit({ lang: value })}
+          value={shownChoice}
+          onChange={chooseLanguage}
         />
         <SelectMenu
           ariaLabel="Minimum DPI"
@@ -574,7 +618,16 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
       </div>
 
       <div className="modal-body" ref={scrollRef}>
-        {search.isSuccess && ids.length === 0 ? (
+        {search.isSuccess && ids.length === 0 && lang ? (
+          // Most MPC Fill art is English: an empty result under a language
+          // filter is usually the filter, not the search.
+          <p className="hint">
+            No {languageName} MPC Fill art for {search.data.query || "this search"}.{" "}
+            <button type="button" className="linklike" onClick={() => submit({ langChoice: "any" })}>
+              Show all languages
+            </button>
+          </p>
+        ) : search.isSuccess && ids.length === 0 ? (
           <p className="hint">
             No MPC Fill art matches
             {submitted.fuzzy ? "." : ". Try Fuzzy, or a shorter name."}

@@ -321,13 +321,18 @@ Google Drives — can go anywhere your own uploads can:
   button, decides where an import's art comes from. On MPC Fill, each
   imported card is still matched to its Scryfall printing, then every face
   gets MPC Fill's top match (downloaded one at a time — Stop leaves the
-  rest on Scryfall art). Cards MPC Fill has nothing for keep their
-  Scryfall art, and any pick can be changed from the card's printing
-  button. The choice is saved per project.
+  rest on Scryfall art). Only art in the import's language counts (any
+  language with **All Languages** ticked); cards MPC Fill has nothing for
+  keep their Scryfall printing, and any pick can be changed from the
+  card's printing button. The choice is saved per project.
 - **Import the order (.xml)** under the Decklist tab's custom-art box reads
   an order file from MPC Fill's *Download XML* button: every front and
   back is fetched into your libraries, and the order's cards are added
   with their quantities and backs.
+
+Nearly all MPC Fill art is English, so its browser searches every language
+by default; its language dropdown (any language, the card's own, or a
+specific one) is remembered for every search after.
 
 MPC Fill images are declared as carrying MakePlayingCards' 3.175 mm of
 bleed (editable like any upload), and can be upscaled like any custom

@@ -876,6 +876,8 @@ fn main() {
             set_cards_resolution,
             get_show_digital_printings,
             set_show_digital_printings,
+            project_store::get_mpc_fill_language,
+            project_store::set_mpc_fill_language,
             get_cutter_inset_unit,
             set_cutter_inset_unit,
             get_registration_conflict_ignored,

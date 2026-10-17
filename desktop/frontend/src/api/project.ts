@@ -340,6 +340,12 @@ export const projectApi = {
 
   // The printing picker's "Show Digital" — an app-wide user preference
   // (same app_settings store), not per-popover state. False until ticked.
+  /** The MPC Fill browser's language filter, remembered app-wide: "any",
+   *  "card" (the card's own language), or an MPC Fill code ("JA"). */
+  getMpcFillLanguage: () => invokeCommand<string>("get_mpc_fill_language"),
+  setMpcFillLanguage: (language: string) =>
+    invokeCommand<void>("set_mpc_fill_language", { language }),
+
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>
     invokeCommand<void>("set_show_digital_printings", { show }),

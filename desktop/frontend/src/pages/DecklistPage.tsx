@@ -471,6 +471,9 @@ export default function DecklistPage() {
         projectTag,
         serverVersion,
         refreshStatus: refetchStatus,
+        // The import's own language: MPC Fill art in it, else the card
+        // keeps the printing it was imported as.
+        lang: settings.lang_any ? null : settings.preferred_lang,
         onProgress: (done, total) => setArtProgress({ done, total }),
       });
       // Only what needs the user's attention; each card's row already
