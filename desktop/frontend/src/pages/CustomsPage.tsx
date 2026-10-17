@@ -34,7 +34,15 @@ import SelectMenu from "../components/SelectMenu";
 import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageViewer";
 import LibraryUpscaleControls from "../components/LibraryUpscaleControls";
 import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
-import { serverSupportsLibraryUpscale, useServerReadiness, useServerVersion } from "../config";
+import {
+  MPC_FILL_MIN_SERVER_VERSION,
+  serverSupportsLibraryUpscale,
+  serverSupportsMpcFill,
+  useServerReadiness,
+  useServerVersion,
+} from "../config";
+import { MpcArtModal } from "../components/MpcArtPicker";
+import { importMpcArt } from "../mpcFill";
 import { useConnection } from "../connection";
 import { useProject } from "../context/ProjectContext";
 import {
@@ -46,7 +54,7 @@ import {
 } from "../libraryUpscale";
 import { UploadCanceled } from "../uploadProgress";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
-import { getProjectSnapshot, registerCustomCards } from "../syncCustoms";
+import { customImageRefs, getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
   ACCEPTED_IMAGE_TYPES,
   MAX_UPLOAD_MB,
@@ -106,6 +114,12 @@ function CustomSettingsFields({
   const queryClient = useQueryClient();
   return (
     <div className="field-group">
+      {image.mpc && (
+        <p className="mpc-provenance">
+          From MPC Fill · {image.mpc.source || "unknown uploader"}
+          {image.mpc.name && image.mpc.name !== image.label ? ` · ${image.mpc.name}` : ""}
+        </p>
+      )}
       <label className="field">
         <span>Name</span>
         <input
@@ -309,9 +323,13 @@ export default function CustomsPage() {
   // The full-size viewer deliberately does not survive a tab switch: it is
   // a modal over the page, not part of where the user was.
   const [viewingId, setViewingId] = useState<number | null>(null);
+  const [mpcOpen, setMpcOpen] = useState(false);
+  const mpcSupported = serverSupportsMpcFill(serverVersion);
   const [pendingDelete, setPendingDelete] = useState<{
     image: CustomImage;
     uses: number;
+    /** Scryfall cards printing it on a face; they keep their card. */
+    faceUses: number;
   } | null>(null);
   // A counter, not a boolean: drag events fire for every child element
   // entered, so a plain flag flickers off the moment the pointer crosses a
@@ -325,7 +343,7 @@ export default function CustomsPage() {
   });
   const images = useMemo(() => libraryQuery.data ?? [], [libraryQuery.data]);
   const idsInProject = useMemo(
-    () => new Set(cards.map((c) => c.custom_image_id).filter((id): id is number => id != null)),
+    () => new Set(cards.flatMap((c) => customImageRefs(c).map((ref) => ref.id))),
     [cards],
   );
   const selected = images.find((i) => i.id === selectedId) ?? null;
@@ -404,7 +422,9 @@ export default function CustomsPage() {
       await projectApi.setCustomImageBleed(args.id, args.includesBleed, args.bleedMm);
       await queryClient.invalidateQueries({ queryKey: ["custom-images"] });
       const { projectTag } = getProjectSnapshot();
-      const using = cards.filter((c) => c.custom_image_id === args.id);
+      const using = cards.filter((c) =>
+        customImageRefs(c).some((ref) => ref.id === args.id),
+      );
       if (using.length && projectTag != null) {
         try {
           await registerCustomCards(using, projectTag, serverVersion);
@@ -425,8 +445,11 @@ export default function CustomsPage() {
   };
 
   async function confirmDelete(image: CustomImage) {
-    const uses = await projectApi.countCardsUsingCustomImage(image.id);
-    setPendingDelete({ image, uses });
+    const [uses, faceUses] = await Promise.all([
+      projectApi.countCardsUsingCustomImage(image.id),
+      projectApi.countFaceArtUsingCustomImage(image.id),
+    ]);
+    setPendingDelete({ image, uses, faceUses });
   }
 
   return (
@@ -570,6 +593,27 @@ export default function CustomsPage() {
             </span>
           </button>
 
+          <button
+            type="button"
+            className="dropzone mpc-library-tile"
+            disabled={serverUnavailable || !mpcSupported}
+            title={
+              serverUnavailable
+                ? "Generation server is unreachable"
+                : !mpcSupported
+                  ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
+                  : "Search community art on MPC Fill"
+            }
+            onClick={() => setMpcOpen(true)}
+          >
+            <span className="dropzone-title">From MPC Fill</span>
+            <span className="dropzone-hint">
+              Search community art
+              <br />
+              cards and tokens
+            </span>
+          </button>
+
           {/* Inside the grid so it can never be orphaned from the button
               that clicks it — moving it out once silently made the whole
               tile do nothing (see BacksPage). */}
@@ -620,6 +664,22 @@ export default function CustomsPage() {
         </div>
       </main>
 
+      {mpcOpen ? (
+        <MpcArtModal
+          title="MPC Fill — card fronts"
+          initial={{}}
+          cardTypes={["CARD", "TOKEN"]}
+          pickLabel="Add to Custom cards"
+          onClose={() => setMpcOpen(false)}
+          onPick={async (card) => {
+            const image = await importMpcArt("custom", card);
+            await queryClient.invalidateQueries({ queryKey: ["custom-images"] });
+            setSelectedId(image.id);
+            setMpcOpen(false);
+          }}
+        />
+      ) : null}
+
       {viewing ? (
         <ImageViewer
           title={viewing.label}
@@ -650,6 +710,9 @@ export default function CustomsPage() {
           {pendingDelete.uses > 0
             ? `This image is used by ${pendingDelete.uses} card(s), which will be removed too.`
             : "This removes the image from your library on this machine."}
+          {pendingDelete.faceUses > 0
+            ? ` ${pendingDelete.faceUses} card(s) printing it on a face go back to their own art.`
+            : ""}
         </ConfirmDialog>
       ) : null}
     </div>

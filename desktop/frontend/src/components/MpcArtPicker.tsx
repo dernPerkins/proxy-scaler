@@ -1,0 +1,609 @@
+// Browsing MPC Fill community art: a search box, a few filters, a grid of
+// previews and a preview pane with the button that picks one.
+//
+// Everything comes from the generation server (api/routers/mpcfill.py):
+// the search (mpcfill.com, cached there for a day), the previews (Google
+// Drive, cached on the server's disk) and, when a pick is made, the
+// download. The client itself never contacts MPC Fill or Google.
+//
+// MpcArtBrowser fills a `.modal.printing-grid-modal` — the same layout as
+// the change-printing grid, preview column on the left — so it works both
+// in its own modal (MpcArtModal, used by the Customs and Backs tabs) and
+// inside the change-printing modal's MPC Fill mode.
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ApiError, generationApi } from "../api/generation";
+import type { MpcCard, MpcCardType } from "../api/types";
+import ModalOverlay from "./ModalOverlay";
+import SelectMenu from "./SelectMenu";
+import {
+  KEYBOARD_PREVIEW_SETTLE_MS,
+  gridColumns,
+  useTileVisibility,
+  type ObserveTile,
+} from "./imageGrid";
+
+// How many previews are hydrated (name, uploader, DPI) at a time as the
+// grid scrolls; the search response carries the first page.
+const PAGE = 60;
+
+// MPC Fill's languages (GET /2/languages/), and the Scryfall codes that
+// map onto them for a card's own default.
+const MPC_LANGUAGES: { code: string; name: string }[] = [
+  { code: "EN", name: "English" },
+  { code: "ES", name: "Spanish" },
+  { code: "FR", name: "French" },
+  { code: "DE", name: "German" },
+  { code: "IT", name: "Italian" },
+  { code: "PT", name: "Portuguese" },
+  { code: "JA", name: "Japanese" },
+  { code: "RU", name: "Russian" },
+  { code: "ZH", name: "Chinese" },
+  { code: "AR", name: "Arabic" },
+  { code: "SA", name: "Sanskrit" },
+];
+const SCRYFALL_TO_MPC: Record<string, string> = { zhs: "ZH", zht: "ZH" };
+
+function mpcLanguage(code: string | null | undefined): string {
+  if (!code) return "";
+  const upper = SCRYFALL_TO_MPC[code.toLowerCase()] ?? code.toUpperCase();
+  return MPC_LANGUAGES.some((l) => l.code === upper) ? upper : "";
+}
+
+const TYPE_LABELS: Record<MpcCardType, string> = {
+  CARD: "Cards",
+  TOKEN: "Tokens",
+  CARDBACK: "Card backs",
+};
+
+const MIN_DPI_OPTIONS = [
+  { value: "0", label: "Any DPI" },
+  { value: "300", label: "300+ DPI" },
+  { value: "600", label: "600+ DPI" },
+  { value: "800", label: "800+ DPI" },
+  { value: "1200", label: "1200+ DPI" },
+];
+
+interface Submitted {
+  q: string;
+  scryfallId: string | null;
+  face: number;
+  /** null until known: a search by card lets the server say CARD or TOKEN. */
+  type: MpcCardType | null;
+  lang: string;
+  minDpi: number;
+  nsfw: boolean;
+  fuzzy: boolean;
+  /** Bumped by Refresh: a new search that skips the server's cache. */
+  refresh: number;
+}
+
+function sizeLabel(bytes: number): string {
+  if (bytes <= 0) return "";
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.round(bytes / 1024)} KB`;
+}
+
+function MpcTile(props: {
+  card: MpcCard;
+  selected: boolean;
+  current: boolean;
+  tabIndex: number;
+  observe: ObserveTile;
+  buttonRef: (el: HTMLButtonElement | null) => void;
+  onFocus: () => void;
+  onSelect: () => void;
+  onPick: () => void;
+}) {
+  const { card, selected, current, observe } = props;
+  const frameRef = useRef<HTMLSpanElement>(null);
+  const [nearView, setNearView] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!frameRef.current) return;
+    return observe(frameRef.current, () => setNearView(true));
+  }, [observe]);
+
+  return (
+    <div className={`printing-tile${current ? " active" : ""}${selected ? " selected" : ""}`}>
+      <button
+        type="button"
+        ref={props.buttonRef}
+        className="printing-tile-pick"
+        tabIndex={props.tabIndex}
+        onFocus={props.onFocus}
+        onClick={props.onSelect}
+        onDoubleClick={props.onPick}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          props.onPick();
+        }}
+        aria-pressed={selected}
+        title={`${card.name} — ${card.source_name}`}
+      >
+        <span className="printing-tile-frame" ref={frameRef}>
+          {failed ? (
+            <span className="printing-tile-placeholder">
+              <span className="printing-tile-placeholder-name">{card.name}</span>
+              <span className="printing-set-name">{card.source_name}</span>
+            </span>
+          ) : nearView ? (
+            <img
+              src={generationApi.mpcThumbUrl(card.drive_id, "small")}
+              alt=""
+              decoding="async"
+              draggable={false}
+              onError={() => setFailed(true)}
+            />
+          ) : null}
+        </span>
+        <span className="mpc-tile-name">{card.name}</span>
+        <span className="printing-tile-label">
+          <span className="mpc-tile-source">{card.source_name}</span>
+          <span className="mpc-tile-dpi mono">{card.dpi} DPI</span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
+function MpcPreview(props: {
+  card: MpcCard;
+  current: boolean;
+  pickLabel: string;
+  currentLabel: string;
+  busy: boolean;
+  error: string | null;
+  /** 0 after a click; KEYBOARD_PREVIEW_SETTLE_MS after an arrow key. */
+  settleMs: number;
+  onPick: () => void;
+}) {
+  const { card, settleMs } = props;
+  const smallUrl = generationApi.mpcThumbUrl(card.drive_id, "small");
+  const largeUrl = generationApi.mpcThumbUrl(card.drive_id, "large");
+  const [requested, setRequested] = useState(false);
+  const [largeLoaded, setLargeLoaded] = useState(false);
+  const [largeFailed, setLargeFailed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setRequested(true), settleMs);
+    return () => clearTimeout(timer);
+  }, [settleMs]);
+
+  const details = [
+    card.source_name,
+    `${card.dpi} DPI`,
+    card.language,
+    sizeLabel(card.size_bytes),
+    card.extension.toUpperCase(),
+  ].filter(Boolean);
+
+  return (
+    <aside className="printing-preview" aria-label="Selected art">
+      <div className="printing-preview-wash" style={{ backgroundImage: `url("${smallUrl}")` }} />
+      <div className="printing-preview-stage">
+        <div className="printing-preview-frame">
+          <img src={smallUrl} alt="" draggable={false} />
+          {requested && !largeFailed && (
+            <img
+              className={`printing-preview-full${largeLoaded ? " loaded" : ""}`}
+              src={largeUrl}
+              alt={card.name}
+              draggable={false}
+              onLoad={() => setLargeLoaded(true)}
+              onError={() => setLargeFailed(true)}
+            />
+          )}
+        </div>
+      </div>
+      <div className="printing-preview-scrim">
+        <h3 className="printing-preview-name">{card.name}</h3>
+        <p className="printing-preview-meta">
+          {details.join(" · ")}
+          {props.current ? " · Current" : ""}
+        </p>
+        <div className="printing-preview-versions">
+          {card.tags.map((tag) => (
+            <span key={tag} className="mpc-tag">
+              {tag}
+            </span>
+          ))}
+        </div>
+        {props.error && <p className="printing-preview-meta mpc-pick-error">{props.error}</p>}
+        <button
+          type="button"
+          className="printing-preview-cta"
+          disabled={props.busy}
+          onClick={props.onPick}
+        >
+          {props.busy ? "Downloading…" : props.current ? props.currentLabel : props.pickLabel}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+export interface MpcArtBrowserProps {
+  /** What to search for first: a name, or a corpus card (and face) whose
+   *  name — and CARD vs TOKEN — the server works out. */
+  initial: { query?: string; scryfallId?: string | null; face?: number };
+  /** The card types offered; the first is the default. CARDBACK alone
+   *  browses every back until a name is typed. */
+  cardTypes: MpcCardType[];
+  /** Scryfall or MPC Fill language code to filter by at first; nothing
+   *  (or a language MPC Fill doesn't have) means any. */
+  defaultLang?: string | null;
+  /** The modal head's contents (Close, a mode switch ...). */
+  head: ReactNode;
+  pickLabel: string;
+  /** Shown on the button when the selection is already `currentDriveId`. */
+  currentLabel?: string;
+  currentDriveId?: string | null;
+  /** Called with the chosen art; throws with a user-facing message. */
+  onPick: (card: MpcCard) => Promise<void>;
+}
+
+export function MpcArtBrowser(props: MpcArtBrowserProps) {
+  const { initial, cardTypes, head, pickLabel, currentDriveId } = props;
+  const [draft, setDraft] = useState(initial.query ?? "");
+  const [submitted, setSubmitted] = useState<Submitted>(() => ({
+    q: initial.query ?? "",
+    scryfallId: initial.query ? null : (initial.scryfallId ?? null),
+    face: initial.face ?? 0,
+    type: initial.query || !initial.scryfallId ? cardTypes[0] : null,
+    lang: mpcLanguage(props.defaultLang),
+    minDpi: 0,
+    nsfw: false,
+    fuzzy: false,
+    refresh: 0,
+  }));
+  const browsing = submitted.type === "CARDBACK" && !submitted.q;
+  const canSearch = Boolean(submitted.q || submitted.scryfallId || submitted.type === "CARDBACK");
+
+  // Searches run when asked (open, Search, a filter change), never per
+  // keystroke; each distinct search is one cached request on the server.
+  const search = useQuery({
+    queryKey: ["mpc-search", submitted],
+    queryFn: () =>
+      generationApi.mpcSearch({
+        q: submitted.q || undefined,
+        scryfall_id: submitted.q ? undefined : (submitted.scryfallId ?? undefined),
+        face: submitted.face,
+        type: submitted.type ?? undefined,
+        lang: submitted.lang || undefined,
+        min_dpi: submitted.minDpi || undefined,
+        nsfw: submitted.nsfw || undefined,
+        fuzzy: submitted.fuzzy || undefined,
+        refresh: submitted.refresh > 0 || undefined,
+      }),
+    enabled: canSearch,
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  // A search by card fills the box with the name the server searched for.
+  useEffect(() => {
+    if (search.data && !submitted.q && submitted.scryfallId) setDraft(search.data.query);
+  }, [search.data, submitted.q, submitted.scryfallId]);
+
+  const ids = useMemo(() => search.data?.ids ?? [], [search.data]);
+  const [cards, setCards] = useState<ReadonlyMap<string, MpcCard>>(new Map());
+  const [pages, setPages] = useState(1);
+  const [hydrating, setHydrating] = useState(false);
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
+  useEffect(() => {
+    setCards(new Map((search.data?.cards ?? []).map((c) => [c.drive_id, c])));
+    setPages(1);
+    setHydrateError(null);
+  }, [search.data]);
+
+  // Hydrate the page the grid has scrolled to.
+  useEffect(() => {
+    const wanted = ids.slice(0, pages * PAGE).filter((id) => !cards.has(id));
+    if (wanted.length === 0 || hydrating || hydrateError) return;
+    let cancelled = false;
+    setHydrating(true);
+    generationApi
+      .mpcCards(wanted)
+      .then((resp) => {
+        if (cancelled) return;
+        setCards((prev) => {
+          const next = new Map(prev);
+          for (const card of resp.cards) next.set(card.drive_id, card);
+          return next;
+        });
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setHydrateError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setHydrating(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // `hydrating` is deliberately not a dependency: it is set here.
+  }, [ids, pages, cards, hydrateError]);
+
+  const shown = useMemo(
+    () =>
+      ids
+        .slice(0, pages * PAGE)
+        .map((id) => cards.get(id))
+        .filter((c): c is MpcCard => c != null),
+    [ids, pages, cards],
+  );
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = shown.find((c) => c.drive_id === selectedId) ?? null;
+  const [settleMs, setSettleMs] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
+
+  async function pick(card: MpcCard) {
+    if (busy) return;
+    setSelectedId(card.drive_id);
+    setBusy(true);
+    setPickError(null);
+    try {
+      await props.onPick(card);
+    } catch (err) {
+      setPickError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const observeTile = useTileVisibility(scrollRef);
+  const tileRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [focusIndex, setFocusIndex] = useState(0);
+  const clampedFocus = Math.min(focusIndex, Math.max(0, shown.length - 1));
+
+  function moveFocus(index: number) {
+    const next = Math.max(0, Math.min(shown.length - 1, index));
+    setFocusIndex(next);
+    tileRefs.current[next]?.focus();
+  }
+
+  function onGridKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const columns = gridColumns(gridRef.current);
+    const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -columns, ArrowDown: columns }[e.key];
+    if (delta === undefined) return;
+    e.preventDefault();
+    setSettleMs(KEYBOARD_PREVIEW_SETTLE_MS);
+    moveFocus(clampedFocus + delta);
+  }
+
+  // Each new result list starts on its first (or the current) art.
+  useLayoutEffect(() => {
+    if (shown.length === 0) return;
+    if (selectedId && shown.some((c) => c.drive_id === selectedId)) return;
+    const index = Math.max(0, shown.findIndex((c) => c.drive_id === currentDriveId));
+    setFocusIndex(index);
+    setSelectedId(shown[index].drive_id);
+    // Only when the list itself changes.
+  }, [shown.length === 0 ? null : shown[0].drive_id]);
+
+  // The end of the grid: once it nears the view, hydrate the next page.
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const hasMore = pages * PAGE < ids.length;
+  useEffect(() => {
+    if (!hasMore || hydrating || !sentinelRef.current) return;
+    return observeTile(sentinelRef.current, () => setPages((p) => p + 1));
+  }, [hasMore, hydrating, observeTile, shown.length]);
+
+  function submit(patch: Partial<Submitted> = {}) {
+    const q = draft.trim();
+    setSubmitted((prev) => {
+      // Still the card's own name: keep searching by card. Edited: search
+      // that text, as the type the server found the card to be.
+      const byCard = prev.scryfallId != null && !prev.q && search.data != null && q === search.data.query;
+      return {
+        ...prev,
+        q: byCard ? "" : q,
+        type: prev.type ?? search.data?.card_type ?? cardTypes[0],
+        ...patch,
+      };
+    });
+  }
+
+  const errorText =
+    search.error instanceof ApiError || search.error instanceof Error
+      ? search.error.message
+      : search.error
+        ? String(search.error)
+        : null;
+
+  return (
+    <>
+      {selected && (
+        <MpcPreview
+          key={selected.drive_id}
+          card={selected}
+          current={selected.drive_id === currentDriveId}
+          pickLabel={pickLabel}
+          currentLabel={props.currentLabel ?? pickLabel}
+          busy={busy}
+          error={pickError}
+          settleMs={settleMs}
+          onPick={() => void pick(selected)}
+        />
+      )}
+
+      <div className="modal-head printing-grid-head">{head}</div>
+
+      <div className="printing-grid-notes">
+        {!canSearch && <p className="hint">Type a card name and press Search.</p>}
+        {search.isFetching && <p className="hint">Searching MPC Fill…</p>}
+        {errorText && <p className="hint">Couldn't search MPC Fill: {errorText}</p>}
+        {hydrateError && <p className="hint">Couldn't load more results: {hydrateError}</p>}
+      </div>
+
+      <div className="printing-grid-controls mpc-controls">
+        <form
+          className="mpc-search-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <input
+            type="search"
+            value={draft}
+            placeholder={browsing ? "All card backs — or type a name" : "Card name"}
+            aria-label="Search MPC Fill"
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button type="submit" className="btn-sm">
+            Search
+          </button>
+        </form>
+        {search.data && (
+          <span className="printing-grid-count">
+            {ids.length} {ids.length === 1 ? "result" : "results"}
+          </span>
+        )}
+        {cardTypes.length > 1 && (
+          <SelectMenu
+            ariaLabel="Card type"
+            options={cardTypes.map((t) => ({ value: t, label: TYPE_LABELS[t] }))}
+            value={submitted.type ?? search.data?.card_type ?? cardTypes[0]}
+            onChange={(value) => submit({ type: value as MpcCardType })}
+          />
+        )}
+        <SelectMenu
+          ariaLabel="Language"
+          options={[
+            { value: "", label: "Any language" },
+            ...MPC_LANGUAGES.map((l) => ({ value: l.code, label: l.name })),
+          ]}
+          value={submitted.lang}
+          onChange={(value) => submit({ lang: value })}
+        />
+        <SelectMenu
+          ariaLabel="Minimum DPI"
+          options={MIN_DPI_OPTIONS}
+          value={String(submitted.minDpi)}
+          onChange={(value) => submit({ minDpi: Number(value) })}
+        />
+        <label className="check" title="Looser name matching: finds more, including near misses">
+          <input
+            type="checkbox"
+            checked={submitted.fuzzy}
+            onChange={(e) => submit({ fuzzy: e.target.checked })}
+          />
+          Fuzzy
+        </label>
+        <label className="check" title="Include art MPC Fill tags as NSFW">
+          <input
+            type="checkbox"
+            checked={submitted.nsfw}
+            onChange={(e) => submit({ nsfw: e.target.checked })}
+          />
+          NSFW
+        </label>
+        <button
+          type="button"
+          className="btn-sm"
+          title="Search again, skipping the server's day-long cache"
+          disabled={!canSearch || search.isFetching}
+          onClick={() => submit({ refresh: submitted.refresh + 1 })}
+        >
+          Refresh
+        </button>
+      </div>
+
+      <div className="modal-body" ref={scrollRef}>
+        {search.isSuccess && ids.length === 0 ? (
+          <p className="hint">
+            No MPC Fill art matches
+            {submitted.fuzzy ? "." : ". Try Fuzzy, or a shorter name."}
+          </p>
+        ) : (
+          <div className="printing-grid" ref={gridRef} onKeyDown={onGridKeyDown}>
+            {shown.map((card, i) => (
+              <MpcTile
+                key={card.drive_id}
+                card={card}
+                selected={card.drive_id === selectedId}
+                current={card.drive_id === currentDriveId}
+                tabIndex={i === clampedFocus ? 0 : -1}
+                observe={observeTile}
+                buttonRef={(el) => {
+                  tileRefs.current[i] = el;
+                }}
+                onFocus={() => {
+                  setFocusIndex(i);
+                  setSelectedId(card.drive_id);
+                  setPickError(null);
+                }}
+                onSelect={() => {
+                  setSettleMs(0);
+                  setSelectedId(card.drive_id);
+                  setPickError(null);
+                  setFocusIndex(i);
+                  tileRefs.current[i]?.focus();
+                }}
+                onPick={() => void pick(card)}
+              />
+            ))}
+          </div>
+        )}
+        {hasMore && <div ref={sentinelRef} className="mpc-sentinel" aria-hidden="true" />}
+        {hydrating && <p className="hint">Loading more…</p>}
+        <p className="hint mpc-attribution">
+          Community art indexed by MPC Fill (mpcfill.com); images are served from each
+          uploader&apos;s Google Drive.
+        </p>
+      </div>
+    </>
+  );
+}
+
+/** MpcArtBrowser in its own modal, for the Customs and Backs tabs. */
+export function MpcArtModal(
+  props: Omit<MpcArtBrowserProps, "head"> & { title: string; onClose: () => void },
+) {
+  const { title, onClose, ...browser } = props;
+  useEffect(() => {
+    function onKeyDown(e: globalThis.KeyboardEvent) {
+      // A handled Esc (a dropdown closing) isn't the modal's.
+      if (e.key === "Escape" && !e.defaultPrevented) onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return (
+    <ModalOverlay onClick={onClose}>
+      <div
+        className="modal printing-grid-modal mpc-art-modal"
+        role="dialog"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <MpcArtBrowser
+          {...browser}
+          head={
+            <>
+              <span className="mpc-head-title">{title}</span>
+              <button type="button" className="btn-sm" onClick={onClose}>
+                Close
+              </button>
+            </>
+          }
+        />
+      </div>
+    </ModalOverlay>
+  );
+}

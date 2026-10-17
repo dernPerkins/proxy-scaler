@@ -12,7 +12,6 @@
 // double-click or Enter pins the card to that exact printing via
 // ProjectContext.setCardPrinting.
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -25,14 +24,17 @@ import { generationApi, ApiError } from "../api/generation";
 import { projectApi } from "../api/project";
 import {
   PRINTING_IMAGES_MIN_SERVER_VERSION,
+  serverSupportsMpcFill,
   serverSupportsPrintingImages,
   useServerVersion,
 } from "../config";
+import { importMpcArt } from "../mpcFill";
+import { MpcArtBrowser } from "./MpcArtPicker";
 import { useProject } from "../context/ProjectContext";
 import { modelDisplayName } from "../constants";
 import { useImageCacheSetting } from "../imageOrigin";
 import type { CardRow } from "../api/project";
-import type { CardVariant, GeneratedPair, ImageOrigin } from "../api/types";
+import type { CardVariant, CustomImage, GeneratedPair, ImageOrigin } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import StatusBadge from "./StatusBadge";
 import TutorialButton from "../tutorial/TutorialButton";
@@ -40,6 +42,12 @@ import { useTourWhenPresent } from "../tutorial/tutorialStore";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
 import SetIcon from "./SetIcon";
 import SelectMenu from "./SelectMenu";
+import {
+  KEYBOARD_PREVIEW_SETTLE_MS,
+  gridColumns,
+  useTileVisibility,
+  type ObserveTile,
+} from "./imageGrid";
 
 type Pick = {
   scryfallId: string;
@@ -133,62 +141,6 @@ function sortVariants(variants: CardVariant[], mode: SortMode): CardVariant[] {
   const setName = (v: CardVariant) => v.set_name ?? v.set_code;
   return [...variants].sort(
     (a, b) => naturalCompare(setName(a), setName(b)) || tail(a, b),
-  );
-}
-
-// How many tiles one row of the grid holds, read off the laid-out CSS grid
-// (auto-fill columns change with the window width).
-function gridColumns(grid: HTMLElement | null): number {
-  if (!grid) return 1;
-  const columns = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean);
-  return Math.max(1, columns.length);
-}
-
-// Thumbnails load as their tiles near the grid's visible area. Not
-// `loading="lazy"`: WebKit (the macOS app's webview) loaded every tile of
-// the grid on open, ignoring the scroll container. One IntersectionObserver
-// rooted on that container serves every tile; a tile reports visible once
-// and is then forgotten.
-type ObserveTile = (el: Element, onVisible: () => void) => () => void;
-
-function useTileVisibility(scrollRef: React.RefObject<HTMLElement | null>): ObserveTile {
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const callbacks = useRef(new Map<Element, () => void>());
-  useEffect(
-    () => () => {
-      // Dropped, not just disconnected, so a remount (StrictMode does one
-      // in development) builds a fresh observer on the current container.
-      observerRef.current?.disconnect();
-      observerRef.current = null;
-      callbacks.current.clear();
-    },
-    [],
-  );
-  return useCallback(
-    (el, onVisible) => {
-      if (!observerRef.current) {
-        observerRef.current = new IntersectionObserver(
-          (entries, observer) => {
-            for (const entry of entries) {
-              if (!entry.isIntersecting) continue;
-              callbacks.current.get(entry.target)?.();
-              callbacks.current.delete(entry.target);
-              observer.unobserve(entry.target);
-            }
-          },
-          // About two rows ahead, so scrolling rarely meets an empty frame.
-          { root: scrollRef.current, rootMargin: "600px 0px" },
-        );
-      }
-      const observer = observerRef.current;
-      callbacks.current.set(el, onVisible);
-      observer.observe(el);
-      return () => {
-        callbacks.current.delete(el);
-        observer.unobserve(el);
-      };
-    },
-    [scrollRef],
   );
 }
 
@@ -371,11 +323,6 @@ function PreviewVersions({ v, face, enabled }: { v: CardVariant; face: number; e
   );
 }
 
-// How long a keyboard selection must rest before the preview asks for the
-// full-size PNG (~1.3 MB, and it lands in the server's originals cache):
-// arrowing across a row shouldn't download every card on the way.
-const KEYBOARD_PREVIEW_SETTLE_MS = 250;
-
 // The left-hand column, the modal's full height: the selected printing
 // at full size — the exact PNG Generate downloads and upscales — on a
 // blurred wash of its own art, with its details, versions and the button
@@ -503,13 +450,33 @@ function PrintingPreview(props: {
   );
 }
 
+/** Where the change-printing modal opens: the printing grid, or MPC Fill
+ *  art for one face. */
+export interface PickerOpenRequest {
+  source: PickerSource;
+  face: number;
+}
+
+type PickerSource = "scryfall" | "mpc";
+
+/** Face art callbacks: print a library image (just picked on MPC Fill) in
+ *  place of a face, or go back to the printing's own art. */
+export interface FaceArtHandlers {
+  onSetFaceArt: (face: number, totalFaces: number, image: CustomImage) => Promise<void>;
+  onClearFaceArt: (face: number) => Promise<void>;
+}
+
 function PrintingGridModal(props: {
   card: CardRow;
   preferredLang: string;
+  initial: PickerOpenRequest;
+  faceArt: FaceArtHandlers | null;
   onClose: () => void;
   onPick: (printing: Pick) => void;
 }) {
-  const { card, preferredLang, onClose, onPick } = props;
+  const { card, preferredLang, onClose, onPick, faceArt } = props;
+  const [source, setSource] = useState<PickerSource>(props.initial.source);
+  const [mpcFace, setMpcFace] = useState(props.initial.face);
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
   // Starts on "<defaultLang> + Exclusives" (see shownByDefault); after
@@ -520,6 +487,8 @@ function PrintingGridModal(props: {
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const serverVersion = useServerVersion();
   const showImages = serverSupportsPrintingImages(serverVersion);
+  const mpcAvailable =
+    faceArt != null && card.scryfall_id != null && serverSupportsMpcFill(serverVersion);
   const { origin } = useImageCacheSetting();
 
   useEffect(() => {
@@ -745,12 +714,127 @@ function PrintingGridModal(props: {
   // the first paint with the pane.
   const scrolledToSelection = useRef(false);
   useLayoutEffect(() => {
-    if (scrolledToSelection.current || selected == null) return;
+    if (scrolledToSelection.current || selected == null || source !== "scryfall") return;
     scrolledToSelection.current = true;
     const tile = tileRefs.current[clampedFocus];
     tile?.scrollIntoView({ block: "center" });
     tile?.focus({ preventScroll: true });
-  }, [selected, clampedFocus]);
+  }, [selected, clampedFocus, source]);
+
+  // MPC Fill mode works on the current printing's faces: how many, and
+  // what each is called. Known once the printings load; until then, what
+  // the card's existing face art says (or one face).
+  const currentVariant = variants.find(isCurrent);
+  const totalFaces = Math.min(
+    2,
+    currentVariant?.face_count ?? card.face_art?.[0]?.total_faces ?? 1,
+  );
+  const artFor = (face: number) => card.face_art?.find((fa) => fa.face === face) ?? null;
+  const faceLabelOf = (face: number) =>
+    currentVariant?.face_names?.[face] ?? (face === 0 ? "Front" : "Back");
+  const mpcHint =
+    source === "scryfall" && card.face_art?.length
+      ? `This card prints MPC Fill art on ${
+          card.face_art.length > 1
+            ? "both faces"
+            : totalFaces > 1
+              ? `its ${card.face_art[0].face === 0 ? "front" : "back"}`
+              : "its face"
+        }. Picking a different printing goes back to Scryfall art.`
+      : null;
+
+  const sourceSwitch = mpcAvailable ? (
+    <span className="segmented" role="group" aria-label="Art source">
+      <button
+        type="button"
+        className={`btn-sm${source === "scryfall" ? " active" : ""}`}
+        aria-pressed={source === "scryfall"}
+        onClick={() => setSource("scryfall")}
+      >
+        Scryfall
+      </button>
+      <button
+        type="button"
+        className={`btn-sm${source === "mpc" ? " active" : ""}`}
+        aria-pressed={source === "mpc"}
+        onClick={() => setSource("mpc")}
+        title="Community art from MPC Fill, printed in place of this printing's art"
+      >
+        MPC Fill
+      </button>
+    </span>
+  ) : null;
+
+  if (source === "mpc" && mpcAvailable && faceArt) {
+    const art = artFor(mpcFace);
+    return (
+      <ModalOverlay onClick={onClose}>
+        <div
+          className="modal printing-grid-modal"
+          role="dialog"
+          aria-label={`MPC Fill art: ${card.name}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MpcArtBrowser
+            // A new face is a new search.
+            key={mpcFace}
+            initial={{ scryfallId: card.scryfall_id, face: mpcFace }}
+            cardTypes={["CARD", "TOKEN"]}
+            defaultLang={card.lang}
+            currentDriveId={art?.mpc_drive_id ?? null}
+            pickLabel={totalFaces > 1 ? `Use for the ${mpcFace === 0 ? "front" : "back"}` : "Use this art"}
+            currentLabel="Keep this art"
+            onPick={async (picked) => {
+              if (art?.mpc_drive_id === picked.drive_id) {
+                onClose();
+                return;
+              }
+              const image = await importMpcArt("custom", picked);
+              await faceArt.onSetFaceArt(mpcFace, totalFaces, image);
+              onClose();
+            }}
+            head={
+              <>
+                <span className="picker-head-left">
+                  {sourceSwitch}
+                  {totalFaces > 1 && (
+                    <span className="segmented" role="group" aria-label="Face">
+                      {[0, 1].map((face) => (
+                        <button
+                          key={face}
+                          type="button"
+                          className={`btn-sm${mpcFace === face ? " active" : ""}`}
+                          aria-pressed={mpcFace === face}
+                          onClick={() => setMpcFace(face)}
+                        >
+                          {faceLabelOf(face)}
+                        </button>
+                      ))}
+                    </span>
+                  )}
+                </span>
+                {art && (
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    title="Print this face from the printing's own art again"
+                    onClick={() => {
+                      void faceArt.onClearFaceArt(mpcFace).then(onClose);
+                    }}
+                  >
+                    Use Scryfall art
+                  </button>
+                )}
+                <button type="button" className="btn-sm" onClick={onClose}>
+                  Close
+                </button>
+              </>
+            }
+          />
+        </div>
+      </ModalOverlay>
+    );
+  }
 
   return (
     <ModalOverlay onClick={onClose}>
@@ -779,6 +863,7 @@ function PrintingGridModal(props: {
 
         {/* No title: the card's name is on the preview. */}
         <div className="modal-head printing-grid-head">
+          {sourceSwitch && <span className="picker-head-left">{sourceSwitch}</span>}
           {/* The tab bar's ? is behind this modal; replay from here. */}
           <TutorialButton tour="decklist-picker" />
           <button type="button" className="btn-sm" onClick={onClose}>
@@ -787,6 +872,7 @@ function PrintingGridModal(props: {
         </div>
 
         <div className="printing-grid-notes">
+          {mpcHint && <p className="hint">{mpcHint}</p>}
           {ready && !showImages && (
             <p className="hint">
               Previews need a newer generation server (v{PRINTING_IMAGES_MIN_SERVER_VERSION} or
@@ -930,9 +1016,20 @@ export default function PrintingPicker(props: {
   onClosed?: () => void;
   /** The pinned printing's rarity, which colors its set symbol. */
   rarity?: string | null;
+  /** Face art support (the MPC Fill source); null hides it. */
+  faceArt?: FaceArtHandlers | null;
+  /** Open the modal from elsewhere in the row (a face tile's "Change
+   *  art"): a new object each time it should open. */
+  openRequest?: PickerOpenRequest | null;
 }) {
-  const { card, preferredLang, disabled, onPick, onClosed, rarity } = props;
-  const [open, setOpen] = useState(false);
+  const { card, preferredLang, disabled, onPick, onClosed, rarity, openRequest } = props;
+  const [open, setOpen] = useState<PickerOpenRequest | null>(null);
+  // Each request is a new object, so this fires once per "Change art".
+  useEffect(() => {
+    if (openRequest && !disabled) setOpen(openRequest);
+    // Not on `disabled` alone: reconnecting must not reopen a past request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRequest]);
 
   // Language always shown, EN included — with several languages of one
   // printing allowed in a deck, an unlabeled row is ambiguous. Rows
@@ -951,17 +1048,25 @@ export default function PrintingPicker(props: {
         className="card-meta mono printing-toggle"
         title={disabled ? "Generation server is unreachable" : "Change printing"}
         disabled={disabled}
-        onClick={() => setOpen(true)}
+        onClick={() => setOpen({ source: "scryfall", face: 0 })}
       >
         <SetIcon setCode={card.set_code} rarity={rarity} />
-        {label} ▾
+        {label}
+        {card.face_art?.length ? (
+          <span className="mpc-mark" title="Prints MPC Fill art on a face">
+            MPC
+          </span>
+        ) : null}{" "}
+        ▾
       </button>
       {open && (
         <PrintingGridModal
           card={card}
           preferredLang={preferredLang}
+          initial={open}
+          faceArt={props.faceArt ?? null}
           onClose={() => {
-            setOpen(false);
+            setOpen(null);
             onClosed?.();
           }}
           onPick={onPick}

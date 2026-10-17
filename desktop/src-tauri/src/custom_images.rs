@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+use crate::mpc_art::{self, MpcProvenance, SyncStep};
 use crate::project_store::open_db;
 
 const CUSTOMS_DIRNAME: &str = "customs";
@@ -42,6 +43,11 @@ const MAX_BYTES: usize = 50 * 1024 * 1024;
 // Mirrors proxy_scaler/dpi.py::MAX_BLEED_MM. Past this a bleed is a typo,
 // not a print spec.
 pub(crate) const MAX_BLEED_MM: f64 = 10.0;
+
+// MakePlayingCards' bleed (1/8 in per side), and the custom_images.bleed_mm
+// column default: what a new row is declared with until the user says
+// otherwise.
+pub(crate) const DEFAULT_BLEED_MM: f64 = 3.175;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomImage {
@@ -62,6 +68,9 @@ pub struct CustomImage {
     /// ~300; it never blocks, because upscaling is a real remedy here and
     /// plenty of art is fine soft.
     pub source_dpi: f64,
+    /// Where the image came from when it was picked on MPC Fill; None for
+    /// the user's own uploads.
+    pub mpc: Option<MpcProvenance>,
 }
 
 fn customs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -143,7 +152,60 @@ fn row_to_custom_image(row: &rusqlite::Row) -> rusqlite::Result<CustomImage> {
         height,
         created_at: row.get("created_at")?,
         source_dpi: dpi_at_card_size(width, height, effective_bleed_mm(includes_bleed, bleed_mm)),
+        mpc: mpc_art::provenance_from_row(row)?,
     })
+}
+
+fn find_by_hash(conn: &Connection, content_hash: &str) -> Result<Option<CustomImage>, String> {
+    conn.query_row(
+        "SELECT * FROM custom_images WHERE content_hash = ?1",
+        params![content_hash],
+        row_to_custom_image,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// A library row about to be inserted (its files already written).
+struct NewCustomImageRow<'a> {
+    content_hash: &'a str,
+    label: String,
+    original_filename: &'a str,
+    file_name: &'a str,
+    thumb_name: &'a str,
+    includes_bleed: bool,
+    bleed_mm: f64,
+    width: i64,
+    height: i64,
+    mpc: Option<&'a MpcProvenance>,
+}
+
+fn insert_custom_image_row(conn: &Connection, row: &NewCustomImageRow) -> Result<CustomImage, String> {
+    conn.execute(
+        "INSERT INTO custom_images
+            (content_hash, label, original_filename, file_name, thumb_name,
+             includes_bleed, bleed_mm, width, height, created_at,
+             mpc_drive_id, mpc_source, mpc_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            row.content_hash,
+            row.label,
+            row.original_filename,
+            row.file_name,
+            row.thumb_name,
+            row.includes_bleed,
+            row.bleed_mm,
+            row.width,
+            row.height,
+            crate::project_store::now_timestamp(),
+            row.mpc.map(|m| m.drive_id.as_str()),
+            row.mpc.map(|m| m.source.as_str()),
+            row.mpc.map(|m| m.name.as_str()),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    find_by_id(conn, id)?.ok_or_else(|| "custom image vanished after insert".to_string())
 }
 
 fn find_by_id(conn: &Connection, id: i64) -> Result<Option<CustomImage>, String> {
@@ -185,6 +247,78 @@ pub fn add_custom_image(
     width: i64,
     height: i64,
 ) -> Result<CustomImage, String> {
+    add_image(&app, &bytes, &thumbnail, &original_filename, width, height, None, None)
+}
+
+/// Add a Custom Image picked on MPC Fill: the bytes the generation
+/// server's /api/mpcfill/import returned, plus where they came from.
+///
+/// A new row takes `label` (MPC Fill's name) and the bleed declaration
+/// given. If the library already holds these bytes, that row keeps its
+/// own label and bleed — the user's declarations win — and only learns
+/// its provenance if it had none.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn add_mpc_custom_image(
+    app: AppHandle,
+    bytes: Vec<u8>,
+    thumbnail: Vec<u8>,
+    original_filename: String,
+    width: i64,
+    height: i64,
+    label: String,
+    includes_bleed: bool,
+    bleed_mm: f64,
+    drive_id: String,
+    mpc_source: String,
+    mpc_name: String,
+) -> Result<CustomImage, String> {
+    let mpc = MpcProvenance::new(&drive_id, &mpc_source, &mpc_name)?;
+    let bleed_mm = validate_bleed_mm(bleed_mm)?;
+    add_image(
+        &app,
+        &bytes,
+        &thumbnail,
+        &original_filename,
+        width,
+        height,
+        Some((label, includes_bleed, bleed_mm)),
+        Some(&mpc),
+    )
+}
+
+/// The library image for an MPC Fill file, if one was already picked.
+/// The client checks this before importing, so picking the same art
+/// twice never downloads it twice.
+#[tauri::command]
+pub fn find_custom_image_by_drive_id(
+    app: AppHandle,
+    drive_id: String,
+) -> Result<Option<CustomImage>, String> {
+    let conn = open_db(&app)?;
+    conn.query_row(
+        "SELECT * FROM custom_images WHERE mpc_drive_id = ?1 ORDER BY id LIMIT 1",
+        params![drive_id],
+        row_to_custom_image,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Shared by both add commands. `declared` is (label, includes_bleed,
+/// bleed_mm) for a new row; None derives the label from the filename and
+/// leaves the bleed at the table's defaults.
+#[allow(clippy::too_many_arguments)]
+fn add_image(
+    app: &AppHandle,
+    bytes: &[u8],
+    thumbnail: &[u8],
+    original_filename: &str,
+    width: i64,
+    height: i64,
+    declared: Option<(String, bool, f64)>,
+    mpc: Option<&MpcProvenance>,
+) -> Result<CustomImage, String> {
     if bytes.is_empty() {
         return Err("That file was empty.".to_string());
     }
@@ -198,22 +332,19 @@ pub fn add_custom_image(
         return Err("That file could not be read as an image.".to_string());
     }
 
-    let content_hash = format!("{:x}", Sha256::digest(&bytes));
-    let conn = open_db(&app)?;
-    if let Some(existing) = conn
-        .query_row(
-            "SELECT * FROM custom_images WHERE content_hash = ?1",
-            params![content_hash],
-            row_to_custom_image,
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-    {
+    let content_hash = format!("{:x}", Sha256::digest(bytes));
+    let conn = open_db(app)?;
+    if let Some(existing) = find_by_hash(&conn, &content_hash)? {
+        if let Some(mpc) = mpc {
+            mpc_art::attach_provenance_row(&conn, "custom_images", existing.id, mpc)?;
+            return find_by_id(&conn, existing.id)?
+                .ok_or_else(|| "custom image vanished".to_string());
+        }
         return Ok(existing);
     }
 
-    let dir = customs_dir(&app)?;
-    let extension = Path::new(&original_filename)
+    let dir = customs_dir(app)?;
+    let extension = Path::new(original_filename)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("img")
@@ -223,30 +354,35 @@ pub fn add_custom_image(
     // Write the files before the row: a row pointing at a file that isn't
     // there would survive every future load and report an image the
     // library cannot actually print.
-    std::fs::write(dir.join(&file_name), &bytes)
+    std::fs::write(dir.join(&file_name), bytes)
         .map_err(|e| format!("failed to save custom image: {e}"))?;
-    std::fs::write(dir.join(&thumb_name), &thumbnail)
+    std::fs::write(dir.join(&thumb_name), thumbnail)
         .map_err(|e| format!("failed to save custom image preview: {e}"))?;
 
-    conn.execute(
-        "INSERT INTO custom_images
-            (content_hash, label, original_filename, file_name, thumb_name,
-             width, height, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            content_hash,
-            label_from_filename(&original_filename),
+    let (label, includes_bleed, bleed_mm) = match declared {
+        Some((label, includes_bleed, bleed_mm)) if !label.trim().is_empty() => {
+            (label.trim().to_string(), includes_bleed, bleed_mm)
+        }
+        Some((_, includes_bleed, bleed_mm)) => {
+            (label_from_filename(original_filename), includes_bleed, bleed_mm)
+        }
+        None => (label_from_filename(original_filename), false, DEFAULT_BLEED_MM),
+    };
+    insert_custom_image_row(
+        &conn,
+        &NewCustomImageRow {
+            content_hash: &content_hash,
+            label,
             original_filename,
-            file_name,
-            thumb_name,
+            file_name: &file_name,
+            thumb_name: &thumb_name,
+            includes_bleed,
+            bleed_mm,
             width,
             height,
-            crate::project_store::now_timestamp(),
-        ],
+            mpc,
+        },
     )
-    .map_err(|e| e.to_string())?;
-    let id = conn.last_insert_rowid();
-    find_by_id(&conn, id)?.ok_or_else(|| "custom image vanished after insert".to_string())
 }
 
 #[tauri::command]
@@ -330,6 +466,9 @@ fn delete_custom_image_row(conn: &Connection, id: i64) -> Result<Option<(String,
         params![id],
     )
     .map_err(|e| e.to_string())?;
+    // A Scryfall card printing this image on a face keeps its card: that
+    // face just goes back to its own art.
+    crate::face_art::strip_custom_image_references(conn, id)?;
     conn.execute("DELETE FROM custom_images WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(names)
@@ -409,6 +548,9 @@ pub struct CustomSyncResult {
     /// already holding them. Purely informational — the client calls sync
     /// unconditionally and this says what it cost.
     pub uploaded: bool,
+    /// Whether the server downloaded the bytes from Google Drive itself
+    /// (an MPC Fill image) instead.
+    pub fetched: bool,
 }
 
 /// Make sure a generation server holds this image's bytes.
@@ -426,10 +568,10 @@ pub async fn sync_custom_image(
     id: i64,
     server_base_url: String,
 ) -> Result<CustomSyncResult, String> {
-    let (content_hash, file_name, includes_bleed, bleed_mm) = {
+    let (content_hash, file_name, includes_bleed, bleed_mm, drive_id) = {
         let conn = open_db(&app)?;
         conn.query_row(
-            "SELECT content_hash, file_name, includes_bleed, bleed_mm
+            "SELECT content_hash, file_name, includes_bleed, bleed_mm, mpc_drive_id
              FROM custom_images WHERE id = ?1",
             params![id],
             |row| {
@@ -438,6 +580,7 @@ pub async fn sync_custom_image(
                     row.get::<_, String>(1)?,
                     row.get::<_, bool>(2)?,
                     row.get::<_, f64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
@@ -450,6 +593,7 @@ pub async fn sync_custom_image(
     let url = format!("{base}/api/customs/{content_hash}");
 
     let client = reqwest::Client::new();
+    let mut answer: Option<(bool, bool)> = None;
     if let Ok(resp) = client.get(&url).send().await {
         if resp.status().is_success() {
             // reqwest is built without its "json" feature here (see
@@ -480,11 +624,27 @@ pub async fn sync_custom_image(
             }
             // Present AND stored under the same declared bleed: nothing to
             // send. A different amount means the server's copy was cropped
-            // to the wrong box, so the POST below replaces it.
-            if present && (server_bleed.unwrap_or(0.0) - declared).abs() < 1e-6 {
-                return Ok(CustomSyncResult { content_hash, uploaded: false });
+            // to the wrong box, so it is replaced below.
+            answer = Some((present, (server_bleed.unwrap_or(0.0) - declared).abs() < 1e-6));
+        }
+    }
+
+    match mpc_art::sync_step(answer, drive_id.is_some()) {
+        SyncStep::Done => {
+            return Ok(CustomSyncResult { content_hash, uploaded: false, fetched: false });
+        }
+        SyncStep::FetchThenUpload => {
+            // An MPC Fill image: the server can download it from Google
+            // itself rather than this machine uploading it.
+            let body = serde_json::json!({
+                "drive_id": drive_id.as_deref().unwrap_or_default(),
+                "bleed_mm": declared,
+            });
+            if mpc_art::server_fetch(&client, &url, &body).await {
+                return Ok(CustomSyncResult { content_hash, uploaded: false, fetched: true });
             }
         }
+        SyncStep::Upload => {}
     }
 
     let path = customs_dir(&app)?.join(file_name);
@@ -507,7 +667,7 @@ pub async fn sync_custom_image(
         let detail = resp.text().await.unwrap_or_default();
         return Err(format!("server rejected the custom image ({status}): {detail}"));
     }
-    Ok(CustomSyncResult { content_hash, uploaded: true })
+    Ok(CustomSyncResult { content_hash, uploaded: true, fetched: false })
 }
 
 #[cfg(test)]
@@ -549,6 +709,55 @@ mod tests {
         )
         .expect("insert custom");
         conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn mpc_rows_carry_provenance_and_bleed() {
+        use crate::project_store::test_support::test_conn;
+        let conn = test_conn();
+        let mpc = MpcProvenance::new("1taR38keSBJgplwmZkX3NETXQSblhPYSh", "Chilli_Axe", "Bolt (Full Art)")
+            .expect("valid id");
+        let row = insert_custom_image_row(
+            &conn,
+            &NewCustomImageRow {
+                content_hash: "m1",
+                label: "Bolt (Full Art)".to_string(),
+                original_filename: "Bolt (Full Art).png",
+                file_name: "m1.png",
+                thumb_name: "m1_thumb.jpg",
+                includes_bleed: true,
+                bleed_mm: 3.175,
+                width: 816,
+                height: 1110,
+                mpc: Some(&mpc),
+            },
+        )
+        .expect("insert");
+        assert_eq!(row.mpc.as_ref(), Some(&mpc));
+        assert!(row.includes_bleed);
+        assert_eq!(row.label, "Bolt (Full Art)");
+        assert_eq!(find_by_hash(&conn, "m1").expect("q").expect("row").id, row.id);
+
+        // An upload made by hand has no provenance.
+        let plain = insert_custom(&conn, "c2");
+        assert!(find_by_id(&conn, plain).expect("q").expect("row").mpc.is_none());
+    }
+
+    #[test]
+    fn provenance_is_attached_once_and_never_touches_the_users_declarations() {
+        use crate::project_store::test_support::test_conn;
+        let conn = test_conn();
+        let id = insert_custom(&conn, "c3");
+        set_custom_image_bleed_row(&conn, id, true, 2.0).expect("bleed");
+        let first = MpcProvenance::new("1taR38keSBJgplwmZkX3NETXQSblhPYSh", "A", "One").unwrap();
+        let second = MpcProvenance::new("1MsVtWxw2bJO9xrduU0fUBraSVuvBW0zq", "B", "Two").unwrap();
+        mpc_art::attach_provenance_row(&conn, "custom_images", id, &first).expect("attach");
+        mpc_art::attach_provenance_row(&conn, "custom_images", id, &second).expect("attach");
+        let row = find_by_id(&conn, id).expect("q").expect("row");
+        assert_eq!(row.mpc, Some(first));
+        assert_eq!(row.label, "A card");
+        assert!(row.includes_bleed);
+        assert!((row.bleed_mm - 2.0).abs() < 1e-9);
     }
 
     #[test]

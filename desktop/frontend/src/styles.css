@@ -1561,6 +1561,91 @@ button:disabled {
   color: var(--wait);
 }
 
+/* The MPC Fill browser (MpcArtPicker.tsx) reuses the change-printing
+   grid's layout; these are only its own bits. */
+.mpc-head-title {
+  margin-right: auto;
+  font-weight: 600;
+}
+.mpc-controls {
+  justify-content: flex-start;
+}
+.mpc-search-form {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.mpc-search-form input {
+  flex: 1;
+  min-width: 0;
+}
+.mpc-tile-name {
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mpc-tile-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+.mpc-tile-dpi {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+.mpc-tag {
+  display: inline-block;
+  margin: 0 4px 4px 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.printing-preview-meta.mpc-pick-error {
+  color: #ffb4a8;
+}
+.mpc-sentinel {
+  height: 1px;
+}
+.mpc-attribution {
+  margin-top: 12px;
+  font-size: 11px;
+}
+/* The change-printing modal's Scryfall | MPC Fill (and Front | Back)
+   switches, at the head's left; its buttons stay on the right. */
+.picker-head-left {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
+}
+/* On a card row's printing button when a face prints MPC Fill art. */
+.mpc-mark {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft, rgba(80, 120, 255, 0.12));
+}
+/* The "From MPC Fill" tile beside the Customs/Backs drop zones. */
+.mpc-library-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 120px;
+  text-align: center;
+}
+.mpc-provenance {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* Import button + language preference side by side (DecklistPage). */
 .import-actions {
   display: flex;

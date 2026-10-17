@@ -6,15 +6,14 @@ from fastapi import APIRouter, HTTPException, Query
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_card_db_path, get_db_path, get_lock_path
+from proxy_scaler.api.entries import to_deck_entry
 from proxy_scaler.api.schemas import (
-    DeckEntryIn,
     DownloadOriginalsIn,
     GenerateIn,
     GenerateOut,
     TaskOut,
     WorkerStatusOut,
 )
-from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.services import generation as generation_service
 
 router = APIRouter(prefix="/api", tags=["generation"])
@@ -44,17 +43,8 @@ def _task_out(t: db.TaskRow) -> TaskOut:
     )
 
 
-def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
-    return DeckEntry(
-        quantity=e.quantity,
-        name=e.name,
-        set_code=e.set_code,
-        collector_number=e.collector_number,
-        raw_line=e.raw_line or e.name,
-        scryfall_id=e.scryfall_id,
-        lang=e.lang,
-        custom_hash=e.custom_hash,
-    )
+# Shared with export.py, which imports it from here.
+_to_deck_entry = to_deck_entry
 
 
 @router.post("/generate", response_model=GenerateOut)

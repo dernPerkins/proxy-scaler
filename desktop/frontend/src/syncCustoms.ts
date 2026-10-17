@@ -17,6 +17,7 @@ import {
   getConnectionMode,
   serverSupportsCustomBleed,
   serverSupportsCustomImages,
+  serverSupportsMpcFill,
 } from "./config";
 import { DEFAULT_GEN_PATHS } from "./constants";
 import { cardToEntry } from "./deckEntries";
@@ -51,6 +52,21 @@ export interface CustomSyncItem {
   id: number;
   hash: string | null;
   label: string;
+  /** Printed on a face of a Scryfall card (face art), not as a card. */
+  faceArt?: boolean;
+}
+
+/** Every Custom Image a card prints: the card itself when it is one, and
+ *  any face art on a Scryfall card. */
+export function customImageRefs(card: CardRow): CustomSyncItem[] {
+  const refs: CustomSyncItem[] = [];
+  if (card.custom_image_id != null) {
+    refs.push({ id: card.custom_image_id, hash: card.custom_hash ?? null, label: card.name });
+  }
+  for (const fa of card.face_art ?? []) {
+    refs.push({ id: fa.custom_image_id, hash: fa.custom_hash, label: fa.label, faceArt: true });
+  }
+  return refs;
 }
 
 /** One entry per distinct custom image among `cards`, keyed by library id
@@ -58,12 +74,10 @@ export interface CustomSyncItem {
 function distinctCustoms(cards: CardRow[]): CustomSyncItem[] {
   const seen = new Map<number, CustomSyncItem>();
   for (const c of cards) {
-    if (c.custom_image_id != null && !seen.has(c.custom_image_id)) {
-      seen.set(c.custom_image_id, {
-        id: c.custom_image_id,
-        hash: c.custom_hash ?? null,
-        label: c.name,
-      });
+    for (const ref of customImageRefs(c)) {
+      const known = seen.get(ref.id);
+      if (!known) seen.set(ref.id, ref);
+      else if (ref.faceArt) known.faceArt = true;
     }
   }
   return [...seen.values()];
@@ -177,6 +191,19 @@ export async function syncCustomItems(
   // follows sends a custom_hash an older server's Pydantic model drops —
   // leaving an entry with no printing, which matches nothing, or matches
   // whatever real card happens to share the file's name.
+  // Face art is newer still, and its failure is worse than silent: an
+  // older server drops face_overrides and prints the Scryfall art.
+  if (
+    serverVersion !== undefined &&
+    customs.some((c) => c.faceArt) &&
+    !serverSupportsMpcFill(serverVersion)
+  ) {
+    throw new Error(
+      "This project prints MPC Fill art on some card faces, which needs a newer " +
+        `generation server${serverVersion ? ` (it reports v${serverVersion})` : ""}. ` +
+        "Update the server, or switch those faces back to Scryfall art.",
+    );
+  }
   if (serverVersion !== undefined && !serverSupportsCustomImages(serverVersion)) {
     throw new Error(
       "This project has custom card images, which need a newer generation " +
@@ -215,7 +242,7 @@ export async function syncCustomItems(
  *  entirely (and to decide whether the server-version floor matters) for
  *  the common all-Scryfall project. */
 export function hasCustomCards(cards: CardRow[]): boolean {
-  return cards.some((c) => c.custom_image_id != null);
+  return cards.some((c) => customImageRefs(c).length > 0);
 }
 
 /**
@@ -245,11 +272,19 @@ export async function registerCustomCards(
   opts?: SyncCustomOptions,
 ): Promise<number[]> {
   const customs = cards.filter((c) => c.custom_image_id != null);
-  if (customs.length === 0 || projectTag == null) return [];
-  await syncCustomImages(customs, serverVersion, opts);
+  // Face art registers as plain customs: sending the Scryfall card's own
+  // entry here would also download its Scryfall originals.
+  const faceArt = distinctCustoms(cards.filter((c) => c.face_art?.length)).filter(
+    (item) => item.faceArt && item.hash != null,
+  );
+  if ((customs.length === 0 && faceArt.length === 0) || projectTag == null) return [];
+  await syncCustomImages(cards, serverVersion, opts);
   const result = await generationApi.downloadOriginals({
     project_tag: projectTag,
-    entries: customs.map(cardToEntry),
+    entries: [
+      ...customs.map(cardToEntry),
+      ...faceArt.map((item) => ({ quantity: 1, name: item.label, custom_hash: item.hash })),
+    ],
     output_dir: DEFAULT_GEN_PATHS.output_dir,
     cache_dir: DEFAULT_GEN_PATHS.cache_dir,
     weights_dir: DEFAULT_GEN_PATHS.weights_dir,

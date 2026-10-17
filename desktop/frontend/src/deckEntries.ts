@@ -41,5 +41,16 @@ export function cardToEntry(card: CardRow): DeckEntryIn {
     // honest if a stale CardRow is still in memory.
     back_mode: card.back_mode === "image" && card.back_hash == null ? "inherit" : card.back_mode,
     back_hash: card.back_mode === "image" ? card.back_hash : null,
+    // Only sent when there are some, so an all-Scryfall deck's request is
+    // exactly what an older server has always accepted.
+    ...(card.face_art?.length
+      ? {
+          face_overrides: card.face_art.map((fa) => ({
+            face: fa.face,
+            total_faces: fa.total_faces,
+            custom_hash: fa.custom_hash,
+          })),
+        }
+      : {}),
   };
 }

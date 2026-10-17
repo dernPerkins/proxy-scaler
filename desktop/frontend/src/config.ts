@@ -259,6 +259,14 @@ export const SET_ICONS_MIN_SERVER_VERSION = "0.5.0";
 // packaging/set-version.py must never rewrite it.
 export const PER_CARD_BACKS_MIN_SERVER_VERSION = "0.5.0";
 
+// MPC Fill art: /api/mpcfill/* (search, previews, import), the /fetch
+// sync routes, and DeckEntryIn.face_overrides (MPC art on one face of a
+// Scryfall card). Below this the MPC Fill buttons are disabled, and a
+// project using face art is blocked from Generate/PDF/ZIP — an older
+// server silently drops face_overrides and would print the Scryfall art.
+// The release these ship in; packaging/set-version.py must never rewrite it.
+export const MPC_FILL_MIN_SERVER_VERSION = "0.5.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -362,6 +370,15 @@ export function serverSupportsCustomUpscale(serverVersion: string | null): boole
 export function serverSupportsPerCardBacks(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, PER_CARD_BACKS_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server have the MPC Fill routes and understand
+ *  face_overrides? Same null/unparseable semantics as
+ *  serverSupportsBackPrinting. */
+export function serverSupportsMpcFill(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, MPC_FILL_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

@@ -18,6 +18,7 @@ import {
   serverSupportsCustomBleed,
 } from "./config";
 import {
+  customImageRefs,
   getProjectSnapshot,
   hasCustomCards,
   probeMissingCustoms,
@@ -410,8 +411,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         // upload lands cropped to the wrong box.
         if (!serverSupportsCustomBleed(targetVersion)) {
           const declared = await declaredBleedByImageId();
-          const flagged = snapshot.cards.some(
-            (c) => c.custom_image_id != null && (declared.get(c.custom_image_id) ?? 0) > 0,
+          const flagged = snapshot.cards.some((c) =>
+            customImageRefs(c).some(({ id }) => (declared.get(id) ?? 0) > 0),
           );
           if (flagged) {
             return (

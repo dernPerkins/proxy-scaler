@@ -21,14 +21,15 @@ deliberate.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from proxy_scaler import customs
+from proxy_scaler import customs, drive_images
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
-from proxy_scaler.api.schemas import CustomImageOut, DeleteCustomOut
+from proxy_scaler.api.schemas import CustomFetchIn, CustomImageOut, DeleteCustomOut
 from proxy_scaler.dpi import MAX_BLEED_MM
 from proxy_scaler.pipeline import invalidate_custom_derivatives
 
@@ -44,6 +45,19 @@ def _status(content_hash: str) -> CustomImageOut:
         low_resolution=dpi is not None and dpi < customs.MIN_COMFORTABLE_DPI,
         bleed_mm=customs.read_bleed_mm(content_hash),
     )
+
+
+def download_mpc_original(drive_id: str) -> bytes:
+    """An MPC Fill image's original bytes from Google Drive, with failures
+    as HTTP errors: 400 for a malformed id, 502 when Google won't serve
+    it (the message says why, for the client to show)."""
+    try:
+        data, _fmt = drive_images.download_original(drive_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except drive_images.DriveImageError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return data
 
 
 def _checked(content_hash: str) -> str:
@@ -95,15 +109,57 @@ async def upload_custom(
     """
     checked = _checked(content_hash)
     data = await request.body()
-    previous = customs.read_bleed_mm(checked) if customs.has_original(checked) else None
     try:
-        customs.store_original(data, expected_hash=checked, bleed_mm=bleed_mm)
+        store_custom_bytes(checked, data, bleed_mm)
     except customs.CustomImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _status(checked)
+
+
+def store_custom_bytes(checked: str, data: bytes, bleed_mm: float) -> None:
+    """Store a Custom Image's bytes under its (already validated) hash and
+    declared bleed. A different bleed for a hash already stored discards
+    everything derived from the old crop. Raises CustomImageError (a
+    mismatched hash, an unreadable or oversized file). Shared by the
+    upload, fetch and MPC Fill import routes."""
+    previous = customs.read_bleed_mm(checked) if customs.has_original(checked) else None
+    customs.store_original(data, expected_hash=checked, bleed_mm=bleed_mm)
     if previous is not None and not customs.same_bleed(previous, bleed_mm):
         invalidate_custom_derivatives(
             checked, db_path=get_db_path(), default_cache_dir=Path(DEFAULT_CACHE_DIR)
         )
+
+
+@router.post("/{content_hash}/fetch", response_model=CustomImageOut)
+def fetch_custom(content_hash: str, body: CustomFetchIn) -> CustomImageOut:
+    """Fill this server's copy of an MPC Fill Custom Image by downloading
+    it from Google Drive itself, instead of the client uploading it.
+
+    The client calls this on a sync miss for a library image that came
+    from MPC Fill (so it knows the Drive file id): the bytes then travel
+    Google -> this server once, rather than Google -> client -> server.
+    Any failure here is fine — the client falls back to a normal upload.
+
+    409 when the Drive file's bytes no longer hash to `content_hash` (the
+    uploader replaced it): the client's copy is the canonical one, and it
+    uploads that. A sync def: it blocks on the download, so FastAPI runs
+    it in its threadpool.
+    """
+    checked = _checked(content_hash)
+    if customs.has_original(checked) and customs.same_bleed(
+        customs.read_bleed_mm(checked), body.bleed_mm
+    ):
+        return _status(checked)
+    data = download_mpc_original(body.drive_id)
+    if hashlib.sha256(data).hexdigest() != checked:
+        raise HTTPException(
+            status_code=409,
+            detail="The file on Google Drive has changed since it was added to the library.",
+        )
+    try:
+        store_custom_bytes(checked, data, body.bleed_mm)
+    except customs.CustomImageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _status(checked)
 
 

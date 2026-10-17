@@ -12,6 +12,7 @@ from pathlib import Path
 
 from proxy_scaler import db
 from proxy_scaler.card_lookup import CardResolver
+from proxy_scaler.decklist import DeckEntry
 from proxy_scaler.dpi import (
     BACK_SOURCE_MODEL,
     CUSTOM_SOURCE_MODEL,
@@ -55,7 +56,9 @@ def custom_face(entry) -> CardFaceImage:
 
 
 def _faces_for(entry, pre, on_note) -> list[CardFaceImage]:
-    """Faces to generate for one decklist entry, from either world."""
+    """Faces to generate for one decklist entry, from either world. A face
+    the entry prints from a Custom Image instead (face_overrides) is left
+    out: its custom is registered through _override_customs."""
     if getattr(entry, "custom_hash", None):
         return [custom_face(entry)]
     if isinstance(pre, ScryfallError):
@@ -64,7 +67,29 @@ def _faces_for(entry, pre, on_note) -> list[CardFaceImage]:
     for w in warnings:
         if on_note:
             on_note(w)
-    return list(expand_faces(card))
+    faces = list(expand_faces(card))
+    if getattr(entry, "face_overrides", ()):
+        faces = [f for f in faces if entry.override_for(f.face_index) is None]
+    return faces
+
+
+def _override_customs(entries: list) -> list:
+    """One Custom Image entry per distinct hash the entries print on a
+    face of a Scryfall card, so those customs are registered (and, with
+    custom_upscale, upscaled) exactly like a custom card — minus any the
+    decklist already has as a card of its own."""
+    plain = {e.custom_hash for e in entries if getattr(e, "custom_hash", None)}
+    seen: set[str] = set()
+    out = []
+    for entry in entries:
+        for override in getattr(entry, "face_overrides", ()):
+            if override.custom_hash in plain or override.custom_hash in seen:
+                continue
+            seen.add(override.custom_hash)
+            out.append(
+                DeckEntry(quantity=1, name=entry.name, custom_hash=override.custom_hash)
+            )
+    return out
 
 
 def _custom_source_dpi(face: CardFaceImage) -> int:
@@ -253,7 +278,8 @@ def enqueue_decklist_entries(
     # (custom_upscale): "off" keeps the upload as prepared; "target" and
     # "native" queue model passes for the selected targets it doesn't
     # already reach (dpi.custom_upscale_targets).
-    customs = [e for e in entries if getattr(e, "custom_hash", None)]
+    overrides = _override_customs(entries)
+    customs = [e for e in entries if getattr(e, "custom_hash", None)] + overrides
     queued = 0
     failed = 0
     task_ids: list[int] = []
@@ -275,7 +301,7 @@ def enqueue_decklist_entries(
         # counted and noted as failed by the registration step.
         entries = [
             e
-            for e in entries
+            for e in [*entries, *overrides]
             if not getattr(e, "custom_hash", None)
             or (
                 custom_upscale != CUSTOM_UPSCALE_OFF
@@ -486,6 +512,9 @@ def enqueue_download_entries(
     output_dir/weights_dir are threaded through only because
     db.enqueue_task requires them NOT NULL — the download handler ignores
     both. Returns (queued_count, failed_count, task_ids)."""
+    # Customs printed on a face of a Scryfall card register like any other
+    # custom (their Scryfall face is skipped in _faces_for).
+    entries = [*entries, *_override_customs(entries)]
     resolver = CardResolver(card_db_path=card_db_path)
     resolved = _resolve_pairs(entries, resolver)
     active = active_task_keys(project_tag, db_path=db_path)

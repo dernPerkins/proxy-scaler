@@ -277,6 +277,10 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // unlike a project, a card has a sane fallback, the universal back.
     ("back_mode", "TEXT"),
     ("back_image_id", "INTEGER"),
+    // Custom Images printed in place of individual faces of this Scryfall
+    // card (MPC Fill art picked in the change-printing modal), as JSON. See
+    // face_art.rs.
+    ("face_art", "TEXT"),
 ];
 
 // Columns added to the two image libraries after their initial release.
@@ -385,6 +389,8 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     add_missing_columns(&conn, "project_cards", PROJECT_CARDS_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "custom_images", CUSTOM_IMAGES_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "back_images", BACK_IMAGES_ADDED_COLUMNS)?;
+    add_missing_columns(&conn, "custom_images", crate::mpc_art::MPC_ADDED_COLUMNS)?;
+    add_missing_columns(&conn, "back_images", crate::mpc_art::MPC_ADDED_COLUMNS)?;
     migrate_guide_flags(&conn)?;
     migrate_page_order_naming(&conn)?;
     Ok(conn)
@@ -764,6 +770,9 @@ pub struct CardRow {
     /// the server uses (back_hash on a deck entry), carried alongside the
     /// local id for the same reason custom_hash is.
     pub back_hash: Option<String>,
+    /// Faces printed from a Custom Image instead of this printing's own
+    /// art (face_art.rs). Empty for almost every card.
+    pub face_art: Vec<crate::face_art::CardFaceArt>,
 }
 
 #[derive(Debug, Serialize)]
@@ -892,16 +901,17 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
             "SELECT c.id, c.sort_order, c.original_import_line, c.quantity, c.name,
                     c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
                     c.custom_image_id, ci.content_hash, c.rarity,
-                    c.back_mode, c.back_image_id, bi.content_hash
+                    c.back_mode, c.back_image_id, bi.content_hash, c.face_art
              FROM project_cards c
              LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
              LEFT JOIN back_images bi ON bi.id = c.back_image_id
              WHERE c.project_id = ?1 ORDER BY c.sort_order ASC",
         )
         .map_err(|e| e.to_string())?;
+    let mut face_art_cache = HashMap::new();
     let rows = stmt
         .query_map(params![project_id], |row| {
-            Ok(CardRow {
+            Ok((CardRow {
                 id: row.get(0)?,
                 sort_order: row.get(1)?,
                 original_import_line: row.get(2)?,
@@ -918,10 +928,23 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 back_mode: normalize_back_mode(row.get(13)?, row.get(14)?),
                 back_image_id: row.get(14)?,
                 back_hash: row.get(15)?,
-            })
+                face_art: Vec::new(),
+            }, row.get::<_, Option<String>>(16)?))
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let mut cards = Vec::new();
+    for row in rows {
+        let (mut card, raw_face_art) = row.map_err(|e| e.to_string())?;
+        if raw_face_art.is_some() {
+            card.face_art = crate::face_art::load_card_face_art(
+                conn,
+                raw_face_art.as_deref(),
+                &mut face_art_cache,
+            )?;
+        }
+        cards.push(card);
+    }
+    Ok(cards)
 }
 
 fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, String> {
@@ -1800,6 +1823,114 @@ pub fn add_custom_cards(
     add_custom_cards_into(&mut conn, project_id, &custom_image_ids)
 }
 
+/// One line of an MPC Autofill order: a custom front, how many copies,
+/// and the Reverse those copies print with.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomCardItem {
+    pub custom_image_id: i64,
+    pub quantity: i64,
+    pub back_mode: String,
+    pub back_image_id: Option<i64>,
+}
+
+/// Add an imported order's cards to a project. Unlike add_custom_cards,
+/// one image can take several rows here, one per distinct Reverse (an
+/// order can print the same front over two different backs); a line that
+/// matches an existing row's image and Reverse adds its copies to that
+/// row instead of making another.
+fn add_custom_cards_with_backs_into(
+    conn: &mut Connection,
+    project_id: i64,
+    items: &[CustomCardItem],
+) -> Result<Vec<CardRow>, String> {
+    for item in items {
+        if !BACK_MODES.contains(&item.back_mode.as_str()) {
+            return Err(format!("Unknown back mode {:?}.", item.back_mode));
+        }
+        if (item.back_mode == "image") != item.back_image_id.is_some() {
+            return Err("A card's own back needs exactly one back image.".to_string());
+        }
+    }
+    let now = now_timestamp();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+        params![now, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let mut next_sort_order: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM project_cards WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    for item in items {
+        let quantity = item.quantity.max(1);
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM project_cards
+                 WHERE project_id = ?1 AND custom_image_id = ?2
+                   AND back_mode = ?3 AND back_image_id IS ?4
+                 ORDER BY sort_order LIMIT 1",
+                params![project_id, item.custom_image_id, item.back_mode, item.back_image_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(card_id) = existing {
+            tx.execute(
+                "UPDATE project_cards SET quantity = COALESCE(quantity, 1) + ?1 WHERE id = ?2",
+                params![quantity, card_id],
+            )
+            .map_err(|e| e.to_string())?;
+            continue;
+        }
+        let label: Option<String> = tx
+            .query_row(
+                "SELECT label FROM custom_images WHERE id = ?1",
+                params![item.custom_image_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(label) = label else {
+            continue;
+        };
+        tx.execute(
+            "INSERT INTO project_cards
+             (project_id, sort_order, original_import_line, quantity, name, custom_image_id,
+              back_mode, back_image_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                project_id,
+                next_sort_order,
+                label,
+                quantity,
+                label,
+                item.custom_image_id,
+                item.back_mode,
+                item.back_image_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        next_sort_order += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    cards_for_project(conn, project_id)
+}
+
+#[tauri::command]
+pub fn add_custom_cards_with_backs(
+    app: AppHandle,
+    project_id: i64,
+    items: Vec<CustomCardItem>,
+) -> Result<Vec<CardRow>, String> {
+    let mut conn = open_db(&app)?;
+    add_custom_cards_with_backs_into(&mut conn, project_id, &items)
+}
+
 #[tauri::command]
 pub fn import_resolved_cards(
     app: AppHandle,
@@ -1892,6 +2023,16 @@ pub fn set_card_printing(
     rarity: Option<String>,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
+    // Art picked for a face belongs to the printing it was picked for; a
+    // different printing (perhaps with a different number of faces)
+    // starts from its own art. Done here, not in apply_card_resolution,
+    // which the background re-resolve also uses.
+    conn.execute(
+        "UPDATE project_cards SET face_art = NULL
+         WHERE id = ?1 AND scryfall_id IS NOT ?2",
+        params![card_id, scryfall_id],
+    )
+    .map_err(|e| e.to_string())?;
     apply_card_resolution(
         &conn,
         &CardResolutionUpdate {
@@ -2584,6 +2725,10 @@ pub(crate) mod test_support {
             .expect("custom_images columns");
         add_missing_columns(&conn, "back_images", BACK_IMAGES_ADDED_COLUMNS)
             .expect("back_images columns");
+        add_missing_columns(&conn, "custom_images", crate::mpc_art::MPC_ADDED_COLUMNS)
+            .expect("custom_images mpc columns");
+        add_missing_columns(&conn, "back_images", crate::mpc_art::MPC_ADDED_COLUMNS)
+            .expect("back_images mpc columns");
         conn
     }
 }
@@ -2640,6 +2785,75 @@ mod tests {
         assert_eq!(cards[0].scryfall_id, None);
         assert_eq!(cards[0].set_code, None);
         assert_eq!(cards[1].name, "Goblin Token");
+    }
+
+    fn add_back_row(conn: &Connection, hash: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO back_images (content_hash, label, original_filename, file_name,
+                                      thumb_name, includes_bleed, width, height, created_at)
+             VALUES (?1, 'Back', 'back.png', ?2, ?3, 0, 745, 1040, '1')",
+            params![hash, format!("{hash}.png"), format!("{hash}_thumb.jpg")],
+        )
+        .expect("insert back");
+        conn.last_insert_rowid()
+    }
+
+    fn item(custom_image_id: i64, quantity: i64, back_image_id: Option<i64>) -> CustomCardItem {
+        CustomCardItem {
+            custom_image_id,
+            quantity,
+            back_mode: if back_image_id.is_some() { "image" } else { "inherit" }.to_string(),
+            back_image_id,
+        }
+    }
+
+    #[test]
+    fn order_import_merges_lines_with_the_same_front_and_back() {
+        let mut conn = test_conn();
+        let project_id = get_or_create_unnamed_project_id(&conn).expect("project");
+        let a = add_custom_image_row(&conn, &"a".repeat(64), "Bolt");
+        let back = add_back_row(&conn, &"c".repeat(64));
+
+        let cards = add_custom_cards_with_backs_into(
+            &mut conn,
+            project_id,
+            &[item(a, 2, None), item(a, 1, Some(back)), item(a, 3, None)],
+        )
+        .expect("add");
+        // One front over two different backs is two rows.
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].quantity, Some(5));
+        assert_eq!(cards[0].back_mode, "inherit");
+        assert_eq!(cards[1].quantity, Some(1));
+        assert_eq!(cards[1].back_mode, "image");
+        assert_eq!(cards[1].back_image_id, Some(back));
+
+        // A second import adds to the matching rows.
+        let cards = add_custom_cards_with_backs_into(&mut conn, project_id, &[item(a, 1, Some(back))])
+            .expect("again");
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].quantity, Some(2));
+    }
+
+    #[test]
+    fn order_import_rejects_inconsistent_backs() {
+        let mut conn = test_conn();
+        let project_id = get_or_create_unnamed_project_id(&conn).expect("project");
+        let a = add_custom_image_row(&conn, &"a".repeat(64), "Bolt");
+        let bad_mode = CustomCardItem {
+            custom_image_id: a,
+            quantity: 1,
+            back_mode: "sideways".to_string(),
+            back_image_id: None,
+        };
+        assert!(add_custom_cards_with_backs_into(&mut conn, project_id, &[bad_mode]).is_err());
+        let image_without_back = CustomCardItem {
+            custom_image_id: a,
+            quantity: 1,
+            back_mode: "image".to_string(),
+            back_image_id: None,
+        };
+        assert!(add_custom_cards_with_backs_into(&mut conn, project_id, &[image_without_back]).is_err());
     }
 
     #[test]
@@ -3491,6 +3705,32 @@ mod tests {
 
         set_card_quantity_in(&conn, card_id, -3).expect("clamp negative");
         assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(1));
+    }
+
+    #[test]
+    fn image_library_mpc_columns_are_added_to_a_legacy_db() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(SCHEMA).expect("schema");
+        conn.execute(
+            "INSERT INTO custom_images
+                (content_hash, label, original_filename, file_name, thumb_name, created_at)
+             VALUES ('c1', 'A card', 'a.png', 'c1.png', 'c1_thumb.jpg', '1')",
+            [],
+        )
+        .expect("legacy row");
+        for _ in 0..2 {
+            add_missing_columns(&conn, "custom_images", crate::mpc_art::MPC_ADDED_COLUMNS)
+                .expect("customs");
+            add_missing_columns(&conn, "back_images", crate::mpc_art::MPC_ADDED_COLUMNS)
+                .expect("backs");
+        }
+        let drive_id: Option<String> = conn
+            .query_row("SELECT mpc_drive_id FROM custom_images", [], |row| row.get(0))
+            .expect("column");
+        assert!(drive_id.is_none());
+        conn.query_row("SELECT mpc_source, mpc_name FROM back_images", [], |_| Ok(()))
+            .optional()
+            .expect("back columns");
     }
 
     #[test]

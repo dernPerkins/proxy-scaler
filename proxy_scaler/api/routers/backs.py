@@ -16,12 +16,15 @@ from a project's Generate — see the module comment in proxy_scaler/backs.py.
 
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, HTTPException, Request
 
 from proxy_scaler import backs
 from proxy_scaler.api.deps import get_db_path
+from proxy_scaler.api.routers.customs import download_mpc_original
 from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
-from proxy_scaler.api.schemas import BackImageOut, DeleteBackOut
+from proxy_scaler.api.schemas import BackFetchIn, BackImageOut, DeleteBackOut
 from proxy_scaler.pipeline import invalidate_back_derivatives
 
 router = APIRouter(prefix="/api/backs", tags=["backs"])
@@ -76,6 +79,30 @@ async def upload_back(content_hash: str, request: Request) -> BackImageOut:
         backs.store_original(data, expected_hash=checked)
     except backs.BackImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _status(checked)
+
+
+@router.post("/{content_hash}/fetch", response_model=BackImageOut)
+def fetch_back(content_hash: str, body: BackFetchIn) -> BackImageOut:
+    """Fill this server's copy of an MPC Fill Back Image by downloading it
+    from Google Drive itself, instead of the client uploading it. Same
+    contract as POST /api/customs/{hash}/fetch: present already -> no
+    download; 409 when the Drive file no longer hashes to `content_hash`;
+    any failure leaves the client to upload as usual. A back's bleed
+    travels with each render request, so there is none to send here."""
+    checked = _checked(content_hash)
+    if backs.has_original(checked):
+        return _status(checked)
+    data = download_mpc_original(body.drive_id)
+    if hashlib.sha256(data).hexdigest() != checked:
+        raise HTTPException(
+            status_code=409,
+            detail="The file on Google Drive has changed since it was added to the library.",
+        )
+    try:
+        backs.store_original(data, expected_hash=checked)
+    except backs.BackImageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _status(checked)
 
 

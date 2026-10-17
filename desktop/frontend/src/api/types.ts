@@ -80,6 +80,18 @@ export interface DeckEntryIn {
   // request's back_images manifest. Servers before 0.6.0 ignore both.
   back_mode?: BackMode;
   back_hash?: string | null;
+  // Faces of this Scryfall card printed from a Custom Image (MPC Fill art)
+  // instead of the printing's own art. Servers before
+  // MPC_FILL_MIN_SERVER_VERSION drop it and print the Scryfall art.
+  face_overrides?: FaceOverrideIn[];
+}
+
+/** Mirrors FaceOverrideIn (server): `face` is 0 for a single-faced card
+ *  or a DFC's front, 1 for a DFC's back. */
+export interface FaceOverrideIn {
+  face: number;
+  total_faces: number;
+  custom_hash: string;
 }
 
 /** What a card's Reverse takes when it isn't a transform face. Mirrors
@@ -708,6 +720,16 @@ export interface BackImage {
   /** Effective print DPI at card size. Warned about below ~300, never
    *  blocked — plenty of people knowingly print a flat logo at low DPI. */
   source_dpi: number;
+  /** Where the back came from when picked on MPC Fill; null for uploads. */
+  mpc: MpcProvenance | null;
+}
+
+/** Mirrors mpc_art::MpcProvenance (Rust): the Google Drive file an MPC
+ *  Fill pick came from, its uploader, and MPC Fill's name for it. */
+export interface MpcProvenance {
+  drive_id: string;
+  source: string;
+  name: string;
 }
 
 /** Mirrors back_images::BackImageUsage (Rust). */
@@ -731,6 +753,8 @@ export interface BackImageServerStatus {
 export interface BackSyncResult {
   content_hash: string;
   uploaded: boolean;
+  /** The server downloaded it from Google Drive itself (an MPC Fill back). */
+  fetched: boolean;
 }
 
 // --- The Custom Image library ----------------------------------------------
@@ -758,9 +782,54 @@ export interface CustomImage {
    *  more than 88 mm). Warned about below ~300, never blocked — and
    *  unlike a Back Image, upscaling is a real remedy. */
   source_dpi: number;
+  /** Where the image came from when picked on MPC Fill; null for uploads. */
+  mpc: MpcProvenance | null;
 }
 
 export interface CustomSyncResult {
   content_hash: string;
   uploaded: boolean;
+  /** The server downloaded it from Google Drive itself (an MPC Fill image). */
+  fetched: boolean;
+}
+
+// --- MPC Fill (api/routers/mpcfill.py) ----------------------------------------
+
+export type MpcCardType = "CARD" | "TOKEN" | "CARDBACK";
+
+/** One piece of MPC Fill art. Mirrors MpcCardOut. Its images come from
+ *  the generation server (mpcThumbUrl / mpcImport), never from MPC Fill. */
+export interface MpcCard {
+  drive_id: string;
+  name: string;
+  card_type: string;
+  extension: string;
+  dpi: number;
+  size_bytes: number;
+  language: string;
+  source_name: string;
+  date_created: string;
+  tags: string[];
+}
+
+/** Mirrors MpcSearchOut: every matching id (best first), the first page
+ *  of them hydrated; mpcCards hydrates the rest. */
+export interface MpcSearchResult {
+  query: string;
+  card_type: MpcCardType;
+  ids: string[];
+  cards: MpcCard[];
+}
+
+export interface MpcSearchParams {
+  q?: string;
+  type?: MpcCardType;
+  scryfall_id?: string;
+  face?: number;
+  /** A Scryfall or MPC Fill language code; omitted means any language. */
+  lang?: string | null;
+  fuzzy?: boolean;
+  nsfw?: boolean;
+  min_dpi?: number;
+  refresh?: boolean;
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
-import type { CardRow, CustomUpscaleMode } from "../api/project";
+import type { CardFaceArt, CardRow, CustomUpscaleMode } from "../api/project";
 import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import SelectMenu from "../components/SelectMenu";
@@ -26,6 +26,7 @@ import { useConnection } from "../connection";
 import {
   getProbedDevice,
   serverSupportsCustomUpscale,
+  serverSupportsMpcFill,
   serverSupportsSetIcons,
   subscribeProbedDevice,
   useServerReadiness,
@@ -38,6 +39,9 @@ import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
 import { registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { importMpcOrder } from "../mpcFill";
+import { parseMpcOrder } from "../mpcOrder";
+import type { BackImage } from "../api/types";
 import { UploadCanceled } from "../uploadProgress";
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -47,13 +51,16 @@ import {
 import { runDownload, useDownloadStatus } from "../download";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import {
+  applyFaceArt,
   cardIdentity,
   groupByCard,
   groupByCardName,
   buildRows,
   statusForPairs,
+  type CardFaceStatus,
   type VariantStatus,
 } from "../mergeCardStatus";
+import type { FaceArtHandlers, PickerOpenRequest } from "../components/PrintingPicker";
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -73,10 +80,8 @@ function localCardIdentity(card: CardRow): string {
   );
 }
 
-interface DisplayFace {
-  faceLabel: string | null;
-  variants: VariantStatus[];
-}
+// One face of a row; `art` when it prints MPC Fill art (face_art).
+type DisplayFace = CardFaceStatus<CardFaceArt>;
 
 export default function DecklistPage() {
   const queryClient = useQueryClient();
@@ -88,9 +93,12 @@ export default function DecklistPage() {
     cards,
     importResolvedCards,
     addCustomCards,
+    addCustomCardsWithBacks,
     removeCard,
     setCardQuantity,
     setCardPrinting,
+    setCardFaceArt,
+    clearCardFaceArt,
     resetCardBacks,
     applyCardResolutions,
     backfillRarities,
@@ -378,6 +386,65 @@ export default function DecklistPage() {
   const [customProgress, setCustomProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
+
+  // MPC Autofill order import: every front and back the order uses goes
+  // into the libraries through the server (one at a time, with a cancel),
+  // then the order's slots become custom cards with their quantities and
+  // backs. The order's default back is offered as the project's.
+  const orderFileInput = useRef<HTMLInputElement>(null);
+  const orderCanceled = useRef(false);
+  const [orderProgress, setOrderProgress] = useState<{
+    done: number;
+    total: number;
+    name: string;
+  } | null>(null);
+  const [orderNote, setOrderNote] = useState<string | null>(null);
+  const [orderCardback, setOrderCardback] = useState<BackImage | null>(null);
+  const mpcSupported = serverSupportsMpcFill(serverVersion);
+  const importOrderMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const order = parseMpcOrder(await file.text());
+      orderCanceled.current = false;
+      setOrderProgress({ done: 0, total: order.fronts.length + order.backs.length, name: "" });
+      const result = await importMpcOrder(
+        order,
+        (done, total, name) => setOrderProgress({ done, total, name }),
+        () => orderCanceled.current,
+      );
+      if (result.canceled) return { ...result, added: 0, warnings: order.warnings };
+      let added = 0;
+      if (result.items.length) {
+        const out = await addCustomCardsWithBacks(result.items);
+        added = result.items.reduce((sum, item) => sum + item.quantity, 0);
+        if (!serverUnavailable) {
+          void registerCustomCards(out.cards, out.projectTag, serverVersion)
+            .then(() => invalidateStatus())
+            .catch(() => {});
+        }
+      }
+      return { ...result, added, warnings: order.warnings };
+    },
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["custom-images"] });
+      void queryClient.invalidateQueries({ queryKey: ["back-images"] });
+      setOrderProgress(null);
+      const problems = [...result.warnings, ...result.errors];
+      setOrderNote(
+        result.canceled
+          ? "Import canceled; art already fetched stays in the library."
+          : `Added ${result.added} card(s) from the order.${
+              problems.length ? ` Not imported: ${problems.join(" ")}` : ""
+            }`,
+      );
+      if (!result.canceled && result.cardback && result.cardback.id !== settings.back_image_id) {
+        setOrderCardback(result.cardback);
+      }
+    },
+    onError: (err: Error) => {
+      setOrderProgress(null);
+      setOrderNote(`Couldn't import that order: ${err.message}`);
+    },
+  });
 
   const addCustomImagesMutation = useMutation({
     mutationFn: async (files: File[]) => {
@@ -929,6 +996,72 @@ export default function DecklistPage() {
             </p>
           )}
           {customUploadError && <p className="error-text">{customUploadError}</p>}
+          <p className="hint">
+            Have an MPC Autofill order?{" "}
+            <button
+              type="button"
+              className="linklike"
+              onClick={() => orderFileInput.current?.click()}
+              disabled={importOrderMutation.isPending || serverUnavailable || !mpcSupported}
+              title={
+                serverUnavailable
+                  ? "Generation server is unreachable"
+                  : !mpcSupported
+                    ? "Needs a newer generation server"
+                    : "Import the .xml file MPC Fill's Download XML button saves"
+              }
+            >
+              Import the order (.xml)
+            </button>
+            . Its art is fetched into your Custom and Back libraries.
+          </p>
+          <input
+            ref={orderFileInput}
+            type="file"
+            accept=".xml,text/xml,application/xml"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) {
+                setOrderNote(null);
+                importOrderMutation.mutate(file);
+              }
+            }}
+          />
+          {orderProgress && importOrderMutation.isPending && (
+            <p className="hint">
+              Fetching art {Math.min(orderProgress.done + 1, orderProgress.total)} of{" "}
+              {orderProgress.total}
+              {orderProgress.name ? ` — ${orderProgress.name}` : ""}…{" "}
+              <button
+                type="button"
+                className="linklike"
+                onClick={() => {
+                  orderCanceled.current = true;
+                }}
+              >
+                Cancel
+              </button>
+            </p>
+          )}
+          {orderNote && <p className="hint">{orderNote}</p>}
+          {orderCardback && (
+            <ConfirmDialog
+              title="Use the order's card back?"
+              confirmLabel="Use this back"
+              tone="primary"
+              onConfirm={() => {
+                const backId = orderCardback.id;
+                setSettings((s) => ({ ...s, back_image_id: backId }));
+                setOrderCardback(null);
+              }}
+              onCancel={() => setOrderCardback(null)}
+            >
+              The order prints &ldquo;{orderCardback.label}&rdquo; on the back of every card
+              without its own. Make it this project&apos;s back?
+            </ConfirmDialog>
+          )}
         </div>
 
         <div className="decklist-head">
@@ -998,20 +1131,31 @@ export default function DecklistPage() {
             cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
           }
           const faceGroups = buildRows(cardGallery, cardTasks);
-          const faces: DisplayFace[] = faceGroups
+          const scryfallFaces = faceGroups
             .map(({ items, tasks: faceTasks }) => {
               const source = items[0] ?? faceTasks[0];
               return {
-                faceLabel: source?.face_label ?? null,
-                // Canceled tasks are just queue history, not worth
-                // surfacing here — the Tasks tab is where cancellation
-                // state actually matters.
-                variants: statusForPairs(items, faceTasks).filter(
-                  (v) => v.status !== "canceled",
-                ),
+                faceIndex: source?.face_index ?? null,
+                face: {
+                  faceLabel: source?.face_label ?? null,
+                  // Canceled tasks are just queue history, not worth
+                  // surfacing here — the Tasks tab is where cancellation
+                  // state actually matters.
+                  variants: statusForPairs(items, faceTasks).filter(
+                    (v) => v.status !== "canceled",
+                  ),
+                } as DisplayFace,
               };
             })
-            .filter((face) => face.variants.length > 0);
+            .filter(({ face }) => face.variants.length > 0);
+          // A face printing MPC Fill art shows that image's variants in
+          // its place (they live under the image's own identity).
+          const faces: DisplayFace[] = applyFaceArt(
+            scryfallFaces,
+            card.face_art ?? [],
+            galleryByCard,
+            tasksByCard,
+          );
           // Known only once the card's faces have been generated or
           // downloaded: a double-faced card's "back" face is what prints
           // on its Reverse while the PDF tab pairs faces, so the per-card
@@ -1047,6 +1191,35 @@ export default function DecklistPage() {
                   .catch(() => {});
               }}
               onPickerClosed={() => setAdoptNonce((n) => n + 1)}
+              faceArt={{
+                onSetFaceArt: async (face, totalFaces, image) => {
+                  await setCardFaceArt(card.id, face, totalFaces, image);
+                  // Ready to print straight away, like a dropped custom:
+                  // register it now (best-effort; Generate/PDF/ZIP rerun
+                  // the same idempotent step).
+                  const withArt: CardRow = {
+                    ...card,
+                    face_art: [
+                      {
+                        face,
+                        total_faces: totalFaces,
+                        custom_image_id: image.id,
+                        custom_hash: image.content_hash,
+                        label: image.label,
+                        mpc_drive_id: image.mpc?.drive_id ?? null,
+                      },
+                    ],
+                  };
+                  void registerCustomCards([withArt], projectTag, serverVersion)
+                    .then(() => invalidateStatus())
+                    .catch(() => {});
+                  invalidateStatus();
+                },
+                onClearFaceArt: async (face) => {
+                  await clearCardFaceArt(card.id, face);
+                  invalidateStatus();
+                },
+              }}
               disabled={serverUnavailable}
             />
           );
@@ -1133,6 +1306,8 @@ function CardRowView(props: {
   }) => void;
   /** The printing picker closed (picked or not) — see adoptNonce. */
   onPickerClosed: () => void;
+  /** MPC Fill art for this card's faces. */
+  faceArt: FaceArtHandlers;
   /** True when the generation server is unreachable — disables
    *  Generate/Regen/printing changes (Remove/Show stay enabled since
    *  those are purely local). */
@@ -1154,8 +1329,11 @@ function CardRowView(props: {
     rarity,
     onPickPrinting,
     onPickerClosed,
+    faceArt,
     disabled,
   } = props;
+  // A face tile's "Change art" opens the row's picker in MPC Fill mode.
+  const [pickerRequest, setPickerRequest] = useState<PickerOpenRequest | null>(null);
   const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
@@ -1214,6 +1392,8 @@ function CardRowView(props: {
             disabled={disabled}
             onPick={onPickPrinting}
             onClosed={onPickerClosed}
+            faceArt={faceArt}
+            openRequest={pickerRequest}
           />
         )}
         <CardBackPicker card={card} transformOnBack={transformOnBack} />
@@ -1275,9 +1455,19 @@ function CardRowView(props: {
         faces.map((face, i) => (
           <div key={i} className="variants" data-tour="card-variants">
             {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
+            {face.art && face.variants.length === 0 && (
+              <StatusBadge status="canceled">
+                {face.art.mpc_drive_id ? "MPC" : "Custom"} · not on the server yet
+              </StatusBadge>
+            )}
             {face.variants.map((v) => (
               <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
-                {v.dpi} · {modelDisplayName(v.model)}
+                {v.dpi} ·{" "}
+                {face.art && v.model === CUSTOM_SOURCE_MODEL
+                  ? face.art.mpc_drive_id
+                    ? "MPC"
+                    : "Custom"
+                  : modelDisplayName(v.model)}
               </StatusBadge>
             ))}
           </div>
@@ -1378,7 +1568,25 @@ function CardRowView(props: {
                         to replace it is to upload a different one. The
                         server rejects the call outright; hiding the
                         button is how the user finds that out first. */}
-                    {card.custom_image_id == null ? (
+                    {face.art ? (
+                      <>
+                        <button
+                          className="btn-sm"
+                          onClick={() => setPickerRequest({ source: "mpc", face: face.art!.face })}
+                          disabled={disabled}
+                          title="Pick different MPC Fill art for this face"
+                        >
+                          Change art
+                        </button>
+                        <button
+                          className="btn-sm"
+                          onClick={() => void faceArt.onClearFaceArt(face.art!.face)}
+                          title="Print this face from the printing's own art again"
+                        >
+                          Use Scryfall art
+                        </button>
+                      </>
+                    ) : card.custom_image_id == null ? (
                       <button
                         className="btn-sm"
                         onClick={() => onRefetch(originalSource.galleryItemId)}

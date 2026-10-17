@@ -34,7 +34,15 @@ import ImageViewer, { MAX_BLEED_MM, MagnifierIcon } from "../components/ImageVie
 import LibraryUpscaleControls from "../components/LibraryUpscaleControls";
 import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import { useConnection } from "../connection";
-import { serverSupportsLibraryUpscale, useServerReadiness, useServerVersion } from "../config";
+import {
+  MPC_FILL_MIN_SERVER_VERSION,
+  serverSupportsLibraryUpscale,
+  serverSupportsMpcFill,
+  useServerReadiness,
+  useServerVersion,
+} from "../config";
+import { MpcArtModal } from "../components/MpcArtPicker";
+import { importMpcArt } from "../mpcFill";
 import {
   serverSourceDpi,
   targetsFor,
@@ -99,6 +107,9 @@ function BackSettingsFields({
   const queryClient = useQueryClient();
   return (
     <div className="field-group">
+      {back.mpc && (
+        <p className="mpc-provenance">From MPC Fill · {back.mpc.source || "unknown uploader"}</p>
+      )}
       <label className="field">
         <span>Name</span>
         <input
@@ -346,6 +357,8 @@ export default function BacksPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [viewingId, setViewingId] = useState<number | null>(null);
+  const [mpcOpen, setMpcOpen] = useState(false);
+  const mpcSupported = serverSupportsMpcFill(serverVersion);
   const [pendingDelete, setPendingDelete] = useState<{ back: BackImage; uses: BackImageUsage } | null>(
     null,
   );
@@ -628,6 +641,23 @@ export default function BacksPage() {
             </span>
           </button>
 
+          <button
+            type="button"
+            className="dropzone mpc-library-tile"
+            disabled={serverUnavailable || !mpcSupported}
+            title={
+              serverUnavailable
+                ? "Generation server is unreachable"
+                : !mpcSupported
+                  ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
+                  : "Browse community card backs on MPC Fill"
+            }
+            onClick={() => setMpcOpen(true)}
+          >
+            <span className="dropzone-title">From MPC Fill</span>
+            <span className="dropzone-hint">Browse community card backs</span>
+          </button>
+
           {/* Lives inside the grid so it can never be orphaned from the
               button that clicks it again — it was moved out once, which
               silently made the whole tile do nothing. */}
@@ -675,6 +705,23 @@ export default function BacksPage() {
           </p>
         )}
       </main>
+
+      {mpcOpen && (
+        <MpcArtModal
+          title="MPC Fill — card backs"
+          initial={{}}
+          cardTypes={["CARDBACK"]}
+          pickLabel="Add and use this back"
+          onClose={() => setMpcOpen(false)}
+          onPick={async (card) => {
+            const back = await importMpcArt("back", card);
+            await queryClient.invalidateQueries({ queryKey: ["back-images"] });
+            // Same as an upload: the new back becomes the project's.
+            setSettings((s) => ({ ...s, back_image_id: back.id }));
+            setMpcOpen(false);
+          }}
+        />
+      )}
 
       {viewing && (
         <ImageViewer

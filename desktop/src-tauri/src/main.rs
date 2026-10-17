@@ -49,6 +49,8 @@
 
 mod back_images;
 mod custom_images;
+mod face_art;
+mod mpc_art;
 mod project_store;
 mod save_dialog;
 mod update;
@@ -911,6 +913,8 @@ fn main() {
             launch_installer,
             back_images::list_back_images,
             back_images::add_back_image,
+            back_images::add_mpc_back_image,
+            back_images::find_back_image_by_drive_id,
             back_images::set_back_image_label,
             back_images::set_back_image_includes_bleed,
             back_images::set_back_image_bleed,
@@ -924,6 +928,8 @@ fn main() {
             back_images::sync_back_image,
             custom_images::list_custom_images,
             custom_images::add_custom_image,
+            custom_images::add_mpc_custom_image,
+            custom_images::find_custom_image_by_drive_id,
             custom_images::set_custom_image_label,
             custom_images::set_custom_image_bleed,
             custom_images::count_cards_using_custom_image,
@@ -931,7 +937,11 @@ fn main() {
             custom_images::custom_image_thumbnail,
             custom_images::custom_image_full,
             custom_images::sync_custom_image,
-            project_store::add_custom_cards
+            project_store::add_custom_cards,
+            face_art::set_card_face_art,
+            face_art::clear_card_face_art,
+            face_art::count_face_art_using_custom_image,
+            project_store::add_custom_cards_with_backs
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

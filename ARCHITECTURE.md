@@ -170,7 +170,8 @@ changes are meant to build on it non-destructively.
 ## The resolve → generate flow
 
 Project management makes zero external network calls — all Scryfall
-traffic lives on the generation side, collapsed into one step instead of
+traffic lives on the generation side (as does all MPC Fill and Google
+Drive traffic: ADR 0006), collapsed into one step instead of
 the old architecture's two separate resolutions (once at decklist import,
 again at generate time):
 
@@ -432,6 +433,11 @@ string, not a database relationship.
 | `POST /api/backs/{hash}` | Sync one Back Image's bytes to this server (raw body, not multipart — one file, no other fields, and a `Form`/`File` route would need `python-multipart`, whose absence would stop the server booting at all). Idempotent, and the hash is verified against the bytes: a content-addressed store that accepts mismatched bytes lies about every later lookup |
 | `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Upscaling a back is a Backs-tab action (`POST /api/library/upscale`), never part of a project's Generate |
 | `DELETE /api/backs/{hash}` | Remove a Back Image from this server entirely. The client's library copy is canonical and untouched |
+| `POST /api/backs/{hash}/fetch` \| `POST /api/customs/{hash}/fetch` | Fill this server's copy of an MPC Fill library image by downloading it from Google Drive itself (`{drive_id}`, plus `bleed_mm` for customs), so a server the user switches to doesn't need the bytes uploaded. Already present → no download; the Drive file no longer hashing to `{hash}` → 409; Google refusing → 502. The client's sync falls back to the byte upload on any failure (an older server's 404 included) |
+| `GET /api/mpcfill/search` | Search MPC Fill art (`q`, or `scryfall_id` + `face` to search that face's name, as a TOKEN when the corpus says so; `type`, `lang`, `fuzzy`, `nsfw`, `min_dpi`, `refresh`). A CARDBACK search with no query lists every back. Ordered drive ids plus the first 60 hydrated. Answered through `art_sources.ArtSource` (mpcfill.com today, cached on disk a day — see ADR 0006) |
+| `POST /api/mpcfill/cards` | Details (name, uploader, DPI, size, tags) for more of a search's ids, as the grid scrolls |
+| `GET /api/mpcfill/thumb/{drive_id}` | A 400 px (`small`) or 800 px (`large`) JPEG preview, fetched from Google's image server and disk-cached under `imgcache/mpcfill/thumbs/`. Never from MPC Fill's own hosts |
+| `POST /api/mpcfill/import` | Download one image's original from Google Drive, store it here as a Custom Image (with `bleed_mm`, 0 when its aspect says it has none) or Back Image, and return the original bytes for the client's library — whose next sync then finds the hash already here |
 | `GET /api/version` | The server's release version (`proxy_scaler.__version__`), for the client's drift warning — Remote mode means client and server are updated on different machines. Clients tolerate its absence (older servers 404) |
 
 ## Frontend data flow (`desktop/frontend/src`)

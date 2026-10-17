@@ -77,6 +77,18 @@ class DeviceOut(BaseModel):
     webgpu: bool = False
 
 
+class FaceOverrideIn(BaseModel):
+    """One face of a Scryfall card printed from a Custom Image instead of
+    its own art (MPC Fill art picked in the client's change-printing
+    modal). `face` is the face's position (0 front, 1 back) and
+    `total_faces` how many faces the printing has, which the print paths
+    need and can't look up without a corpus."""
+
+    face: int = Field(ge=0, le=1)
+    total_faces: int = Field(ge=1, le=2)
+    custom_hash: str
+
+
 class DeckEntryIn(BaseModel):
     quantity: int = 1
     name: str
@@ -99,6 +111,12 @@ class DeckEntryIn(BaseModel):
     # manifest, which carries the bleed declaration.
     back_mode: Literal["inherit", "blank", "image"] = "inherit"
     back_hash: str | None = None
+    # Faces of this (Scryfall) entry printed from a Custom Image instead.
+    # Generate skips those faces' Scryfall download/upscale and registers
+    # (and, with custom_upscale, upscales) the custom; PDF/ZIP print it in
+    # the face's place. An older server drops the field and prints the
+    # Scryfall art, which is why the client gates on the server version.
+    face_overrides: list[FaceOverrideIn] = Field(default_factory=list, max_length=2)
 
 
 class BackImageIn(BaseModel):
@@ -917,3 +935,70 @@ class CustomImageOut(BaseModel):
 
 class DeleteCustomOut(BaseModel):
     removed: int
+
+
+class CustomFetchIn(BaseModel):
+    """POST /api/customs/{hash}/fetch: the Google Drive file the client's
+    library image came from (MPC Fill), and the bleed it is declared with."""
+
+    drive_id: str = Field(min_length=1, max_length=100)
+    bleed_mm: float = Field(default=0.0, ge=0, le=10)
+
+
+class BackFetchIn(BaseModel):
+    """POST /api/backs/{hash}/fetch: the Google Drive file the client's
+    library back came from (MPC Fill)."""
+
+    drive_id: str = Field(min_length=1, max_length=100)
+
+
+# --- MPC Fill (api/routers/mpcfill.py) --------------------------------------
+
+MpcCardType = Literal["CARD", "TOKEN", "CARDBACK"]
+
+
+class MpcCardOut(BaseModel):
+    """One piece of MPC Fill art. Images are fetched by `drive_id` through
+    /api/mpcfill/thumb and /api/mpcfill/import, never from MPC Fill."""
+
+    drive_id: str
+    name: str
+    card_type: str
+    extension: str
+    dpi: int
+    size_bytes: int
+    language: str
+    source_name: str
+    date_created: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class MpcSearchOut(BaseModel):
+    # The name actually searched (the card's face name when the request
+    # named a scryfall_id), and the card type searched for.
+    query: str
+    card_type: MpcCardType
+    # Every match, best first. The first page is hydrated in `cards`; the
+    # client hydrates the rest through POST /api/mpcfill/cards as it
+    # scrolls.
+    ids: list[str]
+    cards: list[MpcCardOut]
+
+
+class MpcCardsIn(BaseModel):
+    ids: list[str] = Field(max_length=1000)
+
+
+class MpcCardsOut(BaseModel):
+    # In request order; ids MPC Fill doesn't know are left out.
+    cards: list[MpcCardOut]
+
+
+class MpcImportIn(BaseModel):
+    """POST /api/mpcfill/import: download one piece of art and store it as
+    a Custom Image (`custom`) or Back Image (`back`) on this server. The
+    response body is the original file, for the client's library."""
+
+    drive_id: str = Field(min_length=1, max_length=100)
+    kind: Literal["custom", "back"]
+    bleed_mm: float = Field(default=0.0, ge=0, le=10)

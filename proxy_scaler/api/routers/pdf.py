@@ -13,10 +13,10 @@ from PIL import Image
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
+from proxy_scaler.api.entries import to_deck_entry
 from proxy_scaler.api.schemas import (
     BackImageIn,
     CutterIn,
-    DeckEntryIn,
     RectOut,
     PdfJobOut,
     PdfJobStatusOut,
@@ -84,19 +84,8 @@ def _default_pdf_basename(today: date | None = None) -> str:
     return f"proxy-scaler-{(today or date.today()).isoformat()}"
 
 
-def _to_deck_entry(e: DeckEntryIn) -> DeckEntry:
-    return DeckEntry(
-        quantity=e.quantity,
-        name=e.name,
-        set_code=e.set_code,
-        collector_number=e.collector_number,
-        raw_line=e.raw_line or e.name,
-        scryfall_id=e.scryfall_id,
-        lang=e.lang,
-        custom_hash=e.custom_hash,
-        back_mode=e.back_mode,
-        back_hash=e.back_hash,
-    )
+# Shared with export.py, which imports it from here.
+_to_deck_entry = to_deck_entry
 
 
 def back_manifest(
@@ -251,7 +240,8 @@ def _rect_out(r: Rect) -> RectOut:
 
 def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> list[FaceResult]:
     """The project's gallery plus every registry row of the Custom Images
-    it prints, whatever tag made them. Custom Images belong to the
+    it prints (as cards or on a card's face), whatever tag made them.
+    Custom Images belong to the
     machine, so a variant upscaled from the Customs tab (dpi.LIBRARY_TAG)
     or by another project is as printable here as one this project made;
     match_quantities and _pick_dpi_variant then apply the preferred
@@ -259,7 +249,10 @@ def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> li
     id, and the declared bleed is attached to every custom row."""
     raw_items = db.list_gallery_items(project_tag, db_path=db_path)
     seen = {int(d["id"]) for d in raw_items}
-    for custom_hash in {e.custom_hash for e in entries if e.custom_hash}:
+    custom_hashes = {e.custom_hash for e in entries if e.custom_hash}
+    # Customs printed on a face of a Scryfall card (face overrides) too.
+    custom_hashes |= {o.custom_hash for e in entries for o in e.face_overrides}
+    for custom_hash in custom_hashes:
         for d in db.list_registry_items_for_custom(custom_hash, db_path=db_path):
             if int(d["id"]) not in seen:
                 seen.add(int(d["id"]))

@@ -6,6 +6,7 @@ separation used elsewhere in this codebase.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
-from .decklist import DeckEntry
+from .decklist import DeckEntry, FaceOverride
 from .dpi import (
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
@@ -738,6 +739,33 @@ class PrintUnit:
 BackKey = tuple[str, str | None]
 """(back_mode, back_hash) as match_quantities groups copies by it."""
 
+SubstKey = tuple[str, int, int] | None
+"""For a custom image printed on a face of a Scryfall card (a face
+override): (scryfall_id, face, total_faces) — copies of one override merge,
+and stay apart from the same image printed as a card of its own (None)."""
+
+
+def _substitute(best: FaceResult, entry: DeckEntry, override: FaceOverride) -> FaceResult:
+    """The custom image `best`, standing in for face `override.face` of the
+    Scryfall card `entry` names: it takes the card's identity (so DFC
+    pairing, ordering and descriptions treat it as that face) and keeps
+    its own file, DPI and bleed. Lives only for this print run — it names
+    two identities at once, which the registry's one-identity CHECK would
+    rightly refuse, so it must never be written back."""
+    double = override.total_faces > 1
+    return dataclasses.replace(
+        best,
+        scryfall_id=entry.scryfall_id,
+        face_index=override.face if double else None,
+        face_label=("front" if override.face == 0 else "back") if double else None,
+        total_faces=override.total_faces,
+        card_name=entry.name,
+        face_name=entry.name,
+        set_code=(entry.set_code or "").lower(),
+        collector_number=entry.collector_number or "",
+        lang=(entry.lang or "en").lower(),
+    )
+
 
 def _back_key(entry: DeckEntry) -> BackKey:
     """Normalise an entry's Reverse choice to the key copies merge on. The
@@ -945,17 +973,31 @@ def match_quantities(
         collector = rep.collector_number
         card_name = (rep.card_name or rep.face_name or "").casefold()
 
-        # Copies per Reverse choice, and the first entry index asking for
-        # each — one unit per key below.
-        qty_by_back: dict[BackKey, int] = {}
-        first_index_by_back: dict[BackKey, int] = {}
+        # Copies per (Reverse choice, face override), and the first entry
+        # index asking for each — one unit per key below.
+        qty_by_key: dict[tuple[BackKey, SubstKey], int] = {}
+        first_index_by_key: dict[tuple[BackKey, SubstKey], int] = {}
+        subst_by_key: dict[SubstKey, tuple[DeckEntry, FaceOverride]] = {}
         matched_indices: set[int] = set()
+        # Faces each entry got from this group: 1, except an entry printing
+        # one custom on both faces of a DFC.
+        faces_taken: dict[int, int] = {}
 
-        def _take(i: int, entry: DeckEntry) -> None:
-            back = _back_key(entry)
-            qty_by_back[back] = qty_by_back.get(back, 0) + entry.quantity
-            first_index_by_back.setdefault(back, i)
+        def _take(i: int, entry: DeckEntry, override: FaceOverride | None = None) -> None:
+            subst: SubstKey = None
+            if override is not None:
+                subst = (entry.scryfall_id or entry.name, override.face, override.total_faces)
+                subst_by_key.setdefault(subst, (entry, override))
+            key = (_back_key(entry), subst)
+            qty_by_key[key] = qty_by_key.get(key, 0) + entry.quantity
+            first_index_by_key.setdefault(key, i)
             matched_indices.add(i)
+            faces_taken[i] = faces_taken.get(i, 0) + 1
+
+        def _overridden(entry: DeckEntry) -> bool:
+            # This Scryfall face prints from a custom instead, for this
+            # entry: its own image must neither print nor count.
+            return entry.override_for(rep.face_index) is not None
 
         if rep.is_custom:
             # Matched on content hash alone, and never by name: two
@@ -965,6 +1007,9 @@ def match_quantities(
             for i, entry in enumerate(entries):
                 if entry.custom_hash == rep.custom_hash:
                     _take(i, entry)
+                for override in entry.face_overrides:
+                    if override.custom_hash == rep.custom_hash:
+                        _take(i, entry, override)
         elif set_code and collector:
             rep_lang = (rep.lang or "en").lower()
             for i, entry in enumerate(entries):
@@ -976,6 +1021,7 @@ def match_quantities(
                     # the same set/collector. Absent lang reads as "en"
                     # on both sides, so pre-language decks are unchanged.
                     and (entry.lang or "en").lower() == rep_lang
+                    and not _overridden(entry)
                 ):
                     _take(i, entry)
         if not matched_indices and card_name and not rep.is_custom:
@@ -987,6 +1033,8 @@ def match_quantities(
                     # different printing that merely shares its name (e.g.
                     # "Sol Ring (c21) 263" vs a separate name-only
                     # "Sol Ring" line resolving to a different printing).
+                    continue
+                if _overridden(entry):
                     continue
                 ename = entry.name.casefold()
                 if (
@@ -1012,8 +1060,17 @@ def match_quantities(
             # this entry exists, so it must not ALSO be reported as "never
             # generated" — a group excluded at the requested DPI gets its
             # own, more precise report instead.
-            matched_face_counts[i] += 1
-            if rep.total_faces is not None:
+            matched_face_counts[i] += faces_taken[i]
+            # A custom printed on a face counts toward its Scryfall card,
+            # whose face count the override carries.
+            override_faces = [
+                o.total_faces
+                for o in entries[i].face_overrides
+                if rep.is_custom and o.custom_hash == rep.custom_hash
+            ]
+            if override_faces:
+                expected_faces_by_entry[i] = override_faces[0]
+            elif rep.total_faces is not None:
                 expected_faces_by_entry[i] = rep.total_faces
 
         best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
@@ -1024,18 +1081,26 @@ def match_quantities(
             missing_at_dpi.append(_describe_face(rep))
             continue
 
-        for (back_mode, back_hash), qty in qty_by_back.items():
+        for ((back_mode, back_hash), subst), qty in qty_by_key.items():
+            unit_best = best
+            unit_key = key
+            if subst is not None:
+                entry, override = subst_by_key[subst]
+                unit_best = _substitute(best, entry, override)
+                unit_key = f"{key}@{subst[0]}:{subst[1]}"
             units.append(
                 PrintUnit(
-                    face_key=key,
+                    face_key=unit_key,
                     quantity=qty,
-                    best=best,
+                    best=unit_best,
                     dpi_fallback=unavailable,
                     back_mode=back_mode,
                     back_hash=back_hash,
                 )
             )
-            unit_order_keys.append((first_index_by_back[(back_mode, back_hash)], best.face_index or 0))
+            unit_order_keys.append(
+                (first_index_by_key[((back_mode, back_hash), subst)], unit_best.face_index or 0)
+            )
 
     # Entries order is authoritative for output order (see docstring).
     # Stable, so ties beyond the (entry, face_index) key keep gallery

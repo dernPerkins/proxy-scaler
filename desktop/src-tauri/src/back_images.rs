@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+use crate::mpc_art::{self, MpcProvenance, SyncStep};
 use crate::project_store::open_db;
 
 const BACKS_DIRNAME: &str = "backs";
@@ -57,6 +58,9 @@ pub struct BackImage {
     /// ~300; it never blocks, because plenty of people knowingly print a
     /// flat logo at low resolution.
     pub source_dpi: f64,
+    /// Where the back came from when it was picked on MPC Fill; None for
+    /// the user's own uploads.
+    pub mpc: Option<MpcProvenance>,
 }
 
 fn backs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -96,7 +100,60 @@ fn row_to_back_image(row: &rusqlite::Row) -> rusqlite::Result<BackImage> {
             height,
             crate::custom_images::effective_bleed_mm(includes_bleed, bleed_mm),
         ),
+        mpc: mpc_art::provenance_from_row(row)?,
     })
+}
+
+fn find_by_hash(conn: &Connection, content_hash: &str) -> Result<Option<BackImage>, String> {
+    conn.query_row(
+        "SELECT * FROM back_images WHERE content_hash = ?1",
+        params![content_hash],
+        row_to_back_image,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// A library row about to be inserted (its files already written).
+struct NewBackImageRow<'a> {
+    content_hash: &'a str,
+    label: String,
+    original_filename: &'a str,
+    file_name: &'a str,
+    thumb_name: &'a str,
+    includes_bleed: bool,
+    bleed_mm: f64,
+    width: i64,
+    height: i64,
+    mpc: Option<&'a MpcProvenance>,
+}
+
+fn insert_back_image_row(conn: &Connection, row: &NewBackImageRow) -> Result<BackImage, String> {
+    conn.execute(
+        "INSERT INTO back_images
+            (content_hash, label, original_filename, file_name, thumb_name,
+             includes_bleed, bleed_mm, width, height, created_at,
+             mpc_drive_id, mpc_source, mpc_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            row.content_hash,
+            row.label,
+            row.original_filename,
+            row.file_name,
+            row.thumb_name,
+            row.includes_bleed,
+            row.bleed_mm,
+            row.width,
+            row.height,
+            crate::project_store::now_timestamp(),
+            row.mpc.map(|m| m.drive_id.as_str()),
+            row.mpc.map(|m| m.source.as_str()),
+            row.mpc.map(|m| m.name.as_str()),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    find_by_id(conn, id)?.ok_or_else(|| "back image vanished after insert".to_string())
 }
 
 fn find_by_id(conn: &Connection, id: i64) -> Result<Option<BackImage>, String> {
@@ -134,6 +191,75 @@ pub fn add_back_image(
     width: i64,
     height: i64,
 ) -> Result<BackImage, String> {
+    add_image(&app, &bytes, &thumbnail, &original_filename, &label, width, height, None, None)
+}
+
+/// Add a Back Image picked on MPC Fill: the bytes the generation server's
+/// /api/mpcfill/import returned, plus where they came from. A new row
+/// takes the bleed declaration given; a row already holding these bytes
+/// keeps its own label and bleed and only learns its provenance.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn add_mpc_back_image(
+    app: AppHandle,
+    bytes: Vec<u8>,
+    thumbnail: Vec<u8>,
+    original_filename: String,
+    width: i64,
+    height: i64,
+    label: String,
+    includes_bleed: bool,
+    bleed_mm: f64,
+    drive_id: String,
+    mpc_source: String,
+    mpc_name: String,
+) -> Result<BackImage, String> {
+    let mpc = MpcProvenance::new(&drive_id, &mpc_source, &mpc_name)?;
+    let bleed_mm = crate::custom_images::validate_bleed_mm(bleed_mm)?;
+    add_image(
+        &app,
+        &bytes,
+        &thumbnail,
+        &original_filename,
+        &label,
+        width,
+        height,
+        Some((includes_bleed, bleed_mm)),
+        Some(&mpc),
+    )
+}
+
+/// The Back Image for an MPC Fill file, if one was already picked, so a
+/// repeat pick never downloads it again.
+#[tauri::command]
+pub fn find_back_image_by_drive_id(
+    app: AppHandle,
+    drive_id: String,
+) -> Result<Option<BackImage>, String> {
+    let conn = open_db(&app)?;
+    conn.query_row(
+        "SELECT * FROM back_images WHERE mpc_drive_id = ?1 ORDER BY id LIMIT 1",
+        params![drive_id],
+        row_to_back_image,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Shared by both add commands. `declared` is (includes_bleed, bleed_mm)
+/// for a new row; None leaves it unticked at the table's default amount.
+#[allow(clippy::too_many_arguments)]
+fn add_image(
+    app: &AppHandle,
+    bytes: &[u8],
+    thumbnail: &[u8],
+    original_filename: &str,
+    label: &str,
+    width: i64,
+    height: i64,
+    declared: Option<(bool, f64)>,
+    mpc: Option<&MpcProvenance>,
+) -> Result<BackImage, String> {
     if bytes.is_empty() {
         return Err("That file was empty.".to_string());
     }
@@ -147,22 +273,18 @@ pub fn add_back_image(
         return Err("That file could not be read as an image.".to_string());
     }
 
-    let content_hash = format!("{:x}", Sha256::digest(&bytes));
-    let conn = open_db(&app)?;
-    if let Some(existing) = conn
-        .query_row(
-            "SELECT * FROM back_images WHERE content_hash = ?1",
-            params![content_hash],
-            row_to_back_image,
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-    {
+    let content_hash = format!("{:x}", Sha256::digest(bytes));
+    let conn = open_db(app)?;
+    if let Some(existing) = find_by_hash(&conn, &content_hash)? {
+        if let Some(mpc) = mpc {
+            mpc_art::attach_provenance_row(&conn, "back_images", existing.id, mpc)?;
+            return find_by_id(&conn, existing.id)?.ok_or_else(|| "back image vanished".to_string());
+        }
         return Ok(existing);
     }
 
-    let dir = backs_dir(&app)?;
-    let extension = Path::new(&original_filename)
+    let dir = backs_dir(app)?;
+    let extension = Path::new(original_filename)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("img")
@@ -172,36 +294,34 @@ pub fn add_back_image(
     // Write the files before the row: a row pointing at a file that isn't
     // there would survive every future load and report a back the library
     // cannot actually print.
-    std::fs::write(dir.join(&file_name), &bytes)
+    std::fs::write(dir.join(&file_name), bytes)
         .map_err(|e| format!("failed to save back image: {e}"))?;
-    std::fs::write(dir.join(&thumb_name), &thumbnail)
+    std::fs::write(dir.join(&thumb_name), thumbnail)
         .map_err(|e| format!("failed to save back image preview: {e}"))?;
 
     let trimmed = label.trim();
     let label = if trimmed.is_empty() {
-        original_filename.clone()
+        original_filename.to_string()
     } else {
         trimmed.to_string()
     };
-    conn.execute(
-        "INSERT INTO back_images
-            (content_hash, label, original_filename, file_name, thumb_name,
-             includes_bleed, width, height, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)",
-        params![
-            content_hash,
+    let (includes_bleed, bleed_mm) =
+        declared.unwrap_or((false, crate::custom_images::DEFAULT_BLEED_MM));
+    insert_back_image_row(
+        &conn,
+        &NewBackImageRow {
+            content_hash: &content_hash,
             label,
             original_filename,
-            file_name,
-            thumb_name,
+            file_name: &file_name,
+            thumb_name: &thumb_name,
+            includes_bleed,
+            bleed_mm,
             width,
             height,
-            crate::project_store::now_timestamp(),
-        ],
+            mpc,
+        },
     )
-    .map_err(|e| e.to_string())?;
-    let id = conn.last_insert_rowid();
-    find_by_id(&conn, id)?.ok_or_else(|| "back image vanished after insert".to_string())
 }
 
 #[tauri::command]
@@ -460,6 +580,9 @@ pub struct BackSyncResult {
     /// already holding them. Purely informational — the client calls sync
     /// unconditionally and this says what it cost.
     pub uploaded: bool,
+    /// Whether the server downloaded the bytes from Google Drive itself
+    /// (an MPC Fill back) instead.
+    pub fetched: bool,
 }
 
 /// Make sure a generation server holds this back's bytes.
@@ -474,12 +597,18 @@ pub async fn sync_back_image(
     id: i64,
     server_base_url: String,
 ) -> Result<BackSyncResult, String> {
-    let (content_hash, file_name) = {
+    let (content_hash, file_name, drive_id) = {
         let conn = open_db(&app)?;
         conn.query_row(
-            "SELECT content_hash, file_name FROM back_images WHERE id = ?1",
+            "SELECT content_hash, file_name, mpc_drive_id FROM back_images WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?
@@ -489,6 +618,7 @@ pub async fn sync_back_image(
     let url = format!("{base}/api/backs/{content_hash}");
 
     let client = reqwest::Client::new();
+    let mut answer: Option<(bool, bool)> = None;
     if let Ok(resp) = client.get(&url).send().await {
         if resp.status().is_success() {
             // reqwest is built without its "json" feature here (see
@@ -501,10 +631,24 @@ pub async fn sync_back_image(
                 .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
                 .and_then(|v| v.get("present").and_then(|p| p.as_bool()))
                 .unwrap_or(false);
-            if present {
-                return Ok(BackSyncResult { content_hash, uploaded: false });
+            // A back's bleed travels with each render, so present is enough.
+            answer = Some((present, true));
+        }
+    }
+
+    match mpc_art::sync_step(answer, drive_id.is_some()) {
+        SyncStep::Done => {
+            return Ok(BackSyncResult { content_hash, uploaded: false, fetched: false });
+        }
+        SyncStep::FetchThenUpload => {
+            // An MPC Fill back: the server can download it from Google
+            // itself rather than this machine uploading it.
+            let body = serde_json::json!({ "drive_id": drive_id.as_deref().unwrap_or_default() });
+            if mpc_art::server_fetch(&client, &url, &body).await {
+                return Ok(BackSyncResult { content_hash, uploaded: false, fetched: true });
             }
         }
+        SyncStep::Upload => {}
     }
 
     let path = backs_dir(&app)?.join(file_name);
@@ -521,7 +665,7 @@ pub async fn sync_back_image(
         let detail = resp.text().await.unwrap_or_default();
         return Err(format!("server rejected the back image ({status}): {detail}"));
     }
-    Ok(BackSyncResult { content_hash, uploaded: true })
+    Ok(BackSyncResult { content_hash, uploaded: true, fetched: false })
 }
 
 /// Minimal base64 for the thumbnail data URL. Hand-rolled rather than

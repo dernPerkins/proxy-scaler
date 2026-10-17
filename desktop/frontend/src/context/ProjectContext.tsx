@@ -7,11 +7,12 @@ import { setProjectSnapshot } from "../syncCustoms";
 import { defaultPresetOverlay, pickPresetFields, presetQueryOptions } from "../settingsPresets";
 import type {
   CardRow,
+  CustomCardItem,
   LoadedProject,
   ProjectSettings,
   ResolvedImportCard,
 } from "../api/project";
-import type { BackImage, BackMode } from "../api/types";
+import type { BackImage, BackMode, CustomImage } from "../api/types";
 
 // Heavy/quality-first vs. light/fast. Named rather than repeated inline so
 // the branching below reads as "which class of hardware is this."
@@ -177,6 +178,11 @@ interface ProjectContextValue {
     customImageIds: number[],
   ) => Promise<{ cards: CardRow[]; projectTag: string | null }>;
   addingCustomCards: boolean;
+  /** addCustomCards for an imported MPC order: quantities and per-line
+   *  backs. Same return as addCustomCards. */
+  addCustomCardsWithBacks: (
+    items: CustomCardItem[],
+  ) => Promise<{ cards: CardRow[]; projectTag: string | null }>;
   /** Re-read this project's cards from the store. Needed after deleting a
    *  Custom Image, which deletes the cards using it — a change made
    *  outside any of the card mutations here. */
@@ -205,6 +211,16 @@ interface ProjectContextValue {
    *  Back ("inherit"), nothing ("blank"), or a Back Library image. Resolves
    *  once stored. */
   setCardBack: (cardId: number, backMode: BackMode, backImageId: number | null) => Promise<void>;
+  /** Print a Custom Image (picked on MPC Fill) in place of one face of a
+   *  Scryfall card; `totalFaces` is the printing's face count. */
+  setCardFaceArt: (
+    cardId: number,
+    face: number,
+    totalFaces: number,
+    image: CustomImage,
+  ) => Promise<void>;
+  /** Back to the printing's own art for one face (or all, with null). */
+  clearCardFaceArt: (cardId: number, face: number | null) => Promise<void>;
   /** Every card in the project back to "inherit" — the bulk undo for
    *  per-card backs. */
   resetCardBacks: () => Promise<void>;
@@ -624,6 +640,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     onError: (err: Error) => setError(err.message),
   });
 
+  const addCustomCardsWithBacksMutation = useMutation({
+    mutationFn: async (items: CustomCardItem[]) => {
+      const id = await ensureProjectRow();
+      return projectApi.addCustomCardsWithBacks(id, items);
+    },
+    onSuccess: (newCards) => {
+      setCards(newCards);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
   const addCustomCardsMutation = useMutation({
     mutationFn: async (customImageIds: number[]) => {
       // Same born-here rule as the imports: with no project yet, adding
@@ -694,6 +722,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 lang: printing.lang,
                 printed_name: printing.printedName,
                 rarity: printing.rarity,
+                // Rust clears face art picked for a different printing.
+                face_art: c.scryfall_id === printing.scryfallId ? c.face_art : [],
               }
             : c,
         ),
@@ -722,6 +752,57 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 back_image_id: backMode === "image" ? backImageId : null,
                 back_hash: hash,
               }
+            : c,
+        ),
+      );
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const setCardFaceArtMutation = useMutation({
+    mutationFn: async (args: {
+      cardId: number;
+      face: number;
+      totalFaces: number;
+      image: CustomImage;
+    }) => {
+      await projectApi.setCardFaceArt(args.cardId, args.face, args.totalFaces, args.image.id);
+      return args;
+    },
+    onSuccess: ({ cardId, face, totalFaces, image }) => {
+      setCards((prev) =>
+        prev.map((c) => {
+          if (c.id !== cardId) return c;
+          // Mirrors face_art.rs: entries picked under another face count
+          // belong to a different printing and are dropped.
+          const kept = (c.face_art ?? []).filter(
+            (fa) => fa.face !== face && fa.total_faces === totalFaces,
+          );
+          const added = {
+            face,
+            total_faces: totalFaces,
+            custom_image_id: image.id,
+            custom_hash: image.content_hash,
+            label: image.label,
+            mpc_drive_id: image.mpc?.drive_id ?? null,
+          };
+          return { ...c, face_art: [...kept, added].sort((a, b) => a.face - b.face) };
+        }),
+      );
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const clearCardFaceArtMutation = useMutation({
+    mutationFn: async (args: { cardId: number; face: number | null }) => {
+      await projectApi.clearCardFaceArt(args.cardId, args.face);
+      return args;
+    },
+    onSuccess: ({ cardId, face }) => {
+      setCards((prev) =>
+        prev.map((c) =>
+          c.id === cardId
+            ? { ...c, face_art: face == null ? [] : (c.face_art ?? []).filter((fa) => fa.face !== face) }
             : c,
         ),
       );
@@ -1087,6 +1168,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return { cards, projectTag: projectTagRef.current };
     },
     addingCustomCards: addCustomCardsMutation.isPending,
+    addCustomCardsWithBacks: async (items) => {
+      const cards = await addCustomCardsWithBacksMutation.mutateAsync(items);
+      return { cards, projectTag: projectTagRef.current };
+    },
     reloadCards: async () => {
       if (projectIdRef.current == null) return;
       const project = await projectApi.getProject(projectIdRef.current);
@@ -1097,6 +1182,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setCardQuantityMutation.mutate({ cardId, quantity }),
     setCardPrinting: async (cardId, printing) => {
       await setCardPrintingMutation.mutateAsync({ cardId, printing });
+    },
+    setCardFaceArt: async (cardId, face, totalFaces, image) => {
+      await setCardFaceArtMutation.mutateAsync({ cardId, face, totalFaces, image });
+    },
+    clearCardFaceArt: async (cardId, face) => {
+      await clearCardFaceArtMutation.mutateAsync({ cardId, face });
     },
     setCardBack: async (cardId, backMode, backImageId) => {
       await setCardBackMutation.mutateAsync({ cardId, backMode, backImageId });

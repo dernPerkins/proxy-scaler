@@ -34,6 +34,9 @@ import type {
   PdfPreview,
   RefetchOriginalRequest,
   RegenerateGalleryItemRequest,
+  MpcCard,
+  MpcSearchParams,
+  MpcSearchResult,
   ResolveResult,
   Task,
   WorkerStatus,
@@ -53,26 +56,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
-  if (!resp.ok) {
-    const body = await resp.text();
-    // FastAPI puts the human-readable message in `detail` — surfacing the
-    // raw body instead printed `{"detail":"Upload the back image..."}`
-    // verbatim into the UI, JSON braces and all. A 422's `detail` is a
-    // list of validation objects rather than a string, so only a string
-    // is unwrapped; anything else falls back to the body text.
-    let detail = body;
-    try {
-      const parsed = JSON.parse(body);
-      if (typeof parsed?.detail === "string") detail = parsed.detail;
-    } catch {
-      // Not JSON (a proxy error page, an empty body) — use it as-is.
-    }
-    throw new ApiError(resp.status, detail || resp.statusText);
-  }
+  if (!resp.ok) await throwApiError(resp);
   if (resp.status === 204) {
     return undefined as T;
   }
   return (await resp.json()) as T;
+}
+
+async function throwApiError(resp: Response): Promise<never> {
+  const body = await resp.text();
+  // FastAPI puts the human-readable message in `detail` — surfacing the
+  // raw body instead printed `{"detail":"Upload the back image..."}`
+  // verbatim into the UI, JSON braces and all. A 422's `detail` is a
+  // list of validation objects rather than a string, so only a string
+  // is unwrapped; anything else falls back to the body text.
+  let detail = body;
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.detail === "string") detail = parsed.detail;
+  } catch {
+    // Not JSON (a proxy error page, an empty body) — use it as-is.
+  }
+  throw new ApiError(resp.status, detail || resp.statusText);
 }
 
 export const generationApi = {
@@ -352,6 +357,42 @@ export const generationApi = {
   cardOriginalUrl: (scryfallId: string, face: number, via: ImageOrigin) => {
     const search = new URLSearchParams({ face: String(face), via });
     return `${getApiBaseUrl()}/api/cards/${encodeURIComponent(scryfallId)}/original?${search}`;
+  },
+
+  // --- MPC Fill ------------------------------------------------------
+  // Everything goes through the generation server, which talks to MPC
+  // Fill (search, cached a day) and Google Drive (images). Only for
+  // servers serverSupportsMpcFill() accepts — older ones 404.
+
+  mpcSearch: (params: MpcSearchParams) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null || value === "") continue;
+      search.set(key, String(value));
+    }
+    return request<MpcSearchResult>(`/api/mpcfill/search?${search}`);
+  },
+  mpcCards: (ids: string[]) =>
+    request<{ cards: MpcCard[] }>("/api/mpcfill/cards", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+  // An <img> src: a 400 px ("small") or 800 px ("large") tall JPEG preview,
+  // from Google via the server's disk cache.
+  mpcThumbUrl: (driveId: string, size: "small" | "large" = "small") =>
+    `${getApiBaseUrl()}/api/mpcfill/thumb/${encodeURIComponent(driveId)}?size=${size}`,
+  // Download one piece of art onto the server (as a Custom or Back Image)
+  // and get the original file back for the library. A Blob whose type is
+  // the image's real MIME type.
+  mpcImport: async (body: { drive_id: string; kind: "custom" | "back"; bleed_mm: number }) => {
+    await waitForServerReady();
+    const resp = await fetch(`${getApiBaseUrl()}/api/mpcfill/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) await throwApiError(resp);
+    return resp.blob();
   },
 
   // A set's symbol as a monochrome SVG, used as a CSS mask (SetIcon.tsx).

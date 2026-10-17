@@ -21,6 +21,31 @@ import type {
   SortPrimary,
 } from "./types";
 
+/** add_mpc_custom_image / add_mpc_back_image arguments: the file the
+ *  generation server's /api/mpcfill/import returned, read by
+ *  readPickedImage, plus its declarations and provenance. */
+export interface MpcLibraryAddArgs {
+  bytes: number[];
+  thumbnail: number[];
+  originalFilename: string;
+  width: number;
+  height: number;
+  label: string;
+  includesBleed: boolean;
+  bleedMm: number;
+  driveId: string;
+  mpcSource: string;
+  mpcName: string;
+}
+
+/** Mirrors project_store::CustomCardItem (Rust). */
+export interface CustomCardItem {
+  custom_image_id: number;
+  quantity: number;
+  back_mode: BackMode;
+  back_image_id: number | null;
+}
+
 export interface ProjectSummary {
   id: number;
   tag: string;
@@ -155,6 +180,21 @@ export interface CardRow {
   back_mode: BackMode;
   back_image_id: number | null;
   back_hash: string | null;
+  // Faces of this Scryfall card printed from a Custom Image instead of the
+  // printing's own art (MPC Fill art picked in the change-printing modal).
+  // Empty for almost every card; always empty for a Custom Image card.
+  face_art: CardFaceArt[];
+}
+
+/** Mirrors face_art::CardFaceArt (Rust). */
+export interface CardFaceArt {
+  /** 0 for a single-faced card or a DFC's front, 1 for a DFC's back. */
+  face: number;
+  total_faces: number;
+  custom_image_id: number;
+  custom_hash: string;
+  label: string;
+  mpc_drive_id: string | null;
 }
 
 // A parsed-but-unresolved decklist line, as returned by the Rust parser
@@ -389,6 +429,16 @@ export const projectApi = {
     height: number;
   }) => invokeCommand<BackImage>("add_back_image", { ...args }),
 
+  /** Add a back picked on MPC Fill (the bytes /api/mpcfill/import
+   *  returned) with its provenance. If the library already holds these
+   *  bytes, that entry keeps its own label and bleed. */
+  addMpcBackImage: (args: MpcLibraryAddArgs) =>
+    invokeCommand<BackImage>("add_mpc_back_image", { ...args }),
+
+  /** The library back for an MPC Fill file, if it was picked before. */
+  findBackImageByDriveId: (driveId: string) =>
+    invokeCommand<BackImage | null>("find_back_image_by_drive_id", { driveId }),
+
   setBackImageLabel: (id: number, label: string) =>
     invokeCommand<void>("set_back_image_label", { id, label }),
 
@@ -457,6 +507,16 @@ export const projectApi = {
     height: number;
   }) => invokeCommand<CustomImage>("add_custom_image", { ...args }),
 
+  /** Add a card front picked on MPC Fill (the bytes /api/mpcfill/import
+   *  returned) with its provenance. If the library already holds these
+   *  bytes, that entry keeps its own label and bleed. */
+  addMpcCustomImage: (args: MpcLibraryAddArgs) =>
+    invokeCommand<CustomImage>("add_mpc_custom_image", { ...args }),
+
+  /** The library image for an MPC Fill file, if it was picked before. */
+  findCustomImageByDriveId: (driveId: string) =>
+    invokeCommand<CustomImage | null>("find_custom_image_by_drive_id", { driveId }),
+
   setCustomImageLabel: (id: number, label: string) =>
     invokeCommand<void>("set_custom_image_label", { id, label }),
 
@@ -488,6 +548,26 @@ export const projectApi = {
    *  resolve, which is what lets this work with no server reachable. */
   addCustomCards: (projectId: number, customImageIds: number[]) =>
     invokeCommand<CardRow[]>("add_custom_cards", { projectId, customImageIds }),
+
+  /** Add an imported MPC order's cards: copies per front, and each line's
+   *  own back. A line matching an existing row's image and back adds its
+   *  copies to that row. */
+  addCustomCardsWithBacks: (projectId: number, items: CustomCardItem[]) =>
+    invokeCommand<CardRow[]>("add_custom_cards_with_backs", { projectId, items }),
+
+  /** Print a Custom Image in place of face `face` of a Scryfall card
+   *  whose printing has `totalFaces` faces. */
+  setCardFaceArt: (cardId: number, face: number, totalFaces: number, customImageId: number) =>
+    invokeCommand<void>("set_card_face_art", { cardId, face, totalFaces, customImageId }),
+
+  /** Back to the printing's own art for one face, or every face (null). */
+  clearCardFaceArt: (cardId: number, face: number | null) =>
+    invokeCommand<void>("clear_card_face_art", { cardId, face }),
+
+  /** How many cards print this image on a face — they go back to their
+   *  Scryfall art if it's deleted. */
+  countFaceArtUsingCustomImage: (id: number) =>
+    invokeCommand<number>("count_face_art_using_custom_image", { id }),
 
   /** Make sure a generation server holds this image's bytes. Cheap to call
    *  unconditionally: Rust GETs first and only uploads on a miss. This is

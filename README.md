@@ -78,9 +78,6 @@ Planned, in roughly the order they're likely to land:
 
 1. **Better project management** — see how much storage space each
    project is consuming, and clean up the ones you no longer need.
-2. **MPCFill exploration** — browsing and selecting already-created
-   custom art the way other proxy tools do. The [Customs](#customs) tab
-   is the stop-gap until something like this exists.
 
 Have an opinion on the order, or something missing? That's what the
 [Discord](https://discord.gg/bSshvYpKy) is for.
@@ -305,6 +302,35 @@ With a remote [server](#server), custom art is uploaded the first time
 something needs it — Generate, PDF, or ZIP export — with a progress
 dialog, and switching servers offers to upload whatever the new one is
 missing. The server has to be 0.3.0 or newer.
+
+### MPC Fill art
+
+Community art from [MPC Fill](https://mpcfill.com) — the hundreds of
+thousands of pre-made card images MPC Autofill indexes from its uploaders'
+Google Drives — can go anywhere your own uploads can:
+
+- **From MPC Fill** on the Customs tab searches cards and tokens and adds
+  your pick to the library; on the Backs tab it browses every community
+  card back and makes your pick the project's back.
+- In a card's change-printing grid, the **MPC Fill** switch picks art for
+  one face (Front or Back on a double-faced card). The card keeps its
+  printing — its name, its back, its pairing — and only that face prints
+  the MPC art; **Use Scryfall art** undoes it. Changing the printing goes
+  back to Scryfall art.
+- **Import the order (.xml)** under the Decklist tab's custom-art box reads
+  an order file from MPC Fill's *Download XML* button: every front and
+  back is fetched into your libraries, and the order's cards are added
+  with their quantities and backs.
+
+MPC Fill images are declared as carrying MakePlayingCards' 3.175 mm of
+bleed (editable like any upload), and can be upscaled like any custom
+image. Everything goes through your generation server — it searches MPC
+Fill (results cached for a day) and downloads each image straight from
+Google Drive — so the app itself contacts neither, and on a remote server
+the image never travels through your machine on its way there. A file
+Google Drive is refusing to serve (its daily download limit on popular
+files) fails with a message; try again later or pick other art. Needs a
+0.5.0 or newer server.
 
 ### Decklist formats
 

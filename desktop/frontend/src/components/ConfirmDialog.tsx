@@ -9,6 +9,9 @@ export interface ConfirmDialogProps {
   confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
+  /** "primary" for a question that destroys nothing (adopting an MPC
+   *  order's card back); destructive confirms keep the default. */
+  tone?: "danger" | "primary";
 }
 
 // The in-app replacement for `window.confirm()`, and the reason it exists:
@@ -25,15 +28,16 @@ export interface ConfirmDialogProps {
 // costs: there it would quit the app, here it is Cancel, the answer that
 // changes nothing. Cancel is focused for the same reason.
 //
-// The confirm button is btn-danger unconditionally rather than behind a
-// prop: both questions this asks today destroy something, which is why
-// they are asked at all. A confirm that doesn't is when to add the prop.
+// The confirm button is btn-danger by default: most questions this asks
+// destroy something, which is why they are asked at all. `tone` is for
+// the ones that don't.
 export default function ConfirmDialog({
   title,
   children,
   confirmLabel,
   onConfirm,
   onCancel,
+  tone = "danger",
 }: ConfirmDialogProps) {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -59,7 +63,7 @@ export default function ConfirmDialog({
           <button autoFocus onClick={onCancel}>
             Cancel
           </button>
-          <button className="btn-danger" onClick={onConfirm}>
+          <button className={tone === "danger" ? "btn-danger" : "btn-primary"} onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>

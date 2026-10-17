@@ -247,3 +247,52 @@ export function statusForPairs(faceItems: GalleryItem[], faceTasks: Task[]): Var
   rows.sort((a, b) => a.dpi - b.dpi || a.model.localeCompare(b.model));
   return rows;
 }
+
+/** One face of a card row as the Decklist shows it. `art` is set when the
+ *  face prints a Custom Image (MPC Fill art) in place of the printing's
+ *  own: its variants are that image's then. */
+export interface CardFaceStatus<A> {
+  faceLabel: string | null;
+  variants: VariantStatus[];
+  art?: A;
+}
+
+/**
+ * Swap each overridden face's Scryfall variants for those of the Custom
+ * Image it prints instead. The custom's own rows live under its
+ * `custom:<hash>` identity, single-faced and unlabelled, so they are
+ * fetched from there and labelled as the face they stand in for. Faces
+ * come back front first; an overridden face shows even before anything
+ * has been registered for it (with no variants), so the row says where
+ * its art comes from.
+ */
+export function applyFaceArt<
+  A extends { face: number; total_faces: number; custom_hash: string },
+>(
+  scryfallFaces: { faceIndex: number | null; face: CardFaceStatus<A> }[],
+  faceArt: A[],
+  galleryByCard: Map<string, GalleryItem[]>,
+  tasksByCard: Map<string, Task[]>,
+): CardFaceStatus<A>[] {
+  if (faceArt.length === 0) return scryfallFaces.map((f) => f.face);
+  const overridden = new Set(faceArt.map((fa) => fa.face));
+  const out: { position: number; face: CardFaceStatus<A> }[] = scryfallFaces
+    .filter((f) => !overridden.has(f.faceIndex ?? 0))
+    .map((f) => ({ position: f.faceIndex ?? 0, face: f.face }));
+  for (const art of faceArt) {
+    const identity = cardIdentity(null, null, null, null, null, art.custom_hash);
+    const variants = statusForPairs(
+      galleryByCard.get(identity) ?? [],
+      tasksByCard.get(identity) ?? [],
+    ).filter((v) => v.status !== "canceled");
+    out.push({
+      position: art.face,
+      face: {
+        faceLabel: art.total_faces > 1 ? (art.face === 0 ? "front" : "back") : null,
+        variants,
+        art,
+      },
+    });
+  }
+  return out.sort((a, b) => a.position - b.position).map((f) => f.face);
+}

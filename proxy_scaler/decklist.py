@@ -40,6 +40,17 @@ _SKIP_LINES = {
 
 
 @dataclass(frozen=True)
+class FaceOverride:
+    """A face of a Scryfall entry printed from a Custom Image instead (see
+    DeckEntryIn.face_overrides). `face` is the face's position: 0 for a
+    single-faced card or a DFC's front, 1 for a DFC's back."""
+
+    face: int
+    total_faces: int
+    custom_hash: str
+
+
+@dataclass(frozen=True)
 class DeckEntry:
     quantity: int
     name: str
@@ -65,10 +76,23 @@ class DeckEntry:
     # — see pdf_layout.build_print_slots.
     back_mode: str = "inherit"
     back_hash: str | None = None
+    # Client-only too: faces of this Scryfall card printed from a Custom
+    # Image (MPC Fill art) rather than the printing's own art. A tuple so
+    # the entry stays hashable.
+    face_overrides: tuple[FaceOverride, ...] = ()
 
     @property
     def is_custom(self) -> bool:
         return self.custom_hash is not None
+
+    def override_for(self, face_index: int | None) -> FaceOverride | None:
+        """The override for a face, by Scryfall face_index (None, a
+        single-faced card, is position 0)."""
+        position = face_index or 0
+        for override in self.face_overrides:
+            if override.face == position:
+                return override
+        return None
 
     @property
     def has_exact_printing(self) -> bool:
