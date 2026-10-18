@@ -2644,6 +2644,28 @@ pub fn set_update_check_enabled(app: AppHandle, enabled: bool) -> Result<(), Str
     write_app_setting(&conn, UPDATE_CHECK_ENABLED_KEY, if enabled { "1" } else { "0" })
 }
 
+// --- MPC Fill catalog prompt -------------------------------------------------
+//
+// What the launch-time "newer MPC Fill catalog" prompt remembers per
+// generation server: when it last asked the server to check, and which
+// published version the user chose to Skip. One opaque JSON string the
+// frontend owns the shape of (mpcCatalog.ts::PromptState); None until first
+// written.
+
+const MPC_CATALOG_PROMPT_KEY: &str = "mpc_catalog_prompt";
+
+#[tauri::command]
+pub fn get_mpc_catalog_prompt_state(app: AppHandle) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    read_app_setting(&conn, MPC_CATALOG_PROMPT_KEY)
+}
+
+#[tauri::command]
+pub fn set_mpc_catalog_prompt_state(app: AppHandle, json: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, MPC_CATALOG_PROMPT_KEY, &json)
+}
+
 // --- Library upscale settings ----------------------------------------------
 //
 // The model / target DPI / VRAM tier / result mode the Customs and Backs

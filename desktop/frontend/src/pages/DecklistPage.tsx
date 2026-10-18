@@ -5,6 +5,7 @@ import { projectApi } from "../api/project";
 import type { CardFaceArt, CardRow, CustomUpscaleMode } from "../api/project";
 import type { GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
+import MpcCatalogPanel from "../components/MpcCatalogPanel";
 import SelectMenu from "../components/SelectMenu";
 import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import CompareDialog from "../components/CompareDialog";
@@ -1019,6 +1020,7 @@ export default function DecklistPage() {
           </div>
 
           <CardDbPanel serverUnavailable={serverUnavailable} />
+          <MpcCatalogPanel serverUnavailable={serverUnavailable} />
         </div>
 
         <div className="danger-zone">

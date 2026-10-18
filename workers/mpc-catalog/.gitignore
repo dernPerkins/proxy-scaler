@@ -1,0 +1,6 @@
+node_modules/
+# wrangler dev/deploy scratch state
+.wrangler/
+# local secrets (GOOGLE_API_KEY) for wrangler dev; never commit
+.dev.vars*
+.env*

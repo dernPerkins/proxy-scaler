@@ -354,6 +354,43 @@ export interface CardImportStatus {
   error: string | null;
 }
 
+/** The MPC Fill art catalog imported on the generation server
+ *  (mpc_catalog.py). */
+export interface MpcCatalogLocal {
+  version: string;
+  generated_at: string | null;
+  imported_at: string;
+  card_count: number;
+  source_count: number;
+}
+
+export interface MpcCatalogStatus {
+  // null until a first update fully finishes; search uses live MPC Fill
+  // until then.
+  local: MpcCatalogLocal | null;
+  import_running: boolean;
+  active_job_id: string | null;
+}
+
+export interface MpcCatalogCheck {
+  remote_version: string;
+  local_version: string | null;
+  update_available: boolean;
+  changed_sources: number;
+  removed_sources: number;
+  download_bytes: number;
+  card_count: number;
+}
+
+export interface MpcCatalogImportStatus {
+  status: "running" | "done" | "failed" | "canceled";
+  phase: "checking" | "downloading" | "importing";
+  bytes_downloaded: number;
+  total_bytes: number | null;
+  rows_imported: number;
+  error: string | null;
+}
+
 export interface CardVariant {
   scryfall_id: string;
   name: string;

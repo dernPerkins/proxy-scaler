@@ -1,0 +1,17 @@
+{
+  "name": "proxy-scaler-mpc-catalog",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "typescript": "^5.6.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.124.0"
+  }
+}

@@ -1,0 +1,67 @@
+// The MPC Fill art-catalogue crawler: a daily Workflow that lists the
+// MPC Fill uploaders' public Google Drive folders and publishes per-source
+// shards plus manifest.json to R2, served on catalog.proxy-scaler.com.
+// See README.md (deploying) and .scratch/mpcfill-art-picker/phase-c/format.md
+// (the output format generation servers read).
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "proxy-scaler-mpc-catalog",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-15",
+	// Nothing is served by this Worker; the bucket's custom domain serves
+	// the catalogue. Runs start from the schedule below or by hand.
+	"workers_dev": false,
+	"workflows": [
+		{
+			"binding": "CATALOG_CRAWL",
+			"name": "proxy-scaler-mpc-catalog-crawl",
+			"class_name": "CatalogCrawl",
+			// 06:00 UTC daily.
+			"schedules": [
+				"0 6 * * *"
+			]
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "CATALOG",
+			"bucket_name": "proxy-scaler-mpc-catalog"
+		},
+		{
+			"bucket_name": "proxy-scaler-mpc-catalog",
+			"binding": "proxy_scaler_mpc_catalog",
+			"remote": true
+		}
+	],
+	"limits": {
+		// Per step invocation. A source's last crawl step parses, gzips and
+		// hashes its whole listing; the biggest sources are tens of thousands
+		// of files. Waiting on Drive doesn't count, only work does.
+		"cpu_ms": 120000,
+		// One Drive request per folder page, at most CRAWL_CHUNK_FOLDERS
+		// folders per step plus retries. Lower this if the plan rejects it.
+		"subrequests": 50000
+	},
+	"vars": {
+		// A manual run with {"dryRun": true} writes manifest.json and
+		// sources/ under this prefix instead of the bucket root.
+		"DRY_RUN_PREFIX": "dev/",
+		// Pause between Drive requests (they run one at a time), and the
+		// first retry delay after a 429/5xx (doubling each time).
+		"DRIVE_GAP_MS": "100",
+		"DRIVE_BACKOFF_MS": "2000",
+		// A Drive request with no answer after this long is aborted and
+		// retried like a network error.
+		"DRIVE_TIMEOUT_MS": "30000",
+		// Folder listings per crawl step. A big source runs as several
+		// steps, so a retry repeats only one chunk.
+		"CRAWL_CHUNK_FOLDERS": "300"
+	},
+	// Set with `npx wrangler secret put GOOGLE_API_KEY`, never written here:
+	// a Google Cloud API key restricted to the Drive API.
+	"secrets": {
+		"required": [
+			"GOOGLE_API_KEY"
+		]
+	}
+}

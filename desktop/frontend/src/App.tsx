@@ -3,6 +3,7 @@ import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "reac
 import AppSettingsModal from "./components/AppSettingsModal";
 import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
+import MpcCatalogPrompt from "./components/MpcCatalogPrompt";
 import GearIcon from "./components/GearIcon";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
 import DownloadProgressModal from "./components/DownloadProgressModal";
@@ -186,6 +187,10 @@ export default function App() {
             half-imported corpus would answer printing lookups
             incompletely. Renders nothing otherwise. */}
         <CardDbImportModal />
+        {/* The MPC Fill art catalog offer (after the card-database one)
+            and the watcher of catalog updates, which never block the app.
+            Renders nothing unless a newer catalog is on offer. */}
+        <MpcCatalogPrompt />
         {settingsOpen && <AppSettingsModal onClose={closeSettings} />}
         <ProjectBar />
         {/* NavLink applies an `active` class on the matched route by

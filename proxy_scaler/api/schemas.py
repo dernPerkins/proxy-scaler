@@ -820,6 +820,47 @@ class CardImportStatusOut(BaseModel):
     error: str | None = None
 
 
+class MpcCatalogLocalOut(BaseModel):
+    # The imported MPC Fill art catalog (mpc_catalog.py); absent until a
+    # first update has fully finished.
+    version: str  # the crawl's manifest version, compared by the client
+    generated_at: str | None = None
+    imported_at: str
+    card_count: int
+    source_count: int
+
+
+class MpcCatalogStatusOut(BaseModel):
+    # Local state only, like CardDbStatusOut: no network on this path.
+    local: MpcCatalogLocalOut | None = None
+    import_running: bool
+    active_job_id: str | None = None
+
+
+class MpcCatalogCheckIn(BaseModel):
+    # True for the manual Update button: skip the server's manifest cache.
+    refresh: bool = False
+
+
+class MpcCatalogCheckOut(BaseModel):
+    remote_version: str
+    local_version: str | None = None
+    update_available: bool
+    changed_sources: int
+    removed_sources: int
+    download_bytes: int
+    card_count: int
+
+
+class MpcCatalogImportStatusOut(BaseModel):
+    status: str  # "running" | "done" | "failed" | "canceled"
+    phase: str  # "checking" | "downloading" | "importing"
+    bytes_downloaded: int
+    total_bytes: int | None = None
+    rows_imported: int
+    error: str | None = None
+
+
 class CardLanguagesOut(BaseModel):
     # Languages actually present in the imported corpus, English first —
     # feeds the import-language dropdown, so an English-only corpus

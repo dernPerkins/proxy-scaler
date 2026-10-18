@@ -397,6 +397,12 @@ export const projectApi = {
   setLibraryUpscaleSettings: (json: string) =>
     invokeCommand<void>("set_library_upscale_settings", { json }),
 
+  // The launch-time MPC Fill catalog prompt's per-server memory — one
+  // opaque JSON string (mpcCatalog.ts owns the shape). Null until written.
+  getMpcCatalogPromptState: () => invokeCommand<string | null>("get_mpc_catalog_prompt_state"),
+  setMpcCatalogPromptState: (json: string) =>
+    invokeCommand<void>("set_mpc_catalog_prompt_state", { json }),
+
   // The PDF / ZIP tabs' settings presets — one opaque JSON blob per tab
   // (settingsPresets.ts owns the shape). Null until first written.
   getSettingsPresets: (kind: "pdf" | "zip") =>

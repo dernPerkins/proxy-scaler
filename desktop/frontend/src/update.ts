@@ -285,3 +285,30 @@ export function setCardDbPromptOpen(open: boolean): void {
 export function getCardDbPromptOpen(): boolean {
   return cardDbPromptOpen;
 }
+
+// Fifth link: MpcCatalogPrompt publishes these the same way, after
+// CardDbPrompt, and the first-view tutorials queue behind it too.
+// "Settled" means it has decided — nothing newer to offer (or no way to
+// ask), or the offer was answered.
+let mpcCatalogSettled = false;
+let mpcCatalogPromptOpen = false;
+
+export function setMpcCatalogSettled(): void {
+  if (mpcCatalogSettled) return;
+  mpcCatalogSettled = true;
+  notifyUpdateStore();
+}
+
+export function getMpcCatalogSettled(): boolean {
+  return mpcCatalogSettled;
+}
+
+export function setMpcCatalogPromptOpen(open: boolean): void {
+  if (mpcCatalogPromptOpen === open) return;
+  mpcCatalogPromptOpen = open;
+  notifyUpdateStore();
+}
+
+export function getMpcCatalogPromptOpen(): boolean {
+  return mpcCatalogPromptOpen;
+}

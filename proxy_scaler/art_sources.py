@@ -1,10 +1,11 @@
 """Where community card art is searched: the seam between the MPC Fill
 routes and whatever answers them.
 
-Today the only implementation is mpcfill.MpcFillSource, which asks
-mpcfill.com. A self-built catalogue (a local index of the same Google
-Drive folders) can replace it without the routes, the client or the
-library import noticing: they only see drive ids and ArtCards.
+Two implementations: mpc_catalog.CatalogSource, a local index of the
+uploaders' Google Drive folders, once one is imported; and
+mpcfill.MpcFillSource, which asks mpcfill.com, before that. The routes,
+the client and the library import don't notice which: they only see
+drive ids and ArtCards.
 """
 
 from __future__ import annotations
@@ -73,7 +74,15 @@ class ArtSource(Protocol):
 
 
 def get_art_source(cache_dir: Path) -> ArtSource:
-    """The art source the routes use. Tests monkeypatch this."""
+    """The art source the routes use: the local catalog once one is
+    imported (mpc_catalog.py), else live mpcfill.com. The catalog keeps
+    MPC Fill as its fallback for details of art it doesn't hold. Tests
+    monkeypatch this."""
+    from . import mpc_catalog
     from .mpcfill import MpcFillSource
 
-    return MpcFillSource(cache_dir)
+    live = MpcFillSource(cache_dir)
+    path = mpc_catalog.db_path_from_env()
+    if mpc_catalog.is_ready(path):
+        return mpc_catalog.CatalogSource(path, fallback=live)
+    return live

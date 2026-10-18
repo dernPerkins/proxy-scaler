@@ -6,6 +6,9 @@
 import { getApiBaseUrl, waitForServerReady } from "../config";
 import { registerShortLabels } from "../constants";
 import type {
+  MpcCatalogCheck,
+  MpcCatalogImportStatus,
+  MpcCatalogStatus,
   CardDataset,
   CardDbStatus,
   CardImportStatus,
@@ -330,6 +333,22 @@ export const generationApi = {
   // Remove the imported corpus from the server entirely; 409 while an
   // import is running.
   deleteCardDb: () => request<void>("/api/cards/database", { method: "DELETE" }),
+  // The MPC Fill art catalog (mpc_catalog.py), per-server like the card
+  // corpus. status is local-only; check reads the published manifest
+  // (cached on the server unless refresh) and 503s when it's unreachable.
+  mpcCatalogStatus: () => request<MpcCatalogStatus>("/api/mpccatalog/status"),
+  checkMpcCatalog: (refresh = false) =>
+    request<MpcCatalogCheck>("/api/mpccatalog/check", {
+      method: "POST",
+      body: JSON.stringify({ refresh }),
+    }),
+  startMpcCatalogImport: () =>
+    request<{ job_id: string }>("/api/mpccatalog/import", { method: "POST" }),
+  mpcCatalogImportStatus: (jobId: string) =>
+    request<MpcCatalogImportStatus>(`/api/mpccatalog/import/${jobId}`),
+  cancelMpcCatalogImport: (jobId: string) =>
+    request<void>(`/api/mpccatalog/import/${jobId}/cancel`, { method: "POST" }),
+  deleteMpcCatalog: () => request<void>("/api/mpccatalog", { method: "DELETE" }),
   cardLanguages: () => request<{ languages: string[] }>("/api/cards/languages"),
   cardVariants: (params: {
     scryfall_id?: string | null;

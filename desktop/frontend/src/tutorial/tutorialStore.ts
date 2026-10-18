@@ -18,6 +18,8 @@ import {
   getBootUpdateCheckSettled,
   getCardDbPromptOpen,
   getCardDbSettled,
+  getMpcCatalogPromptOpen,
+  getMpcCatalogSettled,
   getPatchNotesPromptOpen,
   getPatchNotesSettled,
   getResumeTasksPromptOpen,
@@ -206,6 +208,8 @@ function useAppIdle(): boolean {
   const resumeOpen = useUpdateFlag(getResumeTasksPromptOpen);
   const cardDbSettled = useUpdateFlag(getCardDbSettled);
   const cardDbOpen = useUpdateFlag(getCardDbPromptOpen);
+  const mpcCatalogSettled = useUpdateFlag(getMpcCatalogSettled);
+  const mpcCatalogOpen = useUpdateFlag(getMpcCatalogPromptOpen);
   const readiness = useSyncExternalStore(subscribeServerReadiness, getServerReadiness);
   const importJob = useSyncExternalStore(subscribeCardDbImport, getCardDbImportJobId);
   return (
@@ -214,6 +218,8 @@ function useAppIdle(): boolean {
     !resumeOpen &&
     cardDbSettled &&
     !cardDbOpen &&
+    mpcCatalogSettled &&
+    !mpcCatalogOpen &&
     readiness.status === "ready" &&
     importJob == null
   );

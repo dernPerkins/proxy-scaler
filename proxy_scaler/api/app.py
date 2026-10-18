@@ -16,6 +16,7 @@ from proxy_scaler.api.routers import (
     generation,
     library,
     misc,
+    mpc_catalog,
     mpcfill,
     pdf,
     resolve,
@@ -48,3 +49,4 @@ app.include_router(export.router)
 app.include_router(library.router)
 app.include_router(sets.router)
 app.include_router(mpcfill.router)
+app.include_router(mpc_catalog.router)

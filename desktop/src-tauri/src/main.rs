@@ -907,6 +907,8 @@ fn main() {
             set_image_cache_enabled,
             get_library_upscale_settings,
             set_library_upscale_settings,
+            project_store::get_mpc_catalog_prompt_state,
+            project_store::set_mpc_catalog_prompt_state,
             get_settings_presets,
             set_settings_presets,
             set_card_rarities,
