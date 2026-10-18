@@ -75,6 +75,16 @@ async function throwApiError(resp: Response): Promise<never> {
   try {
     const parsed = JSON.parse(body);
     if (typeof parsed?.detail === "string") detail = parsed.detail;
+    else if (Array.isArray(parsed?.detail) && parsed.detail.length > 0) {
+      // A request the server's schema refused — almost always a server
+      // older than this app. One readable line, not the raw list.
+      const first = parsed.detail[0];
+      const where = Array.isArray(first?.loc) ? first.loc.slice(1).join(".") : "";
+      detail =
+        "The generation server didn't accept this request — it may be older than this app " +
+        `(${parsed.detail.length} problem${parsed.detail.length === 1 ? "" : "s"}; first: ` +
+        `${where ? `${where}: ` : ""}${first?.msg ?? "invalid"}).`;
+    }
   } catch {
     // Not JSON (a proxy error page, an empty body) — use it as-is.
   }

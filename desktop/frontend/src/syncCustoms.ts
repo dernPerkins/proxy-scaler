@@ -64,6 +64,8 @@ export function customImageRefs(card: CardRow): CustomSyncItem[] {
     refs.push({ id: card.custom_image_id, hash: card.custom_hash ?? null, label: card.name });
   }
   for (const fa of card.face_art ?? []) {
+    // Art not downloaded yet has no library image to sync.
+    if (fa.custom_image_id == null) continue;
     refs.push({ id: fa.custom_image_id, hash: fa.custom_hash, label: fa.label, faceArt: true });
   }
   return refs;

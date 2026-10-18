@@ -16,7 +16,7 @@ def to_deck_entry(e: DeckEntryIn) -> DeckEntry:
     overrides: list[FaceOverride] = []
     for o in e.face_overrides:
         try:
-            custom_hash = customs.validate_hash(o.custom_hash)
+            custom_hash = customs.validate_hash(o.custom_hash) if o.custom_hash else None
         except customs.CustomImageError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if o.face >= o.total_faces:

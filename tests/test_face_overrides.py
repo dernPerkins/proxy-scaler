@@ -264,6 +264,22 @@ def test_an_override_that_was_never_registered_is_missing() -> None:
     assert missing and "1 of 2" in missing[0]
 
 
+def test_art_chosen_but_not_downloaded_prints_nothing_for_that_face() -> None:
+    gallery = [_scryfall_face(0), _scryfall_face(1), _custom_face()]
+    entry = _delver(FaceOverride(1, 2, None))
+    units, missing, _ = match_quantities([entry], gallery)
+    # Never the Scryfall back in its place; reported instead.
+    assert [u.best.face_index for u in units] == [0]
+    assert missing and "1 of 2" in missing[0]
+
+
+def test_generation_leaves_an_undownloaded_face_alone(db_path, tmp_path, resolves_delver) -> None:
+    _enqueue([_delver(FaceOverride(1, 2, None))], tmp_path, db_path)
+    tasks = db.list_tasks(db_path=db_path)
+    assert [t.face_index for t in tasks if t.scryfall_id] == [0]
+    assert not [t for t in tasks if t.custom_hash]
+
+
 def test_the_same_image_as_a_card_and_as_an_override_prints_twice() -> None:
     gallery = [_scryfall_face(0), _scryfall_face(1), _custom_face()]
     entries = [
@@ -316,3 +332,38 @@ def test_converter_validates_override_hashes() -> None:
         )
     )
     assert custom.face_overrides == ()
+
+
+def test_the_api_accepts_art_chosen_but_not_downloaded(tmp_path, monkeypatch, resolves_delver) -> None:
+    """A face override with no image yet (custom_hash null) is valid on the
+    wire: Download images sends exactly that for an import's chosen art."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "api.db"
+    db.init_db(db_path)
+    monkeypatch.setenv("PROXY_SCALER_DB_PATH", str(db_path))
+    monkeypatch.setenv("PROXY_SCALER_WORKER_LOCK_PATH", str(tmp_path / "worker.lock"))
+    monkeypatch.setenv("PROXY_SCALER_CARD_DB_PATH", str(tmp_path / "cards.db"))
+    from proxy_scaler.api.app import app
+
+    resp = TestClient(app).post(
+        "/api/generate/downloads",
+        json={
+            "project_tag": "tag",
+            "entries": [
+                {
+                    "quantity": 1,
+                    "name": "Delver of Secrets",
+                    "scryfall_id": "delver-id",
+                    "face_overrides": [{"face": 1, "total_faces": 2, "custom_hash": None}],
+                }
+            ],
+            "output_dir": str(tmp_path / "out"),
+            "cache_dir": str(tmp_path / "cache"),
+            "weights_dir": str(tmp_path / "weights"),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    tasks = db.list_tasks(db_path=db_path)
+    assert [t.face_index for t in tasks if t.scryfall_id] == [0]

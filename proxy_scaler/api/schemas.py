@@ -86,7 +86,10 @@ class FaceOverrideIn(BaseModel):
 
     face: int = Field(ge=0, le=1)
     total_faces: int = Field(ge=1, le=2)
-    custom_hash: str
+    # None: MPC Fill art chosen but not downloaded yet. The face then
+    # prints nothing (reported missing) rather than its Scryfall art, and
+    # Generate/Download leave its Scryfall image alone.
+    custom_hash: str | None = None
 
 
 class DeckEntryIn(BaseModel):

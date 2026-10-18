@@ -14,6 +14,13 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import CardBackPicker from "../components/CardBackPicker";
+import {
+  DownloadIcon,
+  EyeIcon,
+  EyeOffIcon,
+  SparklesIcon,
+  TrashIcon,
+} from "../components/RowIcons";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
 import {
@@ -38,12 +45,13 @@ import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
-import { registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { alternateName } from "../cardNames";
 import { importMpcOrder } from "../mpcFill";
 import {
   autoPickMpcArt,
-  cancelPendingFaceArt,
+  fetchPendingFaceArt,
+  hasPendingFaceArt,
   dismissPendingFaceArt,
   downloadPickedPrinting,
   pendingFaceArtKey,
@@ -142,6 +150,7 @@ export default function DecklistPage() {
     setCardQuantity,
     setCardPrinting,
     setCardFaceArt,
+    setCardFaceArtPending,
     clearCardFaceArt,
     resetCardBacks,
     applyCardResolutions,
@@ -180,7 +189,15 @@ export default function DecklistPage() {
   // different project loads so text typed against one deck can't be
   // imported into another, and cleared again after a successful import.
   const [decklistDraft, setDecklistDraft] = useState("");
-  useEffect(() => setDecklistDraft(""), [projectId]);
+  // Cleared when switching to another project — not when the first one is
+  // created under it (no project yet -> the Unnamed Project): changing any
+  // setting before importing does that, and must keep what was typed.
+  const draftProjectId = useRef(projectId);
+  useEffect(() => {
+    const previous = draftProjectId.current;
+    draftProjectId.current = projectId;
+    if (previous != null && previous !== projectId) setDecklistDraft("");
+  }, [projectId]);
   const [status, setStatus] = useState<string | null>(null);
   // Per-line failures from the last resolve-gated import attempt — the
   // lines themselves stay in the textarea for fixing; successes leave it.
@@ -484,38 +501,33 @@ export default function DecklistPage() {
   // The import toggle's "MPC Fill": every face of each newly imported
   // card gets MPC Fill's top match as its face art, downloaded one at a
   // time with a cancel. Faces with no match keep their Scryfall art.
-  const [artProgress, setArtProgress] = useState<{ done: number; total: number } | null>(null);
+  const [findingArt, setFindingArt] = useState(false);
   const [artNote, setArtNote] = useState<string | null>(null);
   async function pickMpcArtFor(imported: CardRow[]) {
-    setArtProgress({ done: 0, total: 0 });
+    setFindingArt(true);
     try {
       const result = await autoPickMpcArt(imported, {
-        setFaceArt: setCardFaceArt,
-        projectTag,
-        serverVersion,
-        refreshStatus: refetchStatus,
+        setFaceArtPending: setCardFaceArtPending,
         // The import's own language: MPC Fill art in it, else the card
         // keeps the printing it was imported as.
         lang: settings.lang_any ? null : settings.preferred_lang,
-        onProgress: (done, total) => setArtProgress({ done, total }),
       });
-      // Only what needs the user's attention; each card's row already
-      // shows its own art arriving.
-      const parts: string[] = [];
-      if (result.unmatched.length) {
-        parts.push(`No MPC Fill art for ${result.unmatched.join(", ")} — kept Scryfall art.`);
-      }
-      if (result.failed) {
-        parts.push(`${result.failed} download(s) failed — those faces kept Scryfall art.`);
-      }
-      setArtNote(parts.length ? parts.join(" ") : null);
-      invalidateStatus();
+      // Art fetched since the library was last read (picks, Download
+      // images) is linked to these new cards straight away, without a
+      // download — see the library effect below.
+      void queryClient.invalidateQueries({ queryKey: ["custom-images"] });
+      // Only what needs the user's attention.
+      setArtNote(
+        result.unmatched.length
+          ? `No MPC Fill art for ${result.unmatched.join(", ")} — kept Scryfall art.`
+          : null,
+      );
     } catch (err) {
       setArtNote(
         `Couldn't pick MPC Fill art (${err instanceof Error ? err.message : String(err)}) — kept Scryfall art.`,
       );
     } finally {
-      setArtProgress(null);
+      setFindingArt(false);
     }
   }
   const importOrderMutation = useMutation({
@@ -607,14 +619,107 @@ export default function DecklistPage() {
     if (files.length) addCustomImagesMutation.mutate(files);
   }
 
+  // MPC Fill art an import chose but didn't download is fetched by the
+  // same buttons that fetch a Scryfall import's images: Download images
+  // queues it, Generate waits for it (it may be upscaled). Each face shows
+  // its progress on its row.
+  const pendingArtOpts = {
+    setFaceArt: setCardFaceArt,
+    projectTag,
+    serverVersion,
+    refreshStatus: refetchStatus,
+  };
+  // Chosen MPC art that is already in the library (downloaded for another
+  // card, project or earlier pick) needs no download: link it straight
+  // away, so the row shows it as downloaded on import or load rather than
+  // waiting for Download images to find it there.
+  const libraryQuery = useQuery({
+    queryKey: ["custom-images"],
+    queryFn: () => projectApi.listCustomImages(),
+  });
+  const linkingArt = useRef(new Set<string>());
+  useEffect(() => {
+    const byDriveId = new Map(
+      (libraryQuery.data ?? []).flatMap((image) =>
+        image.mpc ? [[image.mpc.drive_id, image] as const] : [],
+      ),
+    );
+    if (byDriveId.size === 0) return;
+    const links = cards.flatMap((card) =>
+      (card.face_art ?? []).flatMap((fa) => {
+        const image = fa.custom_image_id == null && fa.mpc_drive_id ? byDriveId.get(fa.mpc_drive_id) : undefined;
+        const key = `${card.id}:${fa.face}:${fa.mpc_drive_id}`;
+        if (!image || linkingArt.current.has(key)) return [];
+        linkingArt.current.add(key);
+        return [{ card, fa, image }];
+      }),
+    );
+    if (links.length === 0) return;
+    void (async () => {
+      const linked: CardRow[] = [];
+      for (const { card, fa, image } of links) {
+        try {
+          await setCardFaceArt(card.id, fa.face, fa.total_faces, image);
+          linked.push({
+            ...card,
+            face_art: [
+              {
+                ...fa,
+                custom_image_id: image.id,
+                custom_hash: image.content_hash,
+                label: image.label,
+              },
+            ],
+          });
+        } catch {
+          // Left as chosen; Download images still fetches it.
+        }
+      }
+      if (linked.length > 0 && !serverUnavailable) {
+        await registerCustomCards(linked, projectTag, serverVersion).catch(() => {});
+        await refetchStatus();
+      }
+    })();
+    // setCardFaceArt/refetchStatus are stable enough; re-running on them
+    // would only repeat the same (already-attempted) links.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards, libraryQuery.data]);
+
+  /** One row's Download: what Download images does, for this card only —
+   *  its chosen MPC art, its Scryfall original(s) as a queued task (the
+   *  row shows "Downloading · Original" until it lands), or a custom
+   *  card's registration. Best-effort; errors surface on the next bulk
+   *  action. */
+  function downloadCard(card: CardRow) {
+    void fetchPendingFaceArt([card], pendingArtOpts);
+    if (card.custom_image_id != null) {
+      void registerCustomCards([card], projectTag, serverVersion)
+        .then(() => refetchStatus())
+        .catch((err: unknown) =>
+          setStatus(`Download failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      return;
+    }
+    downloadPickedPrinting(card, projectTag, refetchStatus);
+  }
+
+  /** Fetch these cards' chosen MPC art, then the cards as they now are. */
+  async function withPendingArtFetched(subset: CardRow[]): Promise<CardRow[]> {
+    if (!hasPendingFaceArt(subset)) return subset;
+    await fetchPendingFaceArt(subset, pendingArtOpts);
+    const ids = new Set(subset.map((c) => c.id));
+    return getProjectSnapshot().cards.filter((c) => ids.has(c.id));
+  }
+
   const generateAllMutation = useMutation({
     mutationFn: async () => {
+      const ready = await withPendingArtFetched(cards);
       // Custom art has to be on the server before the tasks that will read
       // it are queued — see syncCustoms.ts.
-      await syncCustomImages(cards, serverVersion);
+      await syncCustomImages(ready, serverVersion);
       return generationApi.generate({
         project_tag: projectTag as string,
-        entries: cards.map(cardToEntry),
+        entries: ready.map(cardToEntry),
         model: settings.model,
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
@@ -643,6 +748,9 @@ export default function DecklistPage() {
 
   const downloadAllMutation = useMutation({
     mutationFn: async () => {
+      // Chosen MPC Fill art downloads in the background queue, each face
+      // registering itself as it lands (the rest needn't wait for it).
+      void fetchPendingFaceArt(cards, pendingArtOpts);
       // Custom cards have no Scryfall original to download; this is what
       // registers their uploaded art as printable instead, so they still
       // need syncing first.
@@ -672,7 +780,8 @@ export default function DecklistPage() {
   });
 
   const generateCardMutation = useMutation({
-    mutationFn: async (card: CardRow) => {
+    mutationFn: async (picked: CardRow) => {
+      const [card = picked] = await withPendingArtFetched([picked]);
       await syncCustomImages([card], serverVersion);
       return generationApi.generate({
         project_tag: projectTag as string,
@@ -1006,7 +1115,7 @@ export default function DecklistPage() {
             style={{ width: "100%" }}
             placeholder={"1 Sol Ring (c21) 263\n2 Arcane Signet 117\n4 Lightning Bolt"}
           />
-          <div className="import-actions">
+          <div className="import-actions import-actions-wide">
             <button
               className="btn-primary"
               onClick={() => void handleImport()}
@@ -1049,7 +1158,7 @@ export default function DecklistPage() {
                 each line against Scryfall (that's the card), then prints
                 MPC Fill's top art for every face in its place. */}
             <span className="import-art-source">
-              <span className="hint">Art from</span>
+              <span className="hint">Art From</span>
               <SplitPill
                 ariaLabel="Where imported cards' art comes from"
                 value={settings.import_art_source}
@@ -1072,16 +1181,7 @@ export default function DecklistPage() {
               />
             </span>
           </div>
-          {artProgress && (
-            <p className="hint">
-              {artProgress.total === 0
-                ? "Finding MPC Fill art…"
-                : `Fetching MPC Fill art ${Math.min(artProgress.done + 1, artProgress.total)} of ${artProgress.total}…`}{" "}
-              <button type="button" className="linklike" onClick={cancelPendingFaceArt}>
-                Stop
-              </button>
-            </p>
-          )}
+          {findingArt && <p className="hint">Finding MPC Fill art…</p>}
           {artNote && <p className="hint">{artNote}</p>}
           {serverUnavailable && (
             <p className="hint">
@@ -1328,6 +1428,7 @@ export default function DecklistPage() {
               onRemove={() => removeCard(card.id)}
               onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
               onGenerate={() => generateCardMutation.mutate(card)}
+              onDownload={() => downloadCard(card)}
               upscalesCustoms={customUpscale !== "off"}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
@@ -1447,6 +1548,9 @@ function CardRowView(props: {
   onRemove: () => void;
   onSetQuantity: (quantity: number) => void;
   onGenerate: () => void;
+  /** Queue this card's full-size images (no upscaling), like the bulk
+   *  Download images for one row. */
+  onDownload: () => void;
   /** Whether Generate upscales Custom Images for this project — without
    *  it a custom's per-row Generate would upscale nothing. */
   upscalesCustoms: boolean;
@@ -1487,6 +1591,7 @@ function CardRowView(props: {
     onRemove,
     onSetQuantity,
     onGenerate,
+    onDownload,
     upscalesCustoms,
     onRegenerate,
     onRefetch,
@@ -1590,28 +1695,57 @@ function CardRowView(props: {
             +
           </button>
         </span>
+        {/* Icons with tooltips: four labelled buttons no longer fit the
+            row. Each slot is always present (disabled when it can't act)
+            so the icons line up down the list. */}
         <span className="card-buttons" data-tour="card-buttons">
-          {/* Always present, disabled until there's something to show, so
-              the row's controls don't shift once the first image lands. */}
           <button
-            className="btn-sm"
+            className="btn-sm icon-button"
             onClick={() => onToggleExpand(rowKey)}
             disabled={!hasImages}
-            title={hasImages ? undefined : "Nothing to show yet — generate or download this card first"}
+            title={
+              hasImages
+                ? expanded
+                  ? "Hide images"
+                  : "Show images"
+                : "Nothing to show yet — download or generate this card first"
+            }
+            aria-label={expanded && hasImages ? "Hide images" : "Show images"}
           >
-            {expanded && hasImages ? "Hide" : "Show"}
+            {expanded && hasImages ? <EyeOffIcon /> : <EyeIcon />}
+          </button>
+          <button
+            className="btn-sm icon-button"
+            onClick={onDownload}
+            disabled={disabled}
+            title="Download — the full-size image, without upscaling"
+            aria-label="Download"
+          >
+            <DownloadIcon />
           </button>
           {/* With custom upscaling off the server routes a custom's
-              generate straight to source registration, which the bulk
-              buttons already cover — so a per-row Generate would be a
-              button that upscales nothing. */}
-          {(card.custom_image_id == null || upscalesCustoms) && (
-            <button className="btn-sm" onClick={onGenerate} disabled={disabled}>
-              Generate
-            </button>
-          )}
-          <button className="btn-sm btn-danger" onClick={onRemove}>
-            Remove
+              generate straight to source registration, which Download
+              already does — so a per-row Generate would upscale nothing. */}
+          <button
+            className="btn-sm icon-button"
+            onClick={onGenerate}
+            disabled={disabled || (card.custom_image_id != null && !upscalesCustoms)}
+            title={
+              card.custom_image_id != null && !upscalesCustoms
+                ? "Custom images aren't upscaled in this project (the Custom images setting)"
+                : "Generate — upscale to the selected DPIs"
+            }
+            aria-label="Generate"
+          >
+            <SparklesIcon />
+          </button>
+          <button
+            className="btn-sm btn-danger icon-button"
+            onClick={onRemove}
+            title="Remove from the deck"
+            aria-label="Remove"
+          >
+            <TrashIcon />
           </button>
         </span>
       </div>
@@ -1620,7 +1754,7 @@ function CardRowView(props: {
         <div className="empty-note">
           {card.custom_image_id != null
             ? "Not registered for printing yet — happens automatically once a generation server is reachable."
-            : "Not generated yet."}
+            : "Not Generated Yet"}
         </div>
       ) : (
         faces.map((face, i) => (
@@ -1645,13 +1779,12 @@ function CardRowView(props: {
                 · {face.pick.source === "scryfall" ? "Original" : "MPC"}
               </StatusBadge>
             )}
+            {/* Chosen MPC art not fetched yet: a plain note, like a Scryfall
+                card's "Not Generated Yet", rather than a status badge. */}
             {face.art && !face.pick && face.variants.length === 0 && (
-              <StatusBadge
-                status="canceled"
-                title="Download or Generate fetches it onto the generation server"
-              >
-                {face.art.mpc_drive_id ? "MPC" : "Custom"} · not downloaded yet
-              </StatusBadge>
+              <span className="variant-note" title="Download images or Generate fetches it">
+                Not Downloaded Yet
+              </span>
             )}
             {face.variants.map((v) => (
               <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>

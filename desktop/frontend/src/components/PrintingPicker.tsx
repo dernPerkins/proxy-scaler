@@ -29,6 +29,7 @@ import {
   useServerVersion,
 } from "../config";
 import { MpcArtBrowser } from "./MpcArtPicker";
+import { LoadingGrid, LoadingStage } from "./PickerLoading";
 import { useProject } from "../context/ProjectContext";
 import { modelDisplayName } from "../constants";
 import { useImageCacheSetting } from "../imageOrigin";
@@ -331,7 +332,7 @@ function PreviewVersions({ v, face, enabled }: { v: CardVariant; face: number; e
     (pair) => pair.face_index === faceIndex && pair.model,
   );
   if (versions.length === 0) {
-    return <span className="printing-preview-none">Not generated yet</span>;
+    return <span className="printing-preview-none">Not Generated Yet</span>;
   }
   // The deck list's own badges, so a version reads the same everywhere.
   return (
@@ -750,6 +751,9 @@ function PrintingGridModal(props: {
     tile?.focus({ preventScroll: true });
   }, [selected, clampedFocus, source]);
 
+  // isPending, not isLoading: also while the query waits on Show Digital.
+  const loadingPrintings = variantsQuery.isPending;
+
   // MPC Fill mode works on the current printing's faces: how many, and
   // what each is called. Known once the printings load; until then, what
   // the card's existing face art says (or one face).
@@ -811,12 +815,13 @@ function PrintingGridModal(props: {
             cardTypes={["CARD", "TOKEN"]}
             defaultLang={card.lang}
             currentDriveId={art?.mpc_drive_id ?? null}
-            pickLabel={totalFaces > 1 ? `Use for the ${mpcFace === 0 ? "front" : "back"}` : "Use this art"}
-            currentLabel="Keep this art"
+            pickLabel="Use This Art"
+            currentLabel="Keep Current Art"
             onPick={async (picked) => {
-              if (art?.mpc_drive_id !== picked.drive_id) {
-                faceArt.onPickArt(mpcFace, totalFaces, picked);
-              }
+              // Picking is what downloads: new art, or the art an import
+              // chose and left undownloaded. Already-fetched art is a no-op.
+              const fetched = art?.mpc_drive_id === picked.drive_id && art.custom_image_id != null;
+              if (!fetched) faceArt.onPickArt(mpcFace, totalFaces, picked);
               onClose();
             }}
             head={
@@ -873,7 +878,9 @@ function PrintingGridModal(props: {
         {/* The modal is a grid: the preview fills the first column top to
             bottom; the right column stacks Close, notes, the filter row and
             the scrolling grid. */}
-        {selected && (
+        {loadingPrintings ? (
+          <LoadingStage label="Loading printings…" />
+        ) : selected && (
           <PrintingPreview
             key={selected.scryfall_id}
             v={selected}
@@ -905,7 +912,6 @@ function PrintingGridModal(props: {
               later). You can still pick a printing.
             </p>
           )}
-          {variantsQuery.isLoading && <p className="hint">Loading printings…</p>}
           {variantsQuery.isError && (
             <p className="hint">
               {variantsQuery.error instanceof ApiError && variantsQuery.error.status === 404
@@ -921,7 +927,11 @@ function PrintingGridModal(props: {
 
         {/* Rendered once the list loads even when it's empty: a card with
             only digital printings needs "Show Digital" reachable. */}
-        {variantsQuery.isSuccess && (
+        {loadingPrintings ? (
+          <div className="modal-body">
+            <LoadingGrid label="Loading printings…" />
+          </div>
+        ) : variantsQuery.isSuccess && (
           <>
             {/* Above the grid, right-aligned, the count first. */}
             <div className="printing-grid-controls" data-tour="picker-filters" data-tour-fit>

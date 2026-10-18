@@ -24,6 +24,7 @@ import { ApiError, generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { MpcCard, MpcCardType } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
+import { LoadingGrid, LoadingStage } from "./PickerLoading";
 import { fillFrameWith, looksBled, trimGeometry } from "../cardTrim";
 import { MPC_IMPORT_BLEED_MM } from "../mpcFill";
 import SelectMenu from "./SelectMenu";
@@ -367,6 +368,11 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     retry: false,
   });
 
+  // A search with nothing to show yet (the first can take a moment, as
+  // the server asks mpcfill.com) gets the loading stage and grid.
+  const loading = !languageReady || (search.isFetching && !search.data);
+  const loadingLabel = "Searching MPC Fill…";
+
   // A search by card fills the box with the name the server searched for.
   useEffect(() => {
     if (search.data && !submitted.q && submitted.scryfallId) setDraft(search.data.query);
@@ -511,7 +517,9 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
 
   return (
     <>
-      {selected && (
+      {loading ? (
+        <LoadingStage label={loadingLabel} />
+      ) : selected && (
         <MpcPreview
           key={selected.drive_id}
           card={selected}
@@ -529,7 +537,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
 
       <div className="printing-grid-notes">
         {!canSearch && <p className="hint">Type a card name and press Search.</p>}
-        {search.isFetching && <p className="hint">Searching MPC Fill…</p>}
+        {!loading && search.isFetching && <p className="hint">Searching MPC Fill…</p>}
         {errorText && <p className="hint">Couldn't search MPC Fill: {errorText}</p>}
         {hydrateError && <p className="hint">Couldn't load more results: {hydrateError}</p>}
       </div>
@@ -618,7 +626,9 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
       </div>
 
       <div className="modal-body" ref={scrollRef}>
-        {search.isSuccess && ids.length === 0 && lang ? (
+        {loading ? (
+          <LoadingGrid label={loadingLabel} />
+        ) : search.isSuccess && ids.length === 0 && lang ? (
           // Most MPC Fill art is English: an empty result under a language
           // filter is usually the filter, not the search.
           <p className="hint">

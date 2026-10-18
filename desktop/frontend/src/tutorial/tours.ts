@@ -170,7 +170,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "card-buttons",
         title: "Per-card actions",
-        body: "Generate just this card, a quick way to test a model. Show opens the finished images (once there are some) so you can compare them with the original or regenerate. Remove takes the card out of the deck.",
+        body: "Hover an icon for its name. The eye shows the finished images (once there are some) so you can compare them with the original or regenerate. Download fetches just this card's full-size image, without upscaling. The sparkles generate just this card, a quick way to test a model. The bin takes the card out of the deck.",
         placement: "left",
       },
       {

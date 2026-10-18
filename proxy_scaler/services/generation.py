@@ -83,7 +83,11 @@ def _override_customs(entries: list) -> list:
     out = []
     for entry in entries:
         for override in getattr(entry, "face_overrides", ()):
-            if override.custom_hash in plain or override.custom_hash in seen:
+            if (
+                override.custom_hash is None  # chosen, not downloaded yet
+                or override.custom_hash in plain
+                or override.custom_hash in seen
+            ):
                 continue
             seen.add(override.custom_hash)
             out.append(

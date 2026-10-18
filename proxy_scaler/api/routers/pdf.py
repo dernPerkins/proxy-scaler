@@ -251,7 +251,9 @@ def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> li
     seen = {int(d["id"]) for d in raw_items}
     custom_hashes = {e.custom_hash for e in entries if e.custom_hash}
     # Customs printed on a face of a Scryfall card (face overrides) too.
-    custom_hashes |= {o.custom_hash for e in entries for o in e.face_overrides}
+    custom_hashes |= {
+        o.custom_hash for e in entries for o in e.face_overrides if o.custom_hash
+    }
     for custom_hash in custom_hashes:
         for d in db.list_registry_items_for_custom(custom_hash, db_path=db_path):
             if int(d["id"]) not in seen:

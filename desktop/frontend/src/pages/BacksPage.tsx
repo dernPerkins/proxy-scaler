@@ -711,7 +711,7 @@ export default function BacksPage() {
           title="MPC Fill — card backs"
           initial={{}}
           cardTypes={["CARDBACK"]}
-          pickLabel="Add and use this back"
+          pickLabel="Use This Back"
           onClose={() => setMpcOpen(false)}
           onPick={async (card) => {
             const back = await importMpcArt("back", card);

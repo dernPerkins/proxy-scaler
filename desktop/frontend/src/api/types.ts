@@ -91,7 +91,9 @@ export interface DeckEntryIn {
 export interface FaceOverrideIn {
   face: number;
   total_faces: number;
-  custom_hash: string;
+  /** null: MPC Fill art chosen but not downloaded yet — the face prints
+   *  nothing (reported missing), never its Scryfall art. */
+  custom_hash: string | null;
 }
 
 /** What a card's Reverse takes when it isn't a transform face. Mirrors

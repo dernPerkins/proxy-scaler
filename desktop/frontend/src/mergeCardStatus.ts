@@ -267,7 +267,7 @@ export interface CardFaceStatus<A> {
  * its art comes from.
  */
 export function applyFaceArt<
-  A extends { face: number; total_faces: number; custom_hash: string },
+  A extends { face: number; total_faces: number; custom_hash: string | null },
 >(
   scryfallFaces: { faceIndex: number | null; face: CardFaceStatus<A> }[],
   faceArt: A[],
@@ -280,11 +280,16 @@ export function applyFaceArt<
     .filter((f) => !overridden.has(f.faceIndex ?? 0))
     .map((f) => ({ position: f.faceIndex ?? 0, face: f.face }));
   for (const art of faceArt) {
-    const identity = cardIdentity(null, null, null, null, null, art.custom_hash);
-    const variants = statusForPairs(
-      galleryByCard.get(identity) ?? [],
-      tasksByCard.get(identity) ?? [],
-    ).filter((v) => v.status !== "canceled");
+    // Chosen but not downloaded yet: nothing on the server to show.
+    const identity = art.custom_hash
+      ? cardIdentity(null, null, null, null, null, art.custom_hash)
+      : null;
+    const variants = identity
+      ? statusForPairs(
+          galleryByCard.get(identity) ?? [],
+          tasksByCard.get(identity) ?? [],
+        ).filter((v) => v.status !== "canceled")
+      : [];
     out.push({
       position: art.face,
       face: {

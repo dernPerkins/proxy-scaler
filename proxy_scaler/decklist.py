@@ -47,7 +47,8 @@ class FaceOverride:
 
     face: int
     total_faces: int
-    custom_hash: str
+    # None while the art is chosen but not downloaded (FaceOverrideIn).
+    custom_hash: str | None
 
 
 @dataclass(frozen=True)

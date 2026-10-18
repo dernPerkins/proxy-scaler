@@ -669,7 +669,7 @@ export default function CustomsPage() {
           title="MPC Fill — card fronts"
           initial={{}}
           cardTypes={["CARD", "TOKEN"]}
-          pickLabel="Add to Custom cards"
+          pickLabel="Add to Custom Cards"
           onClose={() => setMpcOpen(false)}
           onPick={async (card) => {
             const image = await importMpcArt("custom", card);

@@ -131,6 +131,7 @@ async function drain() {
             custom_hash: image.content_hash,
             label: image.label,
             mpc_drive_id: image.mpc?.drive_id ?? null,
+            mpc_source: image.mpc?.source ?? null,
           },
         ],
       };
@@ -238,35 +239,36 @@ export function pendingPrintingKey(cardId: number): string {
 }
 
 export interface AutoPickResult {
-  /** Faces now printing MPC Fill art. */
+  /** Faces that now have MPC Fill art chosen. */
   picked: number;
   /** Cards MPC Fill had nothing for, on any face (Scryfall art kept). */
   unmatched: string[];
-  /** Downloads that failed (their faces keep Scryfall art). */
-  failed: number;
 }
 
 // One /api/mpcfill/best call covers this many cards (the server's cap).
 const BEST_BATCH = 300;
 
 /**
- * Give freshly imported Scryfall cards MPC Fill art: MPC Fill's top match
- * for every face (one search per 300 cards, on the server), each queued
- * like a pick in the modal. Faces with no match keep their Scryfall art;
- * cards that already have face art are left alone. `onProgress` follows
- * the downloads. Throws only if the matching itself fails.
+ * Choose MPC Fill art for freshly imported Scryfall cards: MPC Fill's top
+ * match for every face (one search per 300 cards, on the server), recorded
+ * on each card without downloading anything — exactly as a Scryfall import
+ * records printings. Download images (or Generate, or picking one in the
+ * modal) fetches them. Faces with no match keep their Scryfall art; cards
+ * that already have face art are left alone. Throws only if the matching
+ * itself fails.
  */
 export async function autoPickMpcArt(
   cards: CardRow[],
   opts: {
-    setFaceArt: Job["setFaceArt"];
-    projectTag: string | null;
-    serverVersion: string | null;
-    refreshStatus: Job["refreshStatus"];
+    setFaceArtPending: (
+      cardId: number,
+      face: number,
+      totalFaces: number,
+      art: MpcCard,
+    ) => Promise<void>;
     /** The import's language (Scryfall code): only MPC Fill art in it
      *  counts, so a card without any keeps its printing. null: any. */
     lang: string | null;
-    onProgress: (done: number, total: number) => void;
   },
 ): Promise<AutoPickResult> {
   const eligible = cards.filter(
@@ -283,40 +285,64 @@ export async function autoPickMpcArt(
   }
 
   const unmatched: string[] = [];
-  const picks: Promise<boolean>[] = [];
+  let picked = 0;
   for (const card of eligible) {
     const match = best.get(card.scryfall_id as string);
     if (!match || !match.faces.some((f) => f != null)) {
       unmatched.push(card.name);
       continue;
     }
-    match.faces.forEach((art, face) => {
-      if (!art) return;
+    for (const [face, art] of match.faces.entries()) {
+      if (!art) continue;
+      await opts.setFaceArtPending(card.id, face, match.total_faces, art);
+      picked += 1;
+    }
+  }
+  return { picked, unmatched };
+}
+
+/**
+ * Download every face's MPC Fill art that was chosen but not fetched yet
+ * (an import with "Art from: MPC Fill"), through the same background queue
+ * a pick in the modal uses — each face shows "Queued" / "Downloading" on
+ * its row. Download images and Generate call this; resolves once all of
+ * them have landed (or failed).
+ */
+export function fetchPendingFaceArt(
+  cards: CardRow[],
+  opts: Omit<Parameters<typeof queueFaceArtPick>[0], "card" | "face" | "totalFaces" | "art">,
+): Promise<boolean[]> {
+  const picks: Promise<boolean>[] = [];
+  for (const card of cards) {
+    for (const fa of card.face_art ?? []) {
+      if (fa.custom_image_id != null || !fa.mpc_drive_id) continue;
+      if (pending.has(keyOf(card.id, fa.face))) continue;
       picks.push(
         queueFaceArtPick({
+          ...opts,
           card,
-          face,
-          totalFaces: match.total_faces,
-          art,
-          setFaceArt: opts.setFaceArt,
-          projectTag: opts.projectTag,
-          serverVersion: opts.serverVersion,
-          refreshStatus: opts.refreshStatus,
+          face: fa.face,
+          totalFaces: fa.total_faces,
+          art: {
+            drive_id: fa.mpc_drive_id,
+            name: fa.label,
+            source_name: fa.mpc_source ?? "",
+            card_type: "CARD",
+            extension: "",
+            dpi: 0,
+            size_bytes: 0,
+            language: "",
+            date_created: "",
+            tags: [],
+          },
         }),
       );
-    });
+    }
   }
-  let done = 0;
-  opts.onProgress(0, picks.length);
-  const results = await Promise.all(
-    picks.map((p) =>
-      p.then((ok) => {
-        done += 1;
-        opts.onProgress(done, picks.length);
-        return ok;
-      }),
-    ),
-  );
-  const picked = results.filter(Boolean).length;
-  return { picked, unmatched, failed: results.length - picked };
+  return Promise.all(picks);
+}
+
+/** Whether any of these cards has MPC Fill art chosen but not fetched. */
+export function hasPendingFaceArt(cards: CardRow[]): boolean {
+  return cards.some((c) => c.face_art?.some((fa) => fa.custom_image_id == null && fa.mpc_drive_id));
 }

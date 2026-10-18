@@ -317,11 +317,13 @@ Google Drives — can go anywhere your own uploads can:
   printing — its name, its back, its pairing — and only that face prints
   the MPC art; **Use Scryfall art** undoes it. Changing the printing goes
   back to Scryfall art.
-- **Art from Scryfall | MPC Fill**, under the Decklist tab's Import cards
+- **Art from Scryfall | MPC Fill**, beside the Decklist tab's Import cards
   button, decides where an import's art comes from. On MPC Fill, each
   imported card is still matched to its Scryfall printing, then every face
-  gets MPC Fill's top match (downloaded one at a time — Stop leaves the
-  rest on Scryfall art). Only art in the import's language counts (any
+  is given MPC Fill's top match — chosen, not downloaded, just as a
+  Scryfall import downloads nothing. **Download images** fetches them
+  (Generate does too), and picking art in a card's printing grid fetches
+  that one straight away. Only art in the import's language counts (any
   language with **All Languages** ticked); cards MPC Fill has nothing for
   keep their Scryfall printing, and any pick can be changed from the
   card's printing button. The choice is saved per project.

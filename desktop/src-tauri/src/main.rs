@@ -940,6 +940,7 @@ fn main() {
             custom_images::sync_custom_image,
             project_store::add_custom_cards,
             face_art::set_card_face_art,
+            face_art::set_card_face_art_pending,
             face_art::clear_card_face_art,
             face_art::count_face_art_using_custom_image,
             project_store::add_custom_cards_with_backs

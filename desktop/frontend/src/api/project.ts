@@ -187,15 +187,18 @@ export interface CardRow {
   face_art: CardFaceArt[];
 }
 
-/** Mirrors face_art::CardFaceArt (Rust). */
+/** Mirrors face_art::CardFaceArt (Rust). The image fields are null for
+ *  MPC Fill art chosen (by an import) but not downloaded yet; mpc_* then
+ *  say what to download. */
 export interface CardFaceArt {
   /** 0 for a single-faced card or a DFC's front, 1 for a DFC's back. */
   face: number;
   total_faces: number;
-  custom_image_id: number;
-  custom_hash: string;
+  custom_image_id: number | null;
+  custom_hash: string | null;
   label: string;
   mpc_drive_id: string | null;
+  mpc_source: string | null;
 }
 
 // A parsed-but-unresolved decklist line, as returned by the Rust parser
@@ -564,6 +567,23 @@ export const projectApi = {
    *  whose printing has `totalFaces` faces. */
   setCardFaceArt: (cardId: number, face: number, totalFaces: number, customImageId: number) =>
     invokeCommand<void>("set_card_face_art", { cardId, face, totalFaces, customImageId }),
+
+  /** Choose MPC Fill art for a face without downloading it (an import
+   *  with "Art from: MPC Fill"); Download images or Generate fetches it. */
+  setCardFaceArtPending: (
+    cardId: number,
+    face: number,
+    totalFaces: number,
+    art: { driveId: string; mpcSource: string; mpcName: string },
+  ) =>
+    invokeCommand<void>("set_card_face_art_pending", {
+      cardId,
+      face,
+      totalFaces,
+      driveId: art.driveId,
+      mpcSource: art.mpcSource,
+      mpcName: art.mpcName,
+    }),
 
   /** Back to the printing's own art for one face, or every face (null). */
   clearCardFaceArt: (cardId: number, face: number | null) =>

@@ -964,10 +964,10 @@ button:disabled {
   display: grid;
   /* The buttons column is FIXED, not auto: each .card-main is its own
      grid, so an auto column sizes per row — rows with a generated image
-     carry an extra "Show" button and would shift the printing/qty columns
-     of every such row out of alignment with the rest. 216px fits the full
-     Show + Generate + Remove set. */
-  grid-template-columns: minmax(0, 1fr) 158px 36px 106px 216px;
+     would otherwise shift the printing/qty columns of rows out of
+     alignment with the rest. 132px fits the four icon buttons (Show,
+     Download, Generate, Remove: 4 × 30px + 3 × 4px gaps). */
+  grid-template-columns: minmax(0, 1fr) 158px 36px 106px 132px;
   gap: 12px;
   align-items: center;
 }
@@ -1327,22 +1327,26 @@ button:disabled {
   background-position: center;
   filter: blur(42px) saturate(1.5) brightness(0.55);
 }
-/* The tile grid's row. The card's top meets the tiles' image tops (the
-   grid's 4px padding + a tile's 2px border + 6px padding); its size is
-   whatever fits beside the scrim's ~210px, keeping the card's aspect. */
+/* The filter row and the tile grid's row together. Not the grid's row
+   alone: the filter row's height differs per tab (the MPC Fill tab's
+   search controls are taller, and wrap sooner), which moved and shrank the
+   card between tabs. Anchored at the filter row's top instead, the card
+   sits and sizes identically in every tab; the 52px offset (the Scryfall
+   filter row's ~40px + 12px) puts its top level with the tiles' tops there,
+   and its size is whatever fits beside the scrim's ~210px. */
 .printing-preview-stage {
-  grid-row: 4;
+  grid-row: 3 / -1;
   position: relative;
   min-height: 0;
   container-type: size;
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding-top: 12px;
+  padding-top: 52px;
 }
 .printing-preview-frame {
   position: relative;
-  width: min(100cqw - 40px, (100cqh - 222px) * 0.716);
+  width: min(100cqw - 40px, (100cqh - 262px) * 0.716);
   aspect-ratio: 745 / 1040;
   border-radius: 4.75% / 3.5%;
   overflow: hidden;
@@ -1650,6 +1654,122 @@ button:disabled {
   color: var(--wait);
 }
 
+/* The pickers' loading state (PickerLoading.tsx): the preview column as
+   the preview pane's own dark stage, the grid as shimmering placeholder
+   tiles. */
+.loading-stage-wash {
+  position: absolute;
+  inset: -60px;
+  background:
+    radial-gradient(60% 45% at 35% 30%, rgba(120, 130, 255, 0.35), transparent 70%),
+    radial-gradient(55% 40% at 70% 70%, rgba(255, 120, 170, 0.22), transparent 70%),
+    #0b0b0e;
+  filter: blur(30px);
+  animation: loading-wash-drift 6s ease-in-out infinite alternate;
+}
+@keyframes loading-wash-drift {
+  from { transform: translate3d(-12px, -8px, 0) scale(1); }
+  to { transform: translate3d(12px, 10px, 0) scale(1.06); }
+}
+/* Same size and shape as .printing-preview-frame, so the real card lands
+   exactly where the silhouette was. */
+.loading-stage-card {
+  position: relative;
+  width: min(100cqw - 40px, (100cqh - 262px) * 0.716);
+  aspect-ratio: 745 / 1040;
+  border-radius: 4.75% / 3.5%;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  animation: loading-breathe 2.4s ease-in-out infinite;
+}
+.loading-stage-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.16) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: loading-sweep 2.4s ease-in-out infinite;
+}
+@keyframes loading-breathe {
+  0%, 100% { opacity: 0.75; transform: scale(0.995); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@keyframes loading-sweep {
+  to { transform: translateX(100%); }
+}
+.loading-stage-scrim {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.loading-stage-label {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-weight: 500;
+}
+.activity-spinner {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.activity-spinner i {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 5px;
+  border-radius: 1px;
+  background: #fff;
+  transform-origin: 1px 9px;
+  opacity: 0.15;
+  animation: activity-spoke 1s linear infinite;
+}
+@keyframes activity-spoke {
+  from { opacity: 0.9; }
+  to { opacity: 0.15; }
+}
+.loading-shimmer {
+  background: linear-gradient(90deg, var(--surface-3) 0%, var(--surface-2) 40%, var(--surface-3) 80%);
+  background-size: 300% 100%;
+  animation: loading-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes loading-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}
+.loading-grid .loading-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  animation: loading-fade-in 400ms ease both;
+}
+.loading-tile-frame {
+  aspect-ratio: 488 / 680;
+  border-radius: 4.75% / 3.5%;
+}
+.loading-line {
+  height: 10px;
+  border-radius: 999px;
+}
+@keyframes loading-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading-stage-wash,
+  .loading-stage-card,
+  .loading-stage-card::after,
+  .loading-shimmer,
+  .loading-grid .loading-tile,
+  .activity-spinner i {
+    animation: none;
+  }
+}
+
 /* The MPC Fill browser (MpcArtPicker.tsx) reuses the change-printing
    grid's layout; these are only its own bits. */
 .mpc-head-title {
@@ -1746,7 +1866,12 @@ button:disabled {
   align-items: center;
   gap: 10px;
 }
-/* The import row's "Art from Scryfall | MPC Fill" pill, right-aligned. */
+/* The import row's "Art from Scryfall | MPC Fill" pill, right-aligned:
+   the row spans the box (.import-box shrink-wraps its rows), and the pill
+   takes the room left over. */
+.import-actions.import-actions-wide {
+  align-self: stretch;
+}
 .import-art-source {
   display: inline-flex;
   align-items: center;
@@ -1782,12 +1907,21 @@ button:disabled {
 }
 .card-buttons {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   /* Right-aligned inside the fixed column (see .card-main) so rows
      without a "Show" button keep Generate/Remove flush with the rest. */
   justify-content: flex-end;
 }
 
+/* Square icon buttons on a card row (RowIcons.tsx), tooltips on hover. */
+.btn-sm.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+}
 .variants {
   display: flex;
   flex-wrap: wrap;
@@ -1805,6 +1939,12 @@ button:disabled {
   color: var(--text-faint);
   font-size: 13px;
   margin-top: 6px;
+}
+/* The same note inside a face's badge row (a face whose chosen MPC Fill
+   art isn't downloaded yet). */
+.variant-note {
+  color: var(--text-faint);
+  font-size: 13px;
 }
 
 .thumbs {

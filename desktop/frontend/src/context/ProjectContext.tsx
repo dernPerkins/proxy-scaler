@@ -12,7 +12,7 @@ import type {
   ProjectSettings,
   ResolvedImportCard,
 } from "../api/project";
-import type { BackImage, BackMode, CustomImage } from "../api/types";
+import type { BackImage, BackMode, CustomImage, MpcCard } from "../api/types";
 
 // Heavy/quality-first vs. light/fast. Named rather than repeated inline so
 // the branching below reads as "which class of hardware is this."
@@ -224,6 +224,14 @@ interface ProjectContextValue {
   ) => Promise<void>;
   /** Back to the printing's own art for one face (or all, with null). */
   clearCardFaceArt: (cardId: number, face: number | null) => Promise<void>;
+  /** Choose MPC Fill art for a face without downloading it (an import with
+   *  "Art from: MPC Fill"); Download images or Generate fetches it. */
+  setCardFaceArtPending: (
+    cardId: number,
+    face: number,
+    totalFaces: number,
+    art: MpcCard,
+  ) => Promise<void>;
   /** Every card in the project back to "inherit" — the bulk undo for
    *  per-card backs. */
   resetCardBacks: () => Promise<void>;
@@ -796,6 +804,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             custom_hash: image.content_hash,
             label: image.label,
             mpc_drive_id: image.mpc?.drive_id ?? null,
+            mpc_source: image.mpc?.source ?? null,
           };
           return { ...c, face_art: [...kept, added].sort((a, b) => a.face - b.face) };
         }),
@@ -1202,6 +1211,31 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     setCardFaceArt: async (cardId, face, totalFaces, image) => {
       await setCardFaceArtMutation.mutateAsync({ cardId, face, totalFaces, image });
+    },
+    setCardFaceArtPending: async (cardId, face, totalFaces, art) => {
+      await projectApi.setCardFaceArtPending(cardId, face, totalFaces, {
+        driveId: art.drive_id,
+        mpcSource: art.source_name,
+        mpcName: art.name,
+      });
+      setCards((prev) =>
+        prev.map((c) => {
+          if (c.id !== cardId) return c;
+          const kept = (c.face_art ?? []).filter(
+            (fa) => fa.face !== face && fa.total_faces === totalFaces,
+          );
+          const chosen = {
+            face,
+            total_faces: totalFaces,
+            custom_image_id: null,
+            custom_hash: null,
+            label: art.name,
+            mpc_drive_id: art.drive_id,
+            mpc_source: art.source_name,
+          };
+          return { ...c, face_art: [...kept, chosen].sort((a, b) => a.face - b.face) };
+        }),
+      );
     },
     clearCardFaceArt: async (cardId, face) => {
       await clearCardFaceArtMutation.mutateAsync({ cardId, face });
