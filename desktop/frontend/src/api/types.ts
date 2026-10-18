@@ -123,6 +123,8 @@ export interface ResolvedFace {
   // Localized name as printed on a non-English card; null/absent for
   // English printings.
   printed_name?: string | null;
+  // The name a Universes Beyond printing carries instead of the card's own.
+  flavor_name?: string | null;
   // The printing's rarity, stored with the pinned card. Absent from older
   // servers; null for a corpus imported before rarity was kept.
   rarity?: string | null;
@@ -354,6 +356,8 @@ export interface CardVariant {
   scryfall_id: string;
   name: string;
   printed_name: string | null;
+  /** What a Universes Beyond printing calls the card ("Cloud Strife"). */
+  flavor_name?: string | null;
   set_code: string;
   set_name: string | null;
   collector_number: string;

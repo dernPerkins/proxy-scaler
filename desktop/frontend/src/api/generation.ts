@@ -396,10 +396,13 @@ export const generationApi = {
   // scryfall_id -> rarity for a deck's pinned printings; ids the corpus
   // lacks (or holds no rarity for) are absent. Same server floor.
   cardRarities: (ids: string[]) =>
-    request<{ rarities: Record<string, string> }>("/api/cards/rarities", {
-      method: "POST",
-      body: JSON.stringify({ ids }),
-    }),
+    request<{ rarities: Record<string, string>; flavor_names?: Record<string, string> }>(
+      "/api/cards/rarities",
+      {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      },
+    ),
 
   health: () => request<{ status: string }>("/api/health"),
 

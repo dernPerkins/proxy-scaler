@@ -910,6 +910,7 @@ fn main() {
             get_settings_presets,
             set_settings_presets,
             set_card_rarities,
+            project_store::set_card_flavor_names,
             check_for_update,
             download_update,
             launch_installer,

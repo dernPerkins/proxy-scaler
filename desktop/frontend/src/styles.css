@@ -977,6 +977,27 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* What's printed on this printing beside the card's own name (a flavor
+   name, a non-English name): muted, and the first thing to give way. */
+.card-name-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.card-name-cell .card-name {
+  flex-shrink: 0;
+  max-width: 100%;
+}
+.card-alt-name {
+  min-width: 0;
+  flex-shrink: 1;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-meta {
   color: var(--text-muted);
   font-size: 12.5px;
@@ -1401,6 +1422,13 @@ button:disabled {
   letter-spacing: -0.01em;
   text-transform: none;
   color: #fff;
+}
+/* What's printed on this printing when it isn't the card's own name
+   (a flavor name, a non-English name), under the name. */
+.printing-preview-alt-name {
+  margin: -2px 0 6px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.72);
 }
 .printing-preview-meta {
   margin: 2px 0 0;

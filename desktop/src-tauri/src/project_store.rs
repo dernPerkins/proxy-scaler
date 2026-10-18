@@ -287,6 +287,11 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // card (MPC Fill art picked in the change-printing modal), as JSON. See
     // face_art.rs.
     ("face_art", "TEXT"),
+    // The name printed on a Universes Beyond printing in place of the
+    // card's own ("Cloud Strife" on Najeela, the Blade-Blossom). Display
+    // only, like printed_name; filled by imports, picks and the rarity
+    // backfill.
+    ("flavor_name", "TEXT"),
 ];
 
 // Columns added to the two image libraries after their initial release.
@@ -763,6 +768,9 @@ pub struct CardRow {
     pub scryfall_id: Option<String>,
     pub lang: Option<String>,
     pub printed_name: Option<String>,
+    /// What a Universes Beyond printing calls the card instead (display
+    /// only — see the column comment).
+    pub flavor_name: Option<String>,
     /// The pinned printing's Scryfall rarity, for its set symbol's color.
     pub rarity: Option<String>,
     /// Set instead of scryfall_id for a Custom Image card. The frontend
@@ -916,7 +924,8 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
             "SELECT c.id, c.sort_order, c.original_import_line, c.quantity, c.name,
                     c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
                     c.custom_image_id, ci.content_hash, c.rarity,
-                    c.back_mode, c.back_image_id, bi.content_hash, c.face_art
+                    c.back_mode, c.back_image_id, bi.content_hash, c.face_art,
+                    c.flavor_name
              FROM project_cards c
              LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
              LEFT JOIN back_images bi ON bi.id = c.back_image_id
@@ -937,6 +946,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 scryfall_id: row.get(7)?,
                 lang: row.get(8)?,
                 printed_name: row.get(9)?,
+                flavor_name: row.get(17)?,
                 custom_image_id: row.get(10)?,
                 custom_hash: row.get(11)?,
                 rarity: row.get(12)?,
@@ -1643,6 +1653,8 @@ pub struct ResolvedImportCard {
     pub name: String,
     #[serde(default)]
     pub printed_name: Option<String>,
+    #[serde(default)]
+    pub flavor_name: Option<String>,
     pub set_code: String,
     pub collector_number: String,
     pub scryfall_id: String,
@@ -1725,8 +1737,8 @@ fn import_resolved_cards_into(
         tx.execute(
             "INSERT INTO project_cards
              (project_id, sort_order, original_import_line, quantity, name, printed_name,
-              set_code, collector_number, scryfall_id, lang, rarity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+              set_code, collector_number, scryfall_id, lang, rarity, flavor_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 project_id,
                 next_sort_order,
@@ -1739,6 +1751,7 @@ fn import_resolved_cards_into(
                 card.scryfall_id,
                 card.lang,
                 card.rarity,
+                card.flavor_name,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2001,6 +2014,9 @@ pub struct CardResolutionUpdate {
     pub lang: String,
     #[serde(default)]
     pub printed_name: Option<String>,
+    /// Written even when absent, like rarity: another printing has its own.
+    #[serde(default)]
+    pub flavor_name: Option<String>,
     /// The new printing's rarity. Written even when absent: a different
     /// printing can have a different rarity, so the old one is cleared
     /// rather than kept, and the backfill fills the gap.
@@ -2011,7 +2027,8 @@ pub struct CardResolutionUpdate {
 fn apply_card_resolution(conn: &Connection, update: &CardResolutionUpdate) -> Result<(), String> {
     conn.execute(
         "UPDATE project_cards SET scryfall_id = ?1, name = ?2, set_code = ?3,
-         collector_number = ?4, lang = ?5, printed_name = ?6, rarity = ?7 WHERE id = ?8",
+         collector_number = ?4, lang = ?5, printed_name = ?6, rarity = ?7,
+         flavor_name = ?9 WHERE id = ?8",
         params![
             update.scryfall_id,
             update.name,
@@ -2021,6 +2038,7 @@ fn apply_card_resolution(conn: &Connection, update: &CardResolutionUpdate) -> Re
             update.printed_name,
             update.rarity,
             update.card_id,
+            update.flavor_name,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -2041,6 +2059,7 @@ pub fn set_card_printing(
     lang: String,
     printed_name: Option<String>,
     rarity: Option<String>,
+    flavor_name: Option<String>,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
     // Art picked for a face belongs to the printing it was picked for; a
@@ -2063,6 +2082,7 @@ pub fn set_card_printing(
             collector_number,
             lang,
             printed_name,
+            flavor_name,
             rarity,
         },
     )
@@ -2170,6 +2190,33 @@ fn set_card_rarities_in(
         .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())
+}
+
+/// set_card_rarities for flavor names: the same backfill, the same keying.
+fn set_card_flavor_names_in(
+    conn: &mut Connection,
+    project_id: i64,
+    flavor_names: &HashMap<String, String>,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for (scryfall_id, flavor_name) in flavor_names {
+        tx.execute(
+            "UPDATE project_cards SET flavor_name = ?1 WHERE project_id = ?2 AND scryfall_id = ?3",
+            params![flavor_name, project_id, scryfall_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_card_flavor_names(
+    app: AppHandle,
+    project_id: i64,
+    flavor_names: HashMap<String, String>,
+) -> Result<(), String> {
+    let mut conn = open_db(&app)?;
+    set_card_flavor_names_in(&mut conn, project_id, &flavor_names)
 }
 
 #[tauri::command]
@@ -3303,6 +3350,7 @@ mod tests {
                 collector_number: "141".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                flavor_name: None,
                 rarity: None,
             },
         )
@@ -3317,6 +3365,7 @@ mod tests {
                 collector_number: "263".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                flavor_name: None,
                 rarity: None,
             },
         )
@@ -3333,6 +3382,7 @@ mod tests {
             quantity: 1,
             name: name.to_string(),
             printed_name: None,
+            flavor_name: None,
             set_code: set.to_string(),
             collector_number: cn.to_string(),
             scryfall_id: format!("{set}-{cn}"),
@@ -3372,6 +3422,46 @@ mod tests {
     }
 
     #[test]
+    fn flavor_names_are_stored_resolved_and_backfilled() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let najeela = ResolvedImportCard {
+            flavor_name: Some("Cloud Strife".to_string()),
+            .._resolved("1 Cloud Strife", "Najeela, the Blade-Blossom", "fca", "42")
+        };
+        let bolt = _resolved("1 Lightning Bolt", "Lightning Bolt", "lea", "161");
+        let cards = import_resolved_cards_into(&mut conn, id, "x", &[najeela, bolt.clone()])
+            .expect("import");
+        assert_eq!(cards[0].flavor_name.as_deref(), Some("Cloud Strife"));
+        assert_eq!(cards[1].flavor_name, None);
+
+        // A different printing brings its own (here: none).
+        apply_card_resolution(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "other".to_string(),
+                name: "Najeela, the Blade-Blossom".to_string(),
+                set_code: "bbd".to_string(),
+                collector_number: "1".to_string(),
+                lang: "en".to_string(),
+                printed_name: None,
+                flavor_name: None,
+                rarity: None,
+            },
+        )
+        .expect("resolve");
+        assert_eq!(cards_for_project(&conn, id).expect("cards")[0].flavor_name, None);
+
+        let backfill = HashMap::from([(bolt.scryfall_id.clone(), "Shock Wave".to_string())]);
+        set_card_flavor_names_in(&mut conn, id, &backfill).expect("backfill");
+        assert_eq!(
+            cards_for_project(&conn, id).expect("cards")[1].flavor_name.as_deref(),
+            Some("Shock Wave")
+        );
+    }
+
+    #[test]
     fn different_languages_of_one_printing_coexist() {
         // Language is part of a printing's identity: the Italian and
         // English Sol Ring of the same set/collector are different cards
@@ -3383,6 +3473,7 @@ mod tests {
             lang: "it".to_string(),
             scryfall_id: "sol-it".to_string(),
             printed_name: Some("Anello Solare".to_string()),
+            flavor_name: None,
             ..en.clone()
         };
         let cards = import_resolved_cards_into(&mut conn, id, "x", &[en.clone(), it.clone()])
@@ -3407,6 +3498,7 @@ mod tests {
             quantity: 1,
             name: "Aang, Air Nomad".to_string(),
             printed_name: Some("Aang der Luftnomade".to_string()),
+            flavor_name: None,
             set_code: "tle".to_string(),
             collector_number: "210".to_string(),
             scryfall_id: "aang-de".to_string(),
@@ -3627,6 +3719,7 @@ mod tests {
                 collector_number: "1".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                flavor_name: None,
                 rarity: None,
             },
         )
@@ -3974,6 +4067,7 @@ mod tests {
                 collector_number: "116".to_string(),
                 lang: "ja".to_string(),
                 printed_name: None,
+                flavor_name: None,
                 rarity: None,
             },
         )
@@ -4065,6 +4159,7 @@ mod tests {
                 collector_number: "263".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                flavor_name: None,
                 rarity: None,
             },
             CardResolutionUpdate {
@@ -4075,6 +4170,7 @@ mod tests {
                 collector_number: "141".to_string(),
                 lang: "en".to_string(),
                 printed_name: None,
+                flavor_name: None,
                 rarity: None,
             },
         ];

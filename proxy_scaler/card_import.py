@@ -94,7 +94,7 @@ def fetch_bulk_info(
     return info
 
 
-_FACE_KEYS = ("name", "oracle_id", "printed_name")
+_FACE_KEYS = ("name", "oracle_id", "printed_name", "flavor_name")
 
 
 def prune_card(card: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +108,9 @@ def prune_card(card: dict[str, Any]) -> dict[str, Any]:
         "oracle_id",
         "name",
         "printed_name",
+        # The name printed on a Universes Beyond card in place of its own
+        # ("Cloud Strife" on Najeela, the Blade-Blossom). Display only.
+        "flavor_name",
         "lang",
         "set",
         "set_name",

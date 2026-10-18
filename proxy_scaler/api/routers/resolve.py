@@ -74,6 +74,7 @@ def resolve(body: ResolveIn) -> ResolveOut:
                         image_status=f.image_status,
                         lang=f.lang,
                         printed_name=f.printed_name,
+                        flavor_name=f.flavor_name,
                         rarity=card.get("rarity"),
                     )
                     for f in faces

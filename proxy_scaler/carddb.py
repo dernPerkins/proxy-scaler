@@ -30,6 +30,7 @@ from typing import Any, Iterable, Sequence
 
 from . import db as _db
 from .scryfall import (
+    card_flavor_name,
     card_image_version,
     card_printed_name,
     expected_face_count,
@@ -500,6 +501,29 @@ def rarities_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str, st
     return out
 
 
+def flavor_names_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str, str]:
+    """scryfall_id -> flavor name for whichever of `ids` the corpus holds
+    with one (card-level, or a DFC's faces composed by card_flavor_name)."""
+    unique = list(dict.fromkeys(ids))
+    out: dict[str, str] = {}
+    for start in range(0, len(unique), 500):
+        chunk = unique[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        # The LIKE skips decoding the blob of every card without one.
+        for row in conn.execute(
+            f"SELECT id, card_json FROM cards WHERE id IN ({marks})"
+            " AND card_json LIKE '%\"flavor_name\"%'",
+            chunk,
+        ):
+            try:
+                name = card_flavor_name(json.loads(row["card_json"] or "{}"))
+            except (TypeError, ValueError):
+                continue
+            if name:
+                out[row["id"]] = name
+    return out
+
+
 def variants_for_oracle_id(
     conn: sqlite3.Connection, oracle_id: str, *, include_digital: bool = False
 ) -> list[dict[str, Any]]:
@@ -539,10 +563,12 @@ def variants_for_oracle_id(
             data["face_count"] = expected_face_count(card)
             data["face_names"] = printable_face_names(card)
             data["image_version"] = card_image_version(card)
+            data["flavor_name"] = card_flavor_name(card)
         except (TypeError, ValueError):
             data["face_count"] = 1
             data["face_names"] = [data["name"]]
             data["image_version"] = None
+            data["flavor_name"] = None
         variants.append(data)
     return variants
 

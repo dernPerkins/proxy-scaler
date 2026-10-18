@@ -173,6 +173,9 @@ class ResolvedFaceOut(BaseModel):
     # printings. Display-only on the client (English name stays the
     # matching identity).
     printed_name: str | None = None
+    # The name printed on a Universes Beyond card instead of its own; None
+    # otherwise (and for a corpus imported before it was kept).
+    flavor_name: str | None = None
     # Scryfall's rarity for the printing — the client stores it with the
     # pinned card so set symbols are colored without asking again. None
     # for a corpus imported before rarity was kept.
@@ -819,6 +822,7 @@ class CardVariantOut(BaseModel):
     scryfall_id: str
     name: str
     printed_name: str | None = None
+    flavor_name: str | None = None
     set_code: str
     set_name: str | None = None
     collector_number: str
@@ -854,6 +858,10 @@ class CardRaritiesOut(BaseModel):
     # scryfall_id -> rarity, for the ids the corpus has a rarity for. Ids it
     # lacks, or rows from before v3, are simply absent.
     rarities: dict[str, str]
+    # scryfall_id -> flavor name, for the few printings that have one (a
+    # corpus imported before they were kept has none). Rides on the same
+    # backfill so existing deck rows learn them.
+    flavor_names: dict[str, str] = Field(default_factory=dict)
 
 
 class CardVariantsOut(BaseModel):

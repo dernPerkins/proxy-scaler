@@ -39,6 +39,7 @@ import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import SortSelect from "../components/SortSelect";
 import { registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { alternateName } from "../cardNames";
 import { importMpcOrder } from "../mpcFill";
 import {
   autoPickMpcArt,
@@ -224,6 +225,7 @@ export default function DecklistPage() {
             quantity: rc.quantity,
             name: face.card_name,
             printed_name: face.printed_name ?? null,
+            flavor_name: face.flavor_name ?? null,
             set_code: face.set_code,
             collector_number: face.collector_number,
             scryfall_id: face.scryfall_id,
@@ -355,27 +357,47 @@ export default function DecklistPage() {
   // remembered per project so a printing the corpus has no rarity for
   // isn't asked about on every render.
   const rarityAttempted = useRef<Set<string>>(new Set());
+  // A card-database update can bring what wasn't there before (flavor
+  // names arrive only with a corpus imported after they were kept), so
+  // a finished import asks about every card again. Same query as the
+  // sidebar's Card database panel, which refreshes it when an import ends.
+  const cardDbQuery = useQuery({
+    queryKey: ["card-db-status"],
+    queryFn: () => generationApi.cardDbStatus(),
+    enabled: !serverUnavailable,
+  });
+  const corpusImportedAt = cardDbQuery.data?.local?.imported_at ?? null;
   useEffect(() => {
     rarityAttempted.current = new Set();
-  }, [projectId]);
+  }, [projectId, corpusImportedAt]);
   useEffect(() => {
     if (serverUnavailable || !serverSupportsSetIcons(serverVersion)) return;
+    // Rows missing a rarity, or a flavor name (nearly every row: almost
+    // no printing has one, so each id is asked about once a session).
     const missing = [
       ...new Set(
         cards
-          .filter((c) => c.scryfall_id && c.rarity == null)
+          .filter((c) => c.scryfall_id && (c.rarity == null || c.flavor_name == null))
           .map((c) => c.scryfall_id as string)
           .filter((id) => !rarityAttempted.current.has(id)),
       ),
     ];
     if (missing.length === 0) return;
     missing.forEach((id) => rarityAttempted.current.add(id));
+    const lacksRarity = new Set(
+      cards.filter((c) => c.scryfall_id && c.rarity == null).map((c) => c.scryfall_id as string),
+    );
     generationApi
       .cardRarities(missing)
-      .then((r) => backfillRarities(r.rarities))
+      .then((r) =>
+        backfillRarities(
+          Object.fromEntries(Object.entries(r.rarities).filter(([id]) => lacksRarity.has(id))),
+          r.flavor_names ?? {},
+        ),
+      )
       // A failed request is retried the next time the cards change.
       .catch(() => missing.forEach((id) => rarityAttempted.current.delete(id)));
-  }, [cards, serverUnavailable, serverVersion, backfillRarities]);
+  }, [cards, serverUnavailable, serverVersion, backfillRarities, corpusImportedAt]);
 
   // On-load re-resolve for legacy rows only: cards imported before the
   // resolve-gated import existed (or by older builds) may be unpinned —
@@ -419,6 +441,7 @@ export default function DecklistPage() {
               collector_number: face.collector_number,
               lang: face.lang ?? "en",
               printed_name: face.printed_name ?? null,
+              flavor_name: face.flavor_name ?? null,
               rarity: face.rarity ?? null,
             },
           ];
@@ -1330,6 +1353,7 @@ export default function DecklistPage() {
                         collector_number: printing.collectorNumber,
                         lang: printing.lang,
                         printed_name: printing.printedName,
+                        flavor_name: printing.flavorName ?? null,
                         face_art: [],
                       },
                       projectTag,
@@ -1442,6 +1466,7 @@ function CardRowView(props: {
     collectorNumber: string;
     lang: string;
     printedName: string | null;
+    flavorName?: string | null;
     rarity: string | null;
   }) => void;
   /** The printing picker closed (picked or not) — see adoptNonce. */
@@ -1508,14 +1533,20 @@ function CardRowView(props: {
   return (
     <div className="card-row" data-tour="card-row">
       <div className="card-main">
-        {/* Non-English printings show their printed name; the English/
-            oracle name stays underneath (and in the tooltip) as the
-            matching identity. */}
-        <span
-          className="card-name"
-          title={card.printed_name && card.printed_name !== card.name ? card.name : undefined}
-        >
-          {card.printed_name ?? card.name}
+        {/* The card's own name leads — it's what was imported and what
+            everything else matches on — with what's printed on this
+            printing beside it when that differs (a flavor name, or a
+            non-English printing's name). */}
+        <span className="card-name-cell">
+          <span className="card-name">{card.name}</span>
+          {(() => {
+            const alt = alternateName(card.name, card.printed_name, card.flavor_name);
+            return alt ? (
+              <span className="card-alt-name" title="As printed on this card">
+                {alt}
+              </span>
+            ) : null;
+          })()}
         </span>
         {/* A Custom Image has no printings to choose between — it is one
             uploaded file. The chip holds the picker's place so the row

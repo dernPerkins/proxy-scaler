@@ -206,6 +206,7 @@ interface ProjectContextValue {
       collectorNumber: string;
       lang: string;
       printedName: string | null;
+      flavorName?: string | null;
       rarity: string | null;
     },
   ) => Promise<void>;
@@ -239,11 +240,17 @@ interface ProjectContextValue {
       lang: string;
       printed_name: string | null;
       rarity: string | null;
+      flavor_name?: string | null;
     }[],
   ) => Promise<void>;
   /** Stores rarities (scryfall_id -> rarity) learned for cards that were
    *  saved without one. See DecklistPage's rarity backfill. */
-  backfillRarities: (rarities: Record<string, string>) => Promise<void>;
+  /** Fills in what older rows lack: rarities (rows with none) and flavor
+   *  names, both keyed by scryfall_id. */
+  backfillRarities: (
+    rarities: Record<string, string>,
+    flavorNames?: Record<string, string>,
+  ) => Promise<void>;
   /** Whether the project has a name. Deliberately not "is saved": since
    *  settings began writing through (.scratch/optional-projects/spec.md
    *  §5.2) everything is saved, named or not — what varies is whether you
@@ -705,6 +712,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         collectorNumber: string;
         lang: string;
         printedName: string | null;
+        flavorName?: string | null;
         rarity: string | null;
       };
     }) => {
@@ -723,6 +731,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 collector_number: printing.collectorNumber,
                 lang: printing.lang,
                 printed_name: printing.printedName,
+                flavor_name: printing.flavorName ?? null,
                 rarity: printing.rarity,
                 // Rust clears face art picked for a different printing.
                 face_art: c.scryfall_id === printing.scryfallId ? c.face_art : [],
@@ -837,6 +846,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         lang: string;
         printed_name: string | null;
         rarity: string | null;
+        flavor_name?: string | null;
       }[],
     ) => {
       await projectApi.setCardsResolution(updates);
@@ -856,6 +866,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 collector_number: u.collector_number,
                 lang: u.lang,
                 printed_name: u.printed_name,
+                flavor_name: u.flavor_name ?? null,
                 rarity: u.rarity,
               }
             : c;
@@ -1204,18 +1215,24 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     applyCardResolutions: async (updates) => {
       await applyCardResolutionsMutation.mutateAsync(updates);
     },
-    backfillRarities: async (rarities) => {
+    backfillRarities: async (rarities, flavorNames = {}) => {
       const id = projectIdRef.current;
-      if (id == null || Object.keys(rarities).length === 0) return;
-      await projectApi.setCardRarities(id, rarities);
+      if (id == null) return;
+      if (Object.keys(rarities).length > 0) await projectApi.setCardRarities(id, rarities);
+      if (Object.keys(flavorNames).length > 0) {
+        await projectApi.setCardFlavorNames(id, flavorNames);
+      }
+      if (Object.keys(rarities).length === 0 && Object.keys(flavorNames).length === 0) return;
       // Only rows still holding no rarity: a printing picked while the
       // request was out already carries its own.
       setCards((prev) =>
-        prev.map((c) =>
-          c.rarity == null && c.scryfall_id && rarities[c.scryfall_id]
-            ? { ...c, rarity: rarities[c.scryfall_id] }
-            : c,
-        ),
+        prev.map((c) => {
+          if (!c.scryfall_id) return c;
+          const rarity = c.rarity == null ? rarities[c.scryfall_id] : undefined;
+          const flavor = flavorNames[c.scryfall_id];
+          if (rarity == null && flavor == null) return c;
+          return { ...c, rarity: rarity ?? c.rarity, flavor_name: flavor ?? c.flavor_name };
+        }),
       );
     },
     isNamed: projectName.trim().length > 0,

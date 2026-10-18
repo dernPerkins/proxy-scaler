@@ -73,6 +73,10 @@ class CardFaceImage:
     # printed name. Display-only — identity, dedup, and filenames all stay
     # keyed on the English/oracle card_name.
     printed_name: str | None = None
+    # The name printed on a Universes Beyond card instead of its own
+    # ("Cloud Strife" on Najeela, the Blade-Blossom); None almost always.
+    # Display-only, like printed_name.
+    flavor_name: str | None = None
     # How many faces this printing actually has an image for (usually 2 for
     # DFC/transform, 1 otherwise — but Scryfall occasionally lacks a PNG for
     # one face, and expand_faces() already excludes that face below, so this
@@ -419,6 +423,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
     image_status = card.get("image_status")
     lang = card.get("lang") or "en"
     printed_name = card_printed_name(card)
+    flavor_name = card_flavor_name(card)
 
     faces = card.get("card_faces") or []
     per_face_images = [
@@ -444,6 +449,7 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
                     total_faces=total_faces,
                     lang=lang,
                     printed_name=printed_name,
+                    flavor_name=flavor_name,
                 )
             )
         return results
@@ -468,8 +474,23 @@ def expand_faces(card: dict[str, Any]) -> list[CardFaceImage]:
             total_faces=1,
             lang=lang,
             printed_name=printed_name,
+            flavor_name=flavor_name,
         )
     ]
+
+
+def card_flavor_name(card: dict[str, Any]) -> str | None:
+    """The name printed on a Universes Beyond card in place of its own
+    ("Cloud Strife" on Najeela, the Blade-Blossom), or None. Card-level
+    when Scryfall has it there; a DFC's per-face ones compose as
+    "front // back", a face without one keeping its own name."""
+    flavor = card.get("flavor_name")
+    if flavor:
+        return str(flavor)
+    faces = [f for f in card.get("card_faces") or [] if isinstance(f, dict)]
+    if not any(f.get("flavor_name") for f in faces):
+        return None
+    return " // ".join(str(f.get("flavor_name") or f.get("name") or "") for f in faces)
 
 
 def card_printed_name(card: dict[str, Any]) -> str | None:

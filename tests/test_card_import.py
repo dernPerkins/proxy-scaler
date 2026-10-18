@@ -132,6 +132,24 @@ def test_prune_card_keeps_expand_faces_fields_drops_baggage() -> None:
         assert dropped not in pruned
 
 
+def test_prune_card_keeps_flavor_names() -> None:
+    pruned = card_import.prune_card(_bulk_card(flavor_name="Cloud Strife"))
+    assert pruned["flavor_name"] == "Cloud Strife"
+    dfc = card_import.prune_card(
+        _bulk_card(card_faces=[{"name": "A", "flavor_name": "Alias A"}, {"name": "B"}])
+    )
+    assert dfc["card_faces"][0]["flavor_name"] == "Alias A"
+
+
+def test_card_flavor_name_composes_faces() -> None:
+    from proxy_scaler.scryfall import card_flavor_name
+
+    assert card_flavor_name({"name": "X"}) is None
+    assert card_flavor_name({"flavor_name": "Cloud Strife"}) == "Cloud Strife"
+    faces = {"card_faces": [{"name": "A", "flavor_name": "Alias A"}, {"name": "B"}]}
+    assert card_flavor_name(faces) == "Alias A // B"
+
+
 def test_prune_card_keeps_rarity() -> None:
     assert card_import.prune_card(_bulk_card(rarity="uncommon"))["rarity"] == "uncommon"
 

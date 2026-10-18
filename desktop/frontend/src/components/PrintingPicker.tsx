@@ -39,6 +39,7 @@ import StatusBadge from "./StatusBadge";
 import TutorialButton from "../tutorial/TutorialButton";
 import { useTourWhenPresent } from "../tutorial/tutorialStore";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
+import { alternateName } from "../cardNames";
 import SetIcon from "./SetIcon";
 import SelectMenu from "./SelectMenu";
 import {
@@ -55,6 +56,7 @@ type Pick = {
   collectorNumber: string;
   lang: string;
   printedName: string | null;
+  flavorName?: string | null;
   rarity: string | null;
 };
 
@@ -146,7 +148,15 @@ function sortVariants(variants: CardVariant[], mode: SortMode): CardVariant[] {
 // The card-shaped stand-in for a missing image: shown when the thumbnail
 // fails (offline, nothing cached) and for every tile against a server too
 // old to serve thumbnails. Carries enough to tell printings apart.
-function TilePlaceholder({ v, faceName }: { v: CardVariant; faceName: string }) {
+function TilePlaceholder({
+  v,
+  faceName,
+  altName,
+}: {
+  v: CardVariant;
+  faceName: string;
+  altName: string | null;
+}) {
   return (
     <span className="printing-tile-placeholder">
       <span className="mono">
@@ -154,14 +164,25 @@ function TilePlaceholder({ v, faceName }: { v: CardVariant; faceName: string }) 
         {v.set_code.toUpperCase()} #{v.collector_number}
       </span>
       <span className="printing-tile-placeholder-name">{faceName}</span>
+      {altName && <span className="printing-set-name">{altName}</span>}
       {v.set_name && <span className="printing-set-name">{v.set_name}</span>}
     </span>
   );
 }
 
+// The face's own (English) name: what was imported and what matches.
+// What's printed on this printing, when different, is faceAltName.
 function faceNameOf(v: CardVariant, face: number): string {
-  const displayName = v.printed_name ?? v.name;
-  return (v.face_count ?? 1) > 1 ? (v.face_names?.[face] ?? displayName) : displayName;
+  return (v.face_count ?? 1) > 1 ? (v.face_names?.[face] ?? v.name) : v.name;
+}
+
+function faceAltName(v: CardVariant, face: number): string | null {
+  const double = (v.face_count ?? 1) > 1;
+  return alternateName(
+    double ? faceNameOf(v, face) : v.name,
+    v.printed_name && double ? v.printed_name.split(" // ")[face] : v.printed_name,
+    v.flavor_name && double ? v.flavor_name.split(" // ")[face] : v.flavor_name,
+  );
 }
 
 function flipTitle(v: CardVariant, face: number): string {
@@ -219,7 +240,7 @@ function PrintingTile(props: {
 
   let image;
   if (!showImages || failedFaces.has(face)) {
-    image = <TilePlaceholder v={v} faceName={faceName} />;
+    image = <TilePlaceholder v={v} faceName={faceName} altName={faceAltName(v, face)} />;
   } else if (origin == null || !nearView) {
     // The empty frame: off-screen, or the origin setting hasn't loaded.
     image = null;
@@ -260,7 +281,9 @@ function PrintingTile(props: {
         }}
         aria-pressed={selected}
         aria-current={current ? "true" : undefined}
-        title={`${v.printed_name ?? v.name} — ${v.set_name ?? v.set_code.toUpperCase()}${variantYear(v)}`}
+        title={`${faceName}${faceAltName(v, face) ? ` (${faceAltName(v, face)})` : ""} — ${
+          v.set_name ?? v.set_code.toUpperCase()
+        }${variantYear(v)}`}
       >
         <span className="printing-tile-frame" ref={frameRef}>
           {image}
@@ -398,7 +421,7 @@ function PrintingPreview(props: {
               onError={() => setThumbFailed(thumbUrl)}
             />
           ) : (
-            <TilePlaceholder v={v} faceName={faceName} />
+            <TilePlaceholder v={v} faceName={faceName} altName={faceAltName(v, face)} />
           )}
           {fullUrl && requestedUrl === fullUrl && !fullFailed && (
             <img
@@ -425,6 +448,11 @@ function PrintingPreview(props: {
 
       <div className="printing-preview-scrim" data-tour="picker-preview-details">
         <h3 className="printing-preview-name">{faceName}</h3>
+        {faceAltName(v, face) && (
+          <p className="printing-preview-alt-name" title="As printed on this card">
+            {faceAltName(v, face)}
+          </p>
+        )}
         <p className="printing-preview-meta">
           <SetIcon setCode={v.set_code} rarity={v.rarity} />
           {v.set_name ?? v.set_code.toUpperCase()}
@@ -652,6 +680,7 @@ function PrintingGridModal(props: {
         collectorNumber: v.collector_number,
         lang: v.lang,
         printedName: v.printed_name,
+        flavorName: v.flavor_name ?? null,
         rarity: v.rarity ?? null,
       });
     }

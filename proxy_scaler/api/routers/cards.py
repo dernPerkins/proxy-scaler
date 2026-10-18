@@ -31,6 +31,7 @@ from proxy_scaler.scryfall import (
     ImageOrigin,
     ScryfallError,
     expected_face_count,
+    card_flavor_name,
     card_image_version,
     printable_face_names,
 )
@@ -175,20 +176,24 @@ def _variant_out(row) -> CardVariantOut:
         face_count = int(row["face_count"])
         face_names = list(row["face_names"])
         version = row["image_version"]
+        flavor_name = row["flavor_name"]
     else:
         try:
             card = json.loads(row["card_json"] or "{}")
             face_count = expected_face_count(card)
             face_names = printable_face_names(card)
             version = card_image_version(card)
+            flavor_name = card_flavor_name(card)
         except (IndexError, KeyError, TypeError, ValueError):
             face_count = 1
             face_names = [row["name"]]
             version = None
+            flavor_name = None
     return CardVariantOut(
         scryfall_id=row["id"],
         name=row["name"],
         printed_name=row["printed_name"],
+        flavor_name=flavor_name,
         set_code=row["set_code"],
         set_name=row["set_name"],
         collector_number=row["collector_number"],
@@ -258,7 +263,10 @@ def card_rarities(body: CardRaritiesIn) -> CardRaritiesOut:
     if conn is None:
         return CardRaritiesOut(rarities={})
     try:
-        return CardRaritiesOut(rarities=carddb.rarities_by_id(conn, body.ids))
+        return CardRaritiesOut(
+            rarities=carddb.rarities_by_id(conn, body.ids),
+            flavor_names=carddb.flavor_names_by_id(conn, body.ids),
+        )
     finally:
         conn.close()
 

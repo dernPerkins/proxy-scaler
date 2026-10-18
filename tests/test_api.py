@@ -1685,12 +1685,21 @@ def test_card_rarities_maps_known_ids(client: TestClient) -> None:
     _seed_card_db(rarity="common")
     resp = client.post("/api/cards/rarities", json={"ids": ["bolt-lea", "nope"]})
     assert resp.status_code == 200
-    assert resp.json() == {"rarities": {"bolt-lea": "common"}}
+    assert resp.json() == {"rarities": {"bolt-lea": "common"}, "flavor_names": {}}
 
 
 def test_card_rarities_without_corpus_is_empty(client: TestClient) -> None:
     resp = client.post("/api/cards/rarities", json={"ids": ["bolt-lea"]})
-    assert resp.json() == {"rarities": {}}
+    assert resp.json() == {"rarities": {}, "flavor_names": {}}
+
+
+def test_flavor_names_reach_variants_and_the_backfill(client: TestClient) -> None:
+    _seed_card_db(name="Najeela, the Blade-Blossom", flavor_name="Cloud Strife")
+    body = client.get("/api/cards/variants", params={"scryfall_id": "bolt-lea"}).json()
+    assert body["anchor"]["flavor_name"] == "Cloud Strife"
+    assert body["variants"][0]["flavor_name"] == "Cloud Strife"
+    resp = client.post("/api/cards/rarities", json={"ids": ["bolt-lea"]})
+    assert resp.json()["flavor_names"] == {"bolt-lea": "Cloud Strife"}
 
 
 def test_set_icon_serves_svg_with_locked_down_headers(client: TestClient, monkeypatch) -> None:

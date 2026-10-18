@@ -151,6 +151,9 @@ export interface CardRow {
   // Localized name as printed on a non-English printing; null for English.
   // Display-only — `name` (English/oracle) stays the matching identity.
   printed_name: string | null;
+  // The name a Universes Beyond printing carries instead ("Cloud Strife"
+  // on Najeela, the Blade-Blossom); null almost always. Display-only too.
+  flavor_name: string | null;
   // The pinned printing's Scryfall rarity, which colors its set symbol.
   // Stored with the card so the deck list can color symbols on load; null
   // until known (an older row or server), backfilled by setCardRarities.
@@ -215,6 +218,7 @@ export interface ResolvedImportCard {
   name: string;
   printed_name: string | null;
   rarity: string | null;
+  flavor_name?: string | null;
   set_code: string;
   collector_number: string;
   scryfall_id: string;
@@ -287,6 +291,7 @@ export const projectApi = {
       collectorNumber: string;
       lang: string;
       printedName: string | null;
+      flavorName?: string | null;
       rarity: string | null;
     },
   ) =>
@@ -299,6 +304,7 @@ export const projectApi = {
       lang: printing.lang,
       printedName: printing.printedName,
       rarity: printing.rarity,
+      flavorName: printing.flavorName ?? null,
     }),
   // Choose what prints on one card's Reverse. backImageId is required for
   // "image" (Rust rejects the call otherwise) and ignored for the rest.
@@ -320,12 +326,16 @@ export const projectApi = {
       lang: string;
       printed_name: string | null;
       rarity: string | null;
+      flavor_name?: string | null;
     }[],
   ) => invokeCommand<void>("set_cards_resolution", { updates }),
   // Backfill for cards stored before rarity was: scryfall_id -> rarity,
   // applied to every row of this project pinned to that printing.
   setCardRarities: (projectId: number, rarities: Record<string, string>) =>
     invokeCommand<void>("set_card_rarities", { projectId, rarities }),
+  // The same backfill for flavor names (scryfall_id -> name).
+  setCardFlavorNames: (projectId: number, flavorNames: Record<string, string>) =>
+    invokeCommand<void>("set_card_flavor_names", { projectId, flavorNames }),
 
   getLastProjectId: () => invokeCommand<number | null>("get_last_project_id"),
   setLastProjectId: (projectId: number) =>
