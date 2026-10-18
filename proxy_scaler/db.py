@@ -2074,7 +2074,7 @@ def backfill_source_variants(project_tag: str, db_path: Path | str | None = None
     covers upscales finished after it existed; everything upscaled before
     it (or by an older server) left its original as a bare cache file the
     registry-first matching correctly — but confusingly — reports as
-    missing under "Use 300 DPI originals". Running here, on the same
+    missing under "Use Only 300 DPI Originals". Running here, on the same
     adopt/reconcile call the client fires on every project load, heals
     that history without a Download click. Each row already stores its
     own original_path, so this needs no directory scan, no filename
@@ -2548,7 +2548,7 @@ def upsert_gallery_item_for_task(
     upsert_gallery_item(task.project_tag, result, db_path=db_path)
     # An upscale had to put the ~300 DPI original on disk to run at all, so
     # register that as its own download-variant row while we're here. This
-    # is what lets "Use 300 DPI originals" (and the deck list's Original
+    # is what lets "Use Only 300 DPI Originals" (and the deck list's Original
     # tile) work for a card the user only ever upscaled — before this, the
     # file sat in the cache with no registry row, and registry-first
     # matching correctly reported it missing, which read as a lie to anyone

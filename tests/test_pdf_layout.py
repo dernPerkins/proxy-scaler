@@ -726,10 +726,10 @@ def test_match_quantities_use_originals_reports_face_without_download() -> None:
     assert "Sol Ring" in missing[0]
 
 
-def test_match_quantities_download_only_face_is_missing_for_upscale_run() -> None:
-    """The reverse direction: with use_originals off (the default), a face
-    that only has a download must read as missing — originals never mix
-    into an upscale print run via the "highest available" pick."""
+def test_match_quantities_download_only_face_prints_its_original() -> None:
+    """With use_originals off (the default), a face that only has a
+    download prints from it rather than leaving a hole in the sheet, and
+    the unit is flagged as a fallback for the caller to report."""
     from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
 
     gallery = [
@@ -741,9 +741,63 @@ def test_match_quantities_download_only_face_is_missing_for_upscale_run() -> Non
     entries = [
         DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
     ]
-    units, missing, _missing_at_dpi = match_quantities(entries, gallery)
-    assert units == []
-    assert len(missing) == 1
+    for preferred_dpi in (None, 1200):
+        units, missing, missing_at_dpi = match_quantities(
+            entries, gallery, preferred_dpi=preferred_dpi
+        )
+        assert missing == []
+        assert missing_at_dpi == []
+        [unit] = units
+        assert unit.best.model == ORIGINAL_MODEL
+        assert unit.dpi_fallback is True
+
+
+def test_match_quantities_upscale_beats_original() -> None:
+    """An upscale always wins over the original: at the preferred DPI even
+    when the original is newer, and as "highest available" without one."""
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    import dataclasses
+
+    upscale = dataclasses.replace(
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 300),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    original = dataclasses.replace(
+        _face(
+            "sol-id", None, "Sol Ring", "Sol Ring", "c21", "263",
+            ORIGINAL_DPI, model=ORIGINAL_MODEL,
+        ),
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263")
+    ]
+    for preferred_dpi in (None, 300):
+        [unit], _missing, _at_dpi = match_quantities(
+            entries, [upscale, original], preferred_dpi=preferred_dpi
+        )
+        assert unit.best.model == "ultrasharp_v2"
+        assert unit.dpi_fallback is False
+
+
+def test_match_quantities_use_originals_leaves_customs_alone() -> None:
+    """Use Only 300 DPI Originals narrows Scryfall faces only: a Custom
+    Image's upscale still prints, chosen by the preferred DPI."""
+    from proxy_scaler.dpi import CUSTOM_SOURCE_MODEL
+    import dataclasses
+
+    source = dataclasses.replace(
+        _face("x", None, "Art", "Art", None, None, 400, model=CUSTOM_SOURCE_MODEL),
+        scryfall_id=None,
+        custom_hash="a" * 64,
+    )
+    upscale = dataclasses.replace(source, dpi=1200, model="ultrasharp_v2")
+    entries = [DeckEntry(quantity=1, name="Art", custom_hash="a" * 64)]
+    [unit], missing, _at_dpi = match_quantities(
+        entries, [source, upscale], preferred_dpi=1200, use_originals=True
+    )
+    assert missing == []
+    assert unit.best.dpi == 1200
 
 
 def test_match_quantities_dfc_partial_generation_reported_when_total_faces_known() -> None:

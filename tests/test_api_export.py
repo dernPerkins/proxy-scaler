@@ -399,6 +399,7 @@ def test_preview_reports_counts_and_reverses_needing_back(
         "paired_fronts": 4,
         "missing": [],
         "missing_at_dpi": [],
+        "from_originals": [],
         "reverses_needing_back_image": 4,
         "blank_backs": 0,
     }

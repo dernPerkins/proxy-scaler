@@ -112,7 +112,7 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
     # After adoption, register the cached source (original / custom
     # upload) for any upscaled face whose source file exists with no row —
     # heals history from before completion-time registration existed, so
-    # "Use 300 DPI originals" works for anything ever upscaled. Counted
+    # "Use Only 300 DPI Originals" works for anything ever upscaled. Counted
     # into `adopted` so the client's did-anything-change invalidation
     # refreshes the badges.
     adopted += db.backfill_source_variants(body.project_tag, db_path=db_path)

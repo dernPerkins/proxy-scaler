@@ -32,6 +32,7 @@ import {
   setDownloadCancel,
   setDownloadPhase,
 } from "../download";
+import { OriginalsFallbackNote } from "../components/OriginalsFallbackNote";
 import { zipFilename } from "../zipFilename";
 import type { ExportImageFormat, ExportZipFormat, ReverseFill } from "../api/types";
 import tcgplaytestLogo from "../assets/tcgplaytest.webp";
@@ -272,15 +273,16 @@ export default function ExportPage() {
         {/* Which already-generated variant to export for each card — the
             PDF tab's selectors over the same persisted settings. They
             only select among existing images, never trigger generation;
-            Preferred DPI is a hard filter (see PdfPage / pdf_layout.py::
-            _pick_dpi_variant). */}
+            Preferred DPI is a hard filter among upscales, with the 300 DPI
+            original as the fallback (see PdfPage / pdf_layout.py::
+            _pick_scryfall_variant). */}
         <div className="field-group" data-tour="export-source">
           <label className="field">
             <span>Preferred model</span>
             <ModelSelect
               value={settings.preferred_model ?? ""}
               models={modelsQuery.data}
-              disabled={modelsQuery.isLoading || modelsQuery.isError || useOriginals}
+              disabled={modelsQuery.isLoading || modelsQuery.isError}
               onChange={(value) => setSettings((s) => ({ ...s, preferred_model: value || null }))}
               anyOption="Any (highest DPI available)"
             />
@@ -294,7 +296,6 @@ export default function ExportPage() {
                 ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
               ]}
               value={settings.preferred_dpi == null ? "" : String(settings.preferred_dpi)}
-              disabled={useOriginals}
               onChange={(value) =>
                 setSettings((s) => ({ ...s, preferred_dpi: value ? Number(value) : null }))
               }
@@ -308,7 +309,7 @@ export default function ExportPage() {
             title={
               !originalsSupported
                 ? "The connected generation server is too old for this — update it."
-                : "Export the downloaded ~300 DPI Scryfall originals; the preferred model/DPI don't apply."
+                : "Export Scryfall cards from their downloaded ~300 DPI originals only. Custom and MPC Fill images are unaffected and still follow the preferred model/DPI."
             }
           >
             <input
@@ -319,7 +320,7 @@ export default function ExportPage() {
                 setSettings((s) => ({ ...s, use_originals: e.target.checked }))
               }
             />
-            Use 300 DPI originals
+            Use Only 300 DPI Originals
           </label>
         </div>
 
@@ -594,9 +595,10 @@ export default function ExportPage() {
                     <>
                       <strong>
                         {previewQuery.data.missing.length} card(s) from your decklist have
-                        no generated image yet
+                        no image yet
                       </strong>{" "}
-                      and are left out of these ZIPs — generate them from the Decklist tab.
+                      and are left out of these ZIPs — download or generate them from the
+                      Decklist tab.
                     </>
                   )}
                 </p>
@@ -628,6 +630,7 @@ export default function ExportPage() {
                 </ul>
               </>
             )}
+            <OriginalsFallbackNote names={previewQuery.data.from_originals} />
           </div>
         ) : null}
 

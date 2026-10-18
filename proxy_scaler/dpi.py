@@ -35,9 +35,9 @@ ORIGINAL_MODEL = "original"
 # had, so its registry row carries the real dpi_at_card_size() value. That
 # is also why it is a *separate* sentinel rather than reusing
 # ORIGINAL_MODEL: pdf_layout.match_quantities treats ORIGINAL_MODEL rows as
-# an exclusive world (use_originals on/off), and filing customs there would
-# force "Use 300 DPI originals" on to print one — blanking every upscaled
-# Scryfall card on the same sheet.
+# Scryfall scans — the last resort behind a face's upscales, and all that
+# "Use Only 300 DPI Originals" prints — and customs follow their own rules
+# whatever that option says.
 #
 # A Custom Image is upscaled only when the project's custom_upscale
 # setting asks for it (see custom_upscale_targets below); the source row

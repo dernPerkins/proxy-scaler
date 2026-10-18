@@ -93,6 +93,7 @@ from proxy_scaler.pdf_layout import (
     fit_bled_image,
     flatten_corner_alpha,
     match_quantities,
+    printing_from_originals,
     render_back_image,
     resolve_reverse,
     reverse_is_blank,
@@ -135,10 +136,10 @@ def _prepare_slots(
     units, missing, missing_at_dpi = match_quantities(
         entries,
         items,
-        # Same forcing as pdf.py::_prepare — with use_originals there's
-        # exactly one variant per face, so the preferred pair is moot.
-        preferred_dpi=None if body.use_originals else body.preferred_dpi,
-        preferred_model=None if body.use_originals else body.preferred_model,
+        # As in pdf.py::_prepare: use_originals narrows Scryfall faces
+        # only, and the preferred pair still picks a custom's variant.
+        preferred_dpi=body.preferred_dpi,
+        preferred_model=body.preferred_model,
         use_originals=body.use_originals,
     )
 
@@ -173,9 +174,8 @@ def _resolve_backs(body: ExportZipIn) -> tuple[dict[str, BackSource], str | None
             back_image_bleed_mm=body.back_image_bleed_mm,
         ),
         # Same preferences as the cards (see pdf.py::_prepare).
-        preferred_dpi=None if body.use_originals else body.preferred_dpi,
-        preferred_model=None if body.use_originals else body.preferred_model,
-        use_originals=body.use_originals,
+        preferred_dpi=body.preferred_dpi,
+        preferred_model=body.preferred_model,
         db_path=get_db_path(),
     )
     if default_back_hash is not None and default_back_hash not in back_images:
@@ -487,13 +487,16 @@ def _write_zip(
 
 @router.post("/zip/preview", response_model=ExportZipPreviewOut)
 def export_zip_preview(body: ExportZipIn) -> ExportZipPreviewOut:
-    default_slots, paired_slots, missing, missing_at_dpi, _unpaired = _prepare_slots(body)
+    default_slots, paired_slots, missing, missing_at_dpi, unpaired = _prepare_slots(body)
     reverse_fill = ReverseFill(body.reverse_fill.value)
     return ExportZipPreviewOut(
         fronts=len(default_slots),
         paired_fronts=len(paired_slots),
         missing=missing,
         missing_at_dpi=missing_at_dpi,
+        from_originals=printing_from_originals(
+            (s.front for s in unpaired), use_originals=body.use_originals
+        ),
         # Counted the way pdf.py does: only a Reverse that would actually
         # take the Selected Back. A card's own image needs none, and under
         # reverse_fill=blank an inheriting card is meant to be white.

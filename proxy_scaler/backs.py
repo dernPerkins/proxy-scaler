@@ -162,7 +162,6 @@ def resolve_print_source(
     root: Path | str = BACKS_DIR_NAME,
     preferred_dpi: int | None = None,
     preferred_model: str | None = None,
-    use_originals: bool = False,
     db_path: Path | str | None = None,
 ) -> Path | None:
     """The image build_pdf should print on a Reverse, or None if this
@@ -174,8 +173,8 @@ def resolve_print_source(
     exactly as a Custom Image's variants are (pdf_layout._pick_dpi_variant
     with the never-blank rule): the preferred DPI wins when it exists,
     else the best available, with the preferred model breaking ties.
-    `use_originals` prints the synced original, the way it narrows a card
-    to its Scryfall scan. build_pdf cover-fits whatever comes back to the
+    "Use Only 300 DPI Originals" doesn't apply: it narrows Scryfall cards
+    only. build_pdf cover-fits whatever comes back to the
     export DPI (pdf_layout.render_back_image), so an upscale and the
     original are interchangeable downstream.
     """
@@ -185,8 +184,6 @@ def resolve_print_source(
     original = original_path(checked, root=root)
     if not original.is_file():
         return None
-    if use_originals:
-        return original
 
     from proxy_scaler import db
     from proxy_scaler.dpi import BACK_SOURCE_MODEL, dpi_at_card_size

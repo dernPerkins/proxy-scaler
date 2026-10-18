@@ -560,6 +560,9 @@ export interface PdfPreview {
   // excluded from the sheet rather than printed at another resolution, so
   // this must be shown — otherwise they silently disappear.
   missing_at_dpi: string[];
+  /** Scryfall cards printing from their ~300 DPI original because they
+   *  have no upscale (or none at Preferred DPI). Absent on older servers. */
+  from_originals?: string[];
 
   /** Reverses that would take the Back Image rather than a Back Face.
    *  Zero with back printing on means an all-double-faced sheet, which
@@ -692,9 +695,10 @@ export interface ExportZipPreview {
   /** TCGPlaytest FRONT/ (== BACK/) file count: one pair per physical
    *  copy, quantities expanded. */
   paired_fronts: number;
-  // Same meanings as PdfPreview.missing / missing_at_dpi.
+  // Same meanings as PdfPreview.missing / missing_at_dpi / from_originals.
   missing: string[];
   missing_at_dpi: string[];
+  from_originals?: string[];
   /** TCGPlaytest backs that would be the Selected Back rather than the
    *  card's own Back Face. */
   reverses_needing_back_image: number;

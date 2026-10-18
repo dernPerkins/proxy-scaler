@@ -54,6 +54,7 @@ from proxy_scaler.pdf_layout import (
     build_print_slots,
     match_quantities,
     paginate,
+    printing_from_originals,
     registration_conflict,
     registration_keep_out,
     registration_mark_rects,
@@ -118,7 +119,6 @@ def resolve_back_manifest(
     *,
     preferred_dpi: int | None,
     preferred_model: str | None,
-    use_originals: bool,
     db_path,
 ) -> dict[str, BackSource]:
     """Every manifest hash this server holds, as the file to print plus
@@ -135,7 +135,6 @@ def resolve_back_manifest(
                 back.hash,
                 preferred_dpi=preferred_dpi,
                 preferred_model=preferred_model,
-                use_originals=use_originals,
                 db_path=db_path,
             )
         except backs.BackImageError as exc:
@@ -161,6 +160,7 @@ class PreparedRender:
     pages: list[list[PrintSlot]]
     missing: list[str]
     missing_at_dpi: list[str]
+    from_originals: list[str]
     # Every Back Image the request named that this server holds, by
     # content hash, and the hash a card with no choice of its own
     # inherits (the Selected Back). See pdf_layout.resolve_reverse.
@@ -272,11 +272,10 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     units, missing, missing_at_dpi = match_quantities(
         entries,
         items,
-        # With use_originals there's exactly one variant per face, so the
-        # preferred pair is meaningless — forced to None rather than
-        # trusting the client to blank them.
-        preferred_dpi=None if body.use_originals else body.preferred_dpi,
-        preferred_model=None if body.use_originals else body.preferred_model,
+        # use_originals narrows Scryfall faces only; the preferred pair
+        # still picks among a custom's variants.
+        preferred_dpi=body.preferred_dpi,
+        preferred_model=body.preferred_model,
         use_originals=body.use_originals,
     )
 
@@ -307,9 +306,8 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
                 back_image_includes_bleed=body.back_image_includes_bleed,
                 back_image_bleed_mm=body.back_image_bleed_mm,
             ),
-            preferred_dpi=None if body.use_originals else body.preferred_dpi,
-            preferred_model=None if body.use_originals else body.preferred_model,
-            use_originals=body.use_originals,
+            preferred_dpi=body.preferred_dpi,
+            preferred_model=body.preferred_model,
             db_path=db_path,
         )
         reverse_fill = ReverseFill(body.reverse_fill.value)
@@ -334,6 +332,9 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         pages=pages,
         missing=missing,
         missing_at_dpi=missing_at_dpi,
+        from_originals=printing_from_originals(
+            (u.best for u in units), use_originals=body.use_originals
+        ),
         back_images=back_images,
         default_back_hash=default_back_hash,
         reverses_needing_back_image=reverses_needing_back_image,
@@ -399,6 +400,7 @@ def preview(body: PdfLayoutIn) -> PdfPreviewOut:
         missing=prepared.missing,
         page_count=len(prepared.pages),
         missing_at_dpi=prepared.missing_at_dpi,
+        from_originals=prepared.from_originals,
         reverses_needing_back_image=prepared.reverses_needing_back_image,
         missing_back_image=prepared.missing_back_image,
         total_page_count=len(prepared.pages) * (2 if body.back_printing else 1),

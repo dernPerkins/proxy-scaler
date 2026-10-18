@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -722,11 +722,10 @@ class PrintUnit:
     face_key: str
     quantity: int
     best: FaceResult  # chosen image variant for this face (see _pick_dpi_variant)
-    # True only for a Custom Image printed at a resolution other than the
-    # requested one. A Scryfall face with no image at the requested DPI is
-    # excluded and reported rather than silently printed at another
-    # resolution, so this is always False for those — see _pick_dpi_variant
-    # for why customs are the deliberate exception.
+    # True for a Custom Image printed at a resolution other than the
+    # requested one, and for a Scryfall face printing from its ~300 DPI
+    # original because no upscale qualified (see _pick_scryfall_variant).
+    # A Scryfall face with neither is excluded and reported instead.
     dpi_fallback: bool = False
     # The decklist entries' choice of Reverse for these copies (see
     # DeckEntry.back_mode). One printing can yield several units that
@@ -869,6 +868,48 @@ def _pick_dpi_variant(
     return max(face_items, key=lambda x: (x.dpi, _recency_key(x))), False
 
 
+def _pick_scryfall_variant(
+    face_items: list[FaceResult],
+    preferred_dpi: int | None,
+    preferred_model: str | None = None,
+) -> tuple[FaceResult | None, bool]:
+    """_pick_dpi_variant over a Scryfall face's upscales, falling back on
+    its downloaded original when no upscale qualifies — a card the user
+    downloaded but never generated (or not at the preferred DPI) prints at
+    ~300 DPI rather than leaving a hole in the sheet. The original never
+    competes with an upscale: with no preferred DPI, "highest available"
+    would pick an upscale anyway, and with one it must not beat an upscale
+    at that DPI on recency. A fallback is flagged like a custom's
+    (PrintUnit.dpi_fallback) for the caller to report."""
+    upscales = [item for item in face_items if item.model != ORIGINAL_MODEL]
+    if upscales:
+        best, unavailable = _pick_dpi_variant(upscales, preferred_dpi, preferred_model)
+        if best is not None:
+            return best, unavailable
+    originals = [item for item in face_items if item.model == ORIGINAL_MODEL]
+    if originals:
+        return max(originals, key=_recency_key), True
+    return None, True
+
+
+def printing_from_originals(faces: Iterable[FaceResult], *, use_originals: bool) -> list[str]:
+    """The Scryfall faces among `faces` that print from their ~300 DPI
+    original because no upscale qualified (see _pick_scryfall_variant),
+    described once each in first-seen order — for the caller to report,
+    since they print at a lower resolution than the rest of the sheet.
+    Empty under use_originals, where every Scryfall face prints from its
+    original by request."""
+    if use_originals:
+        return []
+    return list(
+        dict.fromkeys(
+            _describe_face(face)
+            for face in faces
+            if not face.is_custom and face.model == ORIGINAL_MODEL
+        )
+    )
+
+
 def match_quantities(
     entries: list[DeckEntry],
     gallery: list[FaceResult],
@@ -906,12 +947,13 @@ def match_quantities(
     predating that migration) skips this check entirely for that entry,
     matching the old lenient any-match-counts behavior.
 
-    `preferred_dpi`, when given, is a hard filter: only images at that DPI
-    are printable, and any face without one is excluded from the run and
-    returned in the third element for the caller to surface as an error —
-    never substituted with a different resolution. `preferred_model`, when
-    given, wins among the eligible images; otherwise the most recently
-    produced one does. See _pick_dpi_variant.
+    `preferred_dpi`, when given, is a hard filter among upscales: a face
+    with no upscale at that DPI is never substituted with one at another
+    resolution. It prints from its original if one is downloaded, else it
+    is excluded from the run and returned in the third element for the
+    caller to surface as an error. `preferred_model`, when given, wins
+    among the eligible images; otherwise the most recently produced one
+    does. See _pick_dpi_variant.
 
     Units come back ordered by the first entry each face-group matched —
     the caller's `entries` order is authoritative for print/export order
@@ -921,13 +963,14 @@ def match_quantities(
     gallery order, with lower face_index first, so a front never trails
     its own back.
 
-    `use_originals` flips which world of variants is visible at all: True
-    makes only the download-only rows (model == ORIGINAL_MODEL, the cached
-    ~300 DPI Scryfall originals) eligible — callers pass preferred_dpi/
-    preferred_model as None then, since there's exactly one original per
-    face. False (the default) hides those rows, so a face with only a
-    download reads as `missing` for an upscale print run, and originals
-    can never silently mix into one via the "highest available" pick.
+    A Scryfall face's download-only original (model == ORIGINAL_MODEL, the
+    cached ~300 DPI scan) is its last resort: the face prints from its
+    upscales by the rules above, and only when none qualifies does it
+    print from the original instead of being left out (see
+    _pick_scryfall_variant). `use_originals` ("Use Only 300 DPI
+    Originals") narrows Scryfall faces to that original alone, preferred
+    model/DPI aside, so a face that was never downloaded reads as
+    `missing`. Custom Images (MPC Fill art included) are unaffected by it.
 
     Entries matching one face-group merge into one unit as long as they
     agree on what prints on their Reverse (DeckEntry.back_mode/back_hash):
@@ -944,15 +987,11 @@ def match_quantities(
             # backs.resolve_print_source, not through a decklist entry.
             return False
         if item.is_custom:
-            # Custom Images live outside the originals/upscales split.
-            # Their uploaded source (CUSTOM_SOURCE_MODEL) is always
-            # printable, because unlike a Scryfall card there is no
-            # download world to fall back to — it is the only image that
-            # exists until the user upscales it. Their upscales then behave
-            # like any other upscale and drop out when the user asks for
-            # sources only.
-            return item.model == CUSTOM_SOURCE_MODEL or not use_originals
-        return (item.model == ORIGINAL_MODEL) == use_originals
+            # Custom Images live outside the originals/upscales split:
+            # their source and upscales are picked by the preferences
+            # whatever use_originals says.
+            return True
+        return item.model == ORIGINAL_MODEL or not use_originals
 
     gallery = [item for item in gallery if _eligible(item)]
     units: list[PrintUnit] = []
@@ -1073,11 +1112,19 @@ def match_quantities(
             elif rep.total_faces is not None:
                 expected_faces_by_entry[i] = rep.total_faces
 
-        best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
+        if rep.is_custom:
+            best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
+        elif use_originals:
+            # Only originals are eligible here, one per face in practice.
+            best, unavailable = max(face_items, key=_recency_key), False
+        else:
+            best, unavailable = _pick_scryfall_variant(
+                face_items, preferred_dpi, preferred_model
+            )
         if best is None:
-            # No image at the requested DPI. Reported to the caller and left
-            # out of the print run entirely — never substituted with another
-            # resolution (see _pick_dpi_variant).
+            # No upscale at the requested DPI and no original to fall back
+            # on. Reported to the caller and left out of the print run
+            # (see _pick_dpi_variant).
             missing_at_dpi.append(_describe_face(rep))
             continue
 

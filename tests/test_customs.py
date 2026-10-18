@@ -452,14 +452,16 @@ def test_preferred_dpi_still_wins_when_the_custom_was_upscaled() -> None:
     assert missing_at_dpi == []
 
 
-def test_use_originals_narrows_customs_to_their_uploaded_source() -> None:
+def test_use_originals_leaves_customs_to_the_usual_pick() -> None:
+    """Use Only 300 DPI Originals is about Scryfall scans: a custom still
+    prints its best variant."""
     gallery = [
         _custom_result(HASH_A, dpi=431, model=CUSTOM_SOURCE_MODEL),
         _custom_result(HASH_A, dpi=1200, model="ultrasharp_v2"),
     ]
     units, _, _ = match_quantities([_custom_entry(HASH_A)], gallery, use_originals=True)
     assert len(units) == 1
-    assert units[0].best.model == CUSTOM_SOURCE_MODEL
+    assert units[0].best.model == "ultrasharp_v2"
 
 
 def test_scryfall_preferred_dpi_filter_is_unchanged() -> None:

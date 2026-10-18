@@ -32,6 +32,7 @@ import {
   setDownloadCancel,
   setDownloadPhase,
 } from "../download";
+import { OriginalsFallbackNote } from "../components/OriginalsFallbackNote";
 import { cutFileFilename, pdfFilename } from "../pdfFilename";
 import type {
   Cutter,
@@ -530,18 +531,20 @@ export default function PdfPage() {
 
             {/* Which already-generated variant to print for each card. These
                 only select among existing images — they never trigger
-                generation. Preferred DPI is a hard filter: a card with no
-                image at it is left out and listed below, not substituted at
-                another resolution. Within that DPI the preferred model wins,
-                else the most recently generated image (see
-                pdf_layout.py::_pick_dpi_variant). */}
+                generation. Preferred DPI is a hard filter among upscales: a
+                card with none at it prints from its 300 DPI original if one
+                is downloaded (noted below), else it is left out and listed —
+                never substituted with an upscale at another resolution.
+                Within that DPI the preferred model wins, else the most
+                recently generated image (see pdf_layout.py::
+                _pick_scryfall_variant). */}
             <div className="field-group" data-tour="pdf-source">
               <label className="field">
                 <span>Preferred model</span>
                 <ModelSelect
                   value={layout.preferred_model ?? ""}
                   models={modelsQuery.data}
-                  disabled={modelsQuery.isLoading || modelsQuery.isError || useOriginals}
+                  disabled={modelsQuery.isLoading || modelsQuery.isError}
                   onChange={(value) => updateLayout("preferred_model", value || null)}
                   anyOption="Any (highest DPI available)"
                 />
@@ -555,21 +558,19 @@ export default function PdfPage() {
                     ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
                   ]}
                   value={layout.preferred_dpi == null ? "" : String(layout.preferred_dpi)}
-                  disabled={useOriginals}
                   onChange={(value) => updateLayout("preferred_dpi", value ? Number(value) : null)}
                 />
               </label>
 
-              {/* An override, not a third "preferred" value: originals are
-                  a different world of images (the ~300 DPI Scryfall
-                  downloads), so while it's on the two selectors above are
-                  inert and disabled rather than silently ignored. */}
+              {/* Narrows Scryfall cards to their ~300 DPI downloads. Custom
+                  Images (MPC Fill art included) and backs ignore it, so the
+                  selectors above stay live for them. */}
               <label
                 className="check"
                 title={
                   !originalsSupported
                     ? "The connected generation server is too old for this — update it."
-                    : "Print from the downloaded ~300 DPI Scryfall originals; the preferred model/DPI don't apply."
+                    : "Print Scryfall cards from their downloaded ~300 DPI originals only. Custom and MPC Fill images are unaffected and still follow the preferred model/DPI."
                 }
               >
                 <input
@@ -578,7 +579,7 @@ export default function PdfPage() {
                   checked={useOriginals}
                   onChange={(e) => updateLayout("use_originals", e.target.checked)}
                 />
-                Use 300 DPI originals
+                Use Only 300 DPI Originals
               </label>
             </div>
 
@@ -1219,9 +1220,10 @@ export default function PdfPage() {
                     <>
                       <strong>
                         {previewQuery.data.missing.length} card(s) from your decklist have
-                        no generated image yet
+                        no image yet
                       </strong>{" "}
-                      and are left out of this PDF — generate them from the Decklist tab.
+                      and are left out of this PDF — download or generate them from the
+                      Decklist tab.
                     </>
                   )}
                 </p>
@@ -1265,6 +1267,7 @@ export default function PdfPage() {
                 </ul>
               </>
             )}
+            <OriginalsFallbackNote names={previewQuery.data.from_originals} />
           </div>
         ) : null}
 

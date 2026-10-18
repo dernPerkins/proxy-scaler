@@ -387,7 +387,6 @@ def test_resolve_print_source_ranks_variants_like_a_custom(
     client: TestClient, tmp_path: Path, db_path: Path, monkeypatch
 ) -> None:
     content_hash, results = _print(client, tmp_path, db_path, monkeypatch)
-    original = backs.original_path(content_hash)
     by_dpi = {r.dpi: r.out_path for r in results.values()}
 
     # Preferred DPI wins when it exists; otherwise the best available
@@ -396,8 +395,6 @@ def test_resolve_print_source_ranks_variants_like_a_custom(
     assert backs.resolve_print_source(content_hash, preferred_dpi=600, db_path=db_path) == by_dpi[600]
     assert backs.resolve_print_source(content_hash, preferred_dpi=800, db_path=db_path) == by_dpi[1200]
     assert backs.resolve_print_source(content_hash, db_path=db_path) == by_dpi[1200]
-    # "Use originals" prints the synced upload; so does a back with no rows.
-    assert backs.resolve_print_source(content_hash, use_originals=True, db_path=db_path) == original
     # A variant whose file vanished is skipped, not printed.
     by_dpi[1200].unlink()
     assert backs.resolve_print_source(content_hash, preferred_dpi=1200, db_path=db_path) == by_dpi[600]
@@ -417,8 +414,9 @@ def test_zip_export_ships_the_preferred_back_variant(
     assert selected(body) == results[("ultrasharp_v2", 1200)].out_path
     body = ExportZipIn(project_tag="t", entries=[], back_image_hash=content_hash, preferred_dpi=600)
     assert selected(body) == results[("ultrasharp_v2", 600)].out_path
+    # Use Only 300 DPI Originals is for Scryfall cards; a back keeps its upscale.
     body = ExportZipIn(project_tag="t", entries=[], back_image_hash=content_hash, use_originals=True)
-    assert selected(body) == backs.original_path(content_hash)
+    assert selected(body) == results[("ultrasharp_v2", 1200)].out_path
 
 
 def test_deleting_the_back_removes_its_derivatives(
