@@ -1,16 +1,14 @@
 // The launch-time MPC Fill catalog offer, and the single watcher of
-// catalog update jobs (mpcCatalog.ts holds the job id; MpcCatalogPanel
-// starts jobs too and reads the same job query).
+// catalog imports (mpcCatalog.ts holds the job id; MpcCatalogPanel starts
+// them too). Whichever started it, a running import holds the app with a
+// modal until it finishes or is cancelled, like CardDbImportModal.
 //
 // Last link in the boot-dialog chain, after CardDbPrompt (see update.ts):
 // renders nothing until that has settled with no dialog up. Then, at most
 // once a day per server, it asks the server whether a newer catalog is
 // published; when one is (and the user hasn't skipped that version), it
-// asks Download or Skip. Download keeps the dialog up with progress until
-// the update lands or the user sends it to the background — the update
-// never blocks the app, since searches read the old catalog until the
-// new one commits. Skip remembers the version, so only a newer one asks
-// again. The sidebar panel's Update button is always there regardless.
+// asks Download or Skip. Skip remembers the version, so only a newer one
+// asks again. The sidebar panel's Update button is always there regardless.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
@@ -117,10 +115,8 @@ export default function MpcCatalogPrompt() {
   const chainClear = cardDbSettled && !cardDbOpen && !cardDbImporting;
   const key = serverKey(connection.mode, connection.host, connection.port);
 
-  // "answered": Skip / background / closed this launch. "watching": the
-  // user chose Download here, so the dialog shows the job's progress.
+  // The offer was answered (Download or Skip) this launch.
   const [answered, setAnswered] = useState(false);
-  const [watching, setWatching] = useState(false);
   const [offer, setOffer] = useState<MpcCatalogCheck | null>(null);
   const [nothingToOffer, setNothingToOffer] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -172,8 +168,9 @@ export default function MpcCatalogPrompt() {
   const startMutation = useMutation({
     mutationFn: () => generationApi.startMpcCatalogImport(),
     onSuccess: ({ job_id }) => {
+      // The import modal below takes over from the offer.
       setError(null);
-      setWatching(true);
+      setAnswered(true);
       setMpcCatalogJobId(job_id);
     },
     onError: (err: Error) => setError(err.message),
@@ -185,15 +182,9 @@ export default function MpcCatalogPrompt() {
     );
   };
 
-  // Watching ends by itself once the job is done (no success message).
-  useEffect(() => {
-    if (watching && jobId == null && !startMutation.isPending) {
-      setWatching(false);
-      setAnswered(true);
-    }
-  }, [watching, jobId, startMutation.isPending]);
-
-  const open = !answered && (offer != null || watching);
+  const offerOpen = !answered && offer != null;
+  const importOpen = jobId != null;
+  const open = offerOpen || importOpen;
   const settled =
     !isTauri() ||
     !supported ||
@@ -211,7 +202,7 @@ export default function MpcCatalogPrompt() {
 
   if (!open) return null;
 
-  if (watching) {
+  if (importOpen) {
     const failed = job?.status === "failed";
     if (failed) {
       // Error view, as CardDbImportModal's: the single button is the choice.
@@ -228,11 +219,7 @@ export default function MpcCatalogPrompt() {
               <button
                 className="btn-primary"
                 autoFocus
-                onClick={() => {
-                  setMpcCatalogJobId(null);
-                  setWatching(false);
-                  setAnswered(true);
-                }}
+                onClick={() => setMpcCatalogJobId(null)}
               >
                 Close
               </button>
@@ -249,19 +236,9 @@ export default function MpcCatalogPrompt() {
           </div>
           <p style={{ marginBottom: 8 }}>{catalogPhaseLine(job)}</p>
           <p className="hint" style={{ marginBottom: 14 }}>
-            Art search keeps using the current catalog until this finishes, so you can
-            carry on while it runs.
+            The app is paused while the MPC Fill catalog imports.
           </p>
           <div className="modal-actions">
-            <button
-              className="btn-sm"
-              onClick={() => {
-                setWatching(false);
-                setAnswered(true);
-              }}
-            >
-              Continue in Background
-            </button>
             <button
               className="btn-danger"
               onClick={() => {

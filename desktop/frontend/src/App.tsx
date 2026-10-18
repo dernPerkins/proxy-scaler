@@ -187,9 +187,9 @@ export default function App() {
             half-imported corpus would answer printing lookups
             incompletely. Renders nothing otherwise. */}
         <CardDbImportModal />
-        {/* The MPC Fill art catalog offer (after the card-database one)
-            and the watcher of catalog updates, which never block the app.
-            Renders nothing unless a newer catalog is on offer. */}
+        {/* The MPC Fill art catalog offer (after the card-database one),
+            and the modal that holds the app while a catalog import runs.
+            Renders nothing otherwise. */}
         <MpcCatalogPrompt />
         {settingsOpen && <AppSettingsModal onClose={closeSettings} />}
         <ProjectBar />

@@ -13,6 +13,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { projectApi } from "../api/project";
 import { getCardDbImportJobId, subscribeCardDbImport } from "../cardDbImport";
 import { getServerReadiness, subscribeServerReadiness } from "../config";
+import { useMpcCatalogJobId } from "../mpcCatalog";
 import { isTauri } from "../tauri";
 import {
   getBootUpdateCheckSettled,
@@ -212,6 +213,7 @@ function useAppIdle(): boolean {
   const mpcCatalogOpen = useUpdateFlag(getMpcCatalogPromptOpen);
   const readiness = useSyncExternalStore(subscribeServerReadiness, getServerReadiness);
   const importJob = useSyncExternalStore(subscribeCardDbImport, getCardDbImportJobId);
+  const catalogImportJob = useMpcCatalogJobId();
   return (
     gateIdle &&
     resumeSettled &&
@@ -221,7 +223,8 @@ function useAppIdle(): boolean {
     mpcCatalogSettled &&
     !mpcCatalogOpen &&
     readiness.status === "ready" &&
-    importJob == null
+    importJob == null &&
+    catalogImportJob == null
   );
 }
 

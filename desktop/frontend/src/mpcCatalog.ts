@@ -3,9 +3,9 @@
 // in the Decklist sidebar): the update job the app is watching, the
 // prompt's per-server memory, and what to refresh once an update lands.
 //
-// The catalog lives on the generation server (mpc_catalog.py); an update
-// never blocks the app — searches read the old catalog until the new one
-// commits — so unlike the card database there is no blocking modal.
+// The catalog lives on the generation server (mpc_catalog.py). Like the
+// card database, an import holds the app with a modal until it finishes
+// (MpcCatalogPrompt shows it, whoever started the import).
 import { useSyncExternalStore } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { projectApi } from "./api/project";

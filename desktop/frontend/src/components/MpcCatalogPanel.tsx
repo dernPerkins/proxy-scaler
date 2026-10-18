@@ -1,9 +1,8 @@
 // Sidebar panel for the generation server's MPC Fill art catalog
 // (mpc_catalog.py): what's downloaded, an Update button that checks now
 // (bypassing the launch prompt's once-a-day pace and the server's manifest
-// cache), and Delete. Per-server, like CardDbPanel beside it. The update
-// runs in the background — MpcCatalogPrompt watches the job and refreshes
-// open searches when it lands; this panel only shows its progress.
+// cache), and Delete. Per-server, like CardDbPanel beside it. A started
+// import is shown, and the app held, by MpcCatalogPrompt's modal.
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";

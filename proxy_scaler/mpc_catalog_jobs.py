@@ -2,9 +2,8 @@
 
 The same shape as card_jobs.py (a thread does the work, the client polls
 phase + progress, finished jobs linger for _TTL_SECONDS), kept separate so
-a catalog update never reads as a card-database import: the client
-blocks the whole app during the latter, but searches keep working during
-the former (they read the old catalog until the new one commits).
+a catalog import never reads as a card-database import: /api/cards/status
+must not report one as the other.
 """
 
 from __future__ import annotations
