@@ -25,7 +25,7 @@ import { projectApi } from "../api/project";
 import type { MpcCard, MpcCardType } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import { LoadingGrid, LoadingStage } from "./PickerLoading";
-import { fillFrameWith, looksBled, trimGeometry } from "../cardTrim";
+import { fillFrameWith, trimGeometry } from "../cardTrim";
 import { MPC_IMPORT_BLEED_MM } from "../mpcFill";
 import SelectMenu from "./SelectMenu";
 import {
@@ -106,11 +106,12 @@ function sizeLabel(bytes: number): string {
 // assumed until a preview has loaded and said otherwise.
 const MPC_TEMPLATE_SIZE = { w: 816, h: 1110 };
 
-/** Where to draw a tile's image so only the card as cut shows (null: the
- *  art has no bleed to crop). */
+/** Where to draw a tile's image so only the card as cut shows. Every MPC
+ *  Fill file is trimmed, even one shaped like a bare card: MakePlayingCards
+ *  stretches any upload onto its bled template and trims it, and uploaders
+ *  design for that (see the server's /api/mpcfill/import). */
 function mpcTrimStyle(natural: { w: number; h: number } | null) {
   const shape = natural ?? MPC_TEMPLATE_SIZE;
-  if (!looksBled(shape.w, shape.h)) return null;
   return fillFrameWith(trimGeometry(shape, MPC_IMPORT_BLEED_MM).trim);
 }
 

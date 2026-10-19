@@ -299,15 +299,17 @@ def test_import_custom_returns_the_original_and_stores_it(client, downloads) -> 
     assert status["bleed_mm"] == pytest.approx(3.175)
 
 
-def test_import_of_a_bleed_free_file_declares_no_bleed(client, monkeypatch) -> None:
+def test_import_of_a_card_shaped_file_still_declares_bleed(client, monkeypatch) -> None:
+    """A file shaped like a bare card is trimmed like any other, as MPC
+    itself would print it."""
     flat = _png(size=(745, 1040))
     monkeypatch.setattr(drive_images, "download_original", lambda _id: (flat, "png"))
     resp = client.post(
         "/api/mpcfill/import", json={"drive_id": DRIVE_ID, "kind": "custom", "bleed_mm": 3.175}
     )
-    assert resp.headers["x-declared-bleed-mm"] == "0"
+    assert resp.headers["x-declared-bleed-mm"] == "3.175"
     content_hash = hashlib.sha256(resp.content).hexdigest()
-    assert client.get(f"/api/customs/{content_hash}").json()["bleed_mm"] == 0.0
+    assert client.get(f"/api/customs/{content_hash}").json()["bleed_mm"] == pytest.approx(3.175)
 
 
 def test_import_back_stores_a_back(client, downloads) -> None:

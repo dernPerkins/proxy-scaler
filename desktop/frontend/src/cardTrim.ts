@@ -77,13 +77,3 @@ export function fillFrameWith(trim: PctRect) {
   };
 }
 
-// Mirrors proxy_scaler/api/routers/mpcfill.py::declared_bleed_mm: a file
-// this close to the bare card's 63:88 carries no bleed.
-const BLEED_FREE_TOLERANCE = 0.006;
-
-/** Does an image of this size look like it carries bleed? */
-export function looksBled(w: number, h: number): boolean {
-  if (w <= 0 || h <= 0) return true;
-  const aspect = Math.min(w, h) / Math.max(w, h);
-  return Math.abs(aspect - CARD_W_MM / CARD_H_MM) > BLEED_FREE_TOLERANCE;
-}

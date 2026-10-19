@@ -64,27 +64,6 @@ MPC_LANGUAGES = frozenset(_LANGUAGES.values())
 
 _THUMB_CACHE = "public, max-age=604800"
 
-# A file this close to the bare card's 63:88 carries no bleed, whatever
-# the import asked for: almost all MPC Fill art is on MakePlayingCards'
-# bled template (about 0.734), but the odd bleed-free scan (0.716) would
-# otherwise be cropped as if it had some. The client applies the same
-# rule (desktop/frontend/src/mpcFill.ts::declaredBleedMm), so both agree
-# on the declaration without a round trip.
-BLEED_FREE_ASPECT = 63 / 88
-BLEED_FREE_TOLERANCE = 0.006
-
-
-def declared_bleed_mm(width: int, height: int, bleed_mm: float) -> float:
-    """The bleed an imported file is declared with: `bleed_mm`, unless its
-    aspect says it has none."""
-    if width <= 0 or height <= 0:
-        return bleed_mm
-    aspect = min(width, height) / max(width, height)
-    if abs(aspect - BLEED_FREE_ASPECT) <= BLEED_FREE_TOLERANCE:
-        return 0.0
-    return bleed_mm
-
-
 def mpc_language(code: str | None) -> str | None:
     """An MPC Fill language code for a Scryfall or MPC Fill code, or None
     (search every language)."""
@@ -301,7 +280,13 @@ def import_art(body: MpcImportIn) -> Response:
             width, height = img.size
     except (OSError, ValueError):
         width = height = 0  # the store says why below
-    declared = declared_bleed_mm(width, height, body.bleed_mm)
+    # Every MPC Fill file is declared with the requested bleed, whatever
+    # its shape: MakePlayingCards stretches any upload onto its bled
+    # template and trims 1/8" off each side, and uploaders design for that
+    # (a file shaped like a bare card often draws its border extra wide so
+    # the trim leaves a normal one). pdf_layout.fit_bled_image crops each
+    # axis by its own scale, so the result matches an MPC print.
+    declared = body.bleed_mm
     try:
         if body.kind == "custom":
             store_custom_bytes(content_hash, data, declared)
