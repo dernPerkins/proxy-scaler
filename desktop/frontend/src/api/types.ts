@@ -164,6 +164,10 @@ export interface GenerateRequest {
   /** Whether Custom Images are upscaled too — see ProjectSettings.
    *  An older server drops it and registers customs only. */
   custom_upscale?: "off" | "target" | "native";
+  /** False upscales only the request's Custom Images (the Decklist's
+   *  Upscale Customs / Upscale MPC Fill). An older server drops it and
+   *  upscales Scryfall faces too. */
+  scryfall_upscale?: boolean;
   /** An older server drops it and fetches from Scryfall directly. */
   image_origin?: ImageOrigin;
   output_dir: string;

@@ -260,6 +260,7 @@ def enqueue_decklist_entries(
     db_path: Path | str | None = None,
     card_db_path: Path | str | None = None,
     custom_upscale: str = CUSTOM_UPSCALE_OFF,
+    scryfall_upscale: bool = True,
     image_origin: str = DEFAULT_IMAGE_ORIGIN,
 ) -> tuple[int, int, list[int]]:
     """Resolve entries (one batched Scryfall call, not one per card) and
@@ -269,6 +270,8 @@ def enqueue_decklist_entries(
     in-flight work is never wanted). Custom Image entries are always
     registered at their native DPI via enqueue_download_entries, and are
     upscaled on top of that only as `custom_upscale` directs (see below).
+    `scryfall_upscale` False leaves Scryfall faces out entirely, so only
+    the Custom Images are upscaled.
     Returns (queued_count, failed_count, task_ids)."""
     if custom_upscale not in CUSTOM_UPSCALE_MODES:
         raise ValueError(
@@ -313,6 +316,11 @@ def enqueue_decklist_entries(
             )
         ]
 
+    if not scryfall_upscale:
+        # Customs only: the Scryfall cards (and a face-art card's own
+        # Scryfall faces) are left as they are, not even resolved.
+        entries = [e for e in entries if getattr(e, "custom_hash", None)]
+
     # Local-first: answered from the imported card corpus when possible,
     # live Scryfall only for the leftovers (see card_lookup.CardResolver).
     resolver = CardResolver(card_db_path=card_db_path)
@@ -325,6 +333,9 @@ def enqueue_decklist_entries(
     # two `continue` sites below for what each one counts.
     skipped_existing = 0
     skipped_active = 0
+    # Customs that already reach every selected target, by name and DPI,
+    # so a Generate that queued nothing for them says why.
+    reached: list[tuple[str, int]] = []
     for entry, pre in zip(entries, resolved):
         try:
             for face in _faces_for(entry, pre, on_note):
@@ -339,9 +350,12 @@ def enqueue_decklist_entries(
                     # (or its one native-4x variant). An upload that
                     # reaches them all queues nothing here — its source
                     # row, registered above, is what prints.
+                    source_dpi = _custom_source_dpi(face)
                     face_targets = custom_upscale_targets(
-                        custom_upscale, _custom_source_dpi(face), dpi_targets
+                        custom_upscale, source_dpi, dpi_targets
                     )
+                    if not face_targets and custom_upscale != CUSTOM_UPSCALE_OFF:
+                        reached.append((face.face_name, source_dpi))
 
                 targets_needed = []
                 for target_dpi in face_targets:
@@ -490,6 +504,12 @@ def enqueue_decklist_entries(
             )
         if skipped_active:
             on_note(f"{skipped_active} image(s) already queued or running.")
+    if reached and on_note:
+        if len(reached) <= 3:
+            for name, source_dpi in reached:
+                on_note(f"{name}: already {source_dpi} DPI.")
+        else:
+            on_note(f"{len(reached)} custom images already reach the selected DPIs.")
 
     return queued, failed, task_ids
 

@@ -98,6 +98,10 @@ def _tasks(db_path: Path, task_ids: list[int]) -> list[tuple[str, int]]:
         # Only targets the upload doesn't already reach.
         ("target", 600, [600, 1200], [1200]),
         ("target", 1400, [600, 1200], []),
+        # Within 10% of a target counts as reaching it.
+        ("target", 1195, [600, 1200], []),
+        ("target", 1080, [1200], []),
+        ("target", 1079, [1200], [1200]),
         ("native", 300, [1200], [1200]),
         ("native", 600, [1200], [2400]),
         # Capped: a full 4x of 900 DPI would be 3600.
@@ -151,6 +155,56 @@ def test_native_mode_queues_one_capped_variant(
     content_hash = _upload(target_pixels(source))
     _, _, task_ids = _enqueue(tmp_path, db_path, content_hash, "native", [600, 1200])
     assert _tasks(db_path, task_ids) == [(CUSTOM_SOURCE_MODEL, source), ("ultrasharp_v2", native)]
+
+
+def test_an_upload_within_ten_percent_of_its_target_says_so(
+    tmp_path: Path, db_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    content_hash = _upload(target_pixels(1195))
+    notes: list[str] = []
+    _, _, task_ids = _enqueue(
+        tmp_path, db_path, content_hash, "target", [1200], on_note=notes.append
+    )
+    assert _tasks(db_path, task_ids) == [(CUSTOM_SOURCE_MODEL, 1195)]
+    assert "My Alter: already 1195 DPI." in notes
+
+
+def test_customs_only_leaves_scryfall_entries_alone(
+    tmp_path: Path, db_path: Path, monkeypatch
+) -> None:
+    from proxy_scaler.services import generation as gen
+
+    monkeypatch.chdir(tmp_path)
+    content_hash = _upload(target_pixels(300))
+    resolved_names: list[str] = []
+    real = gen._resolve_pairs
+
+    def spy(entries, resolver):
+        resolved_names.extend(e.name for e in entries)
+        return real(entries, resolver)
+
+    monkeypatch.setattr(gen, "_resolve_pairs", spy)
+    queued, failed, task_ids = gen.enqueue_decklist_entries(
+        [
+            DeckEntry(quantity=1, name="My Alter", custom_hash=content_hash),
+            DeckEntry(quantity=1, name="Sol Ring"),
+        ],
+        model="ultrasharp_v2",
+        dpi_targets=[1200],
+        skip_existing=True,
+        tile_size=0,
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag-a",
+        db_path=db_path,
+        custom_upscale="target",
+        scryfall_upscale=False,
+    )
+    assert failed == 0
+    assert "Sol Ring" not in resolved_names
+    assert _tasks(db_path, task_ids) == [(CUSTOM_SOURCE_MODEL, 300), ("ultrasharp_v2", 1200)]
 
 
 def test_off_mode_only_registers_the_source(tmp_path: Path, db_path: Path, monkeypatch) -> None:

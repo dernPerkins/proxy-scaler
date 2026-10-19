@@ -34,6 +34,7 @@ export type TourId =
   | "decklist-picker"
   | "customs"
   | "customs-card"
+  | "mpc"
   | "backs"
   | "backs-back"
   | "pdf"
@@ -87,7 +88,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "tabs",
         title: "The tabs, left to right",
-        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running. Ctrl+1 to Ctrl+6 (Cmd on a Mac) jump straight to a tab, and Ctrl+N starts a new project.",
+        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running. Ctrl+1 to Ctrl+7 (Cmd on a Mac) jump straight to a tab, and Ctrl+N starts a new project.",
         placement: "bottom",
       },
       {
@@ -140,7 +141,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "deck-actions",
         title: "Your cards are in!",
-        body: "\"Generate upscaled images\" queues every card at once. Download images just grabs the regular-resolution originals if you don't need upscaling. Sort changes the order here and in your PDF.",
+        body: "\"Upscale Originals\" upscales every card's Scryfall art at once; its ▾ also offers Upscale Customs, Upscale MPC Fill and Upscale Everything. Download images just grabs the regular-resolution originals if you don't need upscaling. Sort changes the order here and in your PDF.",
         placement: "bottom",
       },
       {
@@ -170,7 +171,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "card-buttons",
         title: "Per-card actions",
-        body: "Hover an icon for its name. The eye shows the finished images (once there are some) so you can compare them with the original or regenerate. Download fetches just this card's full-size image, without upscaling. The sparkles generate just this card, a quick way to test a model. The bin takes the card out of the deck.",
+        body: "Hover an icon for its name. The eye shows the finished images (once there are some) so you can compare them with the original or regenerate. Download fetches just this card's full-size image, without upscaling. The sparkles upscale just this card, its custom or MPC art included, a quick way to test a model. The bin takes the card out of the deck.",
         placement: "left",
       },
       {
@@ -228,6 +229,28 @@ export const TOURS: Record<TourId, Tour> = {
     ],
   },
 
+  mpc: {
+    followUps: ["customs-card"],
+    steps: [
+      {
+        title: "MPC Fill",
+        body: "Community art you've downloaded from MPC Fill, kept apart from your own uploads. Like Customs, the library is shared across all your projects.",
+      },
+      {
+        target: "mpc-search",
+        title: "Search MPC Fill",
+        body: "Find art by card name and add it here. Art you pick in the Decklist's change-printing picker lands here too.",
+        placement: "right",
+      },
+      {
+        target: "tutorial-button",
+        title: "Next step: select some art",
+        body: "Click a tile to see its settings. Add to Project puts the art on its card in the current deck.",
+        placement: "bottom",
+      },
+    ],
+  },
+
   "customs-card": {
     steps: [
       {
@@ -238,8 +261,8 @@ export const TOURS: Record<TourId, Tour> = {
       },
       {
         target: "custom-add",
-        title: "Add to project",
-        body: "Puts this card into the current deck so it prints with everything else.",
+        title: "Add to Project",
+        body: "Puts this card into the current deck so it prints with everything else. MPC Fill art goes onto its own card, as if picked in the change-printing picker.",
         placement: "bottom",
       },
       {
@@ -464,6 +487,7 @@ export const TOURS: Record<TourId, Tour> = {
 export const ROUTE_TOURS: Record<string, TourId> = {
   "/decklist": "decklist",
   "/customs": "customs",
+  "/mpc": "mpc",
   "/backs": "backs",
   "/pdf": "pdf",
   "/export": "export",

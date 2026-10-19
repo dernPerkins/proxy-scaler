@@ -162,13 +162,19 @@ export function serverSourceDpi(kind: LibraryKind, image: CustomImage | BackImag
  *  to — the server's rule (only targets above the upload's DPI, or one
  *  native variant), mirrored so the button can say "nothing to do"
  *  before a round-trip. */
+/** Art within this fraction of a target counts as reaching it. Mirrors
+ *  proxy_scaler/dpi.py::CUSTOM_UPSCALE_MEET_RATIO. */
+export const CUSTOM_UPSCALE_MEET_RATIO = 0.9;
+
 export function targetsFor(
   kind: LibraryKind,
   image: CustomImage | BackImage,
   settings: LibraryUpscaleSettings,
 ): number[] {
   const source = Math.round(serverSourceDpi(kind, image));
-  const below = settings.dpi_targets.filter((t) => t > source).sort((a, b) => a - b);
+  const below = settings.dpi_targets
+    .filter((t) => source < t * CUSTOM_UPSCALE_MEET_RATIO)
+    .sort((a, b) => a - b);
   if (below.length === 0) return [];
   return settings.mode === "native" ? [Math.min(source * 4, 2400)] : below;
 }

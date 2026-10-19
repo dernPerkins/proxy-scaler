@@ -71,6 +71,7 @@ def generate(body: GenerateIn) -> GenerateOut:
         db_path=db_path,
         card_db_path=get_card_db_path(),
         custom_upscale=body.custom_upscale,
+        scryfall_upscale=body.scryfall_upscale,
         image_origin=body.image_origin,
     )
     return GenerateOut(queued=queued, failed=failed, task_ids=task_ids, notes=notes)

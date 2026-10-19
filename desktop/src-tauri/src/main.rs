@@ -908,6 +908,7 @@ fn main() {
             get_library_upscale_settings,
             set_library_upscale_settings,
             project_store::get_mpc_catalog_prompt_state,
+            project_store::add_card_with_face_art,
             project_store::set_mpc_catalog_prompt_state,
             get_settings_presets,
             set_settings_presets,

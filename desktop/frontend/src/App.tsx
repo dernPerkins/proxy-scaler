@@ -18,6 +18,7 @@ import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
 import DecklistPage from "./pages/DecklistPage";
 import CustomsPage from "./pages/CustomsPage";
+import MpcFillPage from "./pages/MpcFillPage";
 import BacksPage from "./pages/BacksPage";
 import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
@@ -101,13 +102,14 @@ function AppVersion({ onOpenSettings }: { onOpenSettings: () => void }) {
 const TABS = [
   { to: "/decklist", label: "Decklist" },
   { to: "/customs", label: "Customs" },
+  { to: "/mpc", label: "MPC Fill" },
   { to: "/backs", label: "Backs" },
   { to: "/pdf", label: "PDF" },
   { to: "/export", label: "ZIP" },
   { to: "/tasks", label: "Tasks" },
 ];
 
-// Ctrl/Cmd+1..6 jumps to that tab, the same way browsers number theirs.
+// Ctrl/Cmd+1..7 jumps to that tab, the same way browsers number theirs.
 // Matched on the physical key (e.code) rather than e.key so the top row
 // works on layouts where the unshifted digit key types something else
 // (AZERTY's & é " …), which is also what browsers do for their own tab
@@ -208,6 +210,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/decklist" replace />} />
           <Route path="/decklist" element={<DecklistPage />} />
           <Route path="/customs" element={<CustomsPage />} />
+          <Route path="/mpc" element={<MpcFillPage />} />
           <Route path="/backs" element={<BacksPage />} />
           <Route path="/pdf" element={<PdfPage />} />
           <Route path="/export" element={<ExportPage />} />

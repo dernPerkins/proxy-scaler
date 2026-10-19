@@ -635,9 +635,11 @@ pub struct ProjectSettings {
     pub export_reverse_fill: String,
     #[serde(default = "default_true")]
     pub export_back_faces_as_reverse: bool,
-    // Whether Generate upscales Custom Images — see PROJECTS_ADDED_COLUMNS.
-    // Defaulted on deserialize so a frontend build that predates it
-    // can't wipe it.
+    // How custom and MPC Fill art comes out when an upscale button asks
+    // for it: "target" (each selected DPI it doesn't reach) or "native"
+    // (the model's 4x, capped). The buttons decide whether; a stored "off"
+    // from before they did reads as "target". Defaulted on deserialize so
+    // a frontend build that predates it can't wipe it.
     #[serde(default = "default_custom_upscale")]
     pub custom_upscale: String,
     // The Decklist import toggle — see PROJECTS_ADDED_COLUMNS. Defaulted
@@ -651,7 +653,16 @@ fn default_import_art_source() -> String {
 }
 
 fn default_custom_upscale() -> String {
-    "off".to_string()
+    "target".to_string()
+}
+
+/** A stored custom_upscale as the result mode it now means. */
+fn custom_upscale_mode(stored: String) -> String {
+    if stored == "native" {
+        stored
+    } else {
+        default_custom_upscale()
+    }
 }
 
 fn default_export_image_format() -> String {
@@ -1101,7 +1112,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     export_bleed_mm: row.get("export_bleed_mm")?,
                     export_reverse_fill: row.get("export_reverse_fill")?,
                     export_back_faces_as_reverse: row.get("export_back_faces_as_reverse")?,
-                    custom_upscale: row.get("custom_upscale")?,
+                    custom_upscale: custom_upscale_mode(row.get("custom_upscale")?),
                     import_art_source: row.get("import_art_source")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
@@ -1760,6 +1771,91 @@ fn import_resolved_cards_into(
     tx.commit().map_err(|e| e.to_string())?;
 
     cards_for_project(conn, project_id)
+}
+
+/// Put a library image on one face of a resolved Scryfall card: the card
+/// already in the project if there is one (same printing and language,
+/// not itself a custom card), else a new card appended after the rest.
+/// What the MPC Fill tab's "Add to Deck" does, so a downloaded piece of
+/// MPC art enters a deck the way a printing-picker pick would — with the
+/// card's printing, faces and back behind it — rather than as a custom
+/// card named after the image. One transaction: no card without its art.
+fn add_card_with_face_art_into(
+    conn: &mut Connection,
+    project_id: i64,
+    card: &ResolvedImportCard,
+    face: u8,
+    total_faces: u8,
+    custom_image_id: i64,
+) -> Result<Vec<CardRow>, String> {
+    let now = now_timestamp();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+        params![now, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let existing: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM project_cards
+             WHERE project_id = ?1 AND custom_image_id IS NULL
+               AND set_code = ?2 AND collector_number = ?3 AND COALESCE(lang, 'en') = ?4
+             ORDER BY sort_order LIMIT 1",
+            params![project_id, card.set_code, card.collector_number, card.lang],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let card_id = match existing {
+        Some(id) => id,
+        None => {
+            let next_sort_order: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM project_cards WHERE project_id = ?1",
+                    params![project_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO project_cards
+                 (project_id, sort_order, original_import_line, quantity, name, printed_name,
+                  set_code, collector_number, scryfall_id, lang, rarity, flavor_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    project_id,
+                    next_sort_order,
+                    card.raw_line,
+                    card.quantity.max(1),
+                    card.name,
+                    card.printed_name,
+                    card.set_code,
+                    card.collector_number,
+                    card.scryfall_id,
+                    card.lang,
+                    card.rarity,
+                    card.flavor_name,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.last_insert_rowid()
+        }
+    };
+    crate::face_art::set_card_face_art_row(&tx, card_id, face, total_faces, custom_image_id)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    cards_for_project(conn, project_id)
+}
+
+#[tauri::command]
+pub fn add_card_with_face_art(
+    app: AppHandle,
+    project_id: i64,
+    card: ResolvedImportCard,
+    face: u8,
+    total_faces: u8,
+    custom_image_id: i64,
+) -> Result<Vec<CardRow>, String> {
+    let mut conn = open_db(&app)?;
+    add_card_with_face_art_into(&mut conn, project_id, &card, face, total_faces, custom_image_id)
 }
 
 /// Add one project card per Custom Image, appended after whatever is
@@ -3822,10 +3918,11 @@ mod tests {
     }
 
     #[test]
-    fn custom_upscale_roundtrips_and_defaults_off() {
+    fn custom_upscale_roundtrips_and_defaults_to_target() {
         let conn = test_conn();
         let id = get_or_create_unnamed_project_id(&conn).expect("create");
-        assert_eq!(load_project(&conn, id).expect("load").settings.custom_upscale, "off");
+        // The column's own default is the old "off", which now reads as "target".
+        assert_eq!(load_project(&conn, id).expect("load").settings.custom_upscale, "target");
 
         let settings = ProjectSettings {
             custom_upscale: "native".to_string(),
@@ -3839,7 +3936,14 @@ mod tests {
         let mut json = serde_json::to_value(ProjectSettings::default()).expect("serialize");
         json.as_object_mut().expect("object").remove("custom_upscale");
         let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(settings.custom_upscale, "off");
+        assert_eq!(settings.custom_upscale, "target");
+
+        let settings = ProjectSettings {
+            custom_upscale: "off".to_string(),
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        assert_eq!(load_project(&conn, id).expect("load").settings.custom_upscale, "target");
     }
 
     #[test]
@@ -3910,6 +4014,44 @@ mod tests {
 
         set_card_quantity_in(&conn, card_id, -3).expect("clamp negative");
         assert_eq!(cards_for_project(&conn, id).expect("cards")[0].quantity, Some(1));
+    }
+
+    #[test]
+    fn add_card_with_face_art_adds_once_and_sets_the_face() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        conn.execute(
+            "INSERT INTO custom_images
+                (content_hash, label, original_filename, file_name, thumb_name, created_at)
+             VALUES ('h1', 'Sol Ring', 'sol.png', 'h1.png', 'h1_thumb.jpg', '1')",
+            [],
+        )
+        .expect("image");
+        let image_id = conn.last_insert_rowid();
+        let card = ResolvedImportCard {
+            raw_line: "1 Sol Ring".to_string(),
+            quantity: 1,
+            name: "Sol Ring".to_string(),
+            printed_name: None,
+            flavor_name: None,
+            set_code: "c21".to_string(),
+            collector_number: "263".to_string(),
+            scryfall_id: "sol-id".to_string(),
+            lang: "en".to_string(),
+            rarity: None,
+        };
+        for _ in 0..2 {
+            add_card_with_face_art_into(&mut conn, id, &card, 0, 1, image_id).expect("add");
+        }
+        let cards = cards_for_project(&conn, id).expect("cards");
+        assert_eq!(cards.len(), 1, "a second add reuses the card");
+        assert_eq!(cards[0].custom_image_id, None);
+        let face_art: String = conn
+            .query_row("SELECT face_art FROM project_cards WHERE id = ?1", params![cards[0].id], |r| {
+                r.get(0)
+            })
+            .expect("face art");
+        assert!(face_art.contains(&format!("\"custom_image_id\":{image_id}")), "{face_art}");
     }
 
     #[test]

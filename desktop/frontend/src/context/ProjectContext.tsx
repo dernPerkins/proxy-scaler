@@ -125,7 +125,7 @@ export function getDefaultSettings(): ProjectSettings {
     // which is also what the ZIP export always did before it had settings.
     export_reverse_fill: "back_image",
     export_back_faces_as_reverse: true,
-    custom_upscale: "off",
+    custom_upscale: "target",
     import_art_source: "scryfall",
   };
 }
@@ -180,6 +180,14 @@ interface ProjectContextValue {
     customImageIds: number[],
   ) => Promise<{ cards: CardRow[]; projectTag: string | null }>;
   addingCustomCards: boolean;
+  /** A resolved Scryfall card with a library image on one face (the MPC
+   *  Fill tab). Same return as addCustomCards. */
+  addCardWithFaceArt: (
+    card: ResolvedImportCard,
+    face: number,
+    totalFaces: number,
+    customImageId: number,
+  ) => Promise<{ cards: CardRow[]; projectTag: string | null }>;
   /** addCustomCards for an imported MPC order: quantities and per-line
    *  backs. Same return as addCustomCards. */
   addCustomCardsWithBacks: (
@@ -675,6 +683,29 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       // the first card creates the Unnamed Project.
       const id = await ensureProjectRow();
       return projectApi.addCustomCards(id, customImageIds);
+    },
+    onSuccess: (newCards) => {
+      setCards(newCards);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const addCardWithFaceArtMutation = useMutation({
+    mutationFn: async (args: {
+      card: ResolvedImportCard;
+      face: number;
+      totalFaces: number;
+      customImageId: number;
+    }) => {
+      const id = await ensureProjectRow();
+      return projectApi.addCardWithFaceArt(
+        id,
+        args.card,
+        args.face,
+        args.totalFaces,
+        args.customImageId,
+      );
     },
     onSuccess: (newCards) => {
       setCards(newCards);
@@ -1194,6 +1225,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return { cards, projectTag: projectTagRef.current };
     },
     addingCustomCards: addCustomCardsMutation.isPending,
+    addCardWithFaceArt: async (card, face, totalFaces, customImageId) => {
+      const cards = await addCardWithFaceArtMutation.mutateAsync({
+        card,
+        face,
+        totalFaces,
+        customImageId,
+      });
+      return { cards, projectTag: projectTagRef.current };
+    },
     addCustomCardsWithBacks: async (items) => {
       const cards = await addCustomCardsWithBacksMutation.mutateAsync(items);
       return { cards, projectTag: projectTagRef.current };

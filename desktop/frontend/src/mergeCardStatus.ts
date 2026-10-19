@@ -152,19 +152,23 @@ export function groupByCard(
 // instead, and groupByCard alone would never connect the two. Callers
 // should only consult this for a local card that itself has no set/
 // collector — matching everything by name would risk conflating two
-// different printings that happen to share a card name.
+// different printings that happen to share a card name. Only Scryfall
+// rows are indexed: a Custom Image or Back Image is matched by its hash
+// alone, so a custom named "Sol Ring" never stands in for the card.
 export function groupByCardName(
   items: GalleryItem[],
   tasks: Task[],
 ): { galleryByName: Map<string, GalleryItem[]>; tasksByName: Map<string, Task[]> } {
   const galleryByName = new Map<string, GalleryItem[]>();
   for (const item of items) {
+    if (item.custom_hash || item.back_hash) continue;
     const key = item.card_name.toLowerCase();
     if (!galleryByName.has(key)) galleryByName.set(key, []);
     galleryByName.get(key)!.push(item);
   }
   const tasksByName = new Map<string, Task[]>();
   for (const task of tasks) {
+    if (task.custom_hash || task.back_hash) continue;
     const key = task.card_name.toLowerCase();
     if (!tasksByName.has(key)) tasksByName.set(key, []);
     tasksByName.get(key)!.push(task);

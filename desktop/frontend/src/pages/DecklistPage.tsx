@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -11,6 +11,7 @@ import UpscaleSettingsFields from "../components/UpscaleSettingsFields";
 import CompareDialog from "../components/CompareDialog";
 import FullImageDialog from "../components/FullImageDialog";
 import CompareMenu, { type CompareSide } from "../components/CompareMenu";
+import SplitButton from "../components/SplitButton";
 import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
@@ -45,6 +46,7 @@ import { resolveImageOrigin } from "../imageOrigin";
 import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
+import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { alternateName } from "../cardNames";
@@ -182,7 +184,13 @@ export default function DecklistPage() {
   // would drop the field anyway, so the control is disabled and "off"
   // is sent rather than a choice it can't honour.
   const customUpscaleSupported = serverSupportsCustomUpscale(serverVersion);
-  const customUpscale = customUpscaleSupported ? settings.custom_upscale : "off";
+  // How custom and MPC art comes out when an upscale button asks for it
+  // (the buttons decide *whether*; this setting only decides the result).
+  const customResult = customUpscaleSupported
+    ? settings.custom_upscale === "off"
+      ? "target"
+      : settings.custom_upscale
+    : "off";
 
   // Purely an entry box — never seeded from the project's stored last
   // paste (the card rows below are the actual deck; decklistText lives on
@@ -712,38 +720,52 @@ export default function DecklistPage() {
     return getProjectSnapshot().cards.filter((c) => ids.has(c.id));
   }
 
+  // Library images that came from MPC Fill: what "Upscale MPC Fill" covers
+  // among custom cards (face art says so itself).
+  const mpcImageIds = useMemo(
+    () => new Set((libraryQuery.data ?? []).flatMap((image) => (image.mpc ? [image.id] : []))),
+    [libraryQuery.data],
+  );
+
   const generateAllMutation = useMutation({
-    mutationFn: async () => {
-      const ready = await withPendingArtFetched(cards);
+    mutationFn: async (scope: UpscaleScope) => {
+      const first = scopeRequest(cards, scope, mpcImageIds);
+      if (first.entries.length === 0) return null;
+      const ready = await withPendingArtFetched(first.cards);
+      const request = scopeRequest(ready, scope, mpcImageIds);
+      if (request.entries.length === 0) return null;
       // Custom art has to be on the server before the tasks that will read
       // it are queued — see syncCustoms.ts.
-      await syncCustomImages(ready, serverVersion);
+      await syncCustomImages(request.cards, serverVersion);
       return generationApi.generate({
         project_tag: projectTag as string,
-        entries: ready.map(cardToEntry),
+        entries: request.entries,
         model: settings.model,
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
-        custom_upscale: customUpscale,
+        custom_upscale: request.upscaleCustoms ? customResult : "off",
+        scryfall_upscale: request.scryfallUpscale,
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
         image_origin: await resolveImageOrigin(queryClient),
       });
     },
-    onSuccess: (result) => {
+    onSuccess: (result, scope) => {
       setStatus(
-        result.queued
-          ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
-          : `Nothing to do — every requested image already exists.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
+        result == null
+          ? SCOPE_EMPTY[scope]
+          : result.queued
+            ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
+            : `Nothing to do — every requested image already exists.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
       );
       invalidateStatus();
     },
     onError: (err: Error) => {
       // Cancelling the custom-image upload is a normal outcome, not a failure.
       if (err instanceof UploadCanceled) return;
-      setStatus(`Generate failed: ${err.message}`);
+      setStatus(`Upscale failed: ${err.message}`);
     },
   });
 
@@ -791,18 +813,24 @@ export default function DecklistPage() {
         dpi_targets: settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
-        custom_upscale: customUpscale,
+        // A card's own button upscales everything on it, whatever kind.
+        custom_upscale: customResult,
+        scryfall_upscale: true,
         output_dir: DEFAULT_GEN_PATHS.output_dir,
         cache_dir: DEFAULT_GEN_PATHS.cache_dir,
         weights_dir: DEFAULT_GEN_PATHS.weights_dir,
         image_origin: await resolveImageOrigin(queryClient),
       });
     },
-    onSuccess: invalidateStatus,
+    onSuccess: (result) => {
+      // Only a skip needs saying: queued work shows on the row's badges.
+      if (result.queued === 0 && result.notes.length) setStatus(result.notes.join(" "));
+      invalidateStatus();
+    },
     onError: (err: Error) => {
       // Cancelling the custom-image upload is a normal outcome, not a failure.
       if (err instanceof UploadCanceled) return;
-      setStatus(`Generate failed: ${err.message}`);
+      setStatus(`Upscale failed: ${err.message}`);
     },
   });
 
@@ -849,7 +877,7 @@ export default function DecklistPage() {
       },
       KeyG: () => {
         if (cards.length && !generateAllMutation.isPending && !serverUnavailable) {
-          generateAllMutation.mutate();
+          generateAllMutation.mutate("originals");
         }
       },
       KeyD: () => {
@@ -986,20 +1014,20 @@ export default function DecklistPage() {
             Skip existing output files
           </label>
 
-          {/* Custom Images print as uploaded unless this asks otherwise.
-              Either way only an upload below a selected target is
-              upscaled, and one too large for this machine is refused with
-              a message on its task (proxy_scaler/upscale.py) — it still
-              prints at its own resolution. */}
+          {/* How custom and MPC Fill art comes out when an upscale button
+              asks for it — the buttons decide whether. Either way only art
+              below a selected target is upscaled, and one too large for
+              this machine is refused with a message on its task
+              (proxy_scaler/upscale.py); it still prints at its own
+              resolution. */}
           <label className="field" data-tour="custom-upscale-select">
-            <span>Custom images</span>
+            <span>Custom & MPC Fill Upscales</span>
             <SelectMenu
               options={[
-                { value: "off", label: "Don't upscale" },
-                { value: "target", label: "Upscale to target DPI" },
-                { value: "native", label: "Upscale 4× (up to 2400 DPI)" },
+                { value: "target", label: "Match target DPI" },
+                { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
               ]}
-              value={customUpscale}
+              value={customResult === "native" ? "native" : "target"}
               disabled={!customUpscaleSupported}
               onChange={(value) =>
                 setSettings((s) => ({ ...s, custom_upscale: value as CustomUpscaleMode }))
@@ -1008,8 +1036,8 @@ export default function DecklistPage() {
           </label>
           <p className="hint">
             {customUpscaleSupported
-              ? "Only uploads below a selected target DPI are upscaled. One too large for this GPU is skipped with a message and prints as uploaded."
-              : "Needs a newer generation server. Custom images print as uploaded."}
+              ? "Used by Upscale Customs, Upscale MPC Fill, Upscale Everything and a card's own upscale button. Art already within 10% of a target is left as it is."
+              : "Needs a newer generation server. Custom and MPC Fill art print as they are."}
           </p>
 
           <div className="field divided">
@@ -1345,18 +1373,22 @@ export default function DecklistPage() {
             >
               Download images
             </button>
-            <button
-              className="btn-primary"
-              onClick={() => generateAllMutation.mutate()}
+            <SplitButton
+              primary
+              label={SCOPE_LABELS.originals}
+              onClick={() => generateAllMutation.mutate("originals")}
+              options={(["customs", "mpc", "all"] as const).map((scope) => ({
+                key: scope,
+                label: SCOPE_LABELS[scope],
+              }))}
+              onPick={(scope) => generateAllMutation.mutate(scope as UpscaleScope)}
               disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
               title={
                 serverUnavailable
                   ? "Generation server is unreachable"
-                  : shortcutLabel("G")
+                  : `Upscale the Scryfall art to the selected DPIs · ${shortcutLabel("G")}`
               }
-            >
-              Generate upscaled images
-            </button>
+            />
           </div>
         </div>
 
@@ -1376,8 +1408,9 @@ export default function DecklistPage() {
           const identity = localCardIdentity(card);
           let cardGallery = galleryByCard.get(identity) ?? [];
           let cardTasks = tasksByCard.get(identity) ?? [];
-          if (!card.set_code || !card.collector_number) {
-            // Name-only local card: the generation server always
+          if (card.custom_image_id == null && (!card.set_code || !card.collector_number)) {
+            // Name-only local card (never a custom, which matches by
+            // hash alone): the generation server always
             // resolves it to one concrete printing (a real set +
             // collector_number), so it can never land in the
             // identity bucket above — match by name instead. See
@@ -1431,7 +1464,6 @@ export default function DecklistPage() {
               onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
               onGenerate={() => generateCardMutation.mutate(card)}
               onDownload={() => downloadCard(card)}
-              upscalesCustoms={customUpscale !== "off"}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
               preferredLang={settings.preferred_lang}
@@ -1555,7 +1587,6 @@ function CardRowView(props: {
   onDownload: () => void;
   /** Whether Generate upscales Custom Images for this project — without
    *  it a custom's per-row Generate would upscale nothing. */
-  upscalesCustoms: boolean;
   onRegenerate: (galleryItemId: number) => void;
   /** Re-download this face's Scryfall original, overwriting the cached
    *  copy — takes any of the face's gallery item ids. */
@@ -1594,7 +1625,6 @@ function CardRowView(props: {
     onSetQuantity,
     onGenerate,
     onDownload,
-    upscalesCustoms,
     onRegenerate,
     onRefetch,
     preferredLang,
@@ -1725,19 +1755,14 @@ function CardRowView(props: {
           >
             <DownloadIcon />
           </button>
-          {/* With custom upscaling off the server routes a custom's
-              generate straight to source registration, which Download
-              already does — so a per-row Generate would upscale nothing. */}
+          {/* Upscales everything on this card, Scryfall faces and custom
+              or MPC art alike, whatever the whole-deck buttons cover. */}
           <button
             className="btn-sm icon-button"
             onClick={onGenerate}
-            disabled={disabled || (card.custom_image_id != null && !upscalesCustoms)}
-            title={
-              card.custom_image_id != null && !upscalesCustoms
-                ? "Custom images aren't upscaled in this project (the Custom images setting)"
-                : "Generate — upscale to the selected DPIs"
-            }
-            aria-label="Generate"
+            disabled={disabled}
+            title="Upscale — this card's art to the selected DPIs"
+            aria-label="Upscale"
           >
             <SparklesIcon />
           </button>

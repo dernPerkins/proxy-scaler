@@ -1,4 +1,8 @@
 // The Custom Image library: upload and manage art used as card *fronts*.
+// Two tabs show it: Customs (the user's own uploads) and MPC Fill (art
+// downloaded from MPC Fill, the rows with MPC provenance). One library,
+// one component (CustomLibraryPage), so tiles, settings, upscaling and
+// delete behave the same on both; MpcFillPage.tsx is the second view.
 //
 // Structurally the Backs tab's twin (app-global, client-owned,
 // content-addressed, works with no server reachable), with one difference
@@ -43,6 +47,7 @@ import {
 } from "../config";
 import { MpcArtModal } from "../components/MpcArtPicker";
 import { importMpcArt } from "../mpcFill";
+import { addMpcArtToDeck } from "../mpcLibrary";
 import { useConnection } from "../connection";
 import { useProject } from "../context/ProjectContext";
 import {
@@ -71,7 +76,10 @@ import {
 // launch starts with nothing selected like every other tab. An id whose
 // image has since been deleted resolves to nothing selected through the
 // same lookup as a stale live id.
-let lastSelectedId: number | null = null;
+const lastSelectedId: Record<LibraryView, number | null> = { uploads: null, mpc: null };
+
+/** Which half of the library a page shows. */
+export type LibraryView = "uploads" | "mpc";
 
 // Matches proxy_scaler/customs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation.
@@ -198,6 +206,7 @@ function CustomTile({
   image,
   inProject,
   selected,
+  adding,
   onSelect,
   onAdd,
   onView,
@@ -205,6 +214,7 @@ function CustomTile({
   image: CustomImage;
   inProject: boolean;
   selected: boolean;
+  adding: boolean;
   onSelect: () => void;
   onAdd: () => void;
   onView: () => void;
@@ -269,6 +279,11 @@ function CustomTile({
         </button>
       </div>
       <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{image.label}</div>
+      {image.mpc && (
+        <div className="hint" style={{ fontSize: 12 }}>
+          {image.mpc.source || "Unknown uploader"}
+        </div>
+      )}
       <div className="hint" style={{ fontSize: 12 }}>
         {Math.round(image.source_dpi)} DPI
         {/* A warning, never a block: a sharper file or an upscale are
@@ -286,9 +301,9 @@ function CustomTile({
             e.stopPropagation();
             onAdd();
           }}
-          disabled={inProject}
+          disabled={inProject || adding}
         >
-          {inProject ? "In project" : "Add to project"}
+          {inProject ? "In Project" : adding ? "Adding…" : "Add to Project"}
         </button>
       </div>
     </div>
@@ -296,8 +311,13 @@ function CustomTile({
 }
 
 export default function CustomsPage() {
+  return <CustomLibraryPage view="uploads" />;
+}
+
+export function CustomLibraryPage({ view }: { view: LibraryView }) {
   const queryClient = useQueryClient();
-  const { cards, addCustomCards, reloadCards } = useProject();
+  const { cards, settings: projectSettings, addCustomCards, addCardWithFaceArt, reloadCards } =
+    useProject();
   const serverVersion = useServerVersion();
   const connection = useConnection();
   const readiness = useServerReadiness();
@@ -315,11 +335,13 @@ export default function CustomsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [selectedId, setSelectedIdState] = useState<number | null>(lastSelectedId);
+  const [selectedId, setSelectedIdState] = useState<number | null>(lastSelectedId[view]);
   function setSelectedId(id: number | null) {
-    lastSelectedId = id;
+    lastSelectedId[view] = id;
     setSelectedIdState(id);
   }
+  const [addingId, setAddingId] = useState<number | null>(null);
+  const [addNote, setAddNote] = useState<string | null>(null);
   // The full-size viewer deliberately does not survive a tab switch: it is
   // a modal over the page, not part of where the user was.
   const [viewingId, setViewingId] = useState<number | null>(null);
@@ -341,7 +363,12 @@ export default function CustomsPage() {
     queryKey: ["custom-images"],
     queryFn: () => projectApi.listCustomImages(),
   });
-  const images = useMemo(() => libraryQuery.data ?? [], [libraryQuery.data]);
+  // The shared query holds the whole library (the Decklist links MPC picks
+  // against it); each tab shows its half.
+  const images = useMemo(
+    () => (libraryQuery.data ?? []).filter((i) => (i.mpc != null) === (view === "mpc")),
+    [libraryQuery.data, view],
+  );
   const idsInProject = useMemo(
     () => new Set(cards.flatMap((c) => customImageRefs(c).map((ref) => ref.id))),
     [cards],
@@ -373,9 +400,42 @@ export default function CustomsPage() {
       setUpscaleNote(`Upscale failed: ${err.message}`);
     },
   });
-  useTourOnFirstView("customs");
+  const baseTour = view === "mpc" ? "mpc" : "customs";
+  useTourOnFirstView(baseTour);
   // Per-card settings only exist once a card is selected.
-  useTourWhenPresent("customs-card", selected != null, "customs");
+  useTourWhenPresent("customs-card", selected != null, baseTour);
+
+  /** Into the current deck: an upload as a custom card; MPC art as its
+   *  Scryfall card with the art on its face (see mpcLibrary.ts). */
+  async function addToProject(image: CustomImage) {
+    setAddingId(image.id);
+    setAddNote(null);
+    try {
+      const added =
+        view === "mpc"
+          ? await addMpcArtToDeck(image, {
+              lang: projectSettings.lang_any ? null : projectSettings.preferred_lang,
+              addCardWithFaceArt,
+              addCustomCards,
+            })
+          : { ...(await addCustomCards([image.id])), asCustom: true };
+      if (view === "mpc" && added.asCustom) {
+        setAddNote(`No card is named "${image.mpc?.name || image.label}", so it was added as a custom card.`);
+      }
+      // "Added it, it's ready to print" — same best-effort sync +
+      // register as the Decklist dropzone. Quietly a no-op with no server
+      // reachable; the PDF/ZIP export paths re-run it then.
+      await registerCustomCards(added.cards, added.projectTag, serverVersion)
+        .then(() =>
+          queryClient.invalidateQueries({ queryKey: ["generation-status", added.projectTag] }),
+        )
+        .catch(() => {});
+    } catch (err) {
+      setAddNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAddingId(null);
+    }
+  }
 
   const addMutation = useMutation({
     mutationFn: async (files: File[]) => {
@@ -455,7 +515,7 @@ export default function CustomsPage() {
   return (
     <div className="layout">
       <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Custom card</h3>
+        <h3 style={{ marginBottom: 14 }}>{view === "mpc" ? "MPC Fill Art" : "Custom card"}</h3>
         {selected == null ? (
           <p className="hint">
             Select an image to upscale it, rename it, say whether it already includes bleed,
@@ -529,6 +589,7 @@ export default function CustomsPage() {
       <main
         className="content"
         onDragEnter={(e) => {
+          if (view !== "uploads") return;
           e.preventDefault();
           setDragDepth((d) => d + 1);
         }}
@@ -541,15 +602,34 @@ export default function CustomsPage() {
         onDrop={(e) => {
           e.preventDefault();
           setDragDepth(0);
-          handleFiles(e.dataTransfer.files);
+          if (view === "uploads") handleFiles(e.dataTransfer.files);
         }}
       >
-        <h2>Custom cards</h2>
-        <p className="hint" style={{ marginTop: 8 }}>
-          Your own art, used as card fronts. The library is shared across every project on
-          this machine; each image becomes a card named after its file. Images stay on this
-          machine until something actually needs them — upscaling, or exporting.
-        </p>
+        {view === "mpc" ? (
+          <>
+            <h2>MPC Fill</h2>
+            <p className="hint" style={{ marginTop: 8 }}>
+              Community art downloaded from MPC Fill, shared across every project on this
+              machine. Add to Project puts the art on its card in the current deck, the same
+              as picking it in the change-printing picker.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2>Custom cards</h2>
+            <p className="hint" style={{ marginTop: 8 }}>
+              Your own art, used as card fronts. The library is shared across every project
+              on this machine; each image becomes a card named after its file. Images stay on
+              this machine until something actually needs them — upscaling, or exporting.
+            </p>
+          </>
+        )}
+
+        {addNote ? (
+          <p className="error" style={{ marginTop: 12 }}>
+            {addNote}
+          </p>
+        ) : null}
 
         {uploadError ? (
           <p className="error" style={{ marginTop: 12 }}>
@@ -565,73 +645,78 @@ export default function CustomsPage() {
             gap: 12,
           }}
         >
-          <button
-            type="button"
-            className={`dropzone${dragging ? " is-dragging" : ""}`}
-            data-tour="custom-dropzone"
-            onClick={() => fileInput.current?.click()}
-            disabled={addMutation.isPending}
-          >
-            <UploadIcon />
-            <span className="dropzone-title">
-              {addMutation.isPending && progress ? (
-                `Adding ${progress.done + 1} of ${progress.total}…`
-              ) : (
-                <>
-                  Drag and drop
+          {view === "uploads" ? (
+            <>
+              <button
+                type="button"
+                className={`dropzone${dragging ? " is-dragging" : ""}`}
+                data-tour="custom-dropzone"
+                onClick={() => fileInput.current?.click()}
+                disabled={addMutation.isPending}
+              >
+                <UploadIcon />
+                <span className="dropzone-title">
+                  {addMutation.isPending && progress ? (
+                    `Adding ${progress.done + 1} of ${progress.total}…`
+                  ) : (
+                    <>
+                      Drag and drop
+                      <br />
+                      or
+                      <br />
+                      click here
+                    </>
+                  )}
+                </span>
+                <span className="dropzone-hint">
+                  PNG, JPEG or WebP
                   <br />
-                  or
-                  <br />
-                  click here
-                </>
-              )}
-            </span>
-            <span className="dropzone-hint">
-              PNG, JPEG or WebP
-              <br />
-              up to {MAX_UPLOAD_MB}MB each
-            </span>
-          </button>
+                  up to {MAX_UPLOAD_MB}MB each
+                </span>
+              </button>
 
-          <button
-            type="button"
-            className="dropzone mpc-library-tile"
-            disabled={serverUnavailable || !mpcSupported}
-            title={
-              serverUnavailable
-                ? "Generation server is unreachable"
-                : !mpcSupported
-                  ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
-                  : "Search community art on MPC Fill"
-            }
-            onClick={() => setMpcOpen(true)}
-          >
-            <span className="dropzone-title">From MPC Fill</span>
-            <span className="dropzone-hint">
-              Search community art
-              <br />
-              cards and tokens
-            </span>
-          </button>
-
-          {/* Inside the grid so it can never be orphaned from the button
-              that clicks it — moving it out once silently made the whole
-              tile do nothing (see BacksPage). */}
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            accept={ACCEPTED_IMAGE_TYPES}
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const files = e.target.files;
-              // Reset first: picking the same file twice in a row fires no
-              // change event otherwise, which reads as a broken control.
-              const copy = files ? Array.from(files) : [];
-              e.target.value = "";
-              if (copy.length) addMutation.mutate(copy);
-            }}
-          />
+              {/* Inside the grid so it can never be orphaned from the button
+                  that clicks it — moving it out once silently made the whole
+                  tile do nothing (see BacksPage). */}
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                accept={ACCEPTED_IMAGE_TYPES}
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const files = e.target.files;
+                  // Reset first: picking the same file twice in a row fires no
+                  // change event otherwise, which reads as a broken control.
+                  const copy = files ? Array.from(files) : [];
+                  e.target.value = "";
+                  if (copy.length) addMutation.mutate(copy);
+                }}
+              />
+            </>
+          ) : (
+            <button
+              type="button"
+              className="dropzone mpc-library-tile"
+              data-tour="mpc-search"
+              disabled={serverUnavailable || !mpcSupported}
+              title={
+                serverUnavailable
+                  ? "Generation server is unreachable"
+                  : !mpcSupported
+                    ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
+                    : "Search community art on MPC Fill"
+              }
+              onClick={() => setMpcOpen(true)}
+            >
+              <span className="dropzone-title">Search MPC Fill</span>
+              <span className="dropzone-hint">
+                Search community art
+                <br />
+                cards and tokens
+              </span>
+            </button>
+          )}
 
           {images.map((image) => (
             <CustomTile
@@ -639,26 +724,13 @@ export default function CustomsPage() {
               image={image}
               inProject={idsInProject.has(image.id)}
               selected={image.id === selectedId}
+              adding={addingId === image.id}
               onSelect={() => setSelectedId(image.id)}
               onView={() => {
                 setSelectedId(image.id);
                 setViewingId(image.id);
               }}
-              onAdd={() =>
-                void addCustomCards([image.id]).then((added) =>
-                  // "Added it, it's ready to print" — same best-effort
-                  // sync + register as the Decklist dropzone. Quietly a
-                  // no-op with no server reachable; the PDF/ZIP export
-                  // paths re-run it then.
-                  registerCustomCards(added.cards, added.projectTag, serverVersion)
-                    .then(() =>
-                      queryClient.invalidateQueries({
-                        queryKey: ["generation-status", added.projectTag],
-                      }),
-                    )
-                    .catch(() => {}),
-                )
-              }
+              onAdd={() => void addToProject(image)}
             />
           ))}
         </div>
@@ -669,7 +741,7 @@ export default function CustomsPage() {
           title="MPC Fill — card fronts"
           initial={{}}
           cardTypes={["CARD", "TOKEN"]}
-          pickLabel="Add to Custom Cards"
+          pickLabel="Add to Library"
           onClose={() => setMpcOpen(false)}
           onPick={async (card) => {
             const image = await importMpcArt("custom", card);

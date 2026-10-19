@@ -560,6 +560,22 @@ export const projectApi = {
   /** Add one card per image to a project, appended at the end. Not
    *  resolve-gated, unlike every other import path — there is nothing to
    *  resolve, which is what lets this work with no server reachable. */
+  // One resolved Scryfall card with a library image on one face (the MPC
+  // Fill tab's Add to Project); reuses the card if the deck has it.
+  addCardWithFaceArt: (
+    projectId: number,
+    card: ResolvedImportCard,
+    face: number,
+    totalFaces: number,
+    customImageId: number,
+  ) =>
+    invokeCommand<CardRow[]>("add_card_with_face_art", {
+      projectId,
+      card,
+      face,
+      totalFaces,
+      customImageId,
+    }),
   addCustomCards: (projectId: number, customImageIds: number[]) =>
     invokeCommand<CardRow[]>("add_custom_cards", { projectId, customImageIds }),
 

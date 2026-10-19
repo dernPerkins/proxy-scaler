@@ -234,6 +234,21 @@ def test_adopt_gallery_items_matches_name_only_entries(db_path: Path, tmp_path: 
     assert db_module.adopt_gallery_items("tag-c", [other], db_path=db_path) == 0
 
 
+def test_adopt_gallery_items_never_matches_a_custom_by_name(db_path: Path, tmp_path: Path) -> None:
+    """A Custom Image called "Sol Ring" must not soak up the real card's
+    images: customs adopt by content hash alone."""
+    from proxy_scaler.decklist import DeckEntry
+
+    img = tmp_path / "sol.png"
+    img.write_bytes(b"png")
+    db_module.upsert_gallery_item(
+        "tag-a", _result(out_path=img, original_path=img), db_path=db_path
+    )
+
+    custom = DeckEntry(quantity=1, name="Sol Ring", custom_hash="a" * 64)
+    assert db_module.adopt_gallery_items("tag-b", [custom], db_path=db_path) == 0
+
+
 def _seed_corpus(tmp_path: Path, cards: list[dict]) -> Path:
     """A minimal card corpus for adopt's scan-resolution path — legacy
     filenames carry no scryfall_id, so registering them goes through

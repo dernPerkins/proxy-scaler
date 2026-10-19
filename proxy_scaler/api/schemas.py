@@ -221,6 +221,11 @@ class GenerateIn(BaseModel):
     # dpi.NATIVE_MAX_DPI). Defaulted so an older client gets today's
     # behaviour; an older server drops the field and does the same.
     custom_upscale: Literal["off", "target", "native"] = "off"
+    # Whether Scryfall faces are upscaled. False upscales only the Custom
+    # Images in the request (the Decklist's "Upscale Customs" / "Upscale
+    # MPC Fill"); they are still registered either way. Defaulted so an
+    # older client gets today's behaviour.
+    scryfall_upscale: bool = True
     output_dir: str
     cache_dir: str
     weights_dir: str

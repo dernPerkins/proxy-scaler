@@ -2040,6 +2040,30 @@ button:disabled {
   border-color: var(--border-strong);
 }
 
+/* Split button: [Action][▾] read as one control; the menu is CompareMenu's. */
+.split-button {
+  position: relative;
+  display: inline-flex;
+}
+.split-button > button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-caret {
+  padding-left: 8px;
+  padding-right: 8px;
+  margin-left: 1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.split-menu {
+  min-width: 190px;
+}
+.split-menu button {
+  font-size: 13px;
+  padding: 6px 10px;
+}
+
 /* Compare dialog: side switcher + which-side-is-which labels. */
 .compare-head-controls {
   display: flex;

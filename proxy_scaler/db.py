@@ -1918,6 +1918,7 @@ def adopt_gallery_items(
         entry.name.lower()
         for entry in entries
         if not (entry.set_code and entry.collector_number is not None)
+        and not getattr(entry, "custom_hash", None)
     }
     # Custom Images adopt by content hash alone — never by name (a custom
     # called "Sol Ring" must not soak up the real card's images, nor the

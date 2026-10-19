@@ -155,20 +155,28 @@ def native_output_dpi(source_dpi: int, scale: int = 4) -> int:
     return min(int(source_dpi) * scale, NATIVE_MAX_DPI)
 
 
+# A Custom Image within this fraction of a target counts as reaching it:
+# running a 4x model over 1195 DPI art to land on 1200 spends GPU time (and
+# memory) for nothing anyone could see. Mirrored in the desktop client
+# (libraryUpscale.ts::CUSTOM_UPSCALE_MEET_RATIO).
+CUSTOM_UPSCALE_MEET_RATIO = 0.9
+
+
 def custom_upscale_targets(
     mode: str, source_dpi: int, dpi_targets: list[int]
 ) -> list[int]:
     """Which upscaled variants Generate should queue for one Custom Image
     measured at `source_dpi`, given the project's selected targets.
 
-    Only an upload *below* a selected target is ever upscaled: one that
-    already reaches every target prints from its source row, and running a
-    4x model over it would spend GPU time (and, above ~1150 DPI, more
-    memory than a pass can have) to reproduce what is there. Empty for
-    mode "off"."""
+    Only an upload *below* a selected target is ever upscaled, and one
+    within CUSTOM_UPSCALE_MEET_RATIO of it counts as reaching it: one that
+    reaches every target prints from its source row, and running a 4x
+    model over it would spend GPU time (and, above ~1150 DPI, more memory
+    than a pass can have) to reproduce what is there. Empty for mode
+    "off"."""
     if mode not in CUSTOM_UPSCALE_MODES:
         raise ValueError(f"custom_upscale must be one of {CUSTOM_UPSCALE_MODES}, got {mode!r}")
-    below = sorted({t for t in dpi_targets if t > source_dpi})
+    below = sorted({t for t in dpi_targets if source_dpi < t * CUSTOM_UPSCALE_MEET_RATIO})
     if mode == CUSTOM_UPSCALE_OFF or not below:
         return []
     if mode == CUSTOM_UPSCALE_TARGET:
