@@ -239,7 +239,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "mpc-search",
         title: "Search MPC Fill",
-        body: "Find art by card name and add it here. Art you pick in the Decklist's change-printing picker lands here too.",
+        body: "Find art by card name and add it here. Use if you'd like to search all of MPC Fill then add to your project.",
         placement: "right",
       },
       {

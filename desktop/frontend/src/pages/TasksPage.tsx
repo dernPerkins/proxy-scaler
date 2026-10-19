@@ -5,6 +5,7 @@ import { ORIGINAL_DPI, ORIGINAL_MODEL } from "../constants";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView } from "../tutorial/tutorialStore";
 import type { Task, TaskStatus } from "../api/types";
+import { toast } from "../toasts";
 
 const STATUS_ORDER: TaskStatus[] = ["running", "pending", "done", "failed", "canceled"];
 
@@ -28,20 +29,25 @@ export default function TasksPage() {
   });
 
   const invalidateTasks = () => queryClient.invalidateQueries({ queryKey: ["tasks"] });
+  const failed = (what: string) => (err: Error) =>
+    toast(`${what} failed: ${err.message}`, "err", { key: "tasks" });
 
   const cancelMutation = useMutation({
     mutationFn: (taskId: number) => generationApi.cancelTask(taskId),
     onSuccess: invalidateTasks,
+    onError: failed("Cancel"),
   });
 
   const cancelAllMutation = useMutation({
     mutationFn: () => generationApi.cancelAllTasks(),
     onSuccess: invalidateTasks,
+    onError: failed("Cancel all"),
   });
 
   const retryMutation = useMutation({
     mutationFn: (taskId: number) => generationApi.retryTask(taskId),
     onSuccess: invalidateTasks,
+    onError: failed("Retry"),
   });
 
   // Retries every failed task whose model/dpi match what the current
@@ -64,7 +70,15 @@ export default function TasksPage() {
       ]);
       return { retried: upscales.retried + downloads.retried };
     },
-    onSuccess: invalidateTasks,
+    onSuccess: ({ retried }) => {
+      toast(
+        retried ? `Retried ${retried} task(s).` : "Nothing to retry for this project's model and DPIs.",
+        retried ? "ok" : "info",
+        { key: "tasks" },
+      );
+      void invalidateTasks();
+    },
+    onError: failed("Retry all"),
   });
 
   const tasks: Task[] = tasksQuery.data ?? [];

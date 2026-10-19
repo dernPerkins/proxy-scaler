@@ -46,8 +46,8 @@ import {
   useServerVersion,
 } from "../config";
 import { MpcArtModal } from "../components/MpcArtPicker";
-import { importMpcArt } from "../mpcFill";
-import { addMpcArtToDeck } from "../mpcLibrary";
+import { addMpcArtToDeck, importMpcArtInBackground, usePendingMpcImports } from "../mpcLibrary";
+import StatusBadge from "../components/StatusBadge";
 import { useConnection } from "../connection";
 import { useProject } from "../context/ProjectContext";
 import {
@@ -58,6 +58,8 @@ import {
   type LibraryUpscaleMode,
 } from "../libraryUpscale";
 import { UploadCanceled } from "../uploadProgress";
+import { errorText, toast } from "../toasts";
+import { blurOnEnter } from "../inputKeys";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import { customImageRefs, getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
@@ -133,6 +135,7 @@ function CustomSettingsFields({
         <input
           defaultValue={image.label}
           key={image.id}
+          onKeyDown={blurOnEnter}
           onBlur={(e) => {
             const next = e.target.value.trim();
             if (next && next !== image.label) {
@@ -170,6 +173,7 @@ function CustomSettingsFields({
             step={0.001}
             key={`bleed-${image.id}`}
             defaultValue={image.bleed_mm}
+            onKeyDown={blurOnEnter}
             onBlur={(e) => {
               const next = Number(e.target.value);
               if (
@@ -332,7 +336,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     useLibraryUpscaleSettings(modelsQuery.data);
 
   const fileInput = useRef<HTMLInputElement>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedId, setSelectedIdState] = useState<number | null>(lastSelectedId[view]);
@@ -341,7 +344,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     setSelectedIdState(id);
   }
   const [addingId, setAddingId] = useState<number | null>(null);
-  const [addNote, setAddNote] = useState<string | null>(null);
   // The full-size viewer deliberately does not survive a tab switch: it is
   // a modal over the page, not part of where the user was.
   const [viewingId, setViewingId] = useState<number | null>(null);
@@ -369,6 +371,10 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     () => (libraryQuery.data ?? []).filter((i) => (i.mpc != null) === (view === "mpc")),
     [libraryQuery.data, view],
   );
+  // Picks still downloading, minus any whose entry has already landed.
+  const pendingImports = usePendingMpcImports().filter(
+    (p) => view === "mpc" && !images.some((i) => i.mpc?.drive_id === p.driveId),
+  );
   const idsInProject = useMemo(
     () => new Set(cards.flatMap((c) => customImageRefs(c).map((ref) => ref.id))),
     [cards],
@@ -382,22 +388,25 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     selected?.content_hash ?? null,
     !serverUnavailable && libraryUpscaleSupported,
   );
-  const [upscaleNote, setUpscaleNote] = useState<string | null>(null);
   const upscaleMutation = useMutation({
     mutationFn: (image: CustomImage) =>
       upscaleLibraryImage("custom", image, upscaleSettings, serverVersion),
     onSuccess: (result, image) => {
-      setUpscaleNote(
-        result.queued
-          ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
-          : `Nothing to do.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
-      );
+      if (result.queued) {
+        toast(`Queued ${result.queued} task(s). The Tasks tab shows their progress.`, "ok", {
+          key: "library-upscale",
+        });
+      } else {
+        toast(`Nothing to do.${result.notes.length ? " " + result.notes.join(" ") : ""}`, "info", {
+          key: "library-upscale",
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: ["library-status", "custom", image.content_hash] });
     },
     onError: (err: Error) => {
       // Cancelling the upload is a normal outcome, not a failure.
       if (err instanceof UploadCanceled) return;
-      setUpscaleNote(`Upscale failed: ${err.message}`);
+      toast(`Upscale failed: ${err.message}`, "err", { key: "library-upscale" });
     },
   });
   const baseTour = view === "mpc" ? "mpc" : "customs";
@@ -409,7 +418,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
    *  Scryfall card with the art on its face (see mpcLibrary.ts). */
   async function addToProject(image: CustomImage) {
     setAddingId(image.id);
-    setAddNote(null);
     try {
       const added =
         view === "mpc"
@@ -420,7 +428,10 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
             })
           : { ...(await addCustomCards([image.id])), asCustom: true };
       if (view === "mpc" && added.asCustom) {
-        setAddNote(`No card is named "${image.mpc?.name || image.label}", so it was added as a custom card.`);
+        toast(
+          `No card is named "${image.mpc?.name || image.label}", so it was added as a custom card.`,
+          "warn",
+        );
       }
       // "Added it, it's ready to print" — same best-effort sync +
       // register as the Decklist dropzone. Quietly a no-op with no server
@@ -431,7 +442,7 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
         )
         .catch(() => {});
     } catch (err) {
-      setAddNote(err instanceof Error ? err.message : String(err));
+      toast(`Couldn't add it to the project: ${errorText(err)}`, "err");
     } finally {
       setAddingId(null);
     }
@@ -449,11 +460,11 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     },
     onSuccess: ({ errors }) => {
       void queryClient.invalidateQueries({ queryKey: ["custom-images"] });
-      setUploadError(errors.length ? errors.join(" ") : null);
+      if (errors.length) toast(errors.join(" "), "err", { key: "custom-upload" });
       setProgress(null);
     },
     onError: (err: unknown) => {
-      setUploadError(err instanceof Error ? err.message : String(err));
+      toast(errorText(err), "err", { key: "custom-upload" });
       setProgress(null);
     },
   });
@@ -569,11 +580,7 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
                     : null
               }
               pending={upscaleMutation.isPending}
-              note={upscaleNote}
-              onUpscale={() => {
-                setUpscaleNote(null);
-                upscaleMutation.mutate(selected);
-              }}
+              onUpscale={() => upscaleMutation.mutate(selected)}
             />
             <button
               className="btn-sm btn-danger btn-block"
@@ -624,18 +631,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
             </p>
           </>
         )}
-
-        {addNote ? (
-          <p className="error" style={{ marginTop: 12 }}>
-            {addNote}
-          </p>
-        ) : null}
-
-        {uploadError ? (
-          <p className="error" style={{ marginTop: 12 }}>
-            {uploadError}
-          </p>
-        ) : null}
 
         <div
           style={{
@@ -718,6 +713,22 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
             </button>
           )}
 
+          {pendingImports.map((p) => (
+            <div key={p.driveId} className="thumb" style={{ padding: 6 }} aria-busy="true">
+              <div
+                className="loading-shimmer"
+                style={{ aspectRatio: "63 / 88", borderRadius: 8, border: "1px solid var(--border)" }}
+              />
+              <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{p.name}</div>
+              <div className="hint" style={{ fontSize: 12 }}>
+                {p.source || "Unknown uploader"}
+              </div>
+              <div style={{ marginTop: 6 }}>
+                <StatusBadge status="running">Downloading · MPC</StatusBadge>
+              </div>
+            </div>
+          ))}
+
           {images.map((image) => (
             <CustomTile
               key={image.id}
@@ -744,10 +755,9 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
           pickLabel="Add to Library"
           onClose={() => setMpcOpen(false)}
           onPick={async (card) => {
-            const image = await importMpcArt("custom", card);
-            await queryClient.invalidateQueries({ queryKey: ["custom-images"] });
-            setSelectedId(image.id);
+            // Closes at once; the art downloads behind a placeholder tile.
             setMpcOpen(false);
+            importMpcArtInBackground(card, queryClient, (image) => setSelectedId(image.id));
           }}
         />
       ) : null}

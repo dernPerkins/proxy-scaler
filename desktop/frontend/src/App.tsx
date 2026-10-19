@@ -13,6 +13,7 @@ import QuitPrompt from "./components/QuitPrompt";
 import ResumeTasksPrompt from "./components/ResumeTasksPrompt";
 import CpuFallbackPrompt from "./components/CpuFallbackPrompt";
 import ServerBootModal from "./components/ServerBootModal";
+import ToastStack from "./components/ToastStack";
 import ServerStatusToast from "./components/ServerStatusToast";
 import VersionMismatchToast from "./components/VersionMismatchToast";
 import { ProjectProvider } from "./context/ProjectContext";
@@ -162,6 +163,7 @@ export default function App() {
       <div className="app">
         <ServerStatusToast />
         <VersionMismatchToast />
+        <ToastStack />
         {/* Holds the screen while the local sidecar starts, and owns the
             failure when it doesn't. Renders nothing once the server is
             ready — which is always, immediately, in Remote mode. */}

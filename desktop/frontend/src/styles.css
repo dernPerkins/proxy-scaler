@@ -2598,11 +2598,22 @@ tbody tr:last-child td {
 
 /* ---------- toast ---------- */
 
-.toast {
+/* The stack (components/ToastStack.tsx): newest at the bottom, above
+   modals so an outcome raised from a dialog is still seen. */
+.toast-stack {
   position: fixed;
   bottom: 18px;
   right: 18px;
-  max-width: 360px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100vw - 36px);
+}
+.toast {
+  width: 360px;
+  max-width: 100%;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -2612,8 +2623,32 @@ tbody tr:last-child td {
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow);
   font-size: 13px;
-  z-index: 2000;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
   animation: toast-in 0.22s ease-out;
+}
+.toast-warn {
+  border-color: color-mix(in srgb, var(--wait) 50%, var(--border-strong));
+}
+.toast-info .dot {
+  background: var(--run);
+}
+.toast-warn .dot {
+  background: var(--wait);
+}
+.toast-close {
+  flex-shrink: 0;
+  margin: -4px -6px -4px 0;
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.toast-close:hover {
+  color: var(--text);
 }
 .toast-ok {
   border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong));
@@ -2651,12 +2686,6 @@ tbody tr:last-child td {
 .toast-body {
   flex: 1;
 }
-.toast-secondary {
-  /* Stacks above the default .toast (bottom:18px) so the save toast
-     doesn't overlap ServerStatusToast if both are visible at once. */
-  bottom: 88px;
-}
-
 @keyframes toast-in {
   from {
     opacity: 0;
@@ -2741,10 +2770,12 @@ tbody tr:last-child td {
 }
 /* What the server keeps after cropping to card (or bled) aspect; the
    spread shadow darkens everything the crop discards. */
+/* What the crop keeps: everything outside it is shaded. No outline of its
+   own — on most files the crop sits a pixel or two inside the edge, where
+   a line read as part of the image; the shading says it on its own. */
 .viewer-crop {
   position: absolute;
   box-shadow: 0 0 0 200vmax rgba(0, 0, 0, 0.55);
-  outline: 1px solid #fff;
   pointer-events: none;
 }
 /* The trim line: where the cut lands. Its corners are rounded to the

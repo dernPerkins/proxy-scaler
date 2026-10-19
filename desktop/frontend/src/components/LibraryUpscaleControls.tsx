@@ -1,7 +1,8 @@
 // The selected library image's Upscale button and its badges — everything
 // ever queued or made for it, whichever project (or the library tab) did
 // it. Shared by the Customs and Backs tabs; the page owns the mutation
-// and the status poll (libraryUpscale.ts) and hands the results in.
+// and the status poll (libraryUpscale.ts) and hands the results in. A
+// click's outcome is a toast (toasts.ts), raised by the page.
 
 import StatusBadge from "./StatusBadge";
 import { modelDisplayName } from "../constants";
@@ -16,7 +17,6 @@ interface Props {
   targets: number[];
   disabledReason: string | null;
   pending: boolean;
-  note: string | null;
   onUpscale: () => void;
 }
 
@@ -26,7 +26,6 @@ export default function LibraryUpscaleControls({
   targets,
   disabledReason,
   pending,
-  note,
   onUpscale,
 }: Props) {
   const reason =
@@ -45,7 +44,6 @@ export default function LibraryUpscaleControls({
         {pending ? "Queuing…" : `Upscale to ${targets.join(", ") || "…"} DPI`}
       </button>
       {reason ? <p className="hint">{reason}</p> : null}
-      {note ? <p className="hint">{note}</p> : null}
       {/* Same gap as the remove button below, so the three stack evenly. */}
       {variants.length > 0 && (
         <div className="variants" style={{ marginTop: 18 }}>

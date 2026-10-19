@@ -10,14 +10,13 @@ import { serverSupportsMpcFill, useServerVersion } from "../config";
 import { refreshAfterCatalogUpdate, setMpcCatalogJobId, useMpcCatalogJobId } from "../mpcCatalog";
 import ConfirmDialog from "./ConfirmDialog";
 import { catalogPhaseLine } from "./MpcCatalogPrompt";
+import { toast } from "../toasts";
 
 export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
   const { serverUnavailable } = props;
   const queryClient = useQueryClient();
   const supported = serverSupportsMpcFill(useServerVersion());
   const jobId = useMpcCatalogJobId();
-  const [error, setError] = useState<string | null>(null);
-  const [upToDate, setUpToDate] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const statusQuery = useQuery({
@@ -43,25 +42,17 @@ export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
       if (!check.update_available) return null;
       return generationApi.startMpcCatalogImport();
     },
-    onMutate: () => {
-      setError(null);
-      setUpToDate(false);
-    },
     onSuccess: (started) => {
       if (started) setMpcCatalogJobId(started.job_id);
-      else setUpToDate(true);
+      else toast("The MPC Fill Catalog is up to date.", "info", { key: "mpc-catalog" });
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => toast(err.message, "err", { key: "mpc-catalog" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: () => generationApi.deleteMpcCatalog(),
-    onSuccess: () => {
-      setError(null);
-      setUpToDate(false);
-      refreshAfterCatalogUpdate(queryClient);
-    },
-    onError: (err: Error) => setError(err.message),
+    onSuccess: () => refreshAfterCatalogUpdate(queryClient),
+    onError: (err: Error) => toast(err.message, "err", { key: "mpc-catalog" }),
   });
 
   if (!supported || statusQuery.isError) return null;
@@ -76,7 +67,7 @@ export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
         {running
           ? catalogPhaseLine(job)
           : local
-            ? `${local.card_count.toLocaleString()} Images · ${local.source_count} Sources · Updated ${local.imported_at.slice(0, 10)}${upToDate ? " · Up to Date" : ""}`
+            ? `${local.card_count.toLocaleString()} Images · ${local.source_count} Sources · Updated ${local.imported_at.slice(0, 10)}`
             : "Not Downloaded Yet — art search asks mpcfill.com."}
       </p>
       {job?.status === "failed" && <p className="error-text">{job.error ?? "The update failed."}</p>}
@@ -116,7 +107,6 @@ export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
           decks is untouched.
         </ConfirmDialog>
       )}
-      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }

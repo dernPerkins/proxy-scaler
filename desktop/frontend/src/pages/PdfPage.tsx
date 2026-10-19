@@ -42,6 +42,7 @@ import type {
   PdfLayoutRequest,
   ReverseFill,
 } from "../api/types";
+import { toast } from "../toasts";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -262,7 +263,6 @@ export default function PdfPage() {
     back_images: referencedBacks.map(backImageRef),
   };
   const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   // Sorted before mapping: the server prints/paginates in entries order,
   // so this is where the shared sort dropdown reaches the actual PDF.
@@ -418,7 +418,6 @@ export default function PdfPage() {
    */
   async function handleDownload() {
     if (projectTag == null || serverUnavailable) return;
-    setDownloadError(null);
     setDownloading(true);
     try {
       // The server renders from its registry, so any custom art it hasn't
@@ -469,7 +468,7 @@ export default function PdfPage() {
     } catch (err) {
       // Cancelling is a normal outcome, not something to show as an error.
       if (err instanceof DownloadCanceled || err instanceof UploadCanceled) return;
-      setDownloadError(err instanceof ApiError ? err.message : String(err));
+      toast(err instanceof ApiError ? err.message : String(err), "err", { key: "pdf" });
     } finally {
       setDownloading(false);
     }
@@ -483,7 +482,6 @@ export default function PdfPage() {
    *  (Cricut) wants. */
   async function handleCutFileDownload() {
     if (projectTag == null || serverUnavailable) return;
-    setDownloadError(null);
     setDownloading(true);
     try {
       await runDownload(cutFileFilename(projectName), {
@@ -492,7 +490,7 @@ export default function PdfPage() {
       });
     } catch (err) {
       if (err instanceof DownloadCanceled) return;
-      setDownloadError(err instanceof ApiError ? err.message : String(err));
+      toast(err instanceof ApiError ? err.message : String(err), "err", { key: "pdf" });
     } finally {
       setDownloading(false);
     }
@@ -1395,7 +1393,6 @@ export default function PdfPage() {
               Download cut file (SVG)
             </button>
           )}
-          {downloadError && <span className="error-text">{downloadError}</span>}
         </div>
       </main>
     </div>

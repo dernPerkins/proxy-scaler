@@ -36,6 +36,7 @@ import { OriginalsFallbackNote } from "../components/OriginalsFallbackNote";
 import { zipFilename } from "../zipFilename";
 import type { ExportImageFormat, ExportZipFormat, ReverseFill } from "../api/types";
 import tcgplaytestLogo from "../assets/tcgplaytest.webp";
+import { toast } from "../toasts";
 
 // Same cadence as the PDF tab's job polling.
 const POLL_INTERVAL_MS = 400;
@@ -90,7 +91,6 @@ export default function ExportPage() {
   const perCardBacksSupported = serverSupportsPerCardBacks(serverVersion);
 
   const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   // Sorted before mapping: ZIP filenames are numbered in entries order,
   // so this is where the shared sort dropdown reaches the exported files.
@@ -160,7 +160,6 @@ export default function ExportPage() {
 
   async function handleExport(format: ExportZipFormat) {
     if (projectTag == null || serverUnavailable) return;
-    setDownloadError(null);
     setDownloading(true);
     try {
       // Same as the PDF tab: the archive is built from the server's
@@ -219,7 +218,7 @@ export default function ExportPage() {
     } catch (err) {
       // Cancelling is a normal outcome, not something to show as an error.
       if (err instanceof DownloadCanceled || err instanceof UploadCanceled) return;
-      setDownloadError(err instanceof ApiError ? err.message : String(err));
+      toast(err instanceof ApiError ? err.message : String(err), "err", { key: "zip" });
     } finally {
       setDownloading(false);
     }
@@ -679,7 +678,6 @@ export default function ExportPage() {
               </p>
             )}
           </div>
-          {downloadError && <span className="error-text">{downloadError}</span>}
         </div>
       </main>
     </div>

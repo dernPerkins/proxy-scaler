@@ -52,6 +52,8 @@ import {
   type LibraryUpscaleMode,
 } from "../libraryUpscale";
 import { UploadCanceled } from "../uploadProgress";
+import { errorText, toast } from "../toasts";
+import { blurOnEnter } from "../inputKeys";
 import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
@@ -115,6 +117,7 @@ function BackSettingsFields({
         <input
           defaultValue={back.label}
           key={back.id}
+          onKeyDown={blurOnEnter}
           onBlur={(e) => {
             const next = e.target.value.trim();
             if (next && next !== back.label) {
@@ -151,6 +154,7 @@ function BackSettingsFields({
             step={0.001}
             key={`bleed-${back.id}`}
             defaultValue={back.bleed_mm}
+            onKeyDown={blurOnEnter}
             onBlur={(e) => {
               const next = Number(e.target.value);
               if (
@@ -354,7 +358,6 @@ export default function BacksPage() {
     useLibraryUpscaleSettings(modelsQuery.data);
 
   const fileInput = useRef<HTMLInputElement>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [mpcOpen, setMpcOpen] = useState(false);
@@ -387,20 +390,23 @@ export default function BacksPage() {
     selected?.content_hash ?? null,
     !serverUnavailable && libraryUpscaleSupported,
   );
-  const [upscaleNote, setUpscaleNote] = useState<string | null>(null);
   const upscaleMutation = useMutation({
     mutationFn: (back: BackImage) => upscaleLibraryImage("back", back, upscaleSettings, serverVersion),
     onSuccess: (result, back) => {
-      setUpscaleNote(
-        result.queued
-          ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
-          : `Nothing to do.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
-      );
+      if (result.queued) {
+        toast(`Queued ${result.queued} task(s). The Tasks tab shows their progress.`, "ok", {
+          key: "library-upscale",
+        });
+      } else {
+        toast(`Nothing to do.${result.notes.length ? " " + result.notes.join(" ") : ""}`, "info", {
+          key: "library-upscale",
+        });
+      }
       void queryClient.invalidateQueries({ queryKey: ["library-status", "back", back.content_hash] });
     },
     onError: (err: Error) => {
       if (err instanceof UploadCanceled) return;
-      setUpscaleNote(`Upscale failed: ${err.message}`);
+      toast(`Upscale failed: ${err.message}`, "err", { key: "library-upscale" });
     },
   });
   useTourOnFirstView("backs");
@@ -427,9 +433,9 @@ export default function BacksPage() {
       // Selecting what you just added is the only useful next step, and
       // skipping it leaves a library with a new back nothing points at.
       setSettings((s) => ({ ...s, back_image_id: added.id }));
-      setUploadError(null);
     },
-    onError: (err) => setUploadError(err instanceof Error ? err.message : String(err)),
+    // Rejections (wrong file type, over the size cap) name the file and why.
+    onError: (err) => toast(errorText(err), "err", { key: "back-upload" }),
   });
 
   const deleteMutation = useMutation({
@@ -538,11 +544,7 @@ export default function BacksPage() {
                     : null
               }
               pending={upscaleMutation.isPending}
-              note={upscaleNote}
-              onUpscale={() => {
-                setUpscaleNote(null);
-                upscaleMutation.mutate(selected);
-              }}
+              onUpscale={() => upscaleMutation.mutate(selected)}
             />
             <button
               className="btn-sm btn-danger btn-block"
@@ -688,15 +690,6 @@ export default function BacksPage() {
             />
           ))}
         </div>
-
-        {/* Rejections (wrong file type, over the size cap) surface here
-            rather than inside the tile — the tile is small, and the
-            message needs room to say which file and why. */}
-        {uploadError && (
-          <p className="error-text" style={{ marginTop: 12 }}>
-            {uploadError}
-          </p>
-        )}
 
         {backs.length === 0 && (
           <p className="hint" style={{ marginTop: 12 }}>

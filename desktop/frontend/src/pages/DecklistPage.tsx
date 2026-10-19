@@ -46,6 +46,7 @@ import { resolveImageOrigin } from "../imageOrigin";
 import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
+import { errorText, toast } from "../toasts";
 import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
@@ -137,6 +138,17 @@ function withPendingPicks(
   ].sort((a, b) => (a.pick?.face ?? position(a)) - (b.pick?.face ?? position(b)));
 }
 
+/** The server's notes on an upscale request, as their own toasts beside
+ *  the outcome, whether or not anything else queued: a card skipped for
+ *  already reaching its DPI ("Sol Ring: already 1195 DPI.") is a warning,
+ *  and a card that couldn't be prepared ("FAIL [...]") an error. */
+function toastUpscaleNotes(notes: string[]): void {
+  const failures = notes.filter((n) => n.startsWith("FAIL"));
+  const skips = notes.filter((n) => !n.startsWith("FAIL"));
+  if (skips.length) toast(`Skipped: ${skips.join(" ")}`, "warn", { key: "generate-skips" });
+  if (failures.length) toast(failures.join(" "), "err", { key: "generate-failures" });
+}
+
 export default function DecklistPage() {
   const queryClient = useQueryClient();
   const pendingArt = usePendingFaceArt();
@@ -207,7 +219,6 @@ export default function DecklistPage() {
     draftProjectId.current = projectId;
     if (previous != null && previous !== projectId) setDecklistDraft("");
   }, [projectId]);
-  const [status, setStatus] = useState<string | null>(null);
   // Per-line failures from the last resolve-gated import attempt — the
   // lines themselves stay in the textarea for fixing; successes leave it.
   const [importFailures, setImportFailures] = useState<
@@ -220,14 +231,12 @@ export default function DecklistPage() {
   // server (strictly in the chosen language unless "All Languages"),
   // persist only the successes — failures are listed and NOT added.
   const handleImport = async () => {
-    setStatus(null);
     setImportFailures([]);
-    setArtNote(null);
     setImporting(true);
     try {
       const parsed = await projectApi.parseDecklist(decklistDraft);
       if (parsed.length === 0) {
-        setStatus("Nothing to import.");
+        toast("Nothing to import.", "info", { key: "import" });
         return;
       }
       const lang = settings.lang_any ? null : settings.preferred_lang;
@@ -281,15 +290,17 @@ export default function DecklistPage() {
             .join("\n"),
         );
         setImportFailures(failures);
-        setStatus(
-          `Imported ${resolvedCards.length} card(s) — ${failures.length} line(s) didn't match and were not added.`,
+        toast(
+          `Imported ${resolvedCards.length} card(s). ${failures.length} line(s) didn't match and weren't added; they're listed under the import box.`,
+          "warn",
+          { key: "import" },
         );
       } else {
         setDecklistDraft("");
-        if (resolvedCards.length === 0) setStatus("Nothing to import.");
+        if (resolvedCards.length === 0) toast("Nothing to import.", "info", { key: "import" });
       }
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      toast(`Import failed: ${errorText(err)}`, "err", { key: "import" });
     } finally {
       setImporting(false);
     }
@@ -487,7 +498,6 @@ export default function DecklistPage() {
   // learned this the same way).
   const [dragDepth, setDragDepth] = useState(0);
   const customFileInput = useRef<HTMLInputElement>(null);
-  const [customUploadError, setCustomUploadError] = useState<string | null>(null);
   const [customProgress, setCustomProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -503,7 +513,6 @@ export default function DecklistPage() {
     total: number;
     name: string;
   } | null>(null);
-  const [orderNote, setOrderNote] = useState<string | null>(null);
   const [orderCardback, setOrderCardback] = useState<BackImage | null>(null);
   const mpcSupported = serverSupportsMpcFill(serverVersion);
 
@@ -511,7 +520,6 @@ export default function DecklistPage() {
   // card gets MPC Fill's top match as its face art, downloaded one at a
   // time with a cancel. Faces with no match keep their Scryfall art.
   const [findingArt, setFindingArt] = useState(false);
-  const [artNote, setArtNote] = useState<string | null>(null);
   async function pickMpcArtFor(imported: CardRow[]) {
     setFindingArt(true);
     try {
@@ -526,15 +534,15 @@ export default function DecklistPage() {
       // download — see the library effect below.
       void queryClient.invalidateQueries({ queryKey: ["custom-images"] });
       // Only what needs the user's attention.
-      setArtNote(
-        result.unmatched.length
-          ? `No MPC Fill art for ${result.unmatched.join(", ")} — kept Scryfall art.`
-          : null,
-      );
+      if (result.unmatched.length) {
+        toast(`No MPC Fill art for ${result.unmatched.join(", ")}, so they keep Scryfall art.`, "warn", {
+          key: "mpc-art",
+        });
+      }
     } catch (err) {
-      setArtNote(
-        `Couldn't pick MPC Fill art (${err instanceof Error ? err.message : String(err)}) — kept Scryfall art.`,
-      );
+      toast(`Couldn't pick MPC Fill art (${errorText(err)}), so the cards keep Scryfall art.`, "err", {
+        key: "mpc-art",
+      });
     } finally {
       setFindingArt(false);
     }
@@ -567,20 +575,24 @@ export default function DecklistPage() {
       void queryClient.invalidateQueries({ queryKey: ["back-images"] });
       setOrderProgress(null);
       const problems = [...result.warnings, ...result.errors];
-      setOrderNote(
-        result.canceled
-          ? "Import canceled; art already fetched stays in the library."
-          : `Added ${result.added} card(s) from the order.${
-              problems.length ? ` Not imported: ${problems.join(" ")}` : ""
-            }`,
-      );
+      if (result.canceled) {
+        toast("Import canceled; art already fetched stays in the library.", "info", { key: "order" });
+      } else {
+        toast(
+          `Added ${result.added} card(s) from the order.${
+            problems.length ? ` Not imported: ${problems.join(" ")}` : ""
+          }`,
+          problems.length ? "warn" : "ok",
+          { key: "order" },
+        );
+      }
       if (!result.canceled && result.cardback && result.cardback.id !== settings.back_image_id) {
         setOrderCardback(result.cardback);
       }
     },
     onError: (err: Error) => {
       setOrderProgress(null);
-      setOrderNote(`Couldn't import that order: ${err.message}`);
+      toast(`Couldn't import that order: ${err.message}`, "err", { key: "order" });
     },
   });
 
@@ -614,11 +626,11 @@ export default function DecklistPage() {
     },
     onSuccess: ({ errors }) => {
       void queryClient.invalidateQueries({ queryKey: ["custom-images"] });
-      setCustomUploadError(errors.length ? errors.join(" ") : null);
+      if (errors.length) toast(errors.join(" "), "err", { key: "custom-upload" });
       setCustomProgress(null);
     },
     onError: (err: Error) => {
-      setCustomUploadError(err.message);
+      toast(err.message, "err", { key: "custom-upload" });
       setCustomProgress(null);
     },
   });
@@ -705,7 +717,7 @@ export default function DecklistPage() {
       void registerCustomCards([card], projectTag, serverVersion)
         .then(() => refetchStatus())
         .catch((err: unknown) =>
-          setStatus(`Download failed: ${err instanceof Error ? err.message : String(err)}`),
+          toast(`Download failed: ${errorText(err)}`, "err"),
         );
       return;
     }
@@ -753,19 +765,23 @@ export default function DecklistPage() {
       });
     },
     onSuccess: (result, scope) => {
-      setStatus(
-        result == null
-          ? SCOPE_EMPTY[scope]
-          : result.queued
-            ? `Queued ${result.queued} task(s) — see the Tasks tab to monitor progress.`
-            : `Nothing to do — every requested image already exists.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
-      );
+      if (result == null) toast(SCOPE_EMPTY[scope], "info", { key: "generate" });
+      else {
+        toast(
+          result.queued
+            ? `Queued ${result.queued} task(s). The Tasks tab shows their progress.`
+            : "Nothing to do: every requested image already exists.",
+          result.queued ? "ok" : "info",
+          { key: "generate" },
+        );
+        toastUpscaleNotes(result.notes);
+      }
       invalidateStatus();
     },
     onError: (err: Error) => {
       // Cancelling the custom-image upload is a normal outcome, not a failure.
       if (err instanceof UploadCanceled) return;
-      setStatus(`Upscale failed: ${err.message}`);
+      toast(`Upscale failed: ${err.message}`, "err", { key: "generate" });
     },
   });
 
@@ -788,17 +804,23 @@ export default function DecklistPage() {
       });
     },
     onSuccess: (result) => {
-      setStatus(
-        result.queued
-          ? `Queued ${result.queued} download(s) — see the Tasks tab to monitor progress.`
-          : `Nothing to do — every original is already downloaded.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
-      );
+      if (result.queued) {
+        toast(`Queued ${result.queued} download(s). The Tasks tab shows their progress.`, "ok", {
+          key: "download",
+        });
+      } else {
+        toast(
+          `Nothing to do: every original is already downloaded.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
+          "info",
+          { key: "download" },
+        );
+      }
       invalidateStatus();
     },
     onError: (err: Error) => {
       // Cancelling the custom-image upload is a normal outcome, not a failure.
       if (err instanceof UploadCanceled) return;
-      setStatus(`Download failed: ${err.message}`);
+      toast(`Download failed: ${err.message}`, "err", { key: "download" });
     },
   });
 
@@ -823,14 +845,15 @@ export default function DecklistPage() {
       });
     },
     onSuccess: (result) => {
-      // Only a skip needs saying: queued work shows on the row's badges.
-      if (result.queued === 0 && result.notes.length) setStatus(result.notes.join(" "));
+      // Only what was skipped needs saying: queued work shows on the
+      // row's badges.
+      toastUpscaleNotes(result.notes);
       invalidateStatus();
     },
     onError: (err: Error) => {
       // Cancelling the custom-image upload is a normal outcome, not a failure.
       if (err instanceof UploadCanceled) return;
-      setStatus(`Upscale failed: ${err.message}`);
+      toast(`Upscale failed: ${err.message}`, "err", { key: "generate" });
     },
   });
 
@@ -847,7 +870,7 @@ export default function DecklistPage() {
         image_origin: await resolveImageOrigin(queryClient),
       }),
     onSuccess: invalidateStatus,
-    onError: (err: Error) => setStatus(`Regenerate failed: ${err.message}`),
+    onError: (err: Error) => toast(`Regenerate failed: ${err.message}`, "err"),
   });
 
   const refetchMutation = useMutation({
@@ -860,7 +883,7 @@ export default function DecklistPage() {
         image_origin: await resolveImageOrigin(queryClient),
       }),
     onSuccess: invalidateStatus,
-    onError: (err: Error) => setStatus(`Re-fetch failed: ${err.message}`),
+    onError: (err: Error) => toast(`Re-fetch failed: ${err.message}`, "err"),
   });
 
   // This tab's own shortcuts: Cmd/Ctrl+Enter imports the pasted decklist,
@@ -916,7 +939,7 @@ export default function DecklistPage() {
     onSuccess: () => {
       invalidateStatus();
     },
-    onError: (err: Error) => setStatus(`Clear failed: ${err.message}`),
+    onError: (err: Error) => toast(`Clear failed: ${err.message}`, "err"),
   });
 
   function openDirectory(label: string, path: string) {
@@ -934,7 +957,7 @@ export default function DecklistPage() {
     opening.catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       const hint = viaSsh ? " — copy the path and ssh in manually instead." : "";
-      setStatus(`Couldn't open ${label.toLowerCase()}: ${msg}${hint}`);
+      toast(`Couldn't open ${label.toLowerCase()}: ${msg}${hint}`, "err");
     });
   }
 
@@ -1212,14 +1235,12 @@ export default function DecklistPage() {
             </span>
           </div>
           {findingArt && <p className="hint">Finding MPC Fill art…</p>}
-          {artNote && <p className="hint">{artNote}</p>}
           {serverUnavailable && (
             <p className="hint">
               Importing needs the generation server — cards are matched
               before they're added.
             </p>
           )}
-          {status && <p className="hint">{status}</p>}
           {importFailures.length > 0 && (
             <ul className="import-failures">
               {importFailures.map((f) => (
@@ -1279,7 +1300,6 @@ export default function DecklistPage() {
               {customProgress.total}…
             </p>
           )}
-          {customUploadError && <p className="error-text">{customUploadError}</p>}
           <p className="hint">
             Have an MPC Autofill order?{" "}
             <button
@@ -1308,7 +1328,6 @@ export default function DecklistPage() {
               const file = e.target.files?.[0];
               e.target.value = "";
               if (file) {
-                setOrderNote(null);
                 importOrderMutation.mutate(file);
               }
             }}
@@ -1329,7 +1348,6 @@ export default function DecklistPage() {
               </button>
             </p>
           )}
-          {orderNote && <p className="hint">{orderNote}</p>}
           {orderCardback && (
             <ConfirmDialog
               title="Use the order's card back?"
@@ -1650,7 +1668,6 @@ function CardRowView(props: {
   const hasImages = faces.some((f) => f.variants.some((v) => v.galleryItemId != null));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
   const [viewTarget, setViewTarget] = useState<{ title: string; src: string } | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
   // Global single-flight lock (see download.ts::runDownload) -- disables
   // every Download button on the page the instant any one download
   // starts, not just once its file is ready. Without this, a slow fetch
@@ -1659,11 +1676,10 @@ function CardRowView(props: {
   const downloadStatus = useDownloadStatus();
 
   async function download(url: string, filename: string) {
-    setDownloadError(null);
     try {
       await handleDownloadImage(url, filename);
     } catch (err) {
-      setDownloadError(err instanceof Error ? err.message : String(err));
+      toast(`Download failed: ${errorText(err)}`, "err");
     }
   }
 
@@ -2026,11 +2042,6 @@ function CardRowView(props: {
           );
         })}
 
-      {downloadError && (
-        <p className="error-text">
-          Download failed: {downloadError}
-        </p>
-      )}
 
       {compareTarget && (
         <CompareDialog
