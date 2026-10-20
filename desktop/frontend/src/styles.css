@@ -2069,6 +2069,51 @@ button:disabled {
   flex: 1;
 }
 
+/* The MPC Fill tab's toolbar stays on screen while the grid scrolls: a
+   strip of page background above it hides the tiles passing under its
+   rounded top corners, and a shadow appears once it is actually stuck. */
+.mpc-library-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  margin-top: 8px;
+  padding-top: 8px;
+  background: var(--bg);
+}
+.mpc-library-sticky > .mpc-library-toolbar {
+  margin-top: 0;
+}
+.mpc-library-sticky.is-stuck > .mpc-library-toolbar {
+  box-shadow: var(--shadow);
+}
+
+/* BackToTopButton: bottom-right, where the toast stack also lives; the
+   stack moves up above the button while it shows. */
+.back-to-top,
+.back-to-top:hover:not(:disabled) {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 1500;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 20px;
+  line-height: 1;
+  box-shadow: var(--shadow);
+  animation: toast-in 0.18s ease-out;
+}
+.back-to-top:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+body.has-back-to-top .toast-stack {
+  bottom: 78px;
+}
+
 /* Split button: [Action][▾] read as one control; the menu is CompareMenu's. */
 .split-button {
   position: relative;

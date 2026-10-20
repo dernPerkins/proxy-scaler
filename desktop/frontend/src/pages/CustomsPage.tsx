@@ -28,7 +28,7 @@
 // checkbox asks. The viewer carries the same settings so the answer can
 // be given while looking at the evidence. It is components/ImageViewer,
 // shared with the Backs tab.
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -48,6 +48,7 @@ import {
 import { MpcArtModal } from "../components/MpcArtPicker";
 import { addMpcArtToDeck, importMpcArtInBackground, usePendingMpcImports } from "../mpcLibrary";
 import StatusBadge from "../components/StatusBadge";
+import BackToTopButton from "../components/BackToTopButton";
 import MpcLibraryToolbar, {
   NO_FILTERS,
   applyMpcLibraryFilters,
@@ -401,6 +402,16 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     () => new Set(cards.flatMap((c) => customImageRefs(c).map((ref) => ref.id))),
     [cards],
   );
+  const stickyRef = useRef<HTMLDivElement>(null);
+  const [toolbarStuck, setToolbarStuck] = useState(false);
+  useEffect(() => {
+    if (view !== "mpc") return;
+    const onScroll = () =>
+      setToolbarStuck((stickyRef.current?.getBoundingClientRect().top ?? 1) <= 0 && window.scrollY > 0);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [view]);
   const [mpcFilters, setMpcFiltersState] = useState<MpcLibraryFilters>(lastMpcFilters);
   function setMpcFilters(next: MpcLibraryFilters) {
     lastMpcFilters = next;
@@ -704,14 +715,19 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
 
         {view === "mpc" ? (
           <>
-            <MpcLibraryToolbar
-              items={mpcItems}
-              filters={mpcFilters}
-              onChange={setMpcFilters}
-              shown={mpcShown.length}
-              onSearchMpc={() => setMpcOpen(true)}
-              searchDisabledReason={mpcSearchDisabledReason}
-            />
+            {/* Sticks to the top as the grid scrolls, so search and the
+                filters stay in reach; the shadow marks it stuck. */}
+            <div ref={stickyRef} className={`mpc-library-sticky${toolbarStuck ? " is-stuck" : ""}`}>
+              <MpcLibraryToolbar
+                items={mpcItems}
+                filters={mpcFilters}
+                onChange={setMpcFilters}
+                shown={mpcShown.length}
+                onSearchMpc={() => setMpcOpen(true)}
+                searchDisabledReason={mpcSearchDisabledReason}
+              />
+            </div>
+            <BackToTopButton />
             {mpcShown.length === 0 && !pendingTiles ? (
               <p className="hint" style={{ marginTop: 8 }}>
                 {mpcItems.length === 0 ? (
