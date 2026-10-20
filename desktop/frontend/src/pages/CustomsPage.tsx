@@ -68,6 +68,7 @@ import {
 import { UploadCanceled } from "../uploadProgress";
 import { errorText, toast } from "../toasts";
 import { blurOnEnter } from "../inputKeys";
+import { fillFrameWith, trimGeometry } from "../cardTrim";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import { customImageRefs, getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
@@ -241,6 +242,11 @@ function CustomTile({
     staleTime: Infinity,
   });
   const lowRes = image.source_dpi < LOW_DPI;
+  // A file declared to carry bleed (every MPC Fill download) shows as cut:
+  // the bleed is cropped off, as the MPC Fill picker's tiles do.
+  const trimmed = image.includes_bleed
+    ? fillFrameWith(trimGeometry({ w: image.width, h: image.height }, image.bleed_mm).trim)
+    : null;
   return (
     <div
       className="thumb"
@@ -277,7 +283,11 @@ function CustomTile({
           <img
             src={thumbQuery.data}
             alt={image.label}
-            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            style={
+              trimmed
+                ? { position: "absolute", maxWidth: "none", objectFit: "fill", display: "block", ...trimmed }
+                : { width: "100%", height: "100%", objectFit: "cover", display: "block" }
+            }
           />
         ) : null}
         <button
