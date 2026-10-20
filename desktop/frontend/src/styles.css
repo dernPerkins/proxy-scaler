@@ -2040,6 +2040,35 @@ button:disabled {
   border-color: var(--border-strong);
 }
 
+/* The MPC Fill tab's search and filter row (MpcLibraryToolbar.tsx). */
+.mpc-library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 14px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.mpc-library-toolbar input[type="search"] {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+.mpc-library-toolbar .segmented button {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+}
+.mpc-library-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.mpc-library-spacer {
+  flex: 1;
+}
+
 /* Split button: [Action][▾] read as one control; the menu is CompareMenu's. */
 .split-button {
   position: relative;
@@ -2537,6 +2566,23 @@ tbody tr:last-child td {
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
+}
+.select-menu-search {
+  position: sticky;
+  top: -4px;
+  margin: -4px -4px 4px;
+  padding: 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.select-menu-search input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.select-menu-empty {
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 .select-menu-option.active {
   background: var(--surface-2);

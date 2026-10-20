@@ -48,6 +48,14 @@ import {
 import { MpcArtModal } from "../components/MpcArtPicker";
 import { addMpcArtToDeck, importMpcArtInBackground, usePendingMpcImports } from "../mpcLibrary";
 import StatusBadge from "../components/StatusBadge";
+import MpcLibraryToolbar, {
+  NO_FILTERS,
+  applyMpcLibraryFilters,
+  filtersActive,
+  toPickerInitial,
+  useMpcLibraryItems,
+  type MpcLibraryFilters,
+} from "../components/MpcLibraryToolbar";
 import { useConnection } from "../connection";
 import { useProject } from "../context/ProjectContext";
 import {
@@ -78,6 +86,10 @@ import {
 // launch starts with nothing selected like every other tab. An id whose
 // image has since been deleted resolves to nothing selected through the
 // same lookup as a stale live id.
+// The MPC Fill tab's search and filters, kept across tab switches for the
+// session like the selection (a fresh launch starts unfiltered).
+let lastMpcFilters: MpcLibraryFilters = NO_FILTERS;
+
 const lastSelectedId: Record<LibraryView, number | null> = { uploads: null, mpc: null };
 
 /** Which half of the library a page shows. */
@@ -379,6 +391,16 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     () => new Set(cards.flatMap((c) => customImageRefs(c).map((ref) => ref.id))),
     [cards],
   );
+  const [mpcFilters, setMpcFiltersState] = useState<MpcLibraryFilters>(lastMpcFilters);
+  function setMpcFilters(next: MpcLibraryFilters) {
+    lastMpcFilters = next;
+    setMpcFiltersState(next);
+  }
+  const mpcItems = useMpcLibraryItems(view === "mpc" ? images : [], idsInProject);
+  const mpcShown = useMemo(
+    () => applyMpcLibraryFilters(mpcItems, mpcFilters),
+    [mpcItems, mpcFilters],
+  );
   const selected = images.find((i) => i.id === selectedId) ?? null;
   const viewing = images.find((i) => i.id === viewingId) ?? null;
   // Everything ever made for the selected image, whichever project or
@@ -523,6 +545,44 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     setPendingDelete({ image, uses, faceUses });
   }
 
+  const renderTile = (image: CustomImage) => (
+    <CustomTile
+      key={image.id}
+      image={image}
+      inProject={idsInProject.has(image.id)}
+      selected={image.id === selectedId}
+      adding={addingId === image.id}
+      onSelect={() => setSelectedId(image.id)}
+      onView={() => {
+        setSelectedId(image.id);
+        setViewingId(image.id);
+      }}
+      onAdd={() => void addToProject(image)}
+    />
+  );
+  const pendingTiles = pendingImports.length
+    ? pendingImports.map((p) => (
+        <div key={p.driveId} className="thumb" style={{ padding: 6 }} aria-busy="true">
+          <div
+            className="loading-shimmer"
+            style={{ aspectRatio: "63 / 88", borderRadius: 8, border: "1px solid var(--border)" }}
+          />
+          <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{p.name}</div>
+          <div className="hint" style={{ fontSize: 12 }}>
+            {p.source || "Unknown uploader"}
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <StatusBadge status="running">Downloading · MPC</StatusBadge>
+          </div>
+        </div>
+      ))
+    : null;
+  const mpcSearchDisabledReason = serverUnavailable
+    ? "Generation server is unreachable"
+    : !mpcSupported
+      ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
+      : null;
+
   return (
     <div className="layout">
       <aside className="sidebar panel">
@@ -632,125 +692,113 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
           </>
         )}
 
-        <div
-          style={{
-            marginTop: 16,
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
-            gap: 12,
-          }}
-        >
-          {view === "uploads" ? (
-            <>
-              <button
-                type="button"
-                className={`dropzone${dragging ? " is-dragging" : ""}`}
-                data-tour="custom-dropzone"
-                onClick={() => fileInput.current?.click()}
-                disabled={addMutation.isPending}
-              >
-                <UploadIcon />
-                <span className="dropzone-title">
-                  {addMutation.isPending && progress ? (
-                    `Adding ${progress.done + 1} of ${progress.total}…`
-                  ) : (
-                    <>
-                      Drag and drop
-                      <br />
-                      or
-                      <br />
-                      click here
-                    </>
-                  )}
-                </span>
-                <span className="dropzone-hint">
-                  PNG, JPEG or WebP
-                  <br />
-                  up to {MAX_UPLOAD_MB}MB each
-                </span>
-              </button>
-
-              {/* Inside the grid so it can never be orphaned from the button
-                  that clicks it — moving it out once silently made the whole
-                  tile do nothing (see BacksPage). */}
-              <input
-                ref={fileInput}
-                type="file"
-                multiple
-                accept={ACCEPTED_IMAGE_TYPES}
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const files = e.target.files;
-                  // Reset first: picking the same file twice in a row fires no
-                  // change event otherwise, which reads as a broken control.
-                  const copy = files ? Array.from(files) : [];
-                  e.target.value = "";
-                  if (copy.length) addMutation.mutate(copy);
+        {view === "mpc" ? (
+          <>
+            <MpcLibraryToolbar
+              items={mpcItems}
+              filters={mpcFilters}
+              onChange={setMpcFilters}
+              shown={mpcShown.length}
+              onSearchMpc={() => setMpcOpen(true)}
+              searchDisabledReason={mpcSearchDisabledReason}
+            />
+            {mpcShown.length === 0 && !pendingTiles ? (
+              <p className="hint" style={{ marginTop: 8 }}>
+                {mpcItems.length === 0 ? (
+                  "No MPC Fill art downloaded yet. Use + Search MPC Fill to find some."
+                ) : (
+                  <>
+                    Nothing in your library matches.{" "}
+                    {mpcSearchDisabledReason == null && filtersActive(mpcFilters) && (
+                      <button type="button" className="linklike" onClick={() => setMpcOpen(true)}>
+                        Search MPC Fill for it
+                      </button>
+                    )}
+                    {" · "}
+                    <button type="button" className="linklike" onClick={() => setMpcFilters(NO_FILTERS)}>
+                      Clear filters
+                    </button>
+                  </>
+                )}
+              </p>
+            ) : (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
+                  gap: 12,
                 }}
-              />
-            </>
-          ) : (
+              >
+                {pendingTiles}
+                {mpcShown.map((item) => renderTile(item.image))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div
+            style={{
+              marginTop: 16,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
+              gap: 12,
+            }}
+          >
             <button
               type="button"
-              className="dropzone mpc-library-tile"
-              data-tour="mpc-search"
-              disabled={serverUnavailable || !mpcSupported}
-              title={
-                serverUnavailable
-                  ? "Generation server is unreachable"
-                  : !mpcSupported
-                    ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
-                    : "Search community art on MPC Fill"
-              }
-              onClick={() => setMpcOpen(true)}
+              className={`dropzone${dragging ? " is-dragging" : ""}`}
+              data-tour="custom-dropzone"
+              onClick={() => fileInput.current?.click()}
+              disabled={addMutation.isPending}
             >
-              <span className="dropzone-title">Search MPC Fill</span>
+              <UploadIcon />
+              <span className="dropzone-title">
+                {addMutation.isPending && progress ? (
+                  `Adding ${progress.done + 1} of ${progress.total}…`
+                ) : (
+                  <>
+                    Drag and drop
+                    <br />
+                    or
+                    <br />
+                    click here
+                  </>
+                )}
+              </span>
               <span className="dropzone-hint">
-                Search community art
+                PNG, JPEG or WebP
                 <br />
-                cards and tokens
+                up to {MAX_UPLOAD_MB}MB each
               </span>
             </button>
-          )}
 
-          {pendingImports.map((p) => (
-            <div key={p.driveId} className="thumb" style={{ padding: 6 }} aria-busy="true">
-              <div
-                className="loading-shimmer"
-                style={{ aspectRatio: "63 / 88", borderRadius: 8, border: "1px solid var(--border)" }}
-              />
-              <div style={{ marginTop: 6, fontSize: 13, wordBreak: "break-word" }}>{p.name}</div>
-              <div className="hint" style={{ fontSize: 12 }}>
-                {p.source || "Unknown uploader"}
-              </div>
-              <div style={{ marginTop: 6 }}>
-                <StatusBadge status="running">Downloading · MPC</StatusBadge>
-              </div>
-            </div>
-          ))}
-
-          {images.map((image) => (
-            <CustomTile
-              key={image.id}
-              image={image}
-              inProject={idsInProject.has(image.id)}
-              selected={image.id === selectedId}
-              adding={addingId === image.id}
-              onSelect={() => setSelectedId(image.id)}
-              onView={() => {
-                setSelectedId(image.id);
-                setViewingId(image.id);
+            {/* Inside the grid so it can never be orphaned from the button
+                that clicks it — moving it out once silently made the whole
+                tile do nothing (see BacksPage). */}
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept={ACCEPTED_IMAGE_TYPES}
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const files = e.target.files;
+                // Reset first: picking the same file twice in a row fires no
+                // change event otherwise, which reads as a broken control.
+                const copy = files ? Array.from(files) : [];
+                e.target.value = "";
+                if (copy.length) addMutation.mutate(copy);
               }}
-              onAdd={() => void addToProject(image)}
             />
-          ))}
-        </div>
+
+            {images.map(renderTile)}
+          </div>
+        )}
       </main>
 
       {mpcOpen ? (
         <MpcArtModal
           title="MPC Fill — card fronts"
-          initial={{}}
+          initial={view === "mpc" ? toPickerInitial(mpcFilters) : {}}
           cardTypes={["CARD", "TOKEN"]}
           pickLabel="Add to Library"
           onClose={() => setMpcOpen(false)}

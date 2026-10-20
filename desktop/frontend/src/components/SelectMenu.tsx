@@ -19,6 +19,10 @@
 // row and truncates), options can sit under group headers, and typing
 // jumps to a matching option. Keyboard: Enter/Space/arrows open, arrows
 // move, Home/End, Enter picks, Esc closes, Tab leaves.
+//
+// `searchable` adds a filter box pinned to the top of the list, for lists
+// too long to scroll (every MPC Fill uploader): typing narrows the options
+// by substring instead of jumping, and the arrows and Enter work as usual.
 import {
   Fragment,
   useEffect,
@@ -50,6 +54,8 @@ export default function SelectMenu({
   disabled,
   ariaLabel,
   title,
+  searchable,
+  searchPlaceholder = "Search",
 }: {
   options: SelectMenuOption[];
   /** The chosen option's value, or null when none applies. */
@@ -62,8 +68,13 @@ export default function SelectMenu({
    *  name from the label. */
   ariaLabel?: string;
   title?: string;
+  /** A filter box at the top of the list (see the header comment). */
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
@@ -75,8 +86,11 @@ export default function SelectMenu({
   const listId = useId();
   const listStyle = useDropdownPosition(open, toggleRef, listRef);
 
-  const selectedIndex = options.findIndex((o) => o.value === value);
-  const current = selectedIndex >= 0 ? options[selectedIndex] : null;
+  const current = options.find((o) => o.value === value) ?? null;
+  // What the list shows: everything, or what the filter box matches.
+  const needle = searchable && open ? query.trim().toLowerCase() : "";
+  const shown = needle ? options.filter((o) => o.label.toLowerCase().includes(needle)) : options;
+  const selectedIndex = shown.findIndex((o) => o.value === value);
 
   // Outside clicks close it. The list lives in a portal, so "inside"
   // means the toggle or the list.
@@ -106,11 +120,17 @@ export default function SelectMenu({
     if (disabled) setOpen(false);
   }, [disabled]);
 
-  function openList(at = Math.max(selectedIndex, 0)) {
+  function openList(at?: number) {
     if (disabled || options.length === 0) return;
-    setActive(at);
+    setQuery("");
+    setActive(at ?? Math.max(options.findIndex((o) => o.value === value), 0));
     setOpen(true);
   }
+
+  // The filter box takes the keyboard while the list is open.
+  useEffect(() => {
+    if (open && searchable) searchRef.current?.focus();
+  }, [open, searchable]);
 
   function close() {
     setOpen(false);
@@ -118,7 +138,7 @@ export default function SelectMenu({
   }
 
   function pick(index: number) {
-    const option = options[index];
+    const option = shown[index];
     close();
     if (option && option.value !== value) onChange(option.value);
   }
@@ -130,19 +150,22 @@ export default function SelectMenu({
     const t = typeahead.current;
     t.text = now - t.at > TYPEAHEAD_RESET_MS ? key : t.text + key;
     t.at = now;
-    const query = t.text.toLowerCase();
-    const repeated = query.length > 1 && [...query].every((c) => c === query[0]);
-    const needle = repeated ? query[0] : query;
+    const typed = t.text.toLowerCase();
+    const repeated = typed.length > 1 && [...typed].every((c) => c === typed[0]);
+    const prefix = repeated ? typed[0] : typed;
     const from = open ? active : Math.max(selectedIndex, 0);
-    for (let step = repeated || query.length === 1 ? 1 : 0; step <= options.length; step++) {
-      const i = (from + step) % options.length;
-      if (options[i].label.toLowerCase().startsWith(needle)) return i;
+    for (let step = repeated || typed.length === 1 ? 1 : 0; step <= shown.length; step++) {
+      const i = (from + step) % shown.length;
+      if (shown[i].label.toLowerCase().startsWith(prefix)) return i;
     }
     return -1;
   }
 
   function onKeyDown(e: KeyboardEvent) {
     if (disabled) return;
+    // In the filter box, characters (space included) are the filter's.
+    const inSearch = e.target === searchRef.current;
+    if (inSearch && e.key.length === 1) return;
     if (e.key.length === 1 && e.key !== " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const match = typeaheadMatch(e.key);
       if (match >= 0) {
@@ -168,19 +191,21 @@ export default function SelectMenu({
         break;
       case "ArrowDown":
         e.preventDefault();
-        setActive((i) => Math.min(i + 1, options.length - 1));
+        setActive((i) => Math.min(i + 1, shown.length - 1));
         break;
       case "ArrowUp":
         e.preventDefault();
         setActive((i) => Math.max(i - 1, 0));
         break;
       case "Home":
+        if (inSearch) break;
         e.preventDefault();
         setActive(0);
         break;
       case "End":
+        if (inSearch) break;
         e.preventDefault();
-        setActive(options.length - 1);
+        setActive(shown.length - 1);
         break;
       case "Enter":
       case " ":
@@ -204,9 +229,29 @@ export default function SelectMenu({
           aria-label={ariaLabel}
           style={listStyle}
         >
-          {options.map((o, i) => {
+          {searchable && (
+            <li className="select-menu-search" role="presentation">
+              <input
+                ref={searchRef}
+                type="search"
+                value={query}
+                placeholder={searchPlaceholder}
+                aria-label={`${searchPlaceholder}${ariaLabel ? ` ${ariaLabel}` : ""}`}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setActive(0);
+                }}
+              />
+            </li>
+          )}
+          {searchable && shown.length === 0 && (
+            <li className="select-menu-empty" role="presentation">
+              No matches
+            </li>
+          )}
+          {shown.map((o, i) => {
             const header =
-              o.group && o.group !== options[i - 1]?.group ? (
+              o.group && o.group !== shown[i - 1]?.group ? (
                 <li className="select-menu-group" role="presentation">
                   {o.group}
                 </li>

@@ -44,7 +44,7 @@ const FIRST_HYDRATED = 60;
 
 // MPC Fill's languages (GET /2/languages/), and the Scryfall codes that
 // map onto them for a card's own default.
-const MPC_LANGUAGES: { code: string; name: string }[] = [
+export const MPC_LANGUAGES: { code: string; name: string }[] = [
   { code: "EN", name: "English" },
   { code: "ES", name: "Spanish" },
   { code: "FR", name: "French" },
@@ -279,10 +279,22 @@ function MpcPreview(props: {
   );
 }
 
+/** What the picker searches for first: a name, or a corpus card (and face)
+ *  whose name — and CARD vs TOKEN — the server works out, and optionally
+ *  the filters to start from (the MPC Fill tab hands over its own). */
+export interface MpcPickerInitial {
+  query?: string;
+  scryfallId?: string | null;
+  face?: number;
+  type?: MpcCardType;
+  /** An MPC Fill language code; for this search only, not remembered. */
+  langChoice?: string;
+  minDpi?: number;
+  nsfw?: boolean;
+}
+
 export interface MpcArtBrowserProps {
-  /** What to search for first: a name, or a corpus card (and face) whose
-   *  name — and CARD vs TOKEN — the server works out. */
-  initial: { query?: string; scryfallId?: string | null; face?: number };
+  initial: MpcPickerInitial;
   /** The card types offered; the first is the default. CARDBACK alone
    *  browses every back until a name is typed. */
   cardTypes: MpcCardType[];
@@ -306,10 +318,15 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     q: initial.query ?? "",
     scryfallId: initial.query ? null : (initial.scryfallId ?? null),
     face: initial.face ?? 0,
-    type: initial.query || !initial.scryfallId ? cardTypes[0] : null,
-    langChoice: null,
-    minDpi: 0,
-    nsfw: false,
+    type:
+      initial.type && cardTypes.includes(initial.type)
+        ? initial.type
+        : initial.query || !initial.scryfallId
+          ? cardTypes[0]
+          : null,
+    langChoice: initial.langChoice ?? null,
+    minDpi: initial.minDpi ?? 0,
+    nsfw: initial.nsfw ?? false,
     fuzzy: false,
     refresh: 0,
   }));
