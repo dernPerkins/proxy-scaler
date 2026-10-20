@@ -404,10 +404,33 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
   );
   const stickyRef = useRef<HTMLDivElement>(null);
   const [toolbarStuck, setToolbarStuck] = useState(false);
+  // The MPC Fill tab keeps the tab bar on screen while its long grid
+  // scrolls (`sticky-tabs` on <body>, styles.css), and tells the sticky
+  // sidebar and toolbar how tall it is so both line up just under it.
   useEffect(() => {
     if (view !== "mpc") return;
-    const onScroll = () =>
-      setToolbarStuck((stickyRef.current?.getBoundingClientRect().top ?? 1) <= 0 && window.scrollY > 0);
+    const nav = document.querySelector<HTMLElement>("nav.tabs");
+    const body = document.body;
+    body.classList.add("sticky-tabs");
+    const measure = () => body.style.setProperty("--tabs-height", `${nav?.offsetHeight ?? 0}px`);
+    measure();
+    const observer = nav ? new ResizeObserver(measure) : null;
+    if (nav) observer?.observe(nav);
+    return () => {
+      observer?.disconnect();
+      body.classList.remove("sticky-tabs");
+      body.style.removeProperty("--tabs-height");
+    };
+  }, [view]);
+  useEffect(() => {
+    if (view !== "mpc") return;
+    const onScroll = () => {
+      const el = stickyRef.current;
+      if (!el) return;
+      // Stuck once it has reached its sticky offset (just under the tabs).
+      const stickTop = parseFloat(getComputedStyle(el).top) || 0;
+      setToolbarStuck(el.getBoundingClientRect().top <= stickTop + 0.5 && window.scrollY > 0);
+    };
     window.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
     return () => window.removeEventListener("scroll", onScroll);
@@ -606,7 +629,9 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
 
   return (
     <div className="layout">
-      <aside className="sidebar panel">
+      {/* On the MPC Fill tab the sidebar scrolls on its own, so its bottom
+          is in reach without scrolling the whole (long) grid to its end. */}
+      <aside className={`sidebar panel${view === "mpc" ? " sidebar-scroll" : ""}`}>
         <h3 style={{ marginBottom: 14 }}>{view === "mpc" ? "MPC Fill Art" : "Custom card"}</h3>
         {selected == null ? (
           <p className="hint">

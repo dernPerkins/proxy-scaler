@@ -596,6 +596,32 @@ button:disabled {
   flex: 1;
   min-width: 0;
 }
+/* A sidebar that scrolls by itself: capped at the window (less the sticky
+   offset above and the same below) so a long page's content and its
+   sidebar scroll independently. The scroll stays inside it at either end
+   rather than carrying on into the page. */
+.sidebar-scroll {
+  max-height: calc(100vh - 36px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A page that keeps the tab bar on screen while it scrolls (the MPC Fill
+   tab sets `sticky-tabs` and --tabs-height on <body>): the bar pins to the
+   top, and sticky sidebars sit 12px under it instead of 18px under the
+   window's top. */
+body.sticky-tabs .tabs {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--bg);
+}
+body.sticky-tabs .sidebar {
+  top: calc(var(--tabs-height, 0px) + 12px);
+}
+body.sticky-tabs .sidebar-scroll {
+  max-height: calc(100vh - var(--tabs-height, 0px) - 24px);
+}
 
 /* The PDF tab's sidebar carries four sections (source images, layout,
    guides, back printing) and ran off the bottom of a laptop window, which
@@ -2074,10 +2100,13 @@ button:disabled {
    rounded top corners, and a shadow appears once it is actually stuck. */
 .mpc-library-sticky {
   position: sticky;
-  top: 0;
+  /* Just under the pinned tab bar; the strip of background is the same
+     gap the sidebar keeps, so the two tops line up when stuck. */
+  top: var(--tabs-height, 0px);
   z-index: 30;
-  margin-top: 8px;
-  padding-top: 8px;
+  /* 4 + 12 keeps the 16px the toolbar had below the intro text. */
+  margin-top: 4px;
+  padding-top: 12px;
   background: var(--bg);
 }
 .mpc-library-sticky > .mpc-library-toolbar {
