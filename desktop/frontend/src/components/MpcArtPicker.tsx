@@ -291,6 +291,9 @@ export interface MpcPickerInitial {
   langChoice?: string;
   minDpi?: number;
   nsfw?: boolean;
+  /** Start with Fuzzy on: a search typed by hand (the MPC Fill tab)
+   *  rather than one made from a card's exact name. */
+  fuzzy?: boolean;
 }
 
 export interface MpcArtBrowserProps {
@@ -327,7 +330,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     langChoice: initial.langChoice ?? null,
     minDpi: initial.minDpi ?? 0,
     nsfw: initial.nsfw ?? false,
-    fuzzy: false,
+    fuzzy: initial.fuzzy ?? false,
     refresh: 0,
   }));
   const browsing = submitted.type === "CARDBACK" && !submitted.q;

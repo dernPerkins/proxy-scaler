@@ -134,7 +134,7 @@ export function filtersActive(f: MpcLibraryFilters): boolean {
 
 /** What "+ Search MPC Fill" opens the picker with: the same name, type,
  *  language (Any included, over the picker's remembered one), DPI and
- *  NSFW choice. MPC Fill searches every uploader, so the Uploader filter
+ *  NSFW choice, with Fuzzy on. MPC Fill searches every uploader, so the Uploader filter
  *  has no counterpart there. */
 export function toPickerInitial(f: MpcLibraryFilters): MpcPickerInitial {
   return {
@@ -143,6 +143,9 @@ export function toPickerInitial(f: MpcLibraryFilters): MpcPickerInitial {
     langChoice: f.lang || "any",
     minDpi: f.minDpi || undefined,
     nsfw: f.nsfw || undefined,
+    // Names here are typed by hand, often partly: match loosely. (The
+    // Decklist's picker searches a card's exact name, so it starts off.)
+    fuzzy: true,
   };
 }
 
