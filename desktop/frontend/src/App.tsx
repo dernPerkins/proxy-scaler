@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import AppSettingsModal from "./components/AppSettingsModal";
 import CardDbImportModal from "./components/CardDbImportModal";
@@ -154,8 +154,28 @@ function TabTutorialButton() {
 // connection.tsx::switchTo) — project data is local-only now and
 // genuinely unaffected by which generation server is connected, so
 // there's nothing about it that a connection change needs to reset.
+// The tab bar is pinned to the top of the window (styles.css .tabs), and
+// everything that sticks below it — every tab's sidebar, the MPC Fill
+// tab's toolbar, scrolled-into-view targets — offsets by its height. Kept
+// in --tabs-height on <html>, measured rather than assumed so a wrapped
+// or restyled bar still lines up.
+function useTabsHeight(nav: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = nav.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const measure = () => root.style.setProperty("--tabs-height", `${el.offsetHeight}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [nav]);
+}
+
 export default function App() {
   useTabShortcuts();
+  const tabsRef = useRef<HTMLElement>(null);
+  useTabsHeight(tabsRef);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   return (
@@ -200,7 +220,7 @@ export default function App() {
         {/* NavLink applies an `active` class on the matched route by
             default — .tabs styles the underline off that, no manual
             location matching needed. */}
-        <nav className="tabs" data-tour="tabs">
+        <nav className="tabs" data-tour="tabs" ref={tabsRef}>
           {TABS.map((tab, i) => (
             <NavLink key={tab.to} to={tab.to} title={shortcutLabel(String(i + 1))}>
               {tab.label}

@@ -271,7 +271,7 @@ export default function MpcCatalogPrompt() {
           <p style={{ marginBottom: 8 }}>
             A local index of MPC Fill&apos;s community art makes art search instant and
             lets it work offline, {formatMb(offer?.download_bytes ?? 0)} to download.
-            Otherwise search pings mpcfill.com.
+            Without it, MPC Fill art search isn&apos;t available.
           </p>
         ) : (
           <p style={{ marginBottom: 8 }}>

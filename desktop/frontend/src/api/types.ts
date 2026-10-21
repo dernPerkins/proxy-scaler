@@ -369,8 +369,8 @@ export interface MpcCatalogLocal {
 }
 
 export interface MpcCatalogStatus {
-  // null until a first update fully finishes; search uses live MPC Fill
-  // until then.
+  // null until a first update fully finishes; MPC Fill art search is
+  // unavailable until then (users never call mpcfill.com).
   local: MpcCatalogLocal | null;
   import_running: boolean;
   active_job_id: string | null;
@@ -888,5 +888,4 @@ export interface MpcSearchParams {
   fuzzy?: boolean;
   nsfw?: boolean;
   min_dpi?: number;
-  refresh?: boolean;
 }

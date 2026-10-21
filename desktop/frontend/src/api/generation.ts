@@ -390,9 +390,10 @@ export const generationApi = {
   },
 
   // --- MPC Fill ------------------------------------------------------
-  // Everything goes through the generation server, which talks to MPC
-  // Fill (search, cached a day) and Google Drive (images). Only for
-  // servers serverSupportsMpcFill() accepts — older ones 404.
+  // Everything goes through the generation server: search from its
+  // downloaded MPC Fill catalog (409 until there is one; it never calls
+  // mpcfill.com) and images from Google Drive. Only for servers
+  // serverSupportsMpcFill() accepts — older ones 404.
 
   mpcSearch: (params: MpcSearchParams) => {
     const search = new URLSearchParams();

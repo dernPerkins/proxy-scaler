@@ -37,6 +37,7 @@ import { zipFilename } from "../zipFilename";
 import type { ExportImageFormat, ExportZipFormat, ReverseFill } from "../api/types";
 import tcgplaytestLogo from "../assets/tcgplaytest.webp";
 import { toast } from "../toasts";
+import SidebarColumn from "../components/SidebarColumn";
 
 // Same cadence as the PDF tab's job polling.
 const POLL_INTERVAL_MS = 400;
@@ -264,236 +265,238 @@ export default function ExportPage() {
 
   return (
     <div className="layout">
-      <aside className="sidebar panel">
-        <PresetBar kind="zip" tourId="export-presets" />
+      <SidebarColumn>
+        <aside className="sidebar panel">
+          <PresetBar kind="zip" tourId="export-presets" />
 
-        <h3 style={{ marginBottom: 14 }}>Source images</h3>
+          <h3 style={{ marginBottom: 14 }}>Source images</h3>
 
-        {/* Which already-generated variant to export for each card — the
-            PDF tab's selectors over the same persisted settings. They
-            only select among existing images, never trigger generation;
-            Preferred DPI is a hard filter among upscales, with the 300 DPI
-            original as the fallback (see PdfPage / pdf_layout.py::
-            _pick_scryfall_variant). */}
-        <div className="field-group" data-tour="export-source">
-          <label className="field">
-            <span>Preferred model</span>
-            <ModelSelect
-              value={settings.preferred_model ?? ""}
-              models={modelsQuery.data}
-              disabled={modelsQuery.isLoading || modelsQuery.isError}
-              onChange={(value) => setSettings((s) => ({ ...s, preferred_model: value || null }))}
-              anyOption="Any (highest DPI available)"
-            />
-          </label>
+          {/* Which already-generated variant to export for each card — the
+              PDF tab's selectors over the same persisted settings. They
+              only select among existing images, never trigger generation;
+              Preferred DPI is a hard filter among upscales, with the 300 DPI
+              original as the fallback (see PdfPage / pdf_layout.py::
+              _pick_scryfall_variant). */}
+          <div className="field-group" data-tour="export-source">
+            <label className="field">
+              <span>Preferred model</span>
+              <ModelSelect
+                value={settings.preferred_model ?? ""}
+                models={modelsQuery.data}
+                disabled={modelsQuery.isLoading || modelsQuery.isError}
+                onChange={(value) => setSettings((s) => ({ ...s, preferred_model: value || null }))}
+                anyOption="Any (highest DPI available)"
+              />
+            </label>
 
-          <label className="field">
-            <span>Preferred DPI</span>
-            <SelectMenu
-              options={[
-                { value: "", label: "Any (highest available)" },
-                ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
-              ]}
-              value={settings.preferred_dpi == null ? "" : String(settings.preferred_dpi)}
-              onChange={(value) =>
-                setSettings((s) => ({ ...s, preferred_dpi: value ? Number(value) : null }))
+            <label className="field">
+              <span>Preferred DPI</span>
+              <SelectMenu
+                options={[
+                  { value: "", label: "Any (highest available)" },
+                  ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
+                ]}
+                value={settings.preferred_dpi == null ? "" : String(settings.preferred_dpi)}
+                onChange={(value) =>
+                  setSettings((s) => ({ ...s, preferred_dpi: value ? Number(value) : null }))
+                }
+              />
+            </label>
+
+            {/* Same override, same persisted setting as the PDF tab's
+                checkbox — see PdfPage's Source images section. */}
+            <label
+              className="check"
+              title={
+                !originalsSupported
+                  ? "The connected generation server is too old for this — update it."
+                  : "Export Scryfall cards from their downloaded ~300 DPI originals only. Custom and MPC Fill images are unaffected and still follow the preferred model/DPI."
               }
-            />
-          </label>
+            >
+              <input
+                type="checkbox"
+                disabled={!originalsSupported}
+                checked={useOriginals}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, use_originals: e.target.checked }))
+                }
+              />
+              Use Only 300 DPI Originals
+            </label>
+          </div>
 
-          {/* Same override, same persisted setting as the PDF tab's
-              checkbox — see PdfPage's Source images section. */}
-          <label
-            className="check"
-            title={
-              !originalsSupported
-                ? "The connected generation server is too old for this — update it."
-                : "Export Scryfall cards from their downloaded ~300 DPI originals only. Custom and MPC Fill images are unaffected and still follow the preferred model/DPI."
-            }
-          >
-            <input
-              type="checkbox"
-              disabled={!originalsSupported}
-              checked={useOriginals}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, use_originals: e.target.checked }))
-              }
-            />
-            Use Only 300 DPI Originals
-          </label>
-        </div>
-
-        {modelsQuery.isError && (
-          <p className="error-text">
-            Couldn&apos;t load the model list:{" "}
-            {modelsQuery.error instanceof Error
-              ? modelsQuery.error.message
-              : String(modelsQuery.error)}
-          </p>
-        )}
-
-        <p className="hint" style={{ marginTop: 14 }}>
-          Both exports share these with the PDF tab — they pick which
-          already-generated image is used, and never trigger generation.
-        </p>
-
-        <h3 style={{ margin: "18px 0 14px" }}>Back export</h3>
-
-        {/* The PDF tab's "Back printing" rules, for the ZIP. Separate
-            settings on purpose (export_reverse_fill / export_back_faces_as_
-            reverse): a vendor upload and a home print can want different
-            answers, and each tab's presets carry their own. Both exports
-            resolve a card's back the same way the PDF does — transform
-            side, then the card's own choice, then these two. */}
-        <div className="field-group" data-tour="export-backs">
-          <label
-            className="field"
-            title={perCardBacksSupported || serverUnavailable ? undefined : backsTooOldTitle}
-          >
-            <span>Backs of single-faced cards</span>
-            <SelectMenu
-              options={[
-                { value: "back_image", label: "Use the back image" },
-                { value: "blank", label: "Leave blank" },
-              ]}
-              value={settings.export_reverse_fill}
-              disabled={!perCardBacksSupported && !serverUnavailable}
-              onChange={(value) =>
-                setSettings((s) => ({ ...s, export_reverse_fill: value as ReverseFill }))
-              }
-            />
-          </label>
-          {settings.export_reverse_fill === "back_image" ? (
-            <p className="hint" style={{ margin: "2px 0 8px" }}>
-              {selectedBack ? (
-                <>
-                  Using <strong>{selectedBack.label}</strong> — change it on the Backs tab.
-                </>
-              ) : (
-                <>No back selected. Pick one on the Backs tab.</>
-              )}
-            </p>
-          ) : (
-            <p className="hint" style={{ margin: "2px 0 8px" }}>
-              Single-faced cards get a plain white back in the TCGPlaytest ZIP, and no{" "}
-              <code>BACK/</code> file in the plain ZIP.
+          {modelsQuery.isError && (
+            <p className="error-text">
+              Couldn&apos;t load the model list:{" "}
+              {modelsQuery.error instanceof Error
+                ? modelsQuery.error.message
+                : String(modelsQuery.error)}
             </p>
           )}
-          <CardBackSummaryNote
-            summary={cardBacks}
-            serverSupports={serverUnavailable || perCardBacksSupported}
-            serverVersion={serverVersion}
-          />
 
-          <label
-            className="check"
-            title={perCardBacksSupported || serverUnavailable ? undefined : backsTooOldTitle}
-          >
-            <input
-              type="checkbox"
-              checked={settings.export_back_faces_as_reverse}
-              disabled={!perCardBacksSupported && !serverUnavailable}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, export_back_faces_as_reverse: e.target.checked }))
-              }
-            />
-            Pair a double-faced card&apos;s transform side as its back
-          </label>
-          <p className="hint" style={{ margin: "-2px 0 8px" }}>
-            {settings.export_back_faces_as_reverse
-              ? "A double-faced card is one front/back pair in the TCGPlaytest ZIP."
-              : settings.export_reverse_fill === "blank"
-                ? "Each face is its own card with a blank back (unless the card chose one)."
-                : "Each face is its own card, and both get the back image."}{" "}
-            The plain ZIP always ships every face once.
+          <p className="hint" style={{ marginTop: 14 }}>
+            Both exports share these with the PDF tab — they pick which
+            already-generated image is used, and never trigger generation.
           </p>
-        </div>
 
-        <h3 style={{ margin: "18px 0 14px" }}>Output</h3>
+          <h3 style={{ margin: "18px 0 14px" }}>Back export</h3>
 
-        {/* Export-only, persisted per project like everything else on this
-            page. PNG + no bleed is the original export (the stored files,
-            untouched); anything else re-renders each image server-side. */}
-        <div className="field-group" data-tour="export-output">
-          <div
-            className="field"
-            title={
-              !optionsSupported
-                ? optionsTooOldTitle
-                : "PNG ships the stored images exactly as they are. JPG re-encodes every image for much smaller files — recommended when ordering from a vendor."
-            }
-          >
-            <span>Image format</span>
-            <div className="segmented">
-              <button
-                className={imageFormat === "png" ? "active" : ""}
-                disabled={!optionsSupported}
-                onClick={() => setSettings((s) => ({ ...s, export_image_format: "png" }))}
-              >
-                PNG
-              </button>
-              <button
-                className={imageFormat === "jpg" ? "active" : ""}
-                disabled={!optionsSupported}
-                onClick={() => setSettings((s) => ({ ...s, export_image_format: "jpg" }))}
-              >
-                JPG
-              </button>
-            </div>
-            {/* Vendor uploads (TCGPlaytest, MakePlayingCards) are where the
-                size difference matters most, and print quality is the same
-                either way — so say so here, at the moment of choosing,
-                rather than only in a hover tooltip. */}
-            <p className="hint">
-              JPG is recommended for vendor orders (TCGPlaytest, MakePlayingCards) —
-              far smaller uploads with no visible difference in print.
+          {/* The PDF tab's "Back printing" rules, for the ZIP. Separate
+              settings on purpose (export_reverse_fill / export_back_faces_as_
+              reverse): a vendor upload and a home print can want different
+              answers, and each tab's presets carry their own. Both exports
+              resolve a card's back the same way the PDF does — transform
+              side, then the card's own choice, then these two. */}
+          <div className="field-group" data-tour="export-backs">
+            <label
+              className="field"
+              title={perCardBacksSupported || serverUnavailable ? undefined : backsTooOldTitle}
+            >
+              <span>Backs of single-faced cards</span>
+              <SelectMenu
+                options={[
+                  { value: "back_image", label: "Use the back image" },
+                  { value: "blank", label: "Leave blank" },
+                ]}
+                value={settings.export_reverse_fill}
+                disabled={!perCardBacksSupported && !serverUnavailable}
+                onChange={(value) =>
+                  setSettings((s) => ({ ...s, export_reverse_fill: value as ReverseFill }))
+                }
+              />
+            </label>
+            {settings.export_reverse_fill === "back_image" ? (
+              <p className="hint" style={{ margin: "2px 0 8px" }}>
+                {selectedBack ? (
+                  <>
+                    Using <strong>{selectedBack.label}</strong> — change it on the Backs tab.
+                  </>
+                ) : (
+                  <>No back selected. Pick one on the Backs tab.</>
+                )}
+              </p>
+            ) : (
+              <p className="hint" style={{ margin: "2px 0 8px" }}>
+                Single-faced cards get a plain white back in the TCGPlaytest ZIP, and no{" "}
+                <code>BACK/</code> file in the plain ZIP.
+              </p>
+            )}
+            <CardBackSummaryNote
+              summary={cardBacks}
+              serverSupports={serverUnavailable || perCardBacksSupported}
+              serverVersion={serverVersion}
+            />
+
+            <label
+              className="check"
+              title={perCardBacksSupported || serverUnavailable ? undefined : backsTooOldTitle}
+            >
+              <input
+                type="checkbox"
+                checked={settings.export_back_faces_as_reverse}
+                disabled={!perCardBacksSupported && !serverUnavailable}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, export_back_faces_as_reverse: e.target.checked }))
+                }
+              />
+              Pair a double-faced card&apos;s transform side as its back
+            </label>
+            <p className="hint" style={{ margin: "-2px 0 8px" }}>
+              {settings.export_back_faces_as_reverse
+                ? "A double-faced card is one front/back pair in the TCGPlaytest ZIP."
+                : settings.export_reverse_fill === "blank"
+                  ? "Each face is its own card with a blank back (unless the card chose one)."
+                  : "Each face is its own card, and both get the back image."}{" "}
+              The plain ZIP always ships every face once.
             </p>
           </div>
 
-          <label
-            className="check"
-            title={
-              !optionsSupported
-                ? optionsTooOldTitle
-                : `Adds a bleed border around every image. Defaults to the ${MPC_BLEED_MM} mm bleed MakePlayingCards.com expects (69 × 94 mm cards).`
-            }
-          >
-            <input
-              type="checkbox"
-              disabled={!optionsSupported}
-              checked={withBleed}
-              onChange={(e) =>
-                setSettings((s) => ({ ...s, export_with_bleed: e.target.checked }))
-              }
-            />
-            Export with bleed
-          </label>
+          <h3 style={{ margin: "18px 0 14px" }}>Output</h3>
 
-          {withBleed && (
-            <label
+          {/* Export-only, persisted per project like everything else on this
+              page. PNG + no bleed is the original export (the stored files,
+              untouched); anything else re-renders each image server-side. */}
+          <div className="field-group" data-tour="export-output">
+            <div
               className="field"
-              title={`Per side. MakePlayingCards.com expects ${MPC_BLEED_MM} mm.`}
+              title={
+                !optionsSupported
+                  ? optionsTooOldTitle
+                  : "PNG ships the stored images exactly as they are. JPG re-encodes every image for much smaller files — recommended when ordering from a vendor."
+              }
             >
-              <span>Bleed (mm)</span>
-              <NumberInput
-                step={0.1}
-                min={0.1}
-                value={settings.export_bleed_mm}
-                onChange={(v) => setSettings((s) => ({ ...s, export_bleed_mm: v }))}
-              />
-            </label>
-          )}
-        </div>
+              <span>Image format</span>
+              <div className="segmented">
+                <button
+                  className={imageFormat === "png" ? "active" : ""}
+                  disabled={!optionsSupported}
+                  onClick={() => setSettings((s) => ({ ...s, export_image_format: "png" }))}
+                >
+                  PNG
+                </button>
+                <button
+                  className={imageFormat === "jpg" ? "active" : ""}
+                  disabled={!optionsSupported}
+                  onClick={() => setSettings((s) => ({ ...s, export_image_format: "jpg" }))}
+                >
+                  JPG
+                </button>
+              </div>
+              {/* Vendor uploads (TCGPlaytest, MakePlayingCards) are where the
+                  size difference matters most, and print quality is the same
+                  either way — so say so here, at the moment of choosing,
+                  rather than only in a hover tooltip. */}
+              <p className="hint">
+                JPG is recommended for vendor orders (TCGPlaytest, MakePlayingCards) —
+                far smaller uploads with no visible difference in print.
+              </p>
+            </div>
 
-        {/* A tooltip on a disabled control isn't discoverable — nothing
-            invites hovering it — so the reason is also written out. */}
-        {!serverUnavailable && !serverTooOld && !optionsSupported && (
-          <p className="hint" style={{ marginTop: 10 }}>
-            Image format and bleed need a generation server v
-            {EXPORT_OPTIONS_MIN_SERVER_VERSION} or newer — update it to use them.
-          </p>
-        )}
-      </aside>
+            <label
+              className="check"
+              title={
+                !optionsSupported
+                  ? optionsTooOldTitle
+                  : `Adds a bleed border around every image. Defaults to the ${MPC_BLEED_MM} mm bleed MakePlayingCards.com expects (69 × 94 mm cards).`
+              }
+            >
+              <input
+                type="checkbox"
+                disabled={!optionsSupported}
+                checked={withBleed}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, export_with_bleed: e.target.checked }))
+                }
+              />
+              Export with bleed
+            </label>
+
+            {withBleed && (
+              <label
+                className="field"
+                title={`Per side. MakePlayingCards.com expects ${MPC_BLEED_MM} mm.`}
+              >
+                <span>Bleed (mm)</span>
+                <NumberInput
+                  step={0.1}
+                  min={0.1}
+                  value={settings.export_bleed_mm}
+                  onChange={(v) => setSettings((s) => ({ ...s, export_bleed_mm: v }))}
+                />
+              </label>
+            )}
+          </div>
+
+          {/* A tooltip on a disabled control isn't discoverable — nothing
+              invites hovering it — so the reason is also written out. */}
+          {!serverUnavailable && !serverTooOld && !optionsSupported && (
+            <p className="hint" style={{ marginTop: 10 }}>
+              Image format and bleed need a generation server v
+              {EXPORT_OPTIONS_MIN_SERVER_VERSION} or newer — update it to use them.
+            </p>
+          )}
+        </aside>
+      </SidebarColumn>
 
       <main className="content">
         <h2>ZIP</h2>

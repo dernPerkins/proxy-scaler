@@ -170,8 +170,9 @@ changes are meant to build on it non-destructively.
 ## The resolve → generate flow
 
 Project management makes zero external network calls — all Scryfall
-traffic lives on the generation side (as does all MPC Fill and Google
-Drive traffic: ADR 0006), collapsed into one step instead of
+traffic lives on the generation side (as does all MPC Fill catalog and
+Google Drive traffic: ADRs 0006, 0007; no user's machine calls
+mpcfill.com itself), collapsed into one step instead of
 the old architecture's two separate resolutions (once at decklist import,
 again at generate time):
 
@@ -434,7 +435,7 @@ string, not a database relationship.
 | `GET /api/backs/{hash}` | Does this server hold those bytes, and how sharp are they. The client calls it before every sync so an unchanged back costs one small GET rather than a multi-MB POST. Upscaling a back is a Backs-tab action (`POST /api/library/upscale`), never part of a project's Generate |
 | `DELETE /api/backs/{hash}` | Remove a Back Image from this server entirely. The client's library copy is canonical and untouched |
 | `POST /api/backs/{hash}/fetch` \| `POST /api/customs/{hash}/fetch` | Fill this server's copy of an MPC Fill library image by downloading it from Google Drive itself (`{drive_id}`, plus `bleed_mm` for customs), so a server the user switches to doesn't need the bytes uploaded. Already present → no download; the Drive file no longer hashing to `{hash}` → 409; Google refusing → 502. The client's sync falls back to the byte upload on any failure (an older server's 404 included) |
-| `GET /api/mpcfill/search` | Search MPC Fill art (`q`, or `scryfall_id` + `face` to search that face's name, as a TOKEN when the corpus says so; `type`, `lang`, `fuzzy`, `nsfw`, `min_dpi`, `refresh`). A CARDBACK search with no query lists every back. Ordered drive ids plus the first 60 hydrated. Answered through `art_sources.ArtSource` (mpcfill.com today, cached on disk a day — see ADR 0006) |
+| `GET /api/mpcfill/search` | Search MPC Fill art (`q`, or `scryfall_id` + `face` to search that face's name, as a TOKEN when the corpus says so; `type`, `lang`, `fuzzy`, `nsfw`, `min_dpi`). A CARDBACK search with no query lists every back. Ordered drive ids plus the first 60 hydrated. Answered from the downloaded MPC Fill catalog (`art_sources`, `mpc_catalog.py`, ADR 0007), never mpcfill.com; 409 until a catalog is downloaded |
 | `POST /api/mpcfill/best` | MPC Fill's top match for every face of up to 300 cards (`scryfall_ids`), names and CARD/TOKEN from the corpus — one search for a whole imported decklist when the Decklist's import toggle is on MPC Fill. A face with no match is null |
 | `POST /api/mpcfill/cards` | Details (name, uploader, DPI, size, tags) for more of a search's ids, as the grid scrolls |
 | `GET /api/mpcfill/thumb/{drive_id}` | A 400 px (`small`) or 800 px (`large`) JPEG preview, fetched from Google's image server and disk-cached under `imgcache/mpcfill/thumbs/`. Never from MPC Fill's own hosts |

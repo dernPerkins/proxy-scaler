@@ -57,6 +57,7 @@ import { blurOnEnter } from "../inputKeys";
 import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
+import SidebarColumn from "../components/SidebarColumn";
 
 // Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation — below this, a back is being asked to cover a
@@ -488,74 +489,76 @@ export default function BacksPage() {
 
   return (
     <div className="layout">
-      <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Back image</h3>
-        {selected == null ? (
-          <p className="hint">
-            No back selected for this project. Pick one from the library, or add a new
-            one.
-          </p>
-        ) : (
-          <div>
-            <BackSettingsFields
-              back={selected}
-              isDefault={defaultQuery.data === selected.id}
-              onBleed={(change) => bleedMutation.mutate(change)}
-              error={settingsError}
-              tourTargets
-            />
-
-            {/* The same app-global upscale settings the Customs tab shows
-                — not this project's, since upscaling a back involves no
-                project (see the header comment). */}
-            <h3 style={{ marginTop: 22, marginBottom: 14 }}>Upscale settings</h3>
-            <div className="field-group" data-tour="library-upscale-settings">
-              <UpscaleSettingsFields
-                value={upscaleSettings}
-                onChange={updateUpscaleSettings}
-                tourPrefix="library-"
+      <SidebarColumn>
+        <aside className="sidebar panel">
+          <h3 style={{ marginBottom: 14 }}>Back image</h3>
+          {selected == null ? (
+            <p className="hint">
+              No back selected for this project. Pick one from the library, or add a new
+              one.
+            </p>
+          ) : (
+            <div>
+              <BackSettingsFields
+                back={selected}
+                isDefault={defaultQuery.data === selected.id}
+                onBleed={(change) => bleedMutation.mutate(change)}
+                error={settingsError}
+                tourTargets
               />
-              <label className="field">
-                <span>Result</span>
-                <SelectMenu
-                  options={[
-                    { value: "target", label: "Match target DPI" },
-                    { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
-                  ]}
-                  value={upscaleSettings.mode}
-                  onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}
+
+              {/* The same app-global upscale settings the Customs tab shows
+                  — not this project's, since upscaling a back involves no
+                  project (see the header comment). */}
+              <h3 style={{ marginTop: 22, marginBottom: 14 }}>Upscale settings</h3>
+              <div className="field-group" data-tour="library-upscale-settings">
+                <UpscaleSettingsFields
+                  value={upscaleSettings}
+                  onChange={updateUpscaleSettings}
+                  tourPrefix="library-"
                 />
-              </label>
-              <p className="hint">
-                Only a back below a ticked target is upscaled. Every project that prints
-                with it uses the result; the PDF and ZIP tabs&apos; preferred DPI picks
-                which version.
-              </p>
+                <label className="field">
+                  <span>Result</span>
+                  <SelectMenu
+                    options={[
+                      { value: "target", label: "Match target DPI" },
+                      { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                    ]}
+                    value={upscaleSettings.mode}
+                    onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}
+                  />
+                </label>
+                <p className="hint">
+                  Only a back below a ticked target is upscaled. Every project that prints
+                  with it uses the result; the PDF and ZIP tabs&apos; preferred DPI picks
+                  which version.
+                </p>
+              </div>
+              <LibraryUpscaleControls
+                sourceDpi={serverSourceDpi("back", selected)}
+                variants={variants}
+                targets={targetsFor("back", selected, upscaleSettings)}
+                disabledReason={
+                  !libraryUpscaleSupported
+                    ? "Needs a newer generation server."
+                    : serverUnavailable
+                      ? "The generation server isn't reachable."
+                      : null
+                }
+                pending={upscaleMutation.isPending}
+                onUpscale={() => upscaleMutation.mutate(selected)}
+              />
+              <button
+                className="btn-sm btn-danger btn-block"
+                style={{ marginTop: 18 }}
+                onClick={() => void confirmDelete(selected)}
+              >
+                Delete this back
+              </button>
             </div>
-            <LibraryUpscaleControls
-              sourceDpi={serverSourceDpi("back", selected)}
-              variants={variants}
-              targets={targetsFor("back", selected, upscaleSettings)}
-              disabledReason={
-                !libraryUpscaleSupported
-                  ? "Needs a newer generation server."
-                  : serverUnavailable
-                    ? "The generation server isn't reachable."
-                    : null
-              }
-              pending={upscaleMutation.isPending}
-              onUpscale={() => upscaleMutation.mutate(selected)}
-            />
-            <button
-              className="btn-sm btn-danger btn-block"
-              style={{ marginTop: 18 }}
-              onClick={() => void confirmDelete(selected)}
-            >
-              Delete this back
-            </button>
-          </div>
-        )}
-      </aside>
+          )}
+        </aside>
+      </SidebarColumn>
 
       {/*
         Dropping a file works anywhere on this pane, not only on the

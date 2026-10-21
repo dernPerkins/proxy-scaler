@@ -63,8 +63,9 @@ export async function importMpcOrder(
   onProgress: (done: number, total: number, name: string) => void,
   isCanceled: () => boolean,
 ): Promise<OrderImportResult> {
-  // One request for names, uploaders and formats; art MPC Fill no longer
-  // lists still imports under the order's own file name.
+  // One request for names, uploaders and formats, answered by the
+  // downloaded catalog. Art it doesn't hold, or no catalog at all (a 409),
+  // still imports under the order's own file name.
   const allIds = [...order.fronts, ...order.backs].map((a) => a.driveId);
   const known = new Map<string, MpcCard>();
   try {

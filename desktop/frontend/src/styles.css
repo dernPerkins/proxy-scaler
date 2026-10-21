@@ -111,6 +111,12 @@
   box-sizing: border-box;
 }
 
+/* Anything scrolled into view (a tutorial step's target, a picked tile)
+   lands below the pinned tab bar rather than under it. */
+html {
+  scroll-padding-top: calc(var(--tabs-height, 0px) + 12px);
+}
+
 body {
   margin: 0;
   font-family:
@@ -589,38 +595,33 @@ button:disabled {
   width: 268px;
   flex-shrink: 0;
   padding: 16px;
+}
+/* The column every tab's sidebar sits in (SidebarColumn.tsx). It sticks
+   under the pinned tab bar and scrolls by itself, so on a long page (a big
+   deck) the sidebar's bottom is in reach without scrolling the content to
+   its end, and the content scrolls without moving it. The column is
+   transparent and it, not the panel, is what scrolls: the whole panel
+   slides as one, running off the bottom of the window like page content
+   rather than cropping its own insides. The 12px padding is the gap kept
+   under the tab bar (pulled back with the negative margin, so at rest the
+   panel lines up with the content's top) and at the bottom; the inline
+   padding leaves room for the panel's shadow. --tabs-height is the tab
+   bar's measured height (App.tsx). */
+.sidebar-column {
+  flex-shrink: 0;
   position: sticky;
-  top: 18px;
+  top: var(--tabs-height, 0px);
+  box-sizing: border-box;
+  max-height: calc(100vh - var(--tabs-height, 0px));
+  margin: -12px -6px 0;
+  padding: 12px 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 .content {
   flex: 1;
   min-width: 0;
-}
-/* A sidebar that scrolls by itself: capped at the window (less the sticky
-   offset above and the same below) so a long page's content and its
-   sidebar scroll independently. The scroll stays inside it at either end
-   rather than carrying on into the page. */
-.sidebar-scroll {
-  max-height: calc(100vh - 36px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-/* A page that keeps the tab bar on screen while it scrolls (the MPC Fill
-   tab sets `sticky-tabs` and --tabs-height on <body>): the bar pins to the
-   top, and sticky sidebars sit 12px under it instead of 18px under the
-   window's top. */
-body.sticky-tabs .tabs {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  background: var(--bg);
-}
-body.sticky-tabs .sidebar {
-  top: calc(var(--tabs-height, 0px) + 12px);
-}
-body.sticky-tabs .sidebar-scroll {
-  max-height: calc(100vh - var(--tabs-height, 0px) - 24px);
 }
 
 /* The PDF tab's sidebar carries four sections (source images, layout,
@@ -832,11 +833,17 @@ body.sticky-tabs .sidebar-scroll {
 
 /* ---------- tabs ---------- */
 
+/* The tab bar stays at the top of the window on every tab, so another
+   tab is one click away however far down a page is scrolled. */
 .tabs {
+  position: sticky;
+  top: 0;
+  z-index: 40;
   display: flex;
   gap: 4px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
 .tabs a {
   padding: 7px 14px;
@@ -2064,6 +2071,19 @@ body.sticky-tabs .sidebar-scroll {
 }
 .compare-menu button:hover {
   border-color: var(--border-strong);
+}
+
+/* MpcArtBrowser with no MPC Fill catalog downloaded: the offer to get it. */
+.mpc-catalog-needed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 420px;
+  padding: 24px 4px;
+}
+.mpc-catalog-needed p {
+  margin: 0;
 }
 
 /* The MPC Fill tab's search and filter row (MpcLibraryToolbar.tsx). */

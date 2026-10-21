@@ -77,6 +77,7 @@ import {
   MAX_UPLOAD_MB,
   addImagesSequentially,
 } from "../imageUpload";
+import SidebarColumn from "../components/SidebarColumn";
 
 // The tile selected when this page was last on screen. Routes unmount
 // their page on every tab switch, so plain component state would put the
@@ -404,24 +405,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
   );
   const stickyRef = useRef<HTMLDivElement>(null);
   const [toolbarStuck, setToolbarStuck] = useState(false);
-  // The MPC Fill tab keeps the tab bar on screen while its long grid
-  // scrolls (`sticky-tabs` on <body>, styles.css), and tells the sticky
-  // sidebar and toolbar how tall it is so both line up just under it.
-  useEffect(() => {
-    if (view !== "mpc") return;
-    const nav = document.querySelector<HTMLElement>("nav.tabs");
-    const body = document.body;
-    body.classList.add("sticky-tabs");
-    const measure = () => body.style.setProperty("--tabs-height", `${nav?.offsetHeight ?? 0}px`);
-    measure();
-    const observer = nav ? new ResizeObserver(measure) : null;
-    if (nav) observer?.observe(nav);
-    return () => {
-      observer?.disconnect();
-      body.classList.remove("sticky-tabs");
-      body.style.removeProperty("--tabs-height");
-    };
-  }, [view]);
   useEffect(() => {
     if (view !== "mpc") return;
     const onScroll = () => {
@@ -629,75 +612,75 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
 
   return (
     <div className="layout">
-      {/* On the MPC Fill tab the sidebar scrolls on its own, so its bottom
-          is in reach without scrolling the whole (long) grid to its end. */}
-      <aside className={`sidebar panel${view === "mpc" ? " sidebar-scroll" : ""}`}>
-        <h3 style={{ marginBottom: 14 }}>{view === "mpc" ? "MPC Fill Art" : "Custom card"}</h3>
-        {selected == null ? (
-          <p className="hint">
-            Select an image to upscale it, rename it, say whether it already includes bleed,
-            or remove it from the library. The + on a tile opens the full image with the
-            trim line drawn on it.
-          </p>
-        ) : (
-          <div data-tour="custom-settings">
-            <CustomSettingsFields
-              image={selected}
-              onBleed={(change) => bleedMutation.mutate(change)}
-              error={settingsError}
-            />
-
-            {/* App-global, not the project's Decklist settings: this tab
-                upscales library images whether or not any project uses
-                them, and the project's "Custom images" rule is about what
-                its own bulk Generate does. */}
-            <h3 style={{ marginTop: 22, marginBottom: 14 }}>Upscale settings</h3>
-            <div className="field-group" data-tour="library-upscale-settings">
-              <UpscaleSettingsFields
-                value={upscaleSettings}
-                onChange={updateUpscaleSettings}
-                tourPrefix="library-"
+      <SidebarColumn>
+        <aside className="sidebar panel">
+          <h3 style={{ marginBottom: 14 }}>{view === "mpc" ? "MPC Fill Art" : "Custom card"}</h3>
+          {selected == null ? (
+            <p className="hint">
+              Select an image to upscale it, rename it, say whether it already includes bleed,
+              or remove it from the library. The + on a tile opens the full image with the
+              trim line drawn on it.
+            </p>
+          ) : (
+            <div data-tour="custom-settings">
+              <CustomSettingsFields
+                image={selected}
+                onBleed={(change) => bleedMutation.mutate(change)}
+                error={settingsError}
               />
-              <label className="field">
-                <span>Result</span>
-                <SelectMenu
-                  options={[
-                    { value: "target", label: "Match target DPI" },
-                    { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
-                  ]}
-                  value={upscaleSettings.mode}
-                  onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}
+
+              {/* App-global, not the project's Decklist settings: this tab
+                  upscales library images whether or not any project uses
+                  them, and the project's "Custom images" rule is about what
+                  its own bulk Generate does. */}
+              <h3 style={{ marginTop: 22, marginBottom: 14 }}>Upscale settings</h3>
+              <div className="field-group" data-tour="library-upscale-settings">
+                <UpscaleSettingsFields
+                  value={upscaleSettings}
+                  onChange={updateUpscaleSettings}
+                  tourPrefix="library-"
                 />
-              </label>
-              <p className="hint">
-                Only an image below a ticked target is upscaled. One too large for this GPU
-                is skipped with a message and prints as uploaded.
-              </p>
+                <label className="field">
+                  <span>Result</span>
+                  <SelectMenu
+                    options={[
+                      { value: "target", label: "Match target DPI" },
+                      { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                    ]}
+                    value={upscaleSettings.mode}
+                    onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}
+                  />
+                </label>
+                <p className="hint">
+                  Only an image below a ticked target is upscaled. One too large for this GPU
+                  is skipped with a message and prints as uploaded.
+                </p>
+              </div>
+              <LibraryUpscaleControls
+                sourceDpi={selected.source_dpi}
+                variants={variants}
+                targets={targetsFor("custom", selected, upscaleSettings)}
+                disabledReason={
+                  !libraryUpscaleSupported
+                    ? "Needs a newer generation server."
+                    : serverUnavailable
+                      ? "The generation server isn't reachable."
+                      : null
+                }
+                pending={upscaleMutation.isPending}
+                onUpscale={() => upscaleMutation.mutate(selected)}
+              />
+              <button
+                className="btn-sm btn-danger btn-block"
+                style={{ marginTop: 18 }}
+                onClick={() => void confirmDelete(selected)}
+              >
+                Remove this image
+              </button>
             </div>
-            <LibraryUpscaleControls
-              sourceDpi={selected.source_dpi}
-              variants={variants}
-              targets={targetsFor("custom", selected, upscaleSettings)}
-              disabledReason={
-                !libraryUpscaleSupported
-                  ? "Needs a newer generation server."
-                  : serverUnavailable
-                    ? "The generation server isn't reachable."
-                    : null
-              }
-              pending={upscaleMutation.isPending}
-              onUpscale={() => upscaleMutation.mutate(selected)}
-            />
-            <button
-              className="btn-sm btn-danger btn-block"
-              style={{ marginTop: 18 }}
-              onClick={() => void confirmDelete(selected)}
-            >
-              Remove this image
-            </button>
-          </div>
-        )}
-      </aside>
+          )}
+        </aside>
+      </SidebarColumn>
 
       <main
         className="content"

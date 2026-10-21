@@ -47,6 +47,7 @@ import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
 import { cardToEntry, sortCards } from "../deckEntries";
 import { errorText, toast } from "../toasts";
+import { useMpcCatalogReady } from "../mpcCatalog";
 import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
@@ -86,6 +87,7 @@ import {
   type VariantStatus,
 } from "../mergeCardStatus";
 import type { FaceArtHandlers, PickerOpenRequest } from "../components/PrintingPicker";
+import SidebarColumn from "../components/SidebarColumn";
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -275,7 +277,16 @@ export default function DecklistPage() {
         const after = await importResolvedCards(decklistDraft, resolvedCards);
         importedCards = after.filter((c) => !before.has(c.id));
       }
-      if (importedCards.length > 0 && settings.import_art_source === "mpc" && mpcSupported) {
+      if (
+        importedCards.length > 0 &&
+        settings.import_art_source === "mpc" &&
+        mpcSupported &&
+        !mpcCatalog.ready
+      ) {
+        toast("MPC Fill art needs the MPC Fill Catalog. Imported with Scryfall art.", "warn", {
+          key: "mpc-art",
+        });
+      } else if (importedCards.length > 0 && settings.import_art_source === "mpc" && mpcSupported) {
         // After the import's own bookkeeping, so the cards are in the list
         // (with their Scryfall identity) while their MPC art downloads.
         void pickMpcArtFor(importedCards);
@@ -515,6 +526,8 @@ export default function DecklistPage() {
   } | null>(null);
   const [orderCardback, setOrderCardback] = useState<BackImage | null>(null);
   const mpcSupported = serverSupportsMpcFill(serverVersion);
+  // MPC Fill art comes from the downloaded catalog alone.
+  const mpcCatalog = useMpcCatalogReady();
 
   // The import toggle's "MPC Fill": every face of each newly imported
   // card gets MPC Fill's top match as its face art, downloaded one at a
@@ -1014,106 +1027,108 @@ export default function DecklistPage() {
 
   return (
     <div className="layout">
-      <aside className="sidebar panel">
-        <h3 style={{ marginBottom: 14 }}>Settings</h3>
+      <SidebarColumn>
+        <aside className="sidebar panel">
+          <h3 style={{ marginBottom: 14 }}>Settings</h3>
 
-        {/* Above the field group, and never behind a project check:
-            switching to an empty server leaves projectId null, and if this
-            were gated on a project there'd be no way to switch back. */}
-        <ServerSwitcher />
+          {/* Above the field group, and never behind a project check:
+              switching to an empty server leaves projectId null, and if this
+              were gated on a project there'd be no way to switch back. */}
+          <ServerSwitcher />
 
-        <div className="field-group">
-          <UpscaleSettingsFields
-            value={settings}
-            onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
-          />
-
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={settings.skip_existing}
-              onChange={(e) => setSettings((s) => ({ ...s, skip_existing: e.target.checked }))}
+          <div className="field-group">
+            <UpscaleSettingsFields
+              value={settings}
+              onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
             />
-            Skip existing output files
-          </label>
 
-          {/* How custom and MPC Fill art comes out when an upscale button
-              asks for it — the buttons decide whether. Either way only art
-              below a selected target is upscaled, and one too large for
-              this machine is refused with a message on its task
-              (proxy_scaler/upscale.py); it still prints at its own
-              resolution. */}
-          <label className="field" data-tour="custom-upscale-select">
-            <span>Custom & MPC Fill Upscales</span>
-            <SelectMenu
-              options={[
-                { value: "target", label: "Match target DPI" },
-                { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
-              ]}
-              value={customResult === "native" ? "native" : "target"}
-              disabled={!customUpscaleSupported}
-              onChange={(value) =>
-                setSettings((s) => ({ ...s, custom_upscale: value as CustomUpscaleMode }))
-              }
-            />
-          </label>
-          <p className="hint">
-            {customUpscaleSupported
-              ? "Used by Upscale Customs, Upscale MPC Fill, Upscale Everything and a card's own upscale button. Art already within 10% of a target is left as it is."
-              : "Needs a newer generation server. Custom and MPC Fill art print as they are."}
-          </p>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.skip_existing}
+                onChange={(e) => setSettings((s) => ({ ...s, skip_existing: e.target.checked }))}
+              />
+              Skip existing output files
+            </label>
 
-          <div className="field divided">
-            <span>Directories</span>
-            {dirRow("Output", pathsQuery.data?.output_dir)}
-            {dirRow("Cache", pathsQuery.data?.cache_dir)}
-            {dirRow("Weights", pathsQuery.data?.weights_dir)}
+            {/* How custom and MPC Fill art comes out when an upscale button
+                asks for it — the buttons decide whether. Either way only art
+                below a selected target is upscaled, and one too large for
+                this machine is refused with a message on its task
+                (proxy_scaler/upscale.py); it still prints at its own
+                resolution. */}
+            <label className="field" data-tour="custom-upscale-select">
+              <span>Custom & MPC Fill Upscales</span>
+              <SelectMenu
+                options={[
+                  { value: "target", label: "Match target DPI" },
+                  { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                ]}
+                value={customResult === "native" ? "native" : "target"}
+                disabled={!customUpscaleSupported}
+                onChange={(value) =>
+                  setSettings((s) => ({ ...s, custom_upscale: value as CustomUpscaleMode }))
+                }
+              />
+            </label>
+            <p className="hint">
+              {customUpscaleSupported
+                ? "Used by Upscale Customs, Upscale MPC Fill, Upscale Everything and a card's own upscale button. Art already within 10% of a target is left as it is."
+                : "Needs a newer generation server. Custom and MPC Fill art print as they are."}
+            </p>
+
+            <div className="field divided">
+              <span>Directories</span>
+              {dirRow("Output", pathsQuery.data?.output_dir)}
+              {dirRow("Cache", pathsQuery.data?.cache_dir)}
+              {dirRow("Weights", pathsQuery.data?.weights_dir)}
+            </div>
+
+            <CardDbPanel serverUnavailable={serverUnavailable} />
+            <MpcCatalogPanel serverUnavailable={serverUnavailable} />
           </div>
 
-          <CardDbPanel serverUnavailable={serverUnavailable} />
-          <MpcCatalogPanel serverUnavailable={serverUnavailable} />
-        </div>
-
-        <div className="danger-zone">
-          <h3>Danger zone</h3>
-          <p className="hint">
-            Deletes the generated images and download cache (the output and cache directories
-            above). Model weights and uploaded custom images are kept.
-          </p>
-          <button
-            className="btn-danger btn-block"
-            onClick={() => setConfirmClearOpen(true)}
-            disabled={clearGeneratedMutation.isPending}
-          >
-            Delete all generated images &amp; cache
-          </button>
-          {confirmClearOpen && (
-            <ConfirmDialog
-              title="Delete all generated images & cache?"
-              confirmLabel="Delete everything"
-              onConfirm={() => {
-                setConfirmClearOpen(false);
-                clearGeneratedMutation.mutate();
-              }}
-              onCancel={() => setConfirmClearOpen(false)}
+          <div className="danger-zone">
+            <h3>Danger zone</h3>
+            <p className="hint">
+              Deletes the generated images and download cache (the output and cache directories
+              above). Model weights and uploaded custom images are kept.
+            </p>
+            <button
+              className="btn-danger btn-block"
+              onClick={() => setConfirmClearOpen(true)}
+              disabled={clearGeneratedMutation.isPending}
             >
-              This deletes every generated image and the download cache (the
-              output and cache directories in the sidebar). Model weights and
-              your uploaded custom images are kept. Cards can be re-generated
-              any time.
-            </ConfirmDialog>
-          )}
-          {clearGeneratedMutation.data && (
-            <div className="hint">
-              {clearGeneratedMutation.data.notes.length > 0 ? (
-                clearGeneratedMutation.data.notes.map((note, i) => <div key={i}>{note}</div>)
-              ) : (
-                <div>Generated data cleared.</div>
-              )}
-            </div>
-          )}
-        </div>
-      </aside>
+              Delete all generated images &amp; cache
+            </button>
+            {confirmClearOpen && (
+              <ConfirmDialog
+                title="Delete all generated images & cache?"
+                confirmLabel="Delete everything"
+                onConfirm={() => {
+                  setConfirmClearOpen(false);
+                  clearGeneratedMutation.mutate();
+                }}
+                onCancel={() => setConfirmClearOpen(false)}
+              >
+                This deletes every generated image and the download cache (the
+                output and cache directories in the sidebar). Model weights and
+                your uploaded custom images are kept. Cards can be re-generated
+                any time.
+              </ConfirmDialog>
+            )}
+            {clearGeneratedMutation.data && (
+              <div className="hint">
+                {clearGeneratedMutation.data.notes.length > 0 ? (
+                  clearGeneratedMutation.data.notes.map((note, i) => <div key={i}>{note}</div>)
+                ) : (
+                  <div>Generated data cleared.</div>
+                )}
+              </div>
+            )}
+          </div>
+        </aside>
+      </SidebarColumn>
 
       {/* The whole content area is the drop target, not just the
           dropzone tile — dropping an image anywhere over the decklist is
@@ -1225,10 +1240,12 @@ export default function DecklistPage() {
                   {
                     value: "mpc",
                     label: "MPC Fill",
-                    title: mpcSupported
-                      ? "MPC Fill's top community art for every face, picked automatically on import. Change any of them from the card's printing button."
-                      : "Needs a newer generation server",
-                    disabled: !mpcSupported,
+                    title: !mpcSupported
+                      ? "Needs a newer generation server"
+                      : !mpcCatalog.ready
+                        ? "Download the MPC Fill Catalog first (sidebar)"
+                        : "MPC Fill's top community art for every face, picked automatically on import. Change any of them from the card's printing button.",
+                    disabled: !mpcSupported || !mpcCatalog.ready,
                   },
                 ]}
               />

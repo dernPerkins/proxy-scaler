@@ -7,8 +7,11 @@
 // card database, an import holds the app with a modal until it finishes
 // (MpcCatalogPrompt shows it, whoever started the import).
 import { useSyncExternalStore } from "react";
-import type { QueryClient } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { generationApi } from "./api/generation";
 import { projectApi } from "./api/project";
+import { serverSupportsMpcFill, useServerReadiness, useServerVersion } from "./config";
+import { useConnection } from "./connection";
 
 /** The prompt asks a server to check the published manifest at most this
  *  often (the server caches the manifest for hours on top). */
@@ -53,6 +56,32 @@ export function refreshAfterCatalogUpdate(queryClient: QueryClient): void {
       );
     },
   });
+}
+
+/** Is the MPC Fill catalog downloaded on the connected server? MPC Fill
+ *  art search works from it alone (users never call mpcfill.com), so every
+ *  MPC Fill feature asks this first and offers the download when not.
+ *  Shares the status query with MpcCatalogPanel and the prompt, which an
+ *  import or delete refreshes (refreshAfterCatalogUpdate). */
+export function useMpcCatalogReady(): { ready: boolean; importing: boolean; known: boolean } {
+  const connection = useConnection();
+  const readiness = useServerReadiness();
+  const supported = serverSupportsMpcFill(useServerVersion());
+  const serverUnavailable =
+    connection.mode === "remote" ? !connection.remoteHealthy : readiness.status !== "ready";
+  const jobId = useMpcCatalogJobId();
+  const status = useQuery({
+    queryKey: ["mpc-catalog-status"],
+    queryFn: () => generationApi.mpcCatalogStatus(),
+    enabled: !serverUnavailable && supported,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  return {
+    ready: status.data?.local != null,
+    importing: (status.data?.import_running ?? false) || jobId != null,
+    known: status.data != null,
+  };
 }
 
 // --- The prompt's per-server memory (app_settings, see project_store.rs) --

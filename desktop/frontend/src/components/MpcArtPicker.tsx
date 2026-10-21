@@ -2,9 +2,11 @@
 // previews and a preview pane with the button that picks one.
 //
 // Everything comes from the generation server (api/routers/mpcfill.py):
-// the search (mpcfill.com, cached there for a day), the previews (Google
-// Drive, cached on the server's disk) and, when a pick is made, the
-// download. The client itself never contacts MPC Fill or Google.
+// the search (its downloaded MPC Fill catalog, never mpcfill.com), the
+// previews (Google Drive, cached on the server's disk) and, when a pick is
+// made, the download. The client itself never contacts MPC Fill or Google.
+// With no catalog downloaded the browser offers the download instead of
+// searching (CatalogNeeded).
 //
 // MpcArtBrowser fills a `.modal.printing-grid-modal` — the same layout as
 // the change-printing grid, preview column on the left — so it works both
@@ -27,6 +29,8 @@ import ModalOverlay from "./ModalOverlay";
 import { LoadingGrid, LoadingStage } from "./PickerLoading";
 import { fillFrameWith, trimGeometry } from "../cardTrim";
 import { MPC_IMPORT_BLEED_MM } from "../mpcFill";
+import { setMpcCatalogJobId, useMpcCatalogReady } from "../mpcCatalog";
+import { errorText as toastErrorText, toast } from "../toasts";
 import SelectMenu from "./SelectMenu";
 import {
   KEYBOARD_PREVIEW_SETTLE_MS,
@@ -91,8 +95,6 @@ interface Submitted {
   minDpi: number;
   nsfw: boolean;
   fuzzy: boolean;
-  /** Bumped by Refresh: a new search that skips the server's cache. */
-  refresh: number;
 }
 
 function sizeLabel(bytes: number): string {
@@ -282,6 +284,38 @@ function MpcPreview(props: {
 /** What the picker searches for first: a name, or a corpus card (and face)
  *  whose name — and CARD vs TOKEN — the server works out, and optionally
  *  the filters to start from (the MPC Fill tab hands over its own). */
+/** In place of results while the server has no MPC Fill catalog: MPC
+ *  Fill art search works from it alone, so offer the download. The import
+ *  itself runs under MpcCatalogPrompt's blocking modal, and an import
+ *  refreshes the catalog status, so search starts by itself afterwards. */
+function CatalogNeeded({ importing, known }: { importing: boolean; known: boolean }) {
+  const [starting, setStarting] = useState(false);
+  if (!known) return <p className="hint">Checking for the MPC Fill Catalog…</p>;
+  if (importing) return <p className="hint">Downloading the MPC Fill Catalog…</p>;
+  return (
+    <div className="mpc-catalog-needed">
+      <p>MPC Fill art search uses the MPC Fill Catalog, downloaded once to this server.</p>
+      <button
+        type="button"
+        className="btn-primary"
+        disabled={starting}
+        onClick={() => {
+          setStarting(true);
+          generationApi
+            .startMpcCatalogImport()
+            .then(({ job_id }) => setMpcCatalogJobId(job_id))
+            .catch((err) =>
+              toast(`Couldn't start the download: ${toastErrorText(err)}`, "err", { key: "mpc-catalog" }),
+            )
+            .finally(() => setStarting(false));
+        }}
+      >
+        {starting ? "Starting…" : "Download MPC Fill Catalog"}
+      </button>
+    </div>
+  );
+}
+
 export interface MpcPickerInitial {
   query?: string;
   scryfallId?: string | null;
@@ -331,7 +365,6 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     minDpi: initial.minDpi ?? 0,
     nsfw: initial.nsfw ?? false,
     fuzzy: initial.fuzzy ?? false,
-    refresh: 0,
   }));
   const browsing = submitted.type === "CARDBACK" && !submitted.q;
   const canSearch = Boolean(submitted.q || submitted.scryfallId || submitted.type === "CARDBACK");
@@ -366,6 +399,8 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     void projectApi.setMpcFillLanguage(choice).catch(() => {});
   }
 
+  const catalog = useMpcCatalogReady();
+
   // Searches run when asked (open, Search, a filter change), never per
   // keystroke; each distinct search is one cached request on the server.
   const search = useQuery({
@@ -380,18 +415,17 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         min_dpi: submitted.minDpi || undefined,
         nsfw: submitted.nsfw || undefined,
         fuzzy: submitted.fuzzy || undefined,
-        refresh: submitted.refresh > 0 || undefined,
       }),
     // After the remembered language has loaded, so the first search is
-    // the right one rather than one that is immediately replaced.
-    enabled: canSearch && languageReady,
+    // the right one rather than one that is immediately replaced; and only
+    // with a catalog to search.
+    enabled: canSearch && languageReady && catalog.ready,
     staleTime: Infinity,
     retry: false,
   });
 
-  // A search with nothing to show yet (the first can take a moment, as
-  // the server asks mpcfill.com) gets the loading stage and grid.
-  const loading = !languageReady || (search.isFetching && !search.data);
+  // A search with nothing to show yet gets the loading stage and grid.
+  const loading = catalog.ready && (!languageReady || (search.isFetching && !search.data));
   const loadingLabel = "Searching MPC Fill…";
 
   // A search by card fills the box with the name the server searched for.
@@ -635,19 +669,12 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
           />
           NSFW
         </label>
-        <button
-          type="button"
-          className="btn-sm"
-          title="Search again, skipping the server's day-long cache"
-          disabled={!canSearch || search.isFetching}
-          onClick={() => submit({ refresh: submitted.refresh + 1 })}
-        >
-          Refresh
-        </button>
       </div>
 
       <div className="modal-body" ref={scrollRef}>
-        {loading ? (
+        {!catalog.ready ? (
+          <CatalogNeeded importing={catalog.importing} known={catalog.known} />
+        ) : loading ? (
           <LoadingGrid label={loadingLabel} />
         ) : search.isSuccess && ids.length === 0 && lang ? (
           // Most MPC Fill art is English: an empty result under a language

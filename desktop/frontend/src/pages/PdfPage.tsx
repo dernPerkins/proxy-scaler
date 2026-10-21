@@ -43,6 +43,7 @@ import type {
   ReverseFill,
 } from "../api/types";
 import { toast } from "../toasts";
+import SidebarColumn from "../components/SidebarColumn";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -514,641 +515,643 @@ export default function PdfPage() {
 
   return (
     <div className="layout">
-      <aside className="sidebar sidebar-split panel">
-        {/* Two columns rather than one tall stack: four sections stacked
-            pushed the Generate button below the fold on a laptop screen.
-            The split lands at Guides so the halves come out roughly even.
-            Collapses back to one column on a narrow window — see
-            .sidebar-split in styles.css. */}
-        {/* Presets first, spanning both columns: picking one sets most of
-            what follows, so it reads top-down. */}
-        <PresetBar kind="pdf" tourId="pdf-presets" />
-        <div className="sidebar-cols">
-          <div>
-            <h3 style={{ marginBottom: 14 }}>Source images</h3>
+      <SidebarColumn>
+        <aside className="sidebar sidebar-split panel">
+          {/* Two columns rather than one tall stack: four sections stacked
+              pushed the Generate button below the fold on a laptop screen.
+              The split lands at Guides so the halves come out roughly even.
+              Collapses back to one column on a narrow window — see
+              .sidebar-split in styles.css. */}
+          {/* Presets first, spanning both columns: picking one sets most of
+              what follows, so it reads top-down. */}
+          <PresetBar kind="pdf" tourId="pdf-presets" />
+          <div className="sidebar-cols">
+            <div>
+              <h3 style={{ marginBottom: 14 }}>Source images</h3>
 
-            {/* Which already-generated variant to print for each card. These
-                only select among existing images — they never trigger
-                generation. Preferred DPI is a hard filter among upscales: a
-                card with none at it prints from its 300 DPI original if one
-                is downloaded (noted below), else it is left out and listed —
-                never substituted with an upscale at another resolution.
-                Within that DPI the preferred model wins, else the most
-                recently generated image (see pdf_layout.py::
-                _pick_scryfall_variant). */}
-            <div className="field-group" data-tour="pdf-source">
-              <label className="field">
-                <span>Preferred model</span>
-                <ModelSelect
-                  value={layout.preferred_model ?? ""}
-                  models={modelsQuery.data}
-                  disabled={modelsQuery.isLoading || modelsQuery.isError}
-                  onChange={(value) => updateLayout("preferred_model", value || null)}
-                  anyOption="Any (highest DPI available)"
-                />
-              </label>
-
-              <label className="field">
-                <span>Preferred DPI</span>
-                <SelectMenu
-                  options={[
-                    { value: "", label: "Any (highest available)" },
-                    ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
-                  ]}
-                  value={layout.preferred_dpi == null ? "" : String(layout.preferred_dpi)}
-                  onChange={(value) => updateLayout("preferred_dpi", value ? Number(value) : null)}
-                />
-              </label>
-
-              {/* Narrows Scryfall cards to their ~300 DPI downloads. Custom
-                  Images (MPC Fill art included) and backs ignore it, so the
-                  selectors above stay live for them. */}
-              <label
-                className="check"
-                title={
-                  !originalsSupported
-                    ? "The connected generation server is too old for this — update it."
-                    : "Print Scryfall cards from their downloaded ~300 DPI originals only. Custom and MPC Fill images are unaffected and still follow the preferred model/DPI."
-                }
-              >
-                <input
-                  type="checkbox"
-                  disabled={!originalsSupported}
-                  checked={useOriginals}
-                  onChange={(e) => updateLayout("use_originals", e.target.checked)}
-                />
-                Use Only 300 DPI Originals
-              </label>
-            </div>
-
-            {modelsQuery.isError && (
-              <p className="error-text">
-                Couldn&apos;t load the model list:{" "}
-                {modelsQuery.error instanceof Error
-                  ? modelsQuery.error.message
-                  : String(modelsQuery.error)}
-              </p>
-            )}
-
-            <h3 style={{ margin: "18px 0 14px" }}>Layout</h3>
-
-            <div className="field-group" data-tour="pdf-layout">
-              <label className="field">
-                <span>Page size</span>
-                {/* Custom is the placeholder, not an option: it shows while
-                    the size matches no preset, and never looks like a size
-                    you could pick. */}
-                <SelectMenu
-                  options={Object.keys(PAGE_PRESETS).map((name) => ({ value: name, label: name }))}
-                  value={matchPagePreset(layout.page_width_mm, layout.page_height_mm)}
-                  placeholder={CUSTOM_PAGE_SIZE}
-                  onChange={applyPreset}
-                />
-              </label>
-
-              {/* Paired dimensions sit side by side — they're read together and
-                  each is narrow enough that a full-width row each just adds
-                  vertical scrolling to the sidebar. */}
-              <div style={{ display: "flex", gap: 10 }}>
+              {/* Which already-generated variant to print for each card. These
+                  only select among existing images — they never trigger
+                  generation. Preferred DPI is a hard filter among upscales: a
+                  card with none at it prints from its 300 DPI original if one
+                  is downloaded (noted below), else it is left out and listed —
+                  never substituted with an upscale at another resolution.
+                  Within that DPI the preferred model wins, else the most
+                  recently generated image (see pdf_layout.py::
+                  _pick_scryfall_variant). */}
+              <div className="field-group" data-tour="pdf-source">
                 <label className="field">
-                  <span>Width (mm)</span>
-                  <NumberInput
-                    value={layout.page_width_mm}
-                    onChange={(v) => updateLayout("page_width_mm", v)}
+                  <span>Preferred model</span>
+                  <ModelSelect
+                    value={layout.preferred_model ?? ""}
+                    models={modelsQuery.data}
+                    disabled={modelsQuery.isLoading || modelsQuery.isError}
+                    onChange={(value) => updateLayout("preferred_model", value || null)}
+                    anyOption="Any (highest DPI available)"
                   />
                 </label>
+
                 <label className="field">
-                  <span>Height (mm)</span>
-                  <NumberInput
-                    value={layout.page_height_mm}
-                    onChange={(v) => updateLayout("page_height_mm", v)}
+                  <span>Preferred DPI</span>
+                  <SelectMenu
+                    options={[
+                      { value: "", label: "Any (highest available)" },
+                      ...DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
+                    ]}
+                    value={layout.preferred_dpi == null ? "" : String(layout.preferred_dpi)}
+                    onChange={(value) => updateLayout("preferred_dpi", value ? Number(value) : null)}
                   />
+                </label>
+
+                {/* Narrows Scryfall cards to their ~300 DPI downloads. Custom
+                    Images (MPC Fill art included) and backs ignore it, so the
+                    selectors above stay live for them. */}
+                <label
+                  className="check"
+                  title={
+                    !originalsSupported
+                      ? "The connected generation server is too old for this — update it."
+                      : "Print Scryfall cards from their downloaded ~300 DPI originals only. Custom and MPC Fill images are unaffected and still follow the preferred model/DPI."
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    disabled={!originalsSupported}
+                    checked={useOriginals}
+                    onChange={(e) => updateLayout("use_originals", e.target.checked)}
+                  />
+                  Use Only 300 DPI Originals
                 </label>
               </div>
 
-              <div style={{ display: "flex", gap: 10 }}>
-                <label className="field">
-                  <span>Columns</span>
-                  <NumberInput
-                    min={1}
-                    value={layout.cols}
-                    onChange={(v) => updateLayout("cols", v)}
-                  />
-                </label>
-                <label className="field">
-                  <span>Rows</span>
-                  <NumberInput
-                    min={1}
-                    value={layout.rows}
-                    onChange={(v) => updateLayout("rows", v)}
-                  />
-                </label>
-              </div>
-
-              {/* The preview approximates bleed by edge-extending a small
-                  cached thumbnail, while the real render extends the
-                  full-resolution art — close, but not identical. Flagged in
-                  the UI rather than chased, since keeping the two pipelines
-                  pixel-identical isn't worth the coupling. */}
-              <label
-                className="field"
-                title="Not accurate to what you'll see in the final generated PDF currently."
-              >
-                <span>Bleed (mm)</span>
-                <NumberInput
-                  step={0.1}
-                  value={layout.bleed_mm}
-                  onChange={(v) => updateLayout("bleed_mm", v)}
-                />
-              </label>
-
-              <div style={{ display: "flex", gap: 10 }}>
-                <label className="field">
-                  <span>Spacing X (mm)</span>
-                  <NumberInput
-                    step={0.1}
-                    value={layout.spacing_x_mm}
-                    onChange={(v) => updateLayout("spacing_x_mm", v)}
-                  />
-                </label>
-                <label className="field">
-                  <span>Spacing Y (mm)</span>
-                  <NumberInput
-                    step={0.1}
-                    value={layout.spacing_y_mm}
-                    onChange={(v) => updateLayout("spacing_y_mm", v)}
-                  />
-                </label>
-              </div>
-
-              <div style={{ display: "flex", gap: 10 }}>
-                <label className="field">
-                  <span>Offset X (mm)</span>
-                  <NumberInput
-                    step={0.1}
-                    value={layout.offset_x_mm}
-                    onChange={(v) => updateLayout("offset_x_mm", v)}
-                  />
-                </label>
-                <label className="field">
-                  <span>Offset Y (mm)</span>
-                  <NumberInput
-                    step={0.1}
-                    value={layout.offset_y_mm}
-                    onChange={(v) => updateLayout("offset_y_mm", v)}
-                  />
-                </label>
-              </div>
-
-              {/* A fixed list rather than the free-form NumberInput it used
-                  to be: any source image is resized to this density at
-                  render time, so arbitrary values only invited typos (0,
-                  negative) with no matching source anywhere. 300 is offered
-                  for printing straight from the Scryfall originals. */}
-              <label className="field">
-                <span>Export DPI</span>
-                {/* A legacy project may hold a hand-typed value from the
-                    free-form era — shown as-is so loading it doesn't
-                    silently change its output; picking any standard value
-                    replaces it for good. */}
-                <SelectMenu
-                  options={[
-                    ...(layout.export_dpi != null && !EXPORT_DPI_OPTIONS.includes(layout.export_dpi)
-                      ? [{ value: String(layout.export_dpi), label: `${layout.export_dpi} (custom)` }]
-                      : []),
-                    ...EXPORT_DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
-                  ]}
-                  value={String(layout.export_dpi)}
-                  onChange={(value) => updateLayout("export_dpi", Number(value))}
-                />
-              </label>
-
-              <div style={{ display: "flex", gap: 10 }}>
-                <label className="field">
-                  <span>Guide width (pt)</span>
-                  <NumberInput
-                    step={0.05}
-                    value={layout.guide_width_pt}
-                    onChange={(v) => updateLayout("guide_width_pt", v)}
-                  />
-                </label>
-                <label className="field">
-                  <span>Guide length (mm)</span>
-                  <NumberInput
-                    step={0.1}
-                    value={layout.guide_length_mm}
-                    onChange={(v) => updateLayout("guide_length_mm", v)}
-                  />
-                </label>
-              </div>
-            </div>
-
-            {/* Decklist-level settings that shape the print run. Card
-                sorting is the shared, persisted control (SortSelect) — it
-                lives with the other settings rather than beside the
-                download button, where it read as a one-off. */}
-            <h3 style={{ margin: "18px 0 14px" }}>Deck list</h3>
-
-            <div className="field-group" data-tour="pdf-decklist">
-              <label className="field">
-                <span>Card sorting</span>
-                <SortSelect label={null} />
-              </label>
-            </div>
-          </div>
-
-          <div>
-            {/* Guides, split by kind and by page kind. Card Guides are the
-                small marks at each card's own trim corners; Page Guides are
-                the lines running from the page edge in to the grid. They used
-                to share one switch, which couldn't express the setting most
-                duplex printers actually want: guides on the fronts you cut
-                against, none on the backs that show. */}
-            {/* No top margin: this is the column's first heading and has to
-                sit level with "Source images" in the other column. */}
-            <h3 style={{ marginBottom: 14 }}>
-              Guides{" "}
-              <span
-                className="hint"
-                title="Front pages are the side you cut against, so guides there are the ones you use. Back pages default to none — that ink lands on the visible side of the card."
-              >
-                (?)
-              </span>
-            </h3>
-
-            <div className="field-group" data-tour="pdf-guides">
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={layout.hide_card_guides_front}
-                  onChange={(e) => updateLayout("hide_card_guides_front", e.target.checked)}
-                />
-                Hide card guides on front pages
-              </label>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={layout.hide_page_guides_front}
-                  onChange={(e) => updateLayout("hide_page_guides_front", e.target.checked)}
-                />
-                Hide page guides on front pages
-              </label>
-              {/* Still shown (not hidden) while back printing is off, so the
-                  settings stay comparable side by side — just inert, and said
-                  so rather than silently ignored. */}
-              <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-                <input
-                  type="checkbox"
-                  disabled={!layout.back_printing}
-                  checked={layout.hide_card_guides_back}
-                  onChange={(e) => updateLayout("hide_card_guides_back", e.target.checked)}
-                />
-                Hide card guides on back pages
-              </label>
-              <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-                <input
-                  type="checkbox"
-                  disabled={!layout.back_printing}
-                  checked={layout.hide_page_guides_back}
-                  onChange={(e) => updateLayout("hide_page_guides_back", e.target.checked)}
-                />
-                Hide page guides on back pages
-              </label>
-            </div>
-
-            <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
-
-            <div className="field-group" data-tour="pdf-backs">
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={layout.back_printing}
-                  onChange={(e) => updateLayout("back_printing", e.target.checked)}
-                />
-                Print card backs
-              </label>
-
-              {layout.back_printing && (
-                <>
-                  {/* What goes on the back of a card that has no
-                      transform side. "Leave blank" is the mode for
-                      printing a deck purely so its double-faced cards get
-                      their own backs — it needs no back image at all,
-                      which is why the picker below it goes away entirely
-                      in that mode. */}
-                  <label className="field">
-                    <span>Backs of single-faced cards</span>
-                    <SelectMenu
-                      options={[
-                        { value: "back_image", label: "Use the back image" },
-                        { value: "blank", label: "Leave blank" },
-                      ]}
-                      value={layout.reverse_fill ?? null}
-                      onChange={(value) => updateLayout("reverse_fill", value as ReverseFill)}
-                    />
-                  </label>
-
-                  {layout.reverse_fill === "back_image" ? (
-                    <p className="hint" style={{ margin: "2px 0 8px" }}>
-                      {selectedBack ? (
-                        <>
-                          Using <strong>{selectedBack.label}</strong> — change it on
-                          the Backs tab.
-                        </>
-                      ) : (
-                        <>No back selected. Pick one on the Backs tab.</>
-                      )}
-                    </p>
-                  ) : (
-                    <p className="hint" style={{ margin: "2px 0 8px" }}>
-                      Only double-faced cards get anything on their back. No back
-                      image needed.
-                    </p>
-                  )}
-                  <CardBackSummaryNote
-                    summary={cardBacks}
-                    serverSupports={serverUnavailable || perCardBacksSupported}
-                    serverVersion={serverVersion}
-                  />
-
-                  {/* Changes the print-slot count and therefore the page
-                      count, which is why it lives here rather than with the
-                      Back Image on the Backs tab. */}
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={layout.back_faces_as_reverse}
-                      onChange={(e) =>
-                        updateLayout("back_faces_as_reverse", e.target.checked)
-                      }
-                    />
-                    Print a double-faced card&apos;s transform side on its own back
-                  </label>
-                  <p className="hint" style={{ margin: "-2px 0 8px" }}>
-                    {layout.back_faces_as_reverse
-                      ? "A double-faced card is one printed card with both faces on it."
-                      : layout.reverse_fill === "blank"
-                        ? "Each face prints as its own card — so with blank backs, every back page comes out empty."
-                        : "Each face prints as its own card, and both get the back image."}
-                  </p>
-
-                  <label className="field">
-                    <span>
-                      Flip edge{" "}
-                      <span
-                        className="hint"
-                        title="Match this to your printer's duplex setting — 'Flip on long edge' or 'Flip on short edge' in the print dialog. If they disagree, every card gets someone else's back."
-                      >
-                        (?)
-                      </span>
-                    </span>
-                    <SelectMenu
-                      options={[
-                        { value: "long", label: "Long edge" },
-                        { value: "short", label: "Short edge" },
-                      ]}
-                      value={layout.flip_edge ?? null}
-                      onChange={(value) => updateLayout("flip_edge", value as FlipEdge)}
-                    />
-                  </label>
-
-                  <label className="field">
-                    <span>Page order</span>
-                    <SelectMenu
-                      options={[
-                        { value: "duplex", label: "Duplex (front, back, front…)" },
-                        { value: "fronts_then_backs", label: "All fronts, then all backs" },
-                      ]}
-                      value={layout.page_order ?? null}
-                      onChange={(value) => updateLayout("page_order", value as PageOrder)}
-                    />
-                  </label>
-
-                  {/* Independent of the front offsets rather than added to
-                      them: they calibrate two separate passes through the
-                      printer, and duplex registration genuinely drifts. */}
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <label className="field">
-                      <span>Back offset X (mm)</span>
-                      <NumberInput
-                        step={0.1}
-                        value={layout.back_offset_x_mm ?? 0}
-                        onChange={(v) => updateLayout("back_offset_x_mm", v)}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Back offset Y (mm)</span>
-                      <NumberInput
-                        step={0.1}
-                        value={layout.back_offset_y_mm ?? 0}
-                        onChange={(v) => updateLayout("back_offset_y_mm", v)}
-                      />
-                    </label>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Electronic cutter: registration marks a cutting machine's
-                optical scanner aligns to, so a matching cut file (the
-                button in the main column) can trim the sheet. The layout
-                copies Proxxied's, which users asked for by name. Only
-                Silhouette for now; the select is the seam for the next
-                one. Cricut is deliberately NOT an option: Design Space
-                can't scan third-party marks, so its route is None here
-                plus the cut file (trim boxes alone, aligned to the mat). */}
-            <h3 style={{ margin: "18px 0 14px" }}>
-              Electronic cutter{" "}
-              <span
-                className="hint"
-                title="Prints registration marks a cutting machine scans to align its cuts, and offers a matching cut file. The marks sit in the page corners, outside every card."
-              >
-                (?)
-              </span>
-            </h3>
-
-            <div className="field-group" data-tour="pdf-cutter">
-              <label
-                className="field"
-                title={
-                  cutterSupported
-                    ? undefined
-                    : "The connected generation server is too old for cutter marks — update it."
-                }
-              >
-                <span>Electronic cutter</span>
-                <SelectMenu
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "silhouette", label: "Silhouette" },
-                  ]}
-                  value={cutter}
-                  disabled={!cutterSupported}
-                  onChange={(value) => updateLayout("cutter", value as Cutter)}
-                />
-              </label>
-              {!cutterSupported && !serverUnavailable && (
-                <p className="hint" style={{ margin: "-6px 0 0" }}>
-                  This server is too old to print registration marks — update it to
-                  turn the cutter on.
-                </p>
-              )}
-              {cutterSupported && !cutterOn && (
-                <p className="hint" style={{ margin: "-6px 0 0" }}>
-                  Cricut? Leave this on None and use Download cut file (SVG).
+              {modelsQuery.isError && (
+                <p className="error-text">
+                  Couldn&apos;t load the model list:{" "}
+                  {modelsQuery.error instanceof Error
+                    ? modelsQuery.error.message
+                    : String(modelsQuery.error)}
                 </p>
               )}
 
-              {cutterOn && (
-                <>
-                  <div className="field">
-                    <span>Registration marks</span>
-                    <div className="segmented">
-                      <button
-                        className={settings.cutter_mark_style === "three_point" ? "active" : ""}
-                        onClick={() => updateLayout("cutter_mark_style", "three_point")}
-                        title="Square top-left, L-marks top-right and bottom-left. Cameo 4, Cameo 5, Portrait, Curio."
-                      >
-                        3-point
-                      </button>
-                      <button
-                        className={settings.cutter_mark_style === "four_point" ? "active" : ""}
-                        onClick={() => updateLayout("cutter_mark_style", "four_point")}
-                        title="An L-mark in all four corners, no square. Cameo 5α and Pro MK II."
-                      >
-                        4-point
-                      </button>
-                    </div>
-                  </div>
+              <h3 style={{ margin: "18px 0 14px" }}>Layout</h3>
 
-                  {/* A preset for the inset, nothing more: which button is
-                      lit is read back from the value, so a hand-edited inset
-                      shows neither rather than a stale choice. */}
-                  <div className="field">
-                    <span>Feed</span>
-                    <div className="segmented">
-                      <button
-                        className={feedPreset === "standard" ? "active" : ""}
-                        onClick={() => updateLayout("cutter_inset_mm", STANDARD_INSET_MM)}
-                        title="Cutting mat: Silhouette Studio's standard 0.394 in inset."
-                      >
-                        Standard
-                      </button>
-                      <button
-                        className={feedPreset === "asf" ? "active" : ""}
-                        onClick={() => updateLayout("cutter_inset_mm", ASF_INSET_MM)}
-                        title="Auto Sheet Feeder: needs 0.625 in of clearance for its rollers."
-                      >
-                        Auto Sheet Feeder
-                      </button>
-                    </div>
-                  </div>
+              <div className="field-group" data-tour="pdf-layout">
+                <label className="field">
+                  <span>Page size</span>
+                  {/* Custom is the placeholder, not an option: it shows while
+                      the size matches no preset, and never looks like a size
+                      you could pick. */}
+                  <SelectMenu
+                    options={Object.keys(PAGE_PRESETS).map((name) => ({ value: name, label: name }))}
+                    value={matchPagePreset(layout.page_width_mm, layout.page_height_mm)}
+                    placeholder={CUSTOM_PAGE_SIZE}
+                    onChange={applyPreset}
+                  />
+                </label>
 
-                  <div className="field">
-                    <span>Inset units</span>
-                    <div className="segmented">
-                      <button
-                        className={insetUnit === "in" ? "active" : ""}
-                        onClick={() => setInsetUnit.mutate("in")}
-                      >
-                        inches
-                      </button>
-                      <button
-                        className={insetUnit === "mm" ? "active" : ""}
-                        onClick={() => setInsetUnit.mutate("mm")}
-                      >
-                        mm
-                      </button>
-                    </div>
-                  </div>
-
+                {/* Paired dimensions sit side by side — they're read together and
+                    each is narrow enough that a full-width row each just adds
+                    vertical scrolling to the sidebar. */}
+                <div style={{ display: "flex", gap: 10 }}>
                   <label className="field">
-                    <span>
-                      Registration mark inset{" "}
-                      <span
-                        className="hint"
-                        title="Distance from the page edge to the registration marks. The minimum is 5 mm. Standard is 0.394 in; Auto Sheet Feeder requires 0.625 in."
-                      >
-                        (?)
-                      </span>
-                    </span>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span>Width (mm)</span>
+                    <NumberInput
+                      value={layout.page_width_mm}
+                      onChange={(v) => updateLayout("page_width_mm", v)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Height (mm)</span>
+                    <NumberInput
+                      value={layout.page_height_mm}
+                      onChange={(v) => updateLayout("page_height_mm", v)}
+                    />
+                  </label>
+                </div>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <label className="field">
+                    <span>Columns</span>
+                    <NumberInput
+                      min={1}
+                      value={layout.cols}
+                      onChange={(v) => updateLayout("cols", v)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Rows</span>
+                    <NumberInput
+                      min={1}
+                      value={layout.rows}
+                      onChange={(v) => updateLayout("rows", v)}
+                    />
+                  </label>
+                </div>
+
+                {/* The preview approximates bleed by edge-extending a small
+                    cached thumbnail, while the real render extends the
+                    full-resolution art — close, but not identical. Flagged in
+                    the UI rather than chased, since keeping the two pipelines
+                    pixel-identical isn't worth the coupling. */}
+                <label
+                  className="field"
+                  title="Not accurate to what you'll see in the final generated PDF currently."
+                >
+                  <span>Bleed (mm)</span>
+                  <NumberInput
+                    step={0.1}
+                    value={layout.bleed_mm}
+                    onChange={(v) => updateLayout("bleed_mm", v)}
+                  />
+                </label>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <label className="field">
+                    <span>Spacing X (mm)</span>
+                    <NumberInput
+                      step={0.1}
+                      value={layout.spacing_x_mm}
+                      onChange={(v) => updateLayout("spacing_x_mm", v)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Spacing Y (mm)</span>
+                    <NumberInput
+                      step={0.1}
+                      value={layout.spacing_y_mm}
+                      onChange={(v) => updateLayout("spacing_y_mm", v)}
+                    />
+                  </label>
+                </div>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <label className="field">
+                    <span>Offset X (mm)</span>
+                    <NumberInput
+                      step={0.1}
+                      value={layout.offset_x_mm}
+                      onChange={(v) => updateLayout("offset_x_mm", v)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Offset Y (mm)</span>
+                    <NumberInput
+                      step={0.1}
+                      value={layout.offset_y_mm}
+                      onChange={(v) => updateLayout("offset_y_mm", v)}
+                    />
+                  </label>
+                </div>
+
+                {/* A fixed list rather than the free-form NumberInput it used
+                    to be: any source image is resized to this density at
+                    render time, so arbitrary values only invited typos (0,
+                    negative) with no matching source anywhere. 300 is offered
+                    for printing straight from the Scryfall originals. */}
+                <label className="field">
+                  <span>Export DPI</span>
+                  {/* A legacy project may hold a hand-typed value from the
+                      free-form era — shown as-is so loading it doesn't
+                      silently change its output; picking any standard value
+                      replaces it for good. */}
+                  <SelectMenu
+                    options={[
+                      ...(layout.export_dpi != null && !EXPORT_DPI_OPTIONS.includes(layout.export_dpi)
+                        ? [{ value: String(layout.export_dpi), label: `${layout.export_dpi} (custom)` }]
+                        : []),
+                      ...EXPORT_DPI_OPTIONS.map((dpi) => ({ value: String(dpi), label: String(dpi) })),
+                    ]}
+                    value={String(layout.export_dpi)}
+                    onChange={(value) => updateLayout("export_dpi", Number(value))}
+                  />
+                </label>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <label className="field">
+                    <span>Guide width (pt)</span>
+                    <NumberInput
+                      step={0.05}
+                      value={layout.guide_width_pt}
+                      onChange={(v) => updateLayout("guide_width_pt", v)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Guide length (mm)</span>
+                    <NumberInput
+                      step={0.1}
+                      value={layout.guide_length_mm}
+                      onChange={(v) => updateLayout("guide_length_mm", v)}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Decklist-level settings that shape the print run. Card
+                  sorting is the shared, persisted control (SortSelect) — it
+                  lives with the other settings rather than beside the
+                  download button, where it read as a one-off. */}
+              <h3 style={{ margin: "18px 0 14px" }}>Deck list</h3>
+
+              <div className="field-group" data-tour="pdf-decklist">
+                <label className="field">
+                  <span>Card sorting</span>
+                  <SortSelect label={null} />
+                </label>
+              </div>
+            </div>
+
+            <div>
+              {/* Guides, split by kind and by page kind. Card Guides are the
+                  small marks at each card's own trim corners; Page Guides are
+                  the lines running from the page edge in to the grid. They used
+                  to share one switch, which couldn't express the setting most
+                  duplex printers actually want: guides on the fronts you cut
+                  against, none on the backs that show. */}
+              {/* No top margin: this is the column's first heading and has to
+                  sit level with "Source images" in the other column. */}
+              <h3 style={{ marginBottom: 14 }}>
+                Guides{" "}
+                <span
+                  className="hint"
+                  title="Front pages are the side you cut against, so guides there are the ones you use. Back pages default to none — that ink lands on the visible side of the card."
+                >
+                  (?)
+                </span>
+              </h3>
+
+              <div className="field-group" data-tour="pdf-guides">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={layout.hide_card_guides_front}
+                    onChange={(e) => updateLayout("hide_card_guides_front", e.target.checked)}
+                  />
+                  Hide card guides on front pages
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={layout.hide_page_guides_front}
+                    onChange={(e) => updateLayout("hide_page_guides_front", e.target.checked)}
+                  />
+                  Hide page guides on front pages
+                </label>
+                {/* Still shown (not hidden) while back printing is off, so the
+                    settings stay comparable side by side — just inert, and said
+                    so rather than silently ignored. */}
+                <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+                  <input
+                    type="checkbox"
+                    disabled={!layout.back_printing}
+                    checked={layout.hide_card_guides_back}
+                    onChange={(e) => updateLayout("hide_card_guides_back", e.target.checked)}
+                  />
+                  Hide card guides on back pages
+                </label>
+                <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+                  <input
+                    type="checkbox"
+                    disabled={!layout.back_printing}
+                    checked={layout.hide_page_guides_back}
+                    onChange={(e) => updateLayout("hide_page_guides_back", e.target.checked)}
+                  />
+                  Hide page guides on back pages
+                </label>
+              </div>
+
+              <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
+
+              <div className="field-group" data-tour="pdf-backs">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={layout.back_printing}
+                    onChange={(e) => updateLayout("back_printing", e.target.checked)}
+                  />
+                  Print card backs
+                </label>
+
+                {layout.back_printing && (
+                  <>
+                    {/* What goes on the back of a card that has no
+                        transform side. "Leave blank" is the mode for
+                        printing a deck purely so its double-faced cards get
+                        their own backs — it needs no back image at all,
+                        which is why the picker below it goes away entirely
+                        in that mode. */}
+                    <label className="field">
+                      <span>Backs of single-faced cards</span>
+                      <SelectMenu
+                        options={[
+                          { value: "back_image", label: "Use the back image" },
+                          { value: "blank", label: "Leave blank" },
+                        ]}
+                        value={layout.reverse_fill ?? null}
+                        onChange={(value) => updateLayout("reverse_fill", value as ReverseFill)}
+                      />
+                    </label>
+
+                    {layout.reverse_fill === "back_image" ? (
+                      <p className="hint" style={{ margin: "2px 0 8px" }}>
+                        {selectedBack ? (
+                          <>
+                            Using <strong>{selectedBack.label}</strong> — change it on
+                            the Backs tab.
+                          </>
+                        ) : (
+                          <>No back selected. Pick one on the Backs tab.</>
+                        )}
+                      </p>
+                    ) : (
+                      <p className="hint" style={{ margin: "2px 0 8px" }}>
+                        Only double-faced cards get anything on their back. No back
+                        image needed.
+                      </p>
+                    )}
+                    <CardBackSummaryNote
+                      summary={cardBacks}
+                      serverSupports={serverUnavailable || perCardBacksSupported}
+                      serverVersion={serverVersion}
+                    />
+
+                    {/* Changes the print-slot count and therefore the page
+                        count, which is why it lives here rather than with the
+                        Back Image on the Backs tab. */}
+                    <label className="check">
                       <input
-                        type="range"
-                        min={INSET_MIN_MM}
-                        max={INSET_MAX_MM}
-                        step={0.1}
-                        value={settings.cutter_inset_mm}
+                        type="checkbox"
+                        checked={layout.back_faces_as_reverse}
                         onChange={(e) =>
-                          updateLayout("cutter_inset_mm", insetFromDisplay(Number(e.target.value), "mm"))
+                          updateLayout("back_faces_as_reverse", e.target.checked)
                         }
                       />
-                      <div className="inset-readout">
+                      Print a double-faced card&apos;s transform side on its own back
+                    </label>
+                    <p className="hint" style={{ margin: "-2px 0 8px" }}>
+                      {layout.back_faces_as_reverse
+                        ? "A double-faced card is one printed card with both faces on it."
+                        : layout.reverse_fill === "blank"
+                          ? "Each face prints as its own card — so with blank backs, every back page comes out empty."
+                          : "Each face prints as its own card, and both get the back image."}
+                    </p>
+
+                    <label className="field">
+                      <span>
+                        Flip edge{" "}
+                        <span
+                          className="hint"
+                          title="Match this to your printer's duplex setting — 'Flip on long edge' or 'Flip on short edge' in the print dialog. If they disagree, every card gets someone else's back."
+                        >
+                          (?)
+                        </span>
+                      </span>
+                      <SelectMenu
+                        options={[
+                          { value: "long", label: "Long edge" },
+                          { value: "short", label: "Short edge" },
+                        ]}
+                        value={layout.flip_edge ?? null}
+                        onChange={(value) => updateLayout("flip_edge", value as FlipEdge)}
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span>Page order</span>
+                      <SelectMenu
+                        options={[
+                          { value: "duplex", label: "Duplex (front, back, front…)" },
+                          { value: "fronts_then_backs", label: "All fronts, then all backs" },
+                        ]}
+                        value={layout.page_order ?? null}
+                        onChange={(value) => updateLayout("page_order", value as PageOrder)}
+                      />
+                    </label>
+
+                    {/* Independent of the front offsets rather than added to
+                        them: they calibrate two separate passes through the
+                        printer, and duplex registration genuinely drifts. */}
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <label className="field">
+                        <span>Back offset X (mm)</span>
                         <NumberInput
-                          step={insetUnit === "in" ? 0.001 : 0.1}
-                          min={insetToDisplay(INSET_MIN_MM, insetUnit)}
-                          value={insetToDisplay(settings.cutter_inset_mm, insetUnit)}
-                          onChange={(v) => updateLayout("cutter_inset_mm", insetFromDisplay(v, insetUnit))}
+                          step={0.1}
+                          value={layout.back_offset_x_mm ?? 0}
+                          onChange={(v) => updateLayout("back_offset_x_mm", v)}
                         />
+                      </label>
+                      <label className="field">
+                        <span>Back offset Y (mm)</span>
+                        <NumberInput
+                          step={0.1}
+                          value={layout.back_offset_y_mm ?? 0}
+                          onChange={(v) => updateLayout("back_offset_y_mm", v)}
+                        />
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Electronic cutter: registration marks a cutting machine's
+                  optical scanner aligns to, so a matching cut file (the
+                  button in the main column) can trim the sheet. The layout
+                  copies Proxxied's, which users asked for by name. Only
+                  Silhouette for now; the select is the seam for the next
+                  one. Cricut is deliberately NOT an option: Design Space
+                  can't scan third-party marks, so its route is None here
+                  plus the cut file (trim boxes alone, aligned to the mat). */}
+              <h3 style={{ margin: "18px 0 14px" }}>
+                Electronic cutter{" "}
+                <span
+                  className="hint"
+                  title="Prints registration marks a cutting machine scans to align its cuts, and offers a matching cut file. The marks sit in the page corners, outside every card."
+                >
+                  (?)
+                </span>
+              </h3>
+
+              <div className="field-group" data-tour="pdf-cutter">
+                <label
+                  className="field"
+                  title={
+                    cutterSupported
+                      ? undefined
+                      : "The connected generation server is too old for cutter marks — update it."
+                  }
+                >
+                  <span>Electronic cutter</span>
+                  <SelectMenu
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "silhouette", label: "Silhouette" },
+                    ]}
+                    value={cutter}
+                    disabled={!cutterSupported}
+                    onChange={(value) => updateLayout("cutter", value as Cutter)}
+                  />
+                </label>
+                {!cutterSupported && !serverUnavailable && (
+                  <p className="hint" style={{ margin: "-6px 0 0" }}>
+                    This server is too old to print registration marks — update it to
+                    turn the cutter on.
+                  </p>
+                )}
+                {cutterSupported && !cutterOn && (
+                  <p className="hint" style={{ margin: "-6px 0 0" }}>
+                    Cricut? Leave this on None and use Download cut file (SVG).
+                  </p>
+                )}
+
+                {cutterOn && (
+                  <>
+                    <div className="field">
+                      <span>Registration marks</span>
+                      <div className="segmented">
+                        <button
+                          className={settings.cutter_mark_style === "three_point" ? "active" : ""}
+                          onClick={() => updateLayout("cutter_mark_style", "three_point")}
+                          title="Square top-left, L-marks top-right and bottom-left. Cameo 4, Cameo 5, Portrait, Curio."
+                        >
+                          3-point
+                        </button>
+                        <button
+                          className={settings.cutter_mark_style === "four_point" ? "active" : ""}
+                          onClick={() => updateLayout("cutter_mark_style", "four_point")}
+                          title="An L-mark in all four corners, no square. Cameo 5α and Pro MK II."
+                        >
+                          4-point
+                        </button>
                       </div>
-                      <span className="hint" style={{ flexShrink: 0 }}>
-                        {insetUnit}
-                      </span>
                     </div>
-                  </label>
 
-                  <div className="field">
-                    <span>
-                      Mark orientation{" "}
-                      <span
-                        className="hint"
-                        title="The orientation you load the sheet into the cutter, and the page orientation to set in Silhouette Studio. When it differs from the paper's orientation the marks are rotated 90° and the cut file is exported that way round. With 3-point marks, load the sheet with the square at the top-left."
-                      >
-                        (?)
-                      </span>
-                    </span>
-                    <div className="segmented">
-                      <button
-                        className={settings.cutter_orientation === "landscape" ? "active" : ""}
-                        onClick={() => updateLayout("cutter_orientation", "landscape")}
-                      >
-                        Landscape
-                      </button>
-                      <button
-                        className={settings.cutter_orientation === "portrait" ? "active" : ""}
-                        onClick={() => updateLayout("cutter_orientation", "portrait")}
-                      >
-                        Portrait
-                      </button>
+                    {/* A preset for the inset, nothing more: which button is
+                        lit is read back from the value, so a hand-edited inset
+                        shows neither rather than a stale choice. */}
+                    <div className="field">
+                      <span>Feed</span>
+                      <div className="segmented">
+                        <button
+                          className={feedPreset === "standard" ? "active" : ""}
+                          onClick={() => updateLayout("cutter_inset_mm", STANDARD_INSET_MM)}
+                          title="Cutting mat: Silhouette Studio's standard 0.394 in inset."
+                        >
+                          Standard
+                        </button>
+                        <button
+                          className={feedPreset === "asf" ? "active" : ""}
+                          onClick={() => updateLayout("cutter_inset_mm", ASF_INSET_MM)}
+                          title="Auto Sheet Feeder: needs 0.625 in of clearance for its rollers."
+                        >
+                          Auto Sheet Feeder
+                        </button>
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Same per-page-kind switches as the guides, same back
-                      default: the cutter reads whichever side is face up,
-                      so marks on the other side are just ink. */}
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={settings.hide_cutter_marks_front}
-                      onChange={(e) => updateLayout("hide_cutter_marks_front", e.target.checked)}
-                    />
-                    Hide marks on front faces
-                  </label>
-                  <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-                    <input
-                      type="checkbox"
-                      disabled={!layout.back_printing}
-                      checked={settings.hide_cutter_marks_back}
-                      onChange={(e) => updateLayout("hide_cutter_marks_back", e.target.checked)}
-                    />
-                    Hide marks on back faces
-                  </label>
-                </>
-              )}
+                    <div className="field">
+                      <span>Inset units</span>
+                      <div className="segmented">
+                        <button
+                          className={insetUnit === "in" ? "active" : ""}
+                          onClick={() => setInsetUnit.mutate("in")}
+                        >
+                          inches
+                        </button>
+                        <button
+                          className={insetUnit === "mm" ? "active" : ""}
+                          onClick={() => setInsetUnit.mutate("mm")}
+                        >
+                          mm
+                        </button>
+                      </div>
+                    </div>
+
+                    <label className="field">
+                      <span>
+                        Registration mark inset{" "}
+                        <span
+                          className="hint"
+                          title="Distance from the page edge to the registration marks. The minimum is 5 mm. Standard is 0.394 in; Auto Sheet Feeder requires 0.625 in."
+                        >
+                          (?)
+                        </span>
+                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <input
+                          type="range"
+                          min={INSET_MIN_MM}
+                          max={INSET_MAX_MM}
+                          step={0.1}
+                          value={settings.cutter_inset_mm}
+                          onChange={(e) =>
+                            updateLayout("cutter_inset_mm", insetFromDisplay(Number(e.target.value), "mm"))
+                          }
+                        />
+                        <div className="inset-readout">
+                          <NumberInput
+                            step={insetUnit === "in" ? 0.001 : 0.1}
+                            min={insetToDisplay(INSET_MIN_MM, insetUnit)}
+                            value={insetToDisplay(settings.cutter_inset_mm, insetUnit)}
+                            onChange={(v) => updateLayout("cutter_inset_mm", insetFromDisplay(v, insetUnit))}
+                          />
+                        </div>
+                        <span className="hint" style={{ flexShrink: 0 }}>
+                          {insetUnit}
+                        </span>
+                      </div>
+                    </label>
+
+                    <div className="field">
+                      <span>
+                        Mark orientation{" "}
+                        <span
+                          className="hint"
+                          title="The orientation you load the sheet into the cutter, and the page orientation to set in Silhouette Studio. When it differs from the paper's orientation the marks are rotated 90° and the cut file is exported that way round. With 3-point marks, load the sheet with the square at the top-left."
+                        >
+                          (?)
+                        </span>
+                      </span>
+                      <div className="segmented">
+                        <button
+                          className={settings.cutter_orientation === "landscape" ? "active" : ""}
+                          onClick={() => updateLayout("cutter_orientation", "landscape")}
+                        >
+                          Landscape
+                        </button>
+                        <button
+                          className={settings.cutter_orientation === "portrait" ? "active" : ""}
+                          onClick={() => updateLayout("cutter_orientation", "portrait")}
+                        >
+                          Portrait
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Same per-page-kind switches as the guides, same back
+                        default: the cutter reads whichever side is face up,
+                        so marks on the other side are just ink. */}
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={settings.hide_cutter_marks_front}
+                        onChange={(e) => updateLayout("hide_cutter_marks_front", e.target.checked)}
+                      />
+                      Hide marks on front faces
+                    </label>
+                    <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
+                      <input
+                        type="checkbox"
+                        disabled={!layout.back_printing}
+                        checked={settings.hide_cutter_marks_back}
+                        onChange={(e) => updateLayout("hide_cutter_marks_back", e.target.checked)}
+                      />
+                      Hide marks on back faces
+                    </label>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      </aside>
+        </aside>
+      </SidebarColumn>
 
       <main className="content">
         <h2>PDF</h2>

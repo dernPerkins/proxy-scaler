@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from proxy_scaler import art_sources, mpc_catalog, mpc_catalog_jobs, mpcfill
+from proxy_scaler import art_sources, mpc_catalog, mpc_catalog_jobs
 from proxy_scaler.art_sources import ArtFilters, ArtQuery, ArtSourceError
 
 BASE = "https://catalog.test/"
@@ -350,53 +350,33 @@ def test_filters_language_dpi_nsfw_and_type(published) -> None:
     assert source.cardbacks(ArtFilters()) == ["a6"]
 
 
-def test_cards_hydrates_known_ids_and_asks_the_fallback_for_the_rest(published) -> None:
+def test_cards_hydrates_known_ids_and_leaves_the_rest_out(published) -> None:
+    """No fallback anywhere: an id the catalog doesn't hold has no details."""
     _import(published)
-
-    class Fallback:
-        asked: list[str] = []
-
-        def cards(self, ids):
-            self.asked.extend(ids)
-            return {i: _fake_card(i) for i in ids if i == "hidden"}
-
-    fallback = Fallback()
-    source = mpc_catalog.CatalogSource(mpc_catalog.db_path_from_env(), fallback=fallback)
+    source = mpc_catalog.CatalogSource(mpc_catalog.db_path_from_env())
     cards = source.cards(["a2", "hidden", "gone"])
 
-    assert list(cards) == ["a2", "hidden"]
+    assert list(cards) == ["a2"]
     assert cards["a2"].source_name == "Alpha"
     assert cards["a2"].tags == ("Retro",)
     assert cards["a2"].dpi == 1200
-    assert fallback.asked == ["hidden", "gone"]
-
-
-def _fake_card(drive_id: str):
-    return art_sources.ArtCard(
-        drive_id=drive_id,
-        name="Hidden",
-        card_type="CARD",
-        extension="png",
-        dpi=300,
-        size_bytes=1,
-        language="EN",
-        source_name="Hidden",
-        date_created="",
-    )
 
 
 def test_missing_catalog_is_an_art_source_error(tmp_path) -> None:
     source = mpc_catalog.CatalogSource(tmp_path / "nope.db")
-    with pytest.raises(ArtSourceError):
+    with pytest.raises(art_sources.CatalogMissing):
         source.search([ArtQuery("Sol Ring", "CARD")], ArtFilters())
+    with pytest.raises(ArtSourceError):
+        source.cards(["a1"])
 
 
-def test_get_art_source_uses_the_catalog_once_imported(published, tmp_path) -> None:
-    assert isinstance(art_sources.get_art_source(tmp_path), mpcfill.MpcFillSource)
+def test_get_art_source_is_always_the_catalog(published, tmp_path) -> None:
+    before = art_sources.get_art_source(tmp_path)
+    assert isinstance(before, mpc_catalog.CatalogSource)
+    with pytest.raises(art_sources.CatalogMissing):
+        before.cardbacks(ArtFilters())
     _import(published)
-    source = art_sources.get_art_source(tmp_path)
-    assert isinstance(source, mpc_catalog.CatalogSource)
-    assert isinstance(source.fallback, mpcfill.MpcFillSource)
+    assert art_sources.get_art_source(tmp_path).cardbacks(ArtFilters()) == ["a6"]
 
 
 # --- Update checks --------------------------------------------------------
@@ -456,11 +436,7 @@ def test_check_route_is_503_when_unreachable(client, published) -> None:
     assert "Couldn't reach" in resp.json()["detail"]
 
 
-def test_mpcfill_search_answers_from_the_catalog_without_mpcfill(client, published, monkeypatch) -> None:
-    def no_mpcfill(*args, **kwargs):
-        raise AssertionError("mpcfill.com was called")
-
-    monkeypatch.setattr(mpcfill, "_call", no_mpcfill)
+def test_mpcfill_search_answers_from_the_catalog(client, published) -> None:
     _import(published)
 
     body = client.get("/api/mpcfill/search", params={"q": "Sol Ring"}).json()
@@ -469,3 +445,56 @@ def test_mpcfill_search_answers_from_the_catalog_without_mpcfill(client, publish
     assert [c["drive_id"] for c in body["cards"]] == ["a2", "a1", "b1"]
     backs = client.get("/api/mpcfill/search", params={"type": "CARDBACK"}).json()
     assert backs["ids"] == ["a6"]
+
+
+def test_search_without_a_catalog_is_a_409_offering_the_download(client) -> None:
+    resp = client.get("/api/mpcfill/search", params={"q": "Sol Ring"})
+    assert resp.status_code == 409
+    assert "Download it from the Decklist sidebar" in resp.json()["detail"]
+    assert client.post("/api/mpcfill/cards", json={"ids": ["a1"]}).status_code == 409
+
+
+def test_import_tidies_the_old_live_caches(published, tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "imgcache" / "mpcfill"
+    for d in ("search", "cardbacks", "thumbs"):
+        (root / d).mkdir(parents=True)
+        (root / d / "x.json").write_text("{}")
+    (root / "sources.json").write_text("[]")
+
+    _import(published)
+
+    assert not (root / "search").exists() and not (root / "cardbacks").exists()
+    assert not (root / "sources.json").exists()
+    assert (root / "thumbs" / "x.json").exists()
+
+
+def test_no_server_code_calls_mpcfill_com() -> None:
+    """By agreement with MPC Fill's admin, only our daily crawler
+    (workers/mpc-catalog) ever contacts mpcfill.com. No server module may
+    hold its URL outside a comment or docstring."""
+    import ast
+
+    import proxy_scaler
+
+    root = Path(proxy_scaler.__file__).parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and "mpcfill.com" in node.value.lower()
+                and id(node) not in docstrings
+            ):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []

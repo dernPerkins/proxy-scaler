@@ -68,7 +68,7 @@ export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
           ? catalogPhaseLine(job)
           : local
             ? `${local.card_count.toLocaleString()} Images · ${local.source_count} Sources · Updated ${local.imported_at.slice(0, 10)}`
-            : "Not Downloaded Yet — art search asks mpcfill.com."}
+            : "Not Downloaded Yet: MPC Fill art search needs it."}
       </p>
       {job?.status === "failed" && <p className="error-text">{job.error ?? "The update failed."}</p>}
       <button
@@ -102,9 +102,9 @@ export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
           }}
           onCancel={() => setConfirmDeleteOpen(false)}
         >
-          This removes the downloaded art index from this server. Art search goes back to
-          asking mpcfill.com until it&apos;s downloaded again. Art already in your library and
-          decks is untouched.
+          This removes the downloaded art index from this server. MPC Fill art search stops
+          working until it&apos;s downloaded again. Art already in your library and decks is
+          untouched.
         </ConfirmDialog>
       )}
     </div>

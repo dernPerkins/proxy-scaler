@@ -1,6 +1,5 @@
 // What the image-grid pickers show while their results load: the Scryfall
-// printings, or an MPC Fill search (the first one can take a moment, as
-// the server asks mpcfill.com).
+// printings, or an MPC Fill search.
 //
 // The preview column becomes the preview pane's own dark stage — a card
 // silhouette breathing on a slowly drifting wash, with an activity spinner

@@ -42,20 +42,20 @@ def _art(drive_id: str, name: str = "Lightning Bolt (Full Art)") -> ArtCard:
 
 class _FakeSource:
     def __init__(self) -> None:
-        self.searches: list[tuple[list[ArtQuery], ArtFilters, bool]] = []
+        self.searches: list[tuple[list[ArtQuery], ArtFilters]] = []
         self.ids = [f"{DRIVE_ID[:-3]}{i:03d}" for i in range(70)]
         self.fail = False
 
-    def search(self, queries, filters, *, refresh=False):
+    def search(self, queries, filters):
         if self.fail:
             raise ArtSourceError("MPC Fill is down.")
-        self.searches.append((queries, filters, refresh))
+        self.searches.append((queries, filters))
         return {q: list(self.ids) for q in queries}
 
     def cards(self, drive_ids):
         return {i: _art(i) for i in drive_ids if i in self.ids or i == DRIVE_ID}
 
-    def cardbacks(self, filters, *, refresh=False):
+    def cardbacks(self, filters):
         return self.ids[:5]
 
 
@@ -145,7 +145,7 @@ def test_search_maps_filters(client, source) -> None:
         "/api/mpcfill/search",
         params={"q": "bolt", "lang": "ja", "fuzzy": True, "nsfw": True, "min_dpi": 800},
     )
-    _queries, filters, _refresh = source.searches[-1]
+    _queries, filters = source.searches[-1]
     assert filters == ArtFilters(languages=("JA",), fuzzy=True, include_nsfw=True, min_dpi=800)
 
 
@@ -229,7 +229,7 @@ def test_best_returns_the_top_match_per_face_in_one_search(client, source) -> No
     assert [f["drive_id"] for f in by_id["delver"]["faces"]] == [source.ids[0], source.ids[0]]
     # Every face of every card in one search call, TOKEN for the token.
     assert len(source.searches) == 1
-    queries, filters, _ = source.searches[0]
+    queries, filters = source.searches[0]
     assert ArtQuery("Treasure", "TOKEN") in queries
     assert ArtQuery("Insectile Aberration", "CARD") in queries
     assert filters.languages == ("EN",)

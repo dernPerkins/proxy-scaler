@@ -1,11 +1,13 @@
 """Where community card art is searched: the seam between the MPC Fill
 routes and whatever answers them.
 
-Two implementations: mpc_catalog.CatalogSource, a local index of the
-uploaders' Google Drive folders, once one is imported; and
-mpcfill.MpcFillSource, which asks mpcfill.com, before that. The routes,
-the client and the library import don't notice which: they only see
-drive ids and ArtCards.
+The one implementation is mpc_catalog.CatalogSource, a local index of the
+MPC Fill uploaders' Google Drive folders, downloaded from our own daily
+crawl (workers/mpc-catalog). Nothing on a user's machine ever calls
+mpcfill.com: by agreement with MPC Fill's admin, the crawler's one request
+a day is the only traffic it sees from Proxy Scaler. Without a catalog,
+MPC Fill art search is simply unavailable (CatalogMissing) until the user
+downloads one. See docs/adr/0007-mpc-art-catalog-on-cloudflare-workflows.md.
 """
 
 from __future__ import annotations
@@ -14,13 +16,38 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from . import __version__
+
+# How Proxy Scaler's own requests identify themselves: to our catalog
+# (catalog.proxy-scaler.com) and to Google for MPC Fill art images.
+USER_AGENT = f"proxy-scaler/{__version__} (+https://proxy-scaler.com)"
+# Under the server's image cache: MPC Fill art thumbnails (drive_images.py).
+CACHE_DIRNAME = "mpcfill"
+# MPC Fill's own filter defaults, kept so results match what its search
+# returns; maximumSize is in MB.
+MAXIMUM_DPI = 1500
+MAXIMUM_SIZE_MB = 30
+NSFW_TAG = "NSFW"
+
 CardType = Literal["CARD", "TOKEN", "CARDBACK"]
 CARD_TYPES: tuple[CardType, ...] = ("CARD", "TOKEN", "CARDBACK")
 
 
 class ArtSourceError(RuntimeError):
-    """The art source can't answer right now (offline, upstream down, an
-    unexpected response). The message is shown to the user as-is."""
+    """The art source can't answer right now. The message is shown to the
+    user as-is."""
+
+
+class CatalogMissing(ArtSourceError):
+    """No MPC Fill catalog is downloaded on this server, so there is
+    nothing to search. The routes answer 409 so the client can offer the
+    download."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The MPC Fill catalog isn't downloaded yet. Download it from the "
+            "Decklist sidebar to search MPC Fill art."
+        )
 
 
 @dataclass(frozen=True)
@@ -58,9 +85,7 @@ class ArtCard:
 
 
 class ArtSource(Protocol):
-    def search(
-        self, queries: list[ArtQuery], filters: ArtFilters, *, refresh: bool = False
-    ) -> dict[ArtQuery, list[str]]:
+    def search(self, queries: list[ArtQuery], filters: ArtFilters) -> dict[ArtQuery, list[str]]:
         """Ordered drive ids per query, best first."""
         ...
 
@@ -68,21 +93,15 @@ class ArtSource(Protocol):
         """Details for each known id; unknown ids are left out."""
         ...
 
-    def cardbacks(self, filters: ArtFilters, *, refresh: bool = False) -> list[str]:
+    def cardbacks(self, filters: ArtFilters) -> list[str]:
         """Every card back, best first, for browsing without a query."""
         ...
 
 
 def get_art_source(cache_dir: Path) -> ArtSource:
-    """The art source the routes use: the local catalog once one is
-    imported (mpc_catalog.py), else live mpcfill.com. The catalog keeps
-    MPC Fill as its fallback for details of art it doesn't hold. Tests
-    monkeypatch this."""
+    """The art source the routes use: the local catalog, which raises
+    CatalogMissing until one is downloaded. `cache_dir` is unused now and
+    kept for the routes' call shape. Tests monkeypatch this."""
     from . import mpc_catalog
-    from .mpcfill import MpcFillSource
 
-    live = MpcFillSource(cache_dir)
-    path = mpc_catalog.db_path_from_env()
-    if mpc_catalog.is_ready(path):
-        return mpc_catalog.CatalogSource(path, fallback=live)
-    return live
+    return mpc_catalog.CatalogSource(mpc_catalog.db_path_from_env())

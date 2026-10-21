@@ -9,13 +9,14 @@
 //
 // Library rows know an image's name, uploader, DPI and date, but not its
 // card type, language or tags; useMpcLibraryItems fills those in from
-// /api/mpcfill/cards (the local catalog when one is imported), batched.
+// /api/mpcfill/cards (the downloaded catalog), batched.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import type { CustomImage, MpcCard, MpcCardType } from "../api/types";
 import { MPC_LANGUAGES, type MpcPickerInitial } from "./MpcArtPicker";
 import SelectMenu from "./SelectMenu";
+import { useMpcCatalogReady } from "../mpcCatalog";
 
 export type ProjectFilter = "all" | "in" | "out";
 export type LibrarySort = "newest" | "name" | "dpi";
@@ -65,6 +66,7 @@ export function useMpcLibraryItems(
     () => [...new Set(images.flatMap((i) => (i.mpc ? [i.mpc.drive_id] : [])))].sort(),
     [images],
   );
+  const catalogReady = useMpcCatalogReady().ready;
   const details = useQuery({
     queryKey: ["mpc-library-details", ids.join(",")],
     queryFn: async () => {
@@ -75,7 +77,9 @@ export function useMpcLibraryItems(
       }
       return out;
     },
-    enabled: ids.length > 0,
+    // Details come from the downloaded catalog alone; without one the
+    // type, language and NSFW filters have nothing to go on.
+    enabled: ids.length > 0 && catalogReady,
     staleTime: Infinity,
     retry: false,
   });

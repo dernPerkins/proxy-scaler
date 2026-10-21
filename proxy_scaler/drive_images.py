@@ -6,7 +6,7 @@ resize (`lh3.googleusercontent.com/d/{id}=…`), and Drive's download
 endpoint. This module is the only place those are fetched, always from
 the generation server — the user's own machine — so each user's traffic
 comes from their own IP and nobody shares a rate limit with anyone else.
-MPC Fill's own image hosts are never used (see mpcfill.py).
+MPC Fill itself is never contacted (see art_sources.py).
 
 - thumbnail(): `=h400` / `=h800` JPEGs for the picker grid, cached on
   disk under `<cache_dir>/mpcfill/thumbs/` and refreshed monthly (Drive
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import requests
 
-from .mpcfill import CACHE_DIRNAME, USER_AGENT
+from .art_sources import CACHE_DIRNAME, USER_AGENT
 from .upscale import atomic_write_bytes
 
 LH3_BASE = "https://lh3.googleusercontent.com/d"

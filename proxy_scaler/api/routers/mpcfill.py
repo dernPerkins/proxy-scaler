@@ -2,11 +2,12 @@
 a pick into this server's Custom or Back Image store.
 
 Everything MPC-related the client does goes through here, so the client
-itself still makes no external network calls, and each user's MPC Fill
-and Google traffic comes from their own generation server. Search answers
-come from the art source (art_sources.py, mpcfill.com today, cached a
-day); images come from Google Drive (drive_images.py), never from MPC
-Fill's own hosts.
+itself still makes no external network calls. Search answers come from
+the locally downloaded MPC Fill catalog (art_sources.py, mpc_catalog.py)
+and nothing else: no user's machine ever calls mpcfill.com, by agreement
+with its admin. Without a catalog the search routes answer 409, which the
+client turns into an offer to download one. Images come from Google Drive
+(drive_images.py), each user's own server fetching them.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from proxy_scaler.api.schemas import (
     MpcImportIn,
     MpcSearchOut,
 )
-from proxy_scaler.art_sources import ArtCard, ArtFilters, ArtQuery, ArtSourceError
+from proxy_scaler.art_sources import ArtCard, ArtFilters, ArtQuery, ArtSourceError, CatalogMissing
 
 router = APIRouter(prefix="/api/mpcfill", tags=["mpcfill"])
 
@@ -128,11 +129,19 @@ def _corpus_face(scryfall_id: str, face: int) -> tuple[str, MpcCardType]:
     return names[face], card_type
 
 
+def _art_error(exc: ArtSourceError) -> HTTPException:
+    """409 when there is no catalog to search (the client offers the
+    download), 502 for anything else the catalog can't answer."""
+    return HTTPException(
+        status_code=409 if isinstance(exc, CatalogMissing) else 502, detail=str(exc)
+    )
+
+
 def _hydrate(ids: list[str]) -> list[MpcCardOut]:
     try:
         found = _source().cards(ids)
     except ArtSourceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _art_error(exc) from exc
     return [_out(found[i]) for i in ids if i in found]
 
 
@@ -146,13 +155,11 @@ def search(
     fuzzy: bool = False,
     nsfw: bool = False,
     min_dpi: int = Query(0, ge=0, le=1500),
-    refresh: bool = False,
 ) -> MpcSearchOut:
     """Art matching `q` (or, with `scryfall_id`, the name of that card's
     `face`, searched as a TOKEN when the corpus says it is one). A
     CARDBACK search with no query lists every card back. `lang` is a
-    Scryfall or MPC Fill language code; omitted, every language.
-    `refresh` skips the day-long cache (still one request)."""
+    Scryfall or MPC Fill language code; omitted, every language."""
     query = q.strip()
     card_type: MpcCardType = type or "CARD"
     if scryfall_id and not query:
@@ -170,12 +177,12 @@ def search(
         if not query:
             if card_type != "CARDBACK":
                 raise HTTPException(status_code=400, detail="Type a card name to search for.")
-            ids = source.cardbacks(filters, refresh=refresh)
+            ids = source.cardbacks(filters)
         else:
             art_query = ArtQuery(query, card_type)
-            ids = source.search([art_query], filters, refresh=refresh)[art_query]
+            ids = source.search([art_query], filters)[art_query]
     except ArtSourceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _art_error(exc) from exc
     return MpcSearchOut(
         query=query, card_type=card_type, ids=ids, cards=_hydrate(ids[:FIRST_PAGE])
     )
@@ -191,9 +198,8 @@ def cards(body: MpcCardsIn) -> MpcCardsOut:
 @router.post("/best", response_model=MpcBestOut)
 def best(body: MpcBestIn) -> MpcBestOut:
     """MPC Fill's top match for every face of each card, for importing a
-    whole decklist with MPC Fill art. One search request per 300 faces
-    (and a day-long cache behind that), one hydration request for the
-    winners. A face with no match comes back null and keeps its Scryfall
+    whole decklist with MPC Fill art: every face searched in the local
+    catalog, then the winners hydrated. A face with no match comes back null and keeps its Scryfall
     art; a card the corpus doesn't hold is left out.
 
     `lang` is the import's language: only art in it counts. Unlike
@@ -228,7 +234,7 @@ def best(body: MpcBestIn) -> MpcBestOut:
     try:
         found = _source().search(queries, filters) if queries else {}
     except ArtSourceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _art_error(exc) from exc
     top_ids = list(dict.fromkeys(ids[0] for ids in found.values() if ids))
     hydrated = {c.drive_id: c for c in _hydrate(top_ids)}
 

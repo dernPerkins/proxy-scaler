@@ -1,5 +1,6 @@
 """The MPC Fill art catalog: a local index of the MPC Fill uploaders'
-public Google Drive folders, searched in place of mpcfill.com.
+public Google Drive folders, and the only thing MPC Fill art search reads.
+Users' machines never call mpcfill.com (see art_sources.py).
 
 A daily Cloudflare Workflow (workers/mpc-catalog) crawls the folders'
 metadata and publishes one gzipped NDJSON shard per source, plus a
@@ -13,8 +14,8 @@ manifest, at CATALOG_URL. The format is fixed by
   catalog until the new one commits;
 - answers art_sources.ArtSource from it (CatalogSource).
 
-Images still come from Google through drive_images.py, exactly as with
-live MPC Fill search: the catalog only says which drive ids exist. See
+Images come from Google through drive_images.py: the catalog only says
+which drive ids exist. See
 docs/adr/0007-mpc-art-catalog-on-cloudflare-workflows.md.
 """
 
@@ -37,9 +38,20 @@ from typing import Any, Iterator
 import requests
 
 from . import mpc_catalog_jobs as jobs
-from .art_sources import ArtCard, ArtFilters, ArtQuery, ArtSource, ArtSourceError
+from .art_sources import (
+    MAXIMUM_DPI,
+    MAXIMUM_SIZE_MB,
+    NSFW_TAG,
+    USER_AGENT,
+    ArtCard,
+    ArtFilters,
+    ArtQuery,
+    ArtSourceError,
+    CACHE_DIRNAME,
+    CatalogMissing,
+)
 from .db import _DATA_ROOT
-from .mpcfill import MAXIMUM_DPI, MAXIMUM_SIZE_MB, NSFW_TAG, USER_AGENT
+
 
 CATALOG_URL = "https://catalog.proxy-scaler.com/"
 DEFAULT_DB_PATH = _DATA_ROOT / "mpc_catalog.db"
@@ -219,8 +231,9 @@ def local_status(path: Path | None = None) -> dict[str, Any] | None:
 
 
 def delete_catalog(path: Path | None = None) -> bool:
-    """Remove the catalog (file and WAL/SHM sidecars). Search falls back
-    to live mpcfill.com afterwards. Returns whether a file existed."""
+    """Remove the catalog (file and WAL/SHM sidecars). MPC Fill art search
+    is unavailable afterwards until one is downloaded again. Returns
+    whether a file existed."""
     path = path or db_path_from_env()
     existed = path.exists()
     for target in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
@@ -555,6 +568,23 @@ def _insert(conn: sqlite3.Connection, rows: list[tuple]) -> int:
     return conn.total_changes - before
 
 
+def _remove_live_caches() -> None:
+    """Tidy what the old live mpcfill.com client cached under the image
+    cache (source list, searches, card backs), best-effort. The thumbnail
+    cache beside them is drive_images.py's and stays."""
+    import shutil
+
+    from .api.routers.misc import DEFAULT_CACHE_DIR
+
+    root = Path(DEFAULT_CACHE_DIR) / CACHE_DIRNAME
+    try:
+        (root / "sources.json").unlink(missing_ok=True)
+        for name in ("search", "cardbacks"):
+            shutil.rmtree(root / name, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def run_import(
     job_id: str,
     *,
@@ -598,6 +628,7 @@ def run_import(
                 raise
         finally:
             conn.close()
+        _remove_live_caches()
         jobs.finish(job_id)
     except jobs.CatalogImportCanceled:
         jobs.mark_canceled(job_id)
@@ -616,7 +647,7 @@ def run_import(
 def _filter_sql(filters: ArtFilters) -> tuple[str, list[Any]]:
     """The WHERE fragment for MPC Fill's filters, with its parameters. The
     size and DPI ceilings are MPC Fill's own defaults, so results match
-    what live search returned."""
+    what its own search returns."""
     clauses = ["a.dpi >= ?", "a.dpi <= ?", "a.size_bytes <= ?"]
     params: list[Any] = [max(0, filters.min_dpi), MAXIMUM_DPI, MAXIMUM_SIZE_MB * 1024 * 1024]
     if filters.languages:
@@ -632,24 +663,21 @@ def _fts_phrase(query: str) -> str:
 
 
 class CatalogSource:
-    """ArtSource backed by the local catalog. Details for a drive id the
-    catalog doesn't hold (art picked from a source with no public folder,
-    before the catalog existed) come from `fallback`, so a pick already
-    in a project still shows."""
+    """ArtSource backed by the local catalog, and nothing else. A drive id
+    the catalog doesn't hold (art from a source with no public folder, or
+    a file since removed) simply has no details: the library entry keeps
+    the name and uploader it was picked with."""
 
-    def __init__(self, path: Path, fallback: ArtSource | None = None) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.fallback = fallback
 
     def _connect(self) -> sqlite3.Connection:
         conn = open_if_ready(self.path)
         if conn is None:
-            raise ArtSourceError("The MPC Fill catalog isn't available. Update it and try again.")
+            raise CatalogMissing()
         return conn
 
-    def search(
-        self, queries: list[ArtQuery], filters: ArtFilters, *, refresh: bool = False
-    ) -> dict[ArtQuery, list[str]]:
+    def search(self, queries: list[ArtQuery], filters: ArtFilters) -> dict[ArtQuery, list[str]]:
         where, params = _filter_sql(filters)
         out: dict[ArtQuery, list[str]] = {}
         conn = self._connect()
@@ -697,15 +725,9 @@ class CatalogSource:
                     found[row["drive_id"]] = _art_card(row)
         finally:
             conn.close()
-        missing = [i for i in wanted if i not in found]
-        if missing and self.fallback is not None:
-            try:
-                found.update(self.fallback.cards(missing))
-            except ArtSourceError:
-                pass
         return {i: found[i] for i in drive_ids if i in found}
 
-    def cardbacks(self, filters: ArtFilters, *, refresh: bool = False) -> list[str]:
+    def cardbacks(self, filters: ArtFilters) -> list[str]:
         where, params = _filter_sql(filters)
         conn = self._connect()
         try:
