@@ -356,8 +356,15 @@ def fetch_manifest(
     ):
         return cached[2]
     try:
+        # A query that changes every minute: the manifest is rewritten in
+        # place each day, and an edge cache holding an old copy (seen: days
+        # old, under a cache rule meant for the immutable shards) points at
+        # shards a later crawl has already deleted. The shards themselves
+        # are content-addressed, so they cache forever as they should.
         resp = _session(session).get(
-            base + "manifest.json", headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT_S
+            f"{base}manifest.json?fresh={int(time.time()) // 60}",
+            headers={"User-Agent": USER_AGENT},
+            timeout=TIMEOUT_S,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -449,7 +456,16 @@ def _download_shard(
         timeout=TIMEOUT_S,
         stream=True,
     )
-    resp.raise_for_status()
+    if resp.status_code == 404:
+        raise CatalogError(
+            f"The catalog's file for {source.name} is gone; a newer catalog has replaced it. "
+            "Try again."
+        )
+    if resp.status_code >= 400:
+        raise CatalogError(
+            f"Couldn't download {source.name} from the MPC Fill catalog "
+            f"(HTTP {resp.status_code}). Try again later."
+        )
     digest = hashlib.sha256()
     chunks: list[bytes] = []
     for chunk in resp.iter_content(chunk_size=256 * 1024):
@@ -643,8 +659,11 @@ def run_import(
         jobs.mark_canceled(job_id)
     except CatalogError as exc:
         jobs.fail(job_id, str(exc))
-    except requests.RequestException:
-        jobs.fail(job_id, "Couldn't download the MPC Fill catalog. Try again later.")
+    except requests.RequestException as exc:
+        jobs.fail(
+            job_id,
+            f"Couldn't download the MPC Fill catalog ({type(exc).__name__}). Try again later.",
+        )
     except Exception as exc:  # noqa: BLE001 — must reach the client as a status
         jobs.fail(job_id, str(exc))
 

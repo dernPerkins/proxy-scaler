@@ -123,7 +123,7 @@ class _Catalog:
     # requests.Session's surface, as far as mpc_catalog uses it.
     def get(self, url: str, headers=None, timeout=None, stream=False):
         assert url.startswith(BASE)
-        path = url[len(BASE) :]
+        path = url[len(BASE) :].split("?")[0]
         self.requests.append(path)
         if path not in self.files:
             return _Resp(b"", 404)
@@ -514,3 +514,23 @@ def test_a_manifest_without_source_total_still_imports(published) -> None:
     published.files["manifest.json"] = json.dumps(data).encode()
     _import(published)
     assert mpc_catalog.local_status()["source_total"] is None
+
+
+def test_manifest_requests_bypass_a_stale_edge_cache(published) -> None:
+    seen: list[str] = []
+    real_get = published.get
+
+    def get(url, **kw):
+        seen.append(url)
+        return real_get(url, **kw)
+
+    published.get = get
+    mpc_catalog.fetch_manifest(published, refresh=True)
+    assert seen and seen[0].startswith(BASE + "manifest.json?fresh=")
+
+
+def test_a_shard_gone_from_the_catalog_names_it(published) -> None:
+    published.files.pop(published.sources[0]["path"])
+    job = _import(published)
+    assert job.status == mpc_catalog_jobs.FAILED
+    assert "Alpha" in job.error and "gone" in job.error
