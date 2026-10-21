@@ -75,8 +75,11 @@ export function parseSources(body: unknown): { sources: Source[]; withoutLink: n
   return { sources, withoutLink };
 }
 
-export async function fetchSources(fetcher: Fetcher): Promise<Source[]> {
+/** The Drive-linked sources, and how many sources MPC Fill lists in all
+ *  (published as the manifest's `source_total`, so the app can say how
+ *  many uploaders share their folders publicly). */
+export async function fetchSources(fetcher: Fetcher): Promise<{ sources: Source[]; total: number }> {
   const { sources, withoutLink } = parseSources(await fetcher.getJson(MPCFILL_SOURCES_URL));
   console.log(`MPC Fill: ${sources.length} Drive-linked sources, ${withoutLink} without a usable link`);
-  return sources;
+  return { sources, total: sources.length + withoutLink };
 }

@@ -111,7 +111,13 @@ class _Catalog:
                 }
             )
         self.files["manifest.json"] = json.dumps(
-            {"format": 1, "version": version, "generated_at": version, "sources": self.sources}
+            {
+                "format": 1,
+                "version": version,
+                "generated_at": version,
+                "source_total": len(self.sources) + 3,
+                "sources": self.sources,
+            }
         ).encode()
 
     # requests.Session's surface, as far as mpc_catalog uses it.
@@ -203,6 +209,8 @@ def test_first_import_writes_everything_and_meta(published) -> None:
     assert status["version"] == "2026-10-18T06:00:00Z"
     assert status["card_count"] == 9
     assert status["source_count"] == 2
+    # Two public sources of the five MPC Fill lists.
+    assert status["source_total"] == 5
     assert mpc_catalog.is_ready()
 
 
@@ -498,3 +506,11 @@ def test_no_server_code_calls_mpcfill_com() -> None:
             ):
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert offenders == []
+
+
+def test_a_manifest_without_source_total_still_imports(published) -> None:
+    data = json.loads(published.files["manifest.json"])
+    del data["source_total"]
+    published.files["manifest.json"] = json.dumps(data).encode()
+    _import(published)
+    assert mpc_catalog.local_status()["source_total"] is None

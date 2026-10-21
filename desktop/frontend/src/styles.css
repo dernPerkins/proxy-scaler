@@ -2073,6 +2073,26 @@ button:disabled {
   border-color: var(--border-strong);
 }
 
+/* A field label with something beside it (the MPC Fill Catalog's ⓘ). */
+.field-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* A hover/focus tooltip marker; the text is its title. */
+.info-tip {
+  display: inline-flex;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: help;
+  border-radius: 50%;
+}
+.info-tip:hover,
+.info-tip:focus-visible {
+  color: var(--text);
+}
+
 /* MpcArtBrowser with no MPC Fill catalog downloaded: the offer to get it. */
 .mpc-catalog-needed {
   display: flex;

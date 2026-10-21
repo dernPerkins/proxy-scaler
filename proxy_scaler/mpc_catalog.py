@@ -116,6 +116,9 @@ META_VERSION = "version"
 META_GENERATED_AT = "generated_at"
 META_IMPORTED_AT = "imported_at"
 META_CARD_COUNT = "card_count"
+# How many sources MPC Fill lists in all, public folder or not ("" when the
+# manifest predates the field).
+META_SOURCE_TOTAL = "source_total"
 
 
 class CatalogError(RuntimeError):
@@ -225,6 +228,7 @@ def local_status(path: Path | None = None) -> dict[str, Any] | None:
             "imported_at": meta[META_IMPORTED_AT],
             "card_count": int(meta[META_CARD_COUNT]),
             "source_count": int(sources),
+            "source_total": int(meta[META_SOURCE_TOTAL]) if meta.get(META_SOURCE_TOTAL) else None,
         }
     except (KeyError, ValueError):
         return None
@@ -262,6 +266,8 @@ class Manifest:
     version: str
     generated_at: str | None
     sources: tuple[ManifestSource, ...]
+    # Every source MPC Fill lists; `sources` holds only the public ones.
+    source_total: int | None = None
 
 
 def parse_manifest(data: Any) -> Manifest:
@@ -307,10 +313,12 @@ def parse_manifest(data: Any) -> Manifest:
         seen.add(source.key)
         sources.append(source)
     generated_at = data.get("generated_at")
+    source_total = data.get("source_total")
     return Manifest(
         version=version,
         generated_at=generated_at if isinstance(generated_at, str) else None,
         sources=tuple(sources),
+        source_total=source_total if isinstance(source_total, int) and source_total > 0 else None,
     )
 
 
@@ -620,6 +628,7 @@ def run_import(
                         (META_GENERATED_AT, manifest.generated_at or ""),
                         (META_IMPORTED_AT, datetime.now(timezone.utc).isoformat()),
                         (META_CARD_COUNT, str(count)),
+                        (META_SOURCE_TOTAL, str(manifest.source_total or "")),
                     ],
                 )
                 conn.execute("COMMIT")

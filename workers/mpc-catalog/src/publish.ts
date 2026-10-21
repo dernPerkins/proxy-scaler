@@ -30,6 +30,8 @@ export interface Manifest {
   format: number;
   version: string;
   generated_at: string;
+  /** How many sources MPC Fill lists in all, public folder or not. */
+  source_total: number;
   sources: ManifestSource[];
 }
 
@@ -106,6 +108,8 @@ export interface PublishOptions {
   version: string;
   generatedAt: string;
   sources: readonly Source[];
+  /** Every source MPC Fill lists, Drive-linked or not. */
+  sourceTotal: number;
   crawled: readonly CrawlSummary[];
 }
 
@@ -124,6 +128,7 @@ export async function publish(options: PublishOptions): Promise<PublishResult> {
     format: MANIFEST_FORMAT,
     version,
     generated_at: options.generatedAt,
+    source_total: Math.max(options.sourceTotal, entries.length),
     sources: entries,
   };
   await bucket.put(prefix + MANIFEST_PATH, JSON.stringify(manifest, null, 1), {

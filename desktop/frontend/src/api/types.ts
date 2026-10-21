@@ -366,6 +366,9 @@ export interface MpcCatalogLocal {
   imported_at: string;
   card_count: number;
   source_count: number;
+  /** How many sources MPC Fill lists in all; `source_count` of them share
+   *  a public Drive folder. Null from an older crawl. */
+  source_total: number | null;
 }
 
 export interface MpcCatalogStatus {

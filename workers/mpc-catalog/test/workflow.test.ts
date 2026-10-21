@@ -241,6 +241,8 @@ describe("CatalogCrawl", () => {
     expect(manifest.format).toBe(1);
     expect(manifest.version).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     expect(manifest.generated_at >= manifest.version).toBe(true);
+    // Every source MPC Fill lists, the hidden one included.
+    expect(manifest.source_total).toBe(4);
     expect(manifest.sources.map((s) => [s.key, s.name, s.order])).toEqual([
       ["Alpha Source", "Alpha Source", 0],
       ["Beta", "Beta", 1],

@@ -84,10 +84,12 @@ export class CatalogCrawl extends WorkflowEntrypoint<Env, CrawlParams> {
     const prefix = outputPrefix(params, this.env);
     const version = isoSeconds(new Date(event.timestamp));
 
-    const sources = await step.do("sources", SOURCES_STEP, async () => {
-      const list = await fetchSources(fetcherFor(this.env));
-      if (list.length === 0) throw new NonRetryableError("MPC Fill listed no Drive-linked sources");
-      return list;
+    const { sources, total: sourceTotal } = await step.do("sources", SOURCES_STEP, async () => {
+      const listed = await fetchSources(fetcherFor(this.env));
+      if (listed.sources.length === 0) {
+        throw new NonRetryableError("MPC Fill listed no Drive-linked sources");
+      }
+      return listed;
     });
 
     const only = params.only ? new Set(params.only) : null;
@@ -133,6 +135,7 @@ export class CatalogCrawl extends WorkflowEntrypoint<Env, CrawlParams> {
         version,
         generatedAt: isoSeconds(new Date()),
         sources,
+        sourceTotal,
         crawled,
       }),
     );

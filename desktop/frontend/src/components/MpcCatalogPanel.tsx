@@ -12,6 +12,14 @@ import ConfirmDialog from "./ConfirmDialog";
 import { catalogPhaseLine } from "./MpcCatalogPrompt";
 import { toast } from "../toasts";
 
+/** "223 of 279 Sources" (public of all MPC Fill lists), or just the public
+ *  count from a crawl that didn't record the total. */
+function sourcesLabel(local: { source_count: number; source_total: number | null }): string {
+  return local.source_total
+    ? `${local.source_count} of ${local.source_total} Sources`
+    : `${local.source_count} Sources`;
+}
+
 export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
   const { serverUnavailable } = props;
   const queryClient = useQueryClient();
@@ -58,16 +66,33 @@ export default function MpcCatalogPanel(props: { serverUnavailable: boolean }) {
   if (!supported || statusQuery.isError) return null;
 
   const local = statusQuery.data?.local ?? null;
+  // Only uploaders who share their Google Drive folder publicly can be
+  // indexed (the crawler never recovers hidden ones), so say how many that
+  // is, and where to go for the rest.
+  const coverageNote = [
+    "Only Publicly Shared Google Drive Libraries Will Be Available.",
+    local?.source_total
+      ? `${local.source_count} of ${local.source_total} MPC Fill uploaders share theirs publicly.`
+      : null,
+    "If you don't see a user in the Catalog, please go directly to MPC Fill to get their artwork instead.",
+  ]
+    .filter(Boolean)
+    .join(" ");
   const busy = serverUnavailable || running || updateMutation.isPending || deleteMutation.isPending;
 
   return (
     <div className="field divided">
-      <span>MPC Fill Catalog</span>
+      <span className="field-label-row">
+        MPC Fill Catalog
+        <span className="info-tip" tabIndex={0} role="img" aria-label={coverageNote} title={coverageNote}>
+          ⓘ
+        </span>
+      </span>
       <p className="hint" style={{ margin: 0 }}>
         {running
           ? catalogPhaseLine(job)
           : local
-            ? `${local.card_count.toLocaleString()} Images · ${local.source_count} Sources · Updated ${local.imported_at.slice(0, 10)}`
+            ? `${local.card_count.toLocaleString()} Images · ${sourcesLabel(local)} · Updated ${local.imported_at.slice(0, 10)}`
             : "Not Downloaded Yet: MPC Fill art search needs it."}
       </p>
       {job?.status === "failed" && <p className="error-text">{job.error ?? "The update failed."}</p>}

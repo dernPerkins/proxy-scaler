@@ -833,6 +833,9 @@ class MpcCatalogLocalOut(BaseModel):
     imported_at: str
     card_count: int
     source_count: int
+    # How many sources MPC Fill lists in all: `source_count` of them share a
+    # public Drive folder and are in the catalog. None from an older crawl.
+    source_total: int | None = None
 
 
 class MpcCatalogStatusOut(BaseModel):
