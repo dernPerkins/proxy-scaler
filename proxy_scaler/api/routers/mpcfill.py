@@ -12,6 +12,7 @@ client turns into an offer to download one. Images come from Google Drive
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 from pathlib import Path
@@ -33,6 +34,7 @@ from proxy_scaler.api.schemas import (
     MpcCardType,
     MpcImportIn,
     MpcSearchOut,
+    MpcUploaderOut,
 )
 from proxy_scaler.art_sources import ArtCard, ArtFilters, ArtQuery, ArtSourceError, CatalogMissing
 
@@ -155,11 +157,14 @@ def search(
     fuzzy: bool = False,
     nsfw: bool = False,
     min_dpi: int = Query(0, ge=0, le=1500),
+    source: str | None = None,
 ) -> MpcSearchOut:
     """Art matching `q` (or, with `scryfall_id`, the name of that card's
     `face`, searched as a TOKEN when the corpus says it is one). A
     CARDBACK search with no query lists every card back. `lang` is a
-    Scryfall or MPC Fill language code; omitted, every language."""
+    Scryfall or MPC Fill language code; omitted, every language. `source`
+    keeps one uploader's art; `uploaders` always lists everyone with art
+    for the search, so the choice can be changed."""
     query = q.strip()
     card_type: MpcCardType = type or "CARD"
     if scryfall_id and not query:
@@ -172,19 +177,31 @@ def search(
         include_nsfw=nsfw,
         min_dpi=min_dpi,
     )
-    source = _source()
-    try:
+    art = _source()
+    if not query and card_type != "CARDBACK":
+        raise HTTPException(status_code=400, detail="Type a card name to search for.")
+
+    def run(f: ArtFilters) -> list[str]:
         if not query:
-            if card_type != "CARDBACK":
-                raise HTTPException(status_code=400, detail="Type a card name to search for.")
-            ids = source.cardbacks(filters)
-        else:
-            art_query = ArtQuery(query, card_type)
-            ids = source.search([art_query], filters)[art_query]
+            return art.cardbacks(f)
+        art_query = ArtQuery(query, card_type)
+        return art.search([art_query], f)[art_query]
+
+    uploader = (source or "").strip()
+    try:
+        everyone = run(filters)
+        uploaders = art.uploaders(everyone)
+        ids = (
+            run(dataclasses.replace(filters, sources=(uploader,))) if uploader else everyone
+        )
     except ArtSourceError as exc:
         raise _art_error(exc) from exc
     return MpcSearchOut(
-        query=query, card_type=card_type, ids=ids, cards=_hydrate(ids[:FIRST_PAGE])
+        query=query,
+        card_type=card_type,
+        ids=ids,
+        cards=_hydrate(ids[:FIRST_PAGE]),
+        uploaders=[MpcUploaderOut(name=name, count=n) for name, n in uploaders],
     )
 
 

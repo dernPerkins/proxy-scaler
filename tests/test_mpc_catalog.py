@@ -534,3 +534,13 @@ def test_a_shard_gone_from_the_catalog_names_it(published) -> None:
     job = _import(published)
     assert job.status == mpc_catalog_jobs.FAILED
     assert "Alpha" in job.error and "gone" in job.error
+
+
+def test_search_filters_by_uploader_and_lists_everyone(client, published) -> None:
+    _import(published)
+    body = client.get("/api/mpcfill/search", params={"q": "Sol Ring"}).json()
+    assert body["uploaders"] == [{"name": "Alpha", "count": 2}, {"name": "Beta", "count": 1}]
+    beta = client.get("/api/mpcfill/search", params={"q": "Sol Ring", "source": "Beta"}).json()
+    assert beta["ids"] == ["b1"]
+    # Everyone is still listed, so the choice can change.
+    assert [u["name"] for u in beta["uploaders"]] == ["Alpha", "Beta"]

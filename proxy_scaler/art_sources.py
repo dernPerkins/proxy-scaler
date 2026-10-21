@@ -53,12 +53,14 @@ class CatalogMissing(ArtSourceError):
 @dataclass(frozen=True)
 class ArtFilters:
     """Search filters, in the art source's own terms. `languages` are MPC
-    Fill language codes ("EN", "JA" ...); empty means any language."""
+    Fill language codes ("EN", "JA" ...) and `sources` uploader names;
+    empty means any."""
 
     languages: tuple[str, ...] = ()
     fuzzy: bool = False
     include_nsfw: bool = False
     min_dpi: int = 0
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,10 @@ class ArtSource(Protocol):
 
     def cards(self, drive_ids: list[str]) -> dict[str, ArtCard]:
         """Details for each known id; unknown ids are left out."""
+        ...
+
+    def uploaders(self, drive_ids: list[str]) -> list[tuple[str, int]]:
+        """How many of `drive_ids` each uploader holds, most first."""
         ...
 
     def cardbacks(self, filters: ArtFilters) -> list[str]:

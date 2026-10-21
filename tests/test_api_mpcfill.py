@@ -55,6 +55,9 @@ class _FakeSource:
     def cards(self, drive_ids):
         return {i: _art(i) for i in drive_ids if i in self.ids or i == DRIVE_ID}
 
+    def uploaders(self, drive_ids):
+        return [("Somebody", len(drive_ids))] if drive_ids else []
+
     def cardbacks(self, filters):
         return self.ids[:5]
 

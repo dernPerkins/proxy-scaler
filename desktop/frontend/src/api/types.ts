@@ -873,6 +873,9 @@ export interface MpcSearchResult {
   card_type: MpcCardType;
   ids: string[];
   cards: MpcCard[];
+  /** Everyone with art for this search (before the uploader filter), with
+   *  how many each, most first. Absent from older servers. */
+  uploaders?: { name: string; count: number }[];
 }
 
 /** Mirrors MpcBestOut: MPC Fill's top match for each face of each card
@@ -891,4 +894,6 @@ export interface MpcSearchParams {
   fuzzy?: boolean;
   nsfw?: boolean;
   min_dpi?: number;
+  /** One uploader's art only (MpcSearchResult.uploaders names them). */
+  source?: string;
 }

@@ -95,6 +95,8 @@ interface Submitted {
   minDpi: number;
   nsfw: boolean;
   fuzzy: boolean;
+  /** One uploader's art only; "" for everyone. */
+  source: string;
 }
 
 function sizeLabel(bytes: number): string {
@@ -328,6 +330,8 @@ export interface MpcPickerInitial {
   /** Start with Fuzzy on: a search typed by hand (the MPC Fill tab)
    *  rather than one made from a card's exact name. */
   fuzzy?: boolean;
+  /** Start filtered to one uploader. */
+  source?: string;
 }
 
 export interface MpcArtBrowserProps {
@@ -365,6 +369,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     minDpi: initial.minDpi ?? 0,
     nsfw: initial.nsfw ?? false,
     fuzzy: initial.fuzzy ?? false,
+    source: initial.source ?? "",
   }));
   const browsing = submitted.type === "CARDBACK" && !submitted.q;
   const canSearch = Boolean(submitted.q || submitted.scryfallId || submitted.type === "CARDBACK");
@@ -415,6 +420,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         min_dpi: submitted.minDpi || undefined,
         nsfw: submitted.nsfw || undefined,
         fuzzy: submitted.fuzzy || undefined,
+        source: submitted.source || undefined,
       }),
     // After the remembered language has loaded, so the first search is
     // the right one rather than one that is immediately replaced; and only
@@ -548,6 +554,19 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     return observeTile(sentinelRef.current, () => setPages((p) => p + 1));
   }, [hasMore, hydrating, observeTile, shown.length]);
 
+  // Who has art for this search, with counts (the server lists them before
+  // its uploader filter, so the choice can always change). The chosen one
+  // stays listed even when this search has none of theirs.
+  const uploaders = search.data?.uploaders ?? [];
+  const everyone = uploaders.reduce((sum, u) => sum + u.count, 0);
+  const uploaderOptions = [
+    { value: "", label: search.data ? `Any uploader (${everyone})` : "Any uploader" },
+    ...uploaders.map((u) => ({ value: u.name, label: `${u.name} (${u.count})` })),
+    ...(submitted.source && !uploaders.some((u) => u.name === submitted.source)
+      ? [{ value: submitted.source, label: `${submitted.source} (0)` }]
+      : []),
+  ];
+
   function submit(patch: Partial<Submitted> = {}) {
     const q = draft.trim();
     setSubmitted((prev) => {
@@ -653,6 +672,14 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
           value={String(submitted.minDpi)}
           onChange={(value) => submit({ minDpi: Number(value) })}
         />
+        <SelectMenu
+          ariaLabel="Uploader"
+          searchable
+          searchPlaceholder="Search uploaders"
+          options={uploaderOptions}
+          value={submitted.source}
+          onChange={(value) => submit({ source: value })}
+        />
         <label className="check" title="Looser name matching: finds more, including near misses">
           <input
             type="checkbox"
@@ -676,6 +703,13 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
           <CatalogNeeded importing={catalog.importing} known={catalog.known} />
         ) : loading ? (
           <LoadingGrid label={loadingLabel} />
+        ) : search.isSuccess && ids.length === 0 && submitted.source ? (
+          <p className="hint">
+            No art from {submitted.source} for {search.data.query || "this search"}.{" "}
+            <button type="button" className="linklike" onClick={() => submit({ source: "" })}>
+              Show all uploaders
+            </button>
+          </p>
         ) : search.isSuccess && ids.length === 0 && lang ? (
           // Most MPC Fill art is English: an empty result under a language
           // filter is usually the filter, not the search.

@@ -683,6 +683,10 @@ def _filter_sql(filters: ArtFilters) -> tuple[str, list[Any]]:
         params.extend(lang.upper() for lang in filters.languages)
     if not filters.include_nsfw:
         clauses.append("a.nsfw = 0")
+    if filters.sources:
+        # Callers join `sources s`.
+        clauses.append(f"s.name IN ({', '.join('?' for _ in filters.sources)})")
+        params.extend(filters.sources)
     return " AND ".join(clauses), params
 
 
@@ -754,6 +758,26 @@ class CatalogSource:
         finally:
             conn.close()
         return {i: found[i] for i in drive_ids if i in found}
+
+    def uploaders(self, drive_ids: list[str]) -> list[tuple[str, int]]:
+        """How many of `drive_ids` each uploader holds, most first: the
+        picker's Uploader choices for one search."""
+        wanted = list(dict.fromkeys(drive_ids))
+        counts: dict[str, int] = {}
+        conn = self._connect()
+        try:
+            for start in range(0, len(wanted), _ID_CHUNK):
+                chunk = wanted[start : start + _ID_CHUNK]
+                for row in conn.execute(
+                    "SELECT s.name AS name, COUNT(*) AS n FROM art a "
+                    "JOIN sources s ON s.key = a.source_key "
+                    f"WHERE a.drive_id IN ({', '.join('?' for _ in chunk)}) GROUP BY s.name",
+                    chunk,
+                ):
+                    counts[row["name"]] = counts.get(row["name"], 0) + int(row["n"])
+        finally:
+            conn.close()
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
 
     def cardbacks(self, filters: ArtFilters) -> list[str]:
         where, params = _filter_sql(filters)

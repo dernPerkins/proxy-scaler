@@ -1039,6 +1039,11 @@ class MpcCardOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class MpcUploaderOut(BaseModel):
+    name: str
+    count: int
+
+
 class MpcSearchOut(BaseModel):
     # The name actually searched (the card's face name when the request
     # named a scryfall_id), and the card type searched for.
@@ -1049,6 +1054,9 @@ class MpcSearchOut(BaseModel):
     # scrolls.
     ids: list[str]
     cards: list[MpcCardOut]
+    # Who has art for this search (before any uploader filter), with how
+    # many each: the picker's Uploader choices.
+    uploaders: list[MpcUploaderOut] = []
 
 
 class MpcCardsIn(BaseModel):
