@@ -86,7 +86,8 @@ import {
   type CardFaceStatus,
   type VariantStatus,
 } from "../mergeCardStatus";
-import type { FaceArtHandlers, PickerOpenRequest } from "../components/PrintingPicker";
+import type { Pick, PickerOpenRequest } from "../components/PrintingPicker";
+import DeckArtWalk, { type WalkApply } from "../components/DeckArtWalk";
 import SidebarColumn from "../components/SidebarColumn";
 
 // Generation-machine-local directory names, fixed and not
@@ -362,11 +363,13 @@ export default function DecklistPage() {
   // edits don't re-fire it; best-effort because a failure only means the
   // status poll shows a stale view until the next reconcile.
   const cardIdentities = cards.map(localCardIdentity).sort().join("|");
-  // Bumped when a printing picker closes: its preview may have downloaded
+  // Bumped when the deck walk closes: its previews may have downloaded
   // originals (registered server-side, project-less) that this deck's
   // cards should now adopt — "300 · Original" badges included — even when
   // no printing changed and so no identity did either.
   const [adoptNonce, setAdoptNonce] = useState(0);
+  // The deck walk (DeckArtWalk), open at a card.
+  const [walk, setWalk] = useState<{ cardId: number; request: PickerOpenRequest } | null>(null);
   useEffect(() => {
     if (!projectTag || serverUnavailable || cards.length === 0) return;
     let cancelled = false;
@@ -1024,6 +1027,60 @@ export default function DecklistPage() {
   const { galleryByName, tasksByName } = groupByCardName(gallery, tasks);
 
   const sortedCards = sortCards(cards, settings.sort_primary);
+  // The deck walk goes through the cards with printings, in this order.
+  const walkCards = sortedCards.filter((c) => c.custom_image_id == null);
+
+  async function clearFaceArt(card: CardRow, face: number) {
+    await clearCardFaceArt(card.id, face);
+    invalidateStatus();
+  }
+
+  const walkApply: WalkApply = {
+    printing: (card, printing: Pick) => {
+      // Persisting the pick changes the card's identity string, which
+      // re-fires the adopt effect above (badges re-bucket to whatever
+      // exists for the new printing); the status query refresh makes that
+      // visible without waiting for the 3s poll.
+      setCardPrinting(card.id, printing)
+        .then(() => {
+          // Fetch the picked printing's full-size image now, as a queued
+          // download task (the Download button's), so its "300 · Original"
+          // lands without another click.
+          downloadPickedPrinting(
+            {
+              ...card,
+              scryfall_id: printing.scryfallId,
+              name: printing.name,
+              set_code: printing.setCode,
+              collector_number: printing.collectorNumber,
+              lang: printing.lang,
+              printed_name: printing.printedName,
+              flavor_name: printing.flavorName ?? null,
+              face_art: [],
+            },
+            projectTag,
+            refetchStatus,
+          );
+        })
+        .catch(() => {});
+    },
+    // Downloads in the background (pickDownloads.ts); the row shows the
+    // face as downloading meanwhile.
+    faceArt: (card, face, totalFaces, art) => {
+      dismissPendingFaceArt(card.id, face);
+      void queueFaceArtPick({
+        card,
+        face,
+        totalFaces,
+        art,
+        setFaceArt: setCardFaceArt,
+        projectTag,
+        serverVersion,
+        refreshStatus: refetchStatus,
+      });
+    },
+    clearFaceArt: (card, face) => void clearFaceArt(card, face).catch(() => {}),
+  };
 
   return (
     <div className="layout">
@@ -1501,59 +1558,9 @@ export default function DecklistPage() {
               onDownload={() => downloadCard(card)}
               onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
               onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
-              preferredLang={settings.preferred_lang}
               rarity={card.rarity ?? undefined}
-              onPickPrinting={(printing) => {
-                // Persisting the pick changes the card's identity string,
-                // which re-fires the adopt effect above (badges re-bucket
-                // to whatever exists for the new printing); the status
-                // query refresh makes that visible without waiting for the
-                // 3s poll.
-                setCardPrinting(card.id, printing)
-                  .then(() => {
-                    // Fetch the picked printing's full-size image now, as
-                    // a queued download task (the Download button's), so
-                    // its "300 · Original" lands without another click.
-                    downloadPickedPrinting(
-                      {
-                        ...card,
-                        scryfall_id: printing.scryfallId,
-                        name: printing.name,
-                        set_code: printing.setCode,
-                        collector_number: printing.collectorNumber,
-                        lang: printing.lang,
-                        printed_name: printing.printedName,
-                        flavor_name: printing.flavorName ?? null,
-                        face_art: [],
-                      },
-                      projectTag,
-                      refetchStatus,
-                    );
-                  })
-                  .catch(() => {});
-              }}
-              onPickerClosed={() => setAdoptNonce((n) => n + 1)}
-              faceArt={{
-                // Downloads in the background (pickDownloads.ts); the row
-                // shows the face as downloading meanwhile.
-                onPickArt: (face, totalFaces, art) => {
-                  dismissPendingFaceArt(card.id, face);
-                  void queueFaceArtPick({
-                    card,
-                    face,
-                    totalFaces,
-                    art,
-                    setFaceArt: setCardFaceArt,
-                    projectTag,
-                    serverVersion,
-                    refreshStatus: refetchStatus,
-                  });
-                },
-                onClearFaceArt: async (face) => {
-                  await clearCardFaceArt(card.id, face);
-                  invalidateStatus();
-                },
-              }}
+              onOpenPicker={(request) => setWalk({ cardId: card.id, request })}
+              onClearFaceArt={(face) => clearFaceArt(card, face)}
               disabled={serverUnavailable}
             />
           );
@@ -1574,6 +1581,19 @@ export default function DecklistPage() {
             universal back. The backs themselves stay in the library.
           </p>
         </ConfirmDialog>
+      )}
+      {walk && (
+        <DeckArtWalk
+          cards={walkCards}
+          startCardId={walk.cardId}
+          startRequest={walk.request}
+          preferredLang={settings.preferred_lang}
+          apply={walkApply}
+          onClose={() => {
+            setWalk(null);
+            setAdoptNonce((n) => n + 1);
+          }}
+        />
       )}
     </div>
   );
@@ -1626,25 +1646,13 @@ function CardRowView(props: {
   /** Re-download this face's Scryfall original, overwriting the cached
    *  copy — takes any of the face's gallery item ids. */
   onRefetch: (galleryItemId: number) => void;
-  /** The project's import-language preference — PrintingPicker's default
-   *  language filter for cards that don't carry their own. */
-  preferredLang: string;
   /** The pinned printing's rarity, for its set symbol's color. */
   rarity?: string;
-  onPickPrinting: (printing: {
-    scryfallId: string;
-    name: string;
-    setCode: string;
-    collectorNumber: string;
-    lang: string;
-    printedName: string | null;
-    flavorName?: string | null;
-    rarity: string | null;
-  }) => void;
-  /** The printing picker closed (picked or not) — see adoptNonce. */
-  onPickerClosed: () => void;
-  /** MPC Fill art for this card's faces. */
-  faceArt: FaceArtHandlers;
+  /** Open the deck walk at this card: the printing button, or a face's
+   *  Change Art (on MPC Fill, at that face). */
+  onOpenPicker: (request: PickerOpenRequest) => void;
+  /** Print this face from the printing's own art again. */
+  onClearFaceArt: (face: number) => Promise<void>;
   /** True when the generation server is unreachable — disables
    *  Generate/Regen/printing changes (Remove/Show stay enabled since
    *  those are purely local). */
@@ -1662,15 +1670,11 @@ function CardRowView(props: {
     onDownload,
     onRegenerate,
     onRefetch,
-    preferredLang,
     rarity,
-    onPickPrinting,
-    onPickerClosed,
-    faceArt,
+    onOpenPicker,
+    onClearFaceArt,
     disabled,
   } = props;
-  // A face tile's "Change art" opens the row's picker in MPC Fill mode.
-  const [pickerRequest, setPickerRequest] = useState<PickerOpenRequest | null>(null);
   const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
@@ -1728,13 +1732,9 @@ function CardRowView(props: {
         ) : (
           <PrintingPicker
             card={card}
-            preferredLang={preferredLang}
             rarity={rarity}
             disabled={disabled}
-            onPick={onPickPrinting}
-            onClosed={onPickerClosed}
-            faceArt={faceArt}
-            openRequest={pickerRequest}
+            onOpen={onOpenPicker}
           />
         )}
         <CardBackPicker card={card} transformOnBack={transformOnBack} />
@@ -1958,18 +1958,18 @@ function CardRowView(props: {
                       <>
                         <button
                           className="btn-sm"
-                          onClick={() => setPickerRequest({ source: "mpc", face: face.art!.face })}
+                          onClick={() => onOpenPicker({ source: "mpc", face: face.art!.face })}
                           disabled={disabled}
                           title="Pick different MPC Fill art for this face"
                         >
-                          Change art
+                          Change Art
                         </button>
                         <button
                           className="btn-sm"
-                          onClick={() => void faceArt.onClearFaceArt(face.art!.face)}
+                          onClick={() => void onClearFaceArt(face.art!.face).catch(() => {})}
                           title="Print this face from the printing's own art again"
                         >
-                          Use Scryfall art
+                          Use Scryfall Art
                         </button>
                       </>
                     ) : card.custom_image_id == null ? (

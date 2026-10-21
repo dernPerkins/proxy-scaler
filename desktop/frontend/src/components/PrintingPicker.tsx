@@ -8,9 +8,11 @@
 // never calls Scryfall" still holds. Clicking a tile selects it into the
 // left-hand preview pane, which shows the full-size PNG Generate would use
 // (GET /api/cards/{id}/original — loading it caches that original on the
-// server, so Generate later skips the download). The pane's button, a
-// double-click or Enter pins the card to that exact printing via
-// ProjectContext.setCardPrinting.
+// server, so Generate later skips the download). The modal is the deck
+// walk's (DeckArtWalk.tsx): selecting a printing or MPC Fill art chooses it
+// for the card, Prev / Next move through the deck, and the choices apply
+// when the walk closes; the pane's button, a double-click or Enter choose
+// and close.
 import {
   useEffect,
   useLayoutEffect,
@@ -18,6 +20,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
@@ -50,7 +53,7 @@ import {
   type ObserveTile,
 } from "./imageGrid";
 
-type Pick = {
+export type Pick = {
   scryfallId: string;
   name: string;
   setCode: string;
@@ -471,7 +474,7 @@ function PrintingPreview(props: {
           <PreviewVersions v={v} face={face} enabled={showImages} />
         </div>
         <button type="button" className="printing-preview-cta" onClick={props.onPick}>
-          {current ? "Keep Current Printing" : "Use This Printing"}
+          Use This Printing
         </button>
       </div>
     </aside>
@@ -485,26 +488,51 @@ export interface PickerOpenRequest {
   face: number;
 }
 
-type PickerSource = "scryfall" | "mpc";
+export type PickerSource = "scryfall" | "mpc";
 
-/** Face art callbacks: print MPC Fill art in place of a face (it
- *  downloads in the background — pickDownloads.ts — so the modal closes at
- *  once), or go back to the printing's own art. */
-export interface FaceArtHandlers {
-  onPickArt: (face: number, totalFaces: number, art: MpcCard) => void;
-  onClearFaceArt: (face: number) => Promise<void>;
+/** One choice made in the deck walk for the card on screen. */
+export type WalkChoice =
+  /** null: the card's own printing. */
+  | { kind: "printing"; pick: Pick | null }
+  /** null: the printing's own art for that face. */
+  | { kind: "art"; face: number; totalFaces: number; art: MpcCard | null };
+
+/** What the deck walk will apply to one card when it closes. */
+export interface StagedChanges {
+  /** A different printing; picking one drops the card's MPC Fill art. */
+  printing: Pick | null;
+  /** Per face: MPC Fill art to print, or null for the printing's own. */
+  faces: ReadonlyMap<number, { totalFaces: number; art: MpcCard | null }>;
 }
 
-function PrintingGridModal(props: {
+/** The deck walk's side of the modal (DeckArtWalk.tsx). */
+export interface WalkHooks {
+  /** The deck navigation, in the modal head. */
+  nav: ReactNode;
+  staged: StagedChanges | null;
+  /** Something was selected: it is the card's choice now. */
+  onSelect: (choice: WalkChoice) => void;
+  /** Chosen with the pane's button, a double-click or Enter: choose it
+   *  and close the walk. */
+  onChoose: (choice: WalkChoice) => void;
+}
+
+export function PrintingGridModal(props: {
   card: CardRow;
   preferredLang: string;
   initial: PickerOpenRequest;
-  faceArt: FaceArtHandlers | null;
+  /** Closes the walk, applying what it chose. */
   onClose: () => void;
-  onPick: (printing: Pick) => void;
+  /** The Scryfall | MPC Fill switch moved. */
+  onSourceChange: (source: PickerSource) => void;
+  walk: WalkHooks;
 }) {
-  const { card, preferredLang, onClose, onPick, faceArt } = props;
-  const [source, setSource] = useState<PickerSource>(props.initial.source);
+  const { card, preferredLang, onClose, walk } = props;
+  const [source, setSourceState] = useState<PickerSource>(props.initial.source);
+  const setSource = (next: PickerSource) => {
+    setSourceState(next);
+    props.onSourceChange(next);
+  };
   const [mpcFace, setMpcFace] = useState(props.initial.face);
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
@@ -516,8 +544,7 @@ function PrintingGridModal(props: {
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const serverVersion = useServerVersion();
   const showImages = serverSupportsPrintingImages(serverVersion);
-  const mpcAvailable =
-    faceArt != null && card.scryfall_id != null && serverSupportsMpcFill(serverVersion);
+  const mpcAvailable = card.scryfall_id != null && serverSupportsMpcFill(serverVersion);
   const { origin } = useImageCacheSetting();
 
   useEffect(() => {
@@ -671,21 +698,24 @@ function PrintingGridModal(props: {
     [variants, langDefault, shownByDefault, effectiveLangs, setFilter, sortMode],
   );
 
-  function pick(v: CardVariant) {
-    onClose();
-    if (!isCurrent(v)) {
-      onPick({
-        scryfallId: v.scryfall_id,
-        name: v.name,
-        setCode: v.set_code,
-        collectorNumber: v.collector_number,
-        lang: v.lang,
-        printedName: v.printed_name,
-        flavorName: v.flavor_name ?? null,
-        rarity: v.rarity ?? null,
-      });
-    }
+  function pickOf(v: CardVariant): Pick {
+    return {
+      scryfallId: v.scryfall_id,
+      name: v.name,
+      setCode: v.set_code,
+      collectorNumber: v.collector_number,
+      lang: v.lang,
+      printedName: v.printed_name,
+      flavorName: v.flavor_name ?? null,
+      rarity: v.rarity ?? null,
+    };
   }
+  function choiceOf(v: CardVariant): WalkChoice {
+    return { kind: "printing", pick: isCurrent(v) ? null : pickOf(v) };
+  }
+  // The walk's choice for this card: a staged printing, else its own.
+  const chosenId = walk.staged?.printing?.scryfallId ?? null;
+  const isChosen = (v: CardVariant) => (chosenId ? v.scryfall_id === chosenId : isCurrent(v));
 
   // Which face each double-faced tile shows. Lifted here so the tile and
   // the preview pane flip together.
@@ -733,10 +763,10 @@ function PrintingGridModal(props: {
   useEffect(() => {
     if (placedInitialFocus.current || shown.length === 0) return;
     placedInitialFocus.current = true;
-    const index = Math.max(0, shown.findIndex(isCurrent));
+    const index = Math.max(0, shown.findIndex(isChosen));
     setFocusIndex(index);
     setSelectedId(shown[index].scryfall_id);
-    // isCurrent reads only props that are fixed while the grid is open.
+    // isChosen reads only what is fixed until a selection changes it.
   }, [shown]);
   // The scroll waits for that selection to render: the preview pane it
   // mounts narrows the grid, reflowing every tile, so scrolling any
@@ -798,8 +828,15 @@ function PrintingGridModal(props: {
     </span>
   ) : null;
 
-  if (source === "mpc" && mpcAvailable && faceArt) {
+  if (source === "mpc" && mpcAvailable) {
     const art = artFor(mpcFace);
+    const stagedFace = walk.staged?.faces.get(mpcFace);
+    const artChoice = (picked: MpcCard | null): WalkChoice => ({
+      kind: "art",
+      face: mpcFace,
+      totalFaces,
+      art: picked,
+    });
     return (
       <ModalOverlay onClick={onClose}>
         <div
@@ -814,16 +851,12 @@ function PrintingGridModal(props: {
             initial={{ scryfallId: card.scryfall_id, face: mpcFace }}
             cardTypes={["CARD", "TOKEN"]}
             defaultLang={card.lang}
-            currentDriveId={art?.mpc_drive_id ?? null}
+            currentDriveId={
+              stagedFace ? (stagedFace.art?.drive_id ?? null) : (art?.mpc_drive_id ?? null)
+            }
             pickLabel="Use This Art"
-            currentLabel="Keep Current Art"
-            onPick={async (picked) => {
-              // Picking is what downloads: new art, or the art an import
-              // chose and left undownloaded. Already-fetched art is a no-op.
-              const fetched = art?.mpc_drive_id === picked.drive_id && art.custom_image_id != null;
-              if (!fetched) faceArt.onPickArt(mpcFace, totalFaces, picked);
-              onClose();
-            }}
+            onSelect={(picked) => walk.onSelect(artChoice(picked))}
+            onPick={async (picked) => walk.onChoose(artChoice(picked))}
             head={
               <>
                 <span className="picker-head-left">
@@ -844,21 +877,17 @@ function PrintingGridModal(props: {
                     </span>
                   )}
                 </span>
-                {art && (
+                {(stagedFace ? stagedFace.art != null : art != null) && (
                   <button
                     type="button"
                     className="btn-sm"
                     title="Print this face from the printing's own art again"
-                    onClick={() => {
-                      void faceArt.onClearFaceArt(mpcFace).then(onClose);
-                    }}
+                    onClick={() => walk.onChoose(artChoice(null))}
                   >
-                    Use Scryfall art
+                    Use Scryfall Art
                   </button>
                 )}
-                <button type="button" className="btn-sm" onClick={onClose}>
-                  Close
-                </button>
+                {walk.nav}
               </>
             }
           />
@@ -890,7 +919,7 @@ function PrintingGridModal(props: {
             showImages={showImages}
             settleMs={settleMs}
             onFlip={() => flip(selected)}
-            onPick={() => pick(selected)}
+            onPick={() => walk.onChoose(choiceOf(selected))}
           />
         )}
 
@@ -899,9 +928,7 @@ function PrintingGridModal(props: {
           {sourceSwitch && <span className="picker-head-left">{sourceSwitch}</span>}
           {/* The tab bar's ? is behind this modal; replay from here. */}
           <TutorialButton tour="decklist-picker" />
-          <button type="button" className="btn-sm" onClick={onClose}>
-            Close
-          </button>
+          {walk.nav}
         </div>
 
         <div className="printing-grid-notes">
@@ -1000,8 +1027,11 @@ function PrintingGridModal(props: {
                     <PrintingTile
                       key={v.scryfall_id}
                       v={v}
-                      current={isCurrent(v)}
-                      selected={v.scryfall_id === selectedId}
+                      // Selecting chooses, so the chosen tile shows only
+                      // as chosen; the selection border is left for a
+                      // tile the walk opened on without choosing it.
+                      current={isChosen(v)}
+                      selected={v.scryfall_id === selectedId && !isChosen(v)}
                       coverage={coverageOf(v)}
                       face={faceOf(v)}
                       origin={origin}
@@ -1013,6 +1043,9 @@ function PrintingGridModal(props: {
                       }}
                       onFocus={() => {
                         setFocusIndex(i);
+                        // An arrow key's move chooses too; the initial
+                        // focus, on the selection already, doesn't.
+                        if (v.scryfall_id !== selectedId) walk.onSelect(choiceOf(v));
                         setSelectedId(v.scryfall_id);
                       }}
                       onSelect={() => {
@@ -1022,8 +1055,9 @@ function PrintingGridModal(props: {
                         setSelectedId(v.scryfall_id);
                         setFocusIndex(i);
                         tileRefs.current[i]?.focus();
+                        walk.onSelect(choiceOf(v));
                       }}
-                      onPick={() => pick(v)}
+                      onPick={() => walk.onChoose(choiceOf(v))}
                       onFlip={() => flip(v)}
                     />
                   ))}
@@ -1039,33 +1073,15 @@ function PrintingGridModal(props: {
 
 export default function PrintingPicker(props: {
   card: CardRow;
-  /** The project's import-language preference — the language filter's
-   *  default, and the language of the current printing, for a card row
-   *  that doesn't carry its own. */
-  preferredLang: string;
   /** True when the generation server is unreachable — the button still
    *  renders the printing, it just can't open the picker. */
   disabled: boolean;
-  onPick: (printing: Pick) => void;
-  /** The grid closed, picked or not. Its previews may have downloaded
-   *  originals the deck should now adopt. */
-  onClosed?: () => void;
   /** The pinned printing's rarity, which colors its set symbol. */
   rarity?: string | null;
-  /** Face art support (the MPC Fill source); null hides it. */
-  faceArt?: FaceArtHandlers | null;
-  /** Open the modal from elsewhere in the row (a face tile's "Change
-   *  art"): a new object each time it should open. */
-  openRequest?: PickerOpenRequest | null;
+  /** Open the deck walk at this card (DecklistPage owns it). */
+  onOpen: (request: PickerOpenRequest) => void;
 }) {
-  const { card, preferredLang, disabled, onPick, onClosed, rarity, openRequest } = props;
-  const [open, setOpen] = useState<PickerOpenRequest | null>(null);
-  // Each request is a new object, so this fires once per "Change art".
-  useEffect(() => {
-    if (openRequest && !disabled) setOpen(openRequest);
-    // Not on `disabled` alone: reconnecting must not reopen a past request.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openRequest]);
+  const { card, disabled, rarity, onOpen } = props;
 
   // Language always shown, EN included — with several languages of one
   // printing allowed in a deck, an unlabeled row is ambiguous. Rows
@@ -1087,8 +1103,8 @@ export default function PrintingPicker(props: {
         // A card printing MPC Fill art opens on that art, at its first
         // overridden face; everything else on its printings.
         onClick={() =>
-          setOpen(
-            card.face_art?.length && props.faceArt
+          onOpen(
+            card.face_art?.length
               ? { source: "mpc", face: card.face_art[0].face }
               : { source: "scryfall", face: 0 },
           )
@@ -1097,19 +1113,6 @@ export default function PrintingPicker(props: {
         <SetIcon setCode={card.set_code} rarity={rarity} />
         {label} ▾
       </button>
-      {open && (
-        <PrintingGridModal
-          card={card}
-          preferredLang={preferredLang}
-          initial={open}
-          faceArt={props.faceArt ?? null}
-          onClose={() => {
-            setOpen(null);
-            onClosed?.();
-          }}
-          onPick={onPick}
-        />
-      )}
     </span>
   );
 }

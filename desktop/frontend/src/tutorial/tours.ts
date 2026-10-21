@@ -189,7 +189,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "picker-grid",
         title: "Pick a printing",
-        body: "Every printing of this card, newest first. Click one to see it full size on the left, or double-click to use it straight away.",
+        body: "Every printing of this card, newest first. Click one to choose it and see it full size on the left, or double-click to choose it and close.",
         placement: "left",
       },
       {
@@ -201,8 +201,14 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "picker-preview-details",
         title: "Check it, then confirm",
-        body: "The selected printing's details and every version you've already generated, by resolution and model. Use This Printing swaps it in; Keep Current Printing leaves the card as it is.",
+        body: "The chosen printing's details and every version you've already generated, by resolution and model. Use This Printing chooses it and closes.",
         placement: "right",
+      },
+      {
+        target: "picker-walk",
+        title: "Go through your deck",
+        body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you close with Done; Discard drops your choices.",
+        placement: "bottom",
       },
     ],
   },

@@ -1878,6 +1878,28 @@ button:disabled {
   gap: 8px;
   margin-right: auto;
 }
+/* The deck walk's stepper (DeckArtWalk): ‹ Prev · Card 3 of 60 · name ·
+   Next ›, then the change count, Discard and Done. */
+.walk-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+  min-width: 0;
+}
+.walk-pos,
+.walk-changes {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.walk-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
 /* The "From MPC Fill" tile beside the Customs/Backs drop zones. */
 .mpc-library-tile {
   display: flex;

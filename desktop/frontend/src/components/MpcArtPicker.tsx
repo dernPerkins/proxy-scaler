@@ -350,6 +350,10 @@ export interface MpcArtBrowserProps {
   currentDriveId?: string | null;
   /** Called with the chosen art; throws with a user-facing message. */
   onPick: (card: MpcCard) => Promise<void>;
+  /** Makes selecting choose (the Decklist's deck walk): called for every
+   *  selection, by click or arrow key, and `currentDriveId` should follow
+   *  it, so the chosen tile shows only as current. */
+  onSelect?: (card: MpcCard) => void;
 }
 
 export function MpcArtBrowser(props: MpcArtBrowserProps) {
@@ -730,7 +734,10 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
               <MpcTile
                 key={card.drive_id}
                 card={card}
-                selected={card.drive_id === selectedId}
+                selected={
+                  card.drive_id === selectedId &&
+                  !(props.onSelect && card.drive_id === currentDriveId)
+                }
                 current={card.drive_id === currentDriveId}
                 tabIndex={i === clampedFocus ? 0 : -1}
                 observe={observeTile}
@@ -739,6 +746,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
                 }}
                 onFocus={() => {
                   setFocusIndex(i);
+                  if (card.drive_id !== selectedId) props.onSelect?.(card);
                   setSelectedId(card.drive_id);
                   setPickError(null);
                 }}
@@ -748,6 +756,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
                   setPickError(null);
                   setFocusIndex(i);
                   tileRefs.current[i]?.focus();
+                  props.onSelect?.(card);
                 }}
                 onPick={() => void pick(card)}
               />
