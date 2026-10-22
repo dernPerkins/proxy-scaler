@@ -44,6 +44,14 @@ import type {
 } from "../api/types";
 import { toast } from "../toasts";
 import SidebarColumn from "../components/SidebarColumn";
+// PROTOTYPE — remove once a Guides variant is picked.
+import PrototypeSwitcher, { usePrototypeVariant } from "../components/PrototypeSwitcher";
+import {
+  GUIDE_VARIANTS,
+  VariantA as GuidesVariantA,
+  VariantB as GuidesVariantB,
+  VariantC as GuidesVariantC,
+} from "./pdf-guides.prototype";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -220,6 +228,8 @@ export default function PdfPage() {
   // hidden then, so there was no way to get back to the front.
   const [previewSideChoice, setPreviewSideChoice] = useState<"front" | "back">("front");
   const previewSide = settings.back_printing ? previewSideChoice : "front";
+  // PROTOTYPE — Guides layout variants.
+  const guidesVariant = usePrototypeVariant(GUIDE_VARIANTS.map((v) => v.key));
 
   // Persisted on the project itself (ProjectContext's `settings`, saved via
   // the same project-bar Save button as the Decklist tab's generation
@@ -760,6 +770,12 @@ export default function PdfPage() {
             </div>
 
             <div>
+              {/* PROTOTYPE — ?variant=A|B|C swaps the Guides section for a
+                  throwaway layout (pdf-guides.prototype.tsx). Remove with it. */}
+              {guidesVariant === "A" && <GuidesVariantA seed={layout} />}
+              {guidesVariant === "B" && <GuidesVariantB seed={layout} />}
+              {guidesVariant === "C" && <GuidesVariantC seed={layout} />}
+              {!guidesVariant && (<>
               {/* Guides, split by kind and by page kind. Card Guides are the
                   small marks at each card's own trim corners; Page Guides are
                   the lines running from the page edge in to the grid. They used
@@ -817,6 +833,7 @@ export default function PdfPage() {
                   Hide page guides on back pages
                 </label>
               </div>
+              </>)}
 
               <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
 
@@ -1398,6 +1415,8 @@ export default function PdfPage() {
           )}
         </div>
       </main>
+      {/* PROTOTYPE — Guides layout switcher (dev builds only). */}
+      <PrototypeSwitcher variants={GUIDE_VARIANTS} />
     </div>
   );
 }
