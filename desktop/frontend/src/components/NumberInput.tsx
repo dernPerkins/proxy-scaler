@@ -25,9 +25,10 @@ interface NumberInputProps {
   onChange: (value: number) => void;
   step?: number;
   min?: number;
+  disabled?: boolean;
 }
 
-export default function NumberInput({ value, onChange, step, min }: NumberInputProps) {
+export default function NumberInput({ value, onChange, step, min, disabled }: NumberInputProps) {
   // null = not mid-edit, mirror `value`.
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -36,6 +37,7 @@ export default function NumberInput({ value, onChange, step, min }: NumberInputP
       type="number"
       step={step}
       min={min}
+      disabled={disabled}
       value={draft ?? (value == null ? "" : String(value))}
       onChange={(e) => {
         const raw = e.target.value;

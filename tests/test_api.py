@@ -1929,6 +1929,53 @@ def test_back_page_preview_reports_that_pages_guide_flags(
     assert (back["hide_card_guides"], back["hide_page_guides"]) == (True, True)
 
 
+def test_page_preview_echoes_the_guide_styles(client: TestClient, tmp_path: Path) -> None:
+    """The preview draws what the PDF will, so it needs the same styles —
+    and an older client that sends none gets the look it always had."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+
+    plain = client.post("/api/pdf/preview/page", json=_pdf_layout_body(guide_width_pt=1.0)).json()
+    assert plain["page_guide_width_pt"] == 1.0
+    assert (plain["card_guide_color"], plain["page_guide_color"]) == ("#00AA50", "#000000")
+    assert (plain["card_guide_line"], plain["page_guide_line"]) == ("solid", "solid")
+    assert plain["card_guide_corners"] == "square"
+
+    styled = client.post(
+        "/api/pdf/preview/page",
+        json=_pdf_layout_body(
+            page_guide_width_pt=2.0,
+            card_guide_color="#39ff14",
+            page_guide_color="#FF00FF",
+            card_guide_line="dashed",
+            page_guide_line="dashed",
+            card_guide_corners="rounded",
+        ),
+    ).json()
+    assert styled["page_guide_width_pt"] == 2.0
+    assert (styled["card_guide_color"], styled["page_guide_color"]) == ("#39FF14", "#FF00FF")
+    assert (styled["card_guide_line"], styled["page_guide_line"]) == ("dashed", "dashed")
+    assert styled["card_guide_corners"] == "rounded"
+
+
+def test_a_malformed_guide_color_is_rejected(client: TestClient) -> None:
+    for bad in ("green", "#00AA5", "00AA50", "#00AA5G"):
+        response = client.post("/api/pdf/preview", json=_pdf_layout_body(card_guide_color=bad))
+        assert response.status_code == 422, bad
+
+
+def test_styled_guides_render(client: TestClient, tmp_path: Path) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    response = client.post(
+        "/api/pdf",
+        json=_pdf_layout_body(
+            card_guide_corners="rounded", card_guide_line="dashed", page_guide_line="dashed"
+        ),
+    )
+    assert response.status_code == 200
+
+
 def test_blank_reverses_need_no_back_image(client: TestClient, tmp_path: Path) -> None:
     """"Print my transform cards' backs, nothing else" must not demand a
     Back Image — the whole point of the mode is that there isn't one."""

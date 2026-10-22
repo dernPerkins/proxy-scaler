@@ -413,6 +413,20 @@ class CutterMarkStyleIn(str, Enum):
     FOUR_POINT = "four_point"
 
 
+class GuideLineIn(str, Enum):
+    SOLID = "solid"
+    DASHED = "dashed"
+
+
+class GuideCornersIn(str, Enum):
+    SQUARE = "square"
+    ROUNDED = "rounded"
+
+
+# "#RRGGBB" — what an <input type="color"> produces.
+_HEX_COLOR = r"^#[0-9A-Fa-f]{6}$"
+
+
 class CutterOrientationIn(str, Enum):
     PORTRAIT = "portrait"
     LANDSCAPE = "landscape"
@@ -474,6 +488,19 @@ class PdfLayoutIn(BaseModel):
     hide_page_guides_front: bool
     hide_card_guides_back: bool
     hide_page_guides_back: bool
+
+    # Guide styling. guide_width_pt / guide_length_mm above are the Card
+    # Guides'; Page Guides have their own width, which falls back to the
+    # Card Guides' when unset (the two shared one width before). All
+    # defaulted to the sheet a client that predates them always got; a new
+    # client's values sent to an old server are dropped silently, so the
+    # client gates them on a version floor (desktop/frontend/src/config.ts).
+    page_guide_width_pt: float | None = None
+    card_guide_color: str = Field(default="#00AA50", pattern=_HEX_COLOR)
+    page_guide_color: str = Field(default="#000000", pattern=_HEX_COLOR)
+    card_guide_line: GuideLineIn = GuideLineIn.SOLID
+    page_guide_line: GuideLineIn = GuideLineIn.SOLID
+    card_guide_corners: GuideCornersIn = GuideCornersIn.SQUARE
 
     # --- Electronic cutter -----------------------------------------------
     #
@@ -631,6 +658,15 @@ class PdfPagePreviewOut(BaseModel):
     bleed_mm: float
     guide_width_pt: float
     guide_length_mm: float
+    # Guide styling, echoed so the preview draws exactly what the PDF will.
+    # Defaulted (to the look before these existed) so an older server's
+    # response still validates against a newer client.
+    page_guide_width_pt: float | None = None
+    card_guide_color: str = "#00AA50"
+    page_guide_color: str = "#000000"
+    card_guide_line: GuideLineIn = GuideLineIn.SOLID
+    page_guide_line: GuideLineIn = GuideLineIn.SOLID
+    card_guide_corners: GuideCornersIn = GuideCornersIn.SQUARE
     # Total size of the card grid. Reported so the client can warn when it
     # exceeds the page — resolve_page_layout deliberately does not raise
     # on that (a custom offset may push past an edge on purpose), and asks

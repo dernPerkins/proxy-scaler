@@ -401,6 +401,125 @@ input[type="range"] {
   background: var(--accent-hover);
 }
 
+/* .segmented holding icons rather than words (GuidesSection's Line and
+   Corners), sized to fit a matrix cell. */
+.icon-segmented button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 4px;
+}
+
+/* The PDF tab's Guides section (GuidesSection.tsx): a row label column,
+   then one column per guide kind. minmax(0, …) lets the cells shrink to
+   the sidebar column instead of their content's natural width. */
+.guides-matrix {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 8px;
+  align-items: center;
+}
+.guides-matrix input[type="number"] {
+  width: 100%;
+}
+.guides-matrix input[type="number"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.guides-col-head {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+.guides-row-label {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.guides-row-label.is-inert {
+  opacity: 0.5;
+}
+.guides-na {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.guides-rule {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+}
+
+/* A guide kind's visibility on one page kind, as a state you can read
+   (Shown / Hidden) rather than a checkbox with a double negative. */
+.visibility-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text-faint);
+}
+.visibility-chip.is-shown,
+.visibility-chip.is-shown:hover:not(:disabled) {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: var(--ok);
+}
+
+/* ColorInput.tsx: the native swatch and the hex share one input-shaped
+   box, so the pair reads as one control and fits a matrix cell. */
+.color-input {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 4px 3px 3px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+.color-input:has(:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.color-input.is-disabled {
+  opacity: 0.45;
+}
+.color-input input[type="color"] {
+  flex: none;
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.color-input input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.color-input input[type="color"]::-webkit-color-swatch {
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+.color-input input[type="text"] {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+/* The ring goes on the shared box (above), not on either input. */
+.color-input input:focus-visible {
+  box-shadow: none;
+}
+
 /* A two-way choice of equals (SplitPill.tsx): one pill, a thumb that
    slides under the chosen half. The thumb is half the track wide and moves
    by its own width, so the halves stay equal whatever the labels say. */

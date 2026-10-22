@@ -384,18 +384,44 @@ def _draw_registration_marks(
 
 
 # Outer guide lines run from the page edge to the card grid block — full,
-# dark, and continuous (there's no card content there to obscure, and a
-# continuous line is what you actually align a paper cutter against).
-# Same stroke width as the green marks (PageLayout.guide_width_pt).
+# dark, and continuous by default (there's no card content there to
+# obscure, and a continuous line is what you actually align a paper cutter
+# against).
 _OUTER_LINE_COLOR = (0, 0, 0)
 
 # Inner crop marks sit at each card's own trim corner — a small green "+".
-# Defaults only now — both are user-configurable (PageLayout.guide_width_pt/
-# guide_length_mm), still 0.75pt (a print/PDF point, not a screen pixel) /
-# 2.75mm out of the box.
+# All of these are defaults only — every one is user-configurable on
+# PageLayout: 0.75pt (a print/PDF point, not a screen pixel) wide and
+# 2.75mm long out of the box, and Page Guides share the default width.
 _MARK_LENGTH_MM = 2.75
 _MARK_WIDTH_PT = 0.75
 _MARK_COLOR = (0, 170, 80)
+
+
+class GuideLine(str, Enum):
+    SOLID = "solid"
+    DASHED = "dashed"
+
+
+class GuideCorners(str, Enum):
+    # "square": a "+" at each trim corner. "rounded": a quarter arc that
+    # follows the card's own rounded corner (CARD_CORNER_RADIUS_MM), with a
+    # straight tail along each edge — Card Guides only.
+    SQUARE = "square"
+    ROUNDED = "rounded"
+
+
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    """Parse "#RRGGBB" into (r, g, b). The API validates the shape; this
+    raises on anything else rather than guessing."""
+    value = color.removeprefix("#")
+    if len(value) != 6:
+        raise ValueError(f"Expected a #RRGGBB color, got {color!r}")
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*rgb)
 
 
 @dataclass(frozen=True)
@@ -416,9 +442,15 @@ class PageLayout:
     margin_y_mm: float
     grid_w_mm: float  # so callers can warn (not block) if this exceeds the page
     grid_h_mm: float
-    guide_width_pt: float
-    guide_length_mm: float
+    guide_width_pt: float  # Card Guides
+    guide_length_mm: float  # Card Guides' arm/tail length
     cards_per_page: int
+    page_guide_width_pt: float = _MARK_WIDTH_PT
+    card_guide_color: tuple[int, int, int] = _MARK_COLOR
+    page_guide_color: tuple[int, int, int] = _OUTER_LINE_COLOR
+    card_guide_line: GuideLine = GuideLine.SOLID
+    page_guide_line: GuideLine = GuideLine.SOLID
+    card_guide_corners: GuideCorners = GuideCorners.SQUARE
 
 
 def resolve_page_layout(
@@ -434,6 +466,12 @@ def resolve_page_layout(
     offset_y_mm: float = 0.0,
     guide_width_pt: float = _MARK_WIDTH_PT,
     guide_length_mm: float = _MARK_LENGTH_MM,
+    page_guide_width_pt: float | None = None,
+    card_guide_color: tuple[int, int, int] = _MARK_COLOR,
+    page_guide_color: tuple[int, int, int] = _OUTER_LINE_COLOR,
+    card_guide_line: GuideLine = GuideLine.SOLID,
+    page_guide_line: GuideLine = GuideLine.SOLID,
+    card_guide_corners: GuideCorners = GuideCorners.SQUARE,
 ) -> PageLayout:
     """Resolve a full print-grid geometry from freely user-configurable
     dimensions. Does NOT raise if the grid doesn't fit the page — unlike
@@ -441,6 +479,9 @@ def resolve_page_layout(
     near or past an edge (e.g. to work around a specific printer's feed
     quirk); callers should check `grid_w_mm`/`grid_h_mm` against
     `page_w_mm`/`page_h_mm` themselves and surface a non-blocking warning.
+
+    `page_guide_width_pt` defaults to the Card Guides' width — the two
+    kinds shared one width before they could be set apart.
     """
     if page_w_mm <= 0 or page_h_mm <= 0:
         raise ValueError("Page width/height must be positive")
@@ -476,6 +517,14 @@ def resolve_page_layout(
         guide_width_pt=guide_width_pt,
         guide_length_mm=guide_length_mm,
         cards_per_page=cols * rows,
+        page_guide_width_pt=(
+            guide_width_pt if page_guide_width_pt is None else page_guide_width_pt
+        ),
+        card_guide_color=card_guide_color,
+        page_guide_color=page_guide_color,
+        card_guide_line=card_guide_line,
+        page_guide_line=page_guide_line,
+        card_guide_corners=card_guide_corners,
     )
 
 
@@ -506,6 +555,15 @@ def _card_trim_edges(
     return edges
 
 
+def _guide_dash_mm(width_mm: float) -> tuple[float, float]:
+    """(dash, gap) for a dashed guide of this stroke width. Scaled with the
+    stroke so a heavy line still reads as dashed, but floored so a hairline
+    still gets dashes long enough to see — a 2.75mm arm carries about
+    three of them at the default width."""
+    dash = max(0.75, 3 * width_mm)
+    return dash, dash * 0.8
+
+
 def _draw_cut_marks(
     pdf: FPDF,
     layout: PageLayout,
@@ -514,24 +572,28 @@ def _draw_cut_marks(
     page_guides: bool = True,
     keep_out: Sequence[Rect] = (),
 ) -> None:
-    """Draw Page Guides (black lines from the page edge to the grid block —
+    """Draw Page Guides (lines from the page edge to the grid block —
     outer margins, nothing to obscure there; two closely-spaced lines per
     interior gap, one per card's own trim edge) and Card Guides (small
-    green "+" marks at each card's own trim corner — the grid is regular,
-    so the full xs × ys cross product is exactly every card's 4 corners, no
-    card ever gets a mark that isn't its own).
+    marks at each card's own trim corner — the grid is regular, so the full
+    xs × ys cross product is exactly every card's 4 corners, no card ever
+    gets a mark that isn't its own).
 
     The two kinds are independently switchable per page kind — see
-    GuideVisibility. They share the geometry below, so the flags gate the
-    drawing, not the computation.
+    GuideVisibility — and each has its own width, color and line style
+    (PageLayout). Card Guides are a "+" per corner, or with
+    GuideCorners.ROUNDED a quarter arc that hugs the card's rounded corner
+    plus a straight tail of guide_length_mm along each edge.
 
-    Every guide is nudged OUTWARD from its card by half its stroke width.
-    A stroke centered on the trim coordinate puts half its ink inside the
-    card, where it survives a clean cut as a hairline along the card's
-    border; nudged, the stroke's inner edge sits exactly on the trim line
-    (card edge, then guide) and a perfectly cut card carries no guide ink.
-    Which way is outward falls out of _card_trim_edges' ordering: even
-    indices are leading (left/top) edges, odd are trailing (right/bottom).
+    Every guide is nudged OUTWARD from its card by half its own stroke
+    width. A stroke centered on the trim coordinate puts half its ink
+    inside the card, where it survives a clean cut as a hairline along the
+    card's border; nudged, the stroke's inner edge sits exactly on the trim
+    line (card edge, then guide) and a perfectly cut card carries no guide
+    ink. A rounded arc keeps the same rule: its inner edge is the card's
+    own corner curve. Which way is outward falls out of _card_trim_edges'
+    ordering: even indices are leading (left/top) edges, odd are trailing
+    (right/bottom).
 
     `keep_out` (registration-mark zones, see registration_keep_out) clips
     Page Guides only: they are the ones that run out to the page edge and
@@ -539,33 +601,33 @@ def _draw_cut_marks(
     if not card_guides and not page_guides:
         return
 
-    width_mm = layout.guide_width_pt / 72 * MM_PER_IN
-    half = width_mm / 2
-    xs = [
-        x - half if i % 2 == 0 else x + half
-        for i, x in enumerate(
-            _card_trim_edges(
-                layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm,
-                layout.bled_card_w_mm,
-            )
-        )
-    ]
-    ys = [
-        y - half if i % 2 == 0 else y + half
-        for i, y in enumerate(
-            _card_trim_edges(
-                layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm,
-                layout.bled_card_h_mm,
-            )
-        )
-    ]
-    grid_x0, grid_x1 = xs[0], xs[-1]
-    grid_y0, grid_y1 = ys[0], ys[-1]
+    trim_xs = _card_trim_edges(
+        layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm,
+        layout.bled_card_w_mm,
+    )
+    trim_ys = _card_trim_edges(
+        layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm,
+        layout.bled_card_h_mm,
+    )
 
-    pdf.set_line_width(width_mm)
+    def nudged(edges: list[float], half: float) -> list[float]:
+        return [e - half if i % 2 == 0 else e + half for i, e in enumerate(edges)]
+
+    def dashed(line: GuideLine, width_mm: float) -> bool:
+        if line is not GuideLine.DASHED:
+            return False
+        pdf.set_dash_pattern(*_guide_dash_mm(width_mm))
+        return True
 
     if page_guides:
-        pdf.set_draw_color(*_OUTER_LINE_COLOR)
+        width_mm = layout.page_guide_width_pt / 72 * MM_PER_IN
+        half = width_mm / 2
+        xs, ys = nudged(trim_xs, half), nudged(trim_ys, half)
+        grid_x0, grid_x1 = xs[0], xs[-1]
+        grid_y0, grid_y1 = ys[0], ys[-1]
+        pdf.set_line_width(width_mm)
+        pdf.set_draw_color(*layout.page_guide_color)
+        is_dashed = dashed(layout.page_guide_line, width_mm)
         # start < end is the old "grid edge inside the page" test, and the
         # clip is a no-op with no keep-out zones.
         for x in xs:
@@ -592,13 +654,49 @@ def _draw_cut_marks(
             )
             if seg:
                 pdf.line(seg[0], y, seg[1], y)
+        if is_dashed:
+            pdf.set_dash_pattern()
 
     if card_guides:
-        pdf.set_draw_color(*_MARK_COLOR)
-        for x in xs:
-            for y in ys:
-                pdf.line(x - layout.guide_length_mm, y, x + layout.guide_length_mm, y)
-                pdf.line(x, y - layout.guide_length_mm, x, y + layout.guide_length_mm)
+        width_mm = layout.guide_width_pt / 72 * MM_PER_IN
+        half = width_mm / 2
+        xs, ys = nudged(trim_xs, half), nudged(trim_ys, half)
+        length = layout.guide_length_mm
+        pdf.set_line_width(width_mm)
+        pdf.set_draw_color(*layout.card_guide_color)
+        is_dashed = dashed(layout.card_guide_line, width_mm)
+        if layout.card_guide_corners is GuideCorners.ROUNDED:
+            r = CARD_CORNER_RADIUS_MM
+            for i, x in enumerate(xs):
+                # +1 when the card lies to the right of / below this edge.
+                into_x = 1 if i % 2 == 0 else -1
+                for j, y in enumerate(ys):
+                    into_y = 1 if j % 2 == 0 else -1
+                    # The arc's centre is the card corner's own: R in from
+                    # both (un-nudged) trim edges. Its radius is R + half,
+                    # so the stroke's inner edge is the card's curve.
+                    cx = x + into_x * (r + half)
+                    cy = y + into_y * (r + half)
+                    _corner_arc(pdf, cx, cy, r + half, into_x, into_y)
+                    pdf.line(cx, y, cx + into_x * length, y)
+                    pdf.line(x, cy, x, cy + into_y * length)
+        else:
+            for x in xs:
+                for y in ys:
+                    pdf.line(x - length, y, x + length, y)
+                    pdf.line(x, y - length, x, y + length)
+        if is_dashed:
+            pdf.set_dash_pattern()
+
+
+def _corner_arc(
+    pdf: FPDF, cx: float, cy: float, radius: float, into_x: int, into_y: int
+) -> None:
+    """The quarter of the circle at (cx, cy) facing away from the card.
+    fpdf2 measures angles from 3 o'clock, clockwise on the page (y down):
+    a top-left corner (card right of and below it) is 180°→270°."""
+    start = {(1, 1): 180, (-1, 1): 270, (-1, -1): 0, (1, -1): 90}[(into_x, into_y)]
+    pdf.arc(cx - radius, cy - radius, 2 * radius, start, start + 90)
 
 
 # How far inside the true edge the export-time extension samples from, in

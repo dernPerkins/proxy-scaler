@@ -17,6 +17,8 @@ from proxy_scaler.api.entries import to_deck_entry
 from proxy_scaler.api.schemas import (
     BackImageIn,
     CutterIn,
+    GuideCornersIn,
+    GuideLineIn,
     RectOut,
     PdfJobOut,
     PdfJobStatusOut,
@@ -38,6 +40,8 @@ from proxy_scaler.pdf_layout import (
     CutterMarkStyle,
     CutterOrientation,
     FlipEdge,
+    GuideCorners,
+    GuideLine,
     GuideVisibility,
     PageLayout,
     PageOrder,
@@ -51,6 +55,7 @@ from proxy_scaler.pdf_layout import (
     back_page_cells,
     fit_bled_image,
     build_pdf,
+    hex_to_rgb,
     build_print_slots,
     match_quantities,
     paginate,
@@ -60,6 +65,7 @@ from proxy_scaler.pdf_layout import (
     registration_mark_rects,
     resolve_page_layout,
     resolve_reverse,
+    rgb_to_hex,
     unique_image_count,
 )
 from proxy_scaler import customs
@@ -230,6 +236,12 @@ def _layout_from_body(body: PdfLayoutIn, offset_x: float, offset_y: float) -> Pa
         offset_y_mm=offset_y,
         guide_width_pt=body.guide_width_pt,
         guide_length_mm=body.guide_length_mm,
+        page_guide_width_pt=body.page_guide_width_pt,
+        card_guide_color=hex_to_rgb(body.card_guide_color),
+        page_guide_color=hex_to_rgb(body.page_guide_color),
+        card_guide_line=GuideLine(body.card_guide_line.value),
+        page_guide_line=GuideLine(body.page_guide_line.value),
+        card_guide_corners=GuideCorners(body.card_guide_corners.value),
     )
 
 
@@ -605,6 +617,12 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         bleed_mm=layout.bleed_mm,
         guide_width_pt=layout.guide_width_pt,
         guide_length_mm=layout.guide_length_mm,
+        page_guide_width_pt=layout.page_guide_width_pt,
+        card_guide_color=rgb_to_hex(layout.card_guide_color),
+        page_guide_color=rgb_to_hex(layout.page_guide_color),
+        card_guide_line=GuideLineIn(layout.card_guide_line.value),
+        page_guide_line=GuideLineIn(layout.page_guide_line.value),
+        card_guide_corners=GuideCornersIn(layout.card_guide_corners.value),
         # Identical for the front and back layouts — they differ only in
         # their position offsets — so one value serves whichever side is
         # being previewed.

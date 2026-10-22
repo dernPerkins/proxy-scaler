@@ -489,6 +489,17 @@ export interface PdfLayoutRequest {
   hide_card_guides_back: boolean;
   hide_page_guides_back: boolean;
 
+  // Guide styling. guide_width_pt / guide_length_mm above are the Card
+  // Guides'. All optional — the server defaults them to the look before
+  // they existed. Only send them after serverSupportsGuideStyles(): older
+  // servers silently drop the fields and render the default guides.
+  page_guide_width_pt?: number | null;
+  card_guide_color?: string;
+  page_guide_color?: string;
+  card_guide_line?: GuideLine;
+  page_guide_line?: GuideLine;
+  card_guide_corners?: GuideCorners;
+
   // Electronic cutter — registration marks for a cutting machine. All
   // optional: the server defaults them. Only send a cutter other than
   // "none" after serverSupportsCutterMarks() — older servers silently
@@ -533,6 +544,12 @@ export interface PdfLayoutRequest {
  *  double-faced cards get their own backs. The Back Page is still
  *  emitted either way, or the sheet falls out of register. */
 export type ReverseFill = "back_image" | "blank";
+
+/** A guide kind's stroke. Mirrors pdf_layout.GuideLine. */
+export type GuideLine = "solid" | "dashed";
+/** Card Guides only: a "+" at each trim corner, or a quarter arc that
+ *  follows the card's rounded corner. Mirrors pdf_layout.GuideCorners. */
+export type GuideCorners = "square" | "rounded";
 
 /** "duplex" (front, back, front, back…) is what a duplex printer driver
  *  expects; "fronts_then_backs" is for hand-feeding a stack through a
@@ -647,6 +664,15 @@ export interface PdfPagePreview {
   bleed_mm: number;
   guide_width_pt: number;
   guide_length_mm: number;
+  /** Guide styling, echoed so the preview draws what the PDF will. Absent
+   *  from servers older than guide styles — the preview falls back to the
+   *  default look, which is what such a server prints. */
+  page_guide_width_pt?: number | null;
+  card_guide_color?: string;
+  page_guide_color?: string;
+  card_guide_line?: GuideLine;
+  page_guide_line?: GuideLine;
+  card_guide_corners?: GuideCorners;
   /** Total size of the card grid. The server reports it rather than
    *  refusing an oversized grid — a custom offset may push past an edge
    *  on purpose — so the client compares these against the page and

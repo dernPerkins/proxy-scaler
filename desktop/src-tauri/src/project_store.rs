@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS projects (
     export_bleed_mm REAL NOT NULL DEFAULT 3.0,
     custom_upscale TEXT NOT NULL DEFAULT 'off',
     import_art_source TEXT NOT NULL DEFAULT 'scryfall',
+    -- Guide styling (PDF tab). guide_width_pt / guide_length_mm above are
+    -- the Card Guides'; page_guide_width_pt is NULL until set and then
+    -- reads as the Card Guides' width (the two shared one width before).
+    -- Colors are '#RRGGBB'; the line/corner strings are opaque to Rust —
+    -- the generation server validates them.
+    page_guide_width_pt REAL,
+    card_guide_color TEXT NOT NULL DEFAULT '#00AA50',
+    page_guide_color TEXT NOT NULL DEFAULT '#000000',
+    card_guide_line TEXT NOT NULL DEFAULT 'solid',
+    page_guide_line TEXT NOT NULL DEFAULT 'solid',
+    card_guide_corners TEXT NOT NULL DEFAULT 'square',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -255,6 +266,16 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // as face_art; the printing still identifies the card). Opaque; the
     // Decklist tab's import toggle reads it.
     ("import_art_source", "TEXT NOT NULL DEFAULT 'scryfall'"),
+    // Guide styling — see the SCHEMA comment. page_guide_width_pt is
+    // nullable on purpose: an existing project's Page Guides keep the
+    // width they always shared with its Card Guides until the user sets
+    // one, rather than snapping to a column default.
+    ("page_guide_width_pt", "REAL"),
+    ("card_guide_color", "TEXT NOT NULL DEFAULT '#00AA50'"),
+    ("page_guide_color", "TEXT NOT NULL DEFAULT '#000000'"),
+    ("card_guide_line", "TEXT NOT NULL DEFAULT 'solid'"),
+    ("page_guide_line", "TEXT NOT NULL DEFAULT 'solid'"),
+    ("card_guide_corners", "TEXT NOT NULL DEFAULT 'square'"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -646,6 +667,37 @@ pub struct ProjectSettings {
     // on deserialize for the same reason as custom_upscale.
     #[serde(default = "default_import_art_source")]
     pub import_art_source: String,
+    // Guide styling — see PROJECTS_ADDED_COLUMNS. Defaulted on deserialize
+    // so a frontend build that predates them can't wipe them. A None page
+    // width is stored as NULL and loads as the Card Guides' width.
+    #[serde(default)]
+    pub page_guide_width_pt: Option<f64>,
+    #[serde(default = "default_card_guide_color")]
+    pub card_guide_color: String,
+    #[serde(default = "default_page_guide_color")]
+    pub page_guide_color: String,
+    #[serde(default = "default_guide_line")]
+    pub card_guide_line: String,
+    #[serde(default = "default_guide_line")]
+    pub page_guide_line: String,
+    #[serde(default = "default_card_guide_corners")]
+    pub card_guide_corners: String,
+}
+
+fn default_card_guide_color() -> String {
+    "#00AA50".to_string()
+}
+
+fn default_page_guide_color() -> String {
+    "#000000".to_string()
+}
+
+fn default_guide_line() -> String {
+    "solid".to_string()
+}
+
+fn default_card_guide_corners() -> String {
+    "square".to_string()
 }
 
 fn default_import_art_source() -> String {
@@ -763,6 +815,12 @@ impl Default for ProjectSettings {
             export_back_faces_as_reverse: true,
             custom_upscale: default_custom_upscale(),
             import_art_source: default_import_art_source(),
+            page_guide_width_pt: None,
+            card_guide_color: default_card_guide_color(),
+            page_guide_color: default_page_guide_color(),
+            card_guide_line: default_guide_line(),
+            page_guide_line: default_guide_line(),
+            card_guide_corners: default_card_guide_corners(),
         }
     }
 }
@@ -1038,6 +1096,12 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         export_back_faces_as_reverse: bool,
         custom_upscale: String,
         import_art_source: String,
+        page_guide_width_pt: Option<f64>,
+        card_guide_color: String,
+        page_guide_color: String,
+        card_guide_line: String,
+        page_guide_line: String,
+        card_guide_corners: String,
         created_at: String,
         updated_at: String,
     }
@@ -1059,6 +1123,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     export_image_format, export_with_bleed, export_bleed_mm,
                     export_reverse_fill, export_back_faces_as_reverse,
                     custom_upscale, import_art_source,
+                    page_guide_width_pt, card_guide_color, page_guide_color,
+                    card_guide_line, page_guide_line, card_guide_corners,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -1114,6 +1180,12 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     export_back_faces_as_reverse: row.get("export_back_faces_as_reverse")?,
                     custom_upscale: custom_upscale_mode(row.get("custom_upscale")?),
                     import_art_source: row.get("import_art_source")?,
+                    page_guide_width_pt: row.get("page_guide_width_pt")?,
+                    card_guide_color: row.get("card_guide_color")?,
+                    page_guide_color: row.get("page_guide_color")?,
+                    card_guide_line: row.get("card_guide_line")?,
+                    page_guide_line: row.get("page_guide_line")?,
+                    card_guide_corners: row.get("card_guide_corners")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -1177,6 +1249,16 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             export_back_faces_as_reverse: loaded.export_back_faces_as_reverse,
             custom_upscale: loaded.custom_upscale,
             import_art_source: loaded.import_art_source,
+            // Never None on the way out, so the frontend always has a
+            // number to show: unset means "the Card Guides' width".
+            page_guide_width_pt: Some(
+                loaded.page_guide_width_pt.unwrap_or(loaded.guide_width_pt),
+            ),
+            card_guide_color: loaded.card_guide_color,
+            page_guide_color: loaded.page_guide_color,
+            card_guide_line: loaded.card_guide_line,
+            page_guide_line: loaded.page_guide_line,
+            card_guide_corners: loaded.card_guide_corners,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1427,6 +1509,8 @@ fn update_project_row(
          custom_upscale = ?47,
          export_reverse_fill = ?48, export_back_faces_as_reverse = ?49,
          import_art_source = ?50,
+         page_guide_width_pt = ?51, card_guide_color = ?52, page_guide_color = ?53,
+         card_guide_line = ?54, page_guide_line = ?55, card_guide_corners = ?56,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1480,6 +1564,12 @@ fn update_project_row(
             settings.export_reverse_fill,
             settings.export_back_faces_as_reverse,
             settings.import_art_source,
+            settings.page_guide_width_pt,
+            settings.card_guide_color,
+            settings.page_guide_color,
+            settings.card_guide_line,
+            settings.page_guide_line,
+            settings.card_guide_corners,
         ],
     )
     .map_err(|e| {
@@ -3767,6 +3857,74 @@ mod tests {
         assert_eq!(loaded.cutter_inset_mm, 15.875);
         assert!(loaded.hide_cutter_marks_front);
         assert!(!loaded.hide_cutter_marks_back);
+    }
+
+    #[test]
+    fn guide_style_settings_roundtrip_through_project_settings() {
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.page_guide_width_pt, Some(0.75));
+        assert_eq!(loaded.card_guide_color, "#00AA50");
+        assert_eq!(loaded.page_guide_color, "#000000");
+        assert_eq!(loaded.card_guide_line, "solid");
+        assert_eq!(loaded.page_guide_line, "solid");
+        assert_eq!(loaded.card_guide_corners, "square");
+
+        let settings = ProjectSettings {
+            page_guide_width_pt: Some(1.5),
+            card_guide_color: "#39FF14".to_string(),
+            page_guide_color: "#FF00FF".to_string(),
+            card_guide_line: "dashed".to_string(),
+            page_guide_line: "dashed".to_string(),
+            card_guide_corners: "rounded".to_string(),
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.page_guide_width_pt, Some(1.5));
+        assert_eq!(loaded.card_guide_color, "#39FF14");
+        assert_eq!(loaded.page_guide_color, "#FF00FF");
+        assert_eq!(loaded.card_guide_line, "dashed");
+        assert_eq!(loaded.page_guide_line, "dashed");
+        assert_eq!(loaded.card_guide_corners, "rounded");
+    }
+
+    #[test]
+    fn unset_page_guide_width_loads_as_the_card_guide_width() {
+        // A project from before the two widths split: its Page Guides were
+        // drawn at guide_width_pt, and must keep printing that way.
+        let conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let settings = ProjectSettings {
+            guide_width_pt: 1.25,
+            page_guide_width_pt: None,
+            ..ProjectSettings::default()
+        };
+        update_project_row(&conn, id, "", &settings).expect("update");
+        let loaded = load_project(&conn, id).expect("load").settings;
+        assert_eq!(loaded.page_guide_width_pt, Some(1.25));
+    }
+
+    #[test]
+    fn guide_style_settings_default_when_an_older_frontend_omits_them() {
+        let mut json = serde_json::to_value(ProjectSettings::default()).expect("serialize");
+        let obj = json.as_object_mut().expect("object");
+        for key in [
+            "page_guide_width_pt",
+            "card_guide_color",
+            "page_guide_color",
+            "card_guide_line",
+            "page_guide_line",
+            "card_guide_corners",
+        ] {
+            obj.remove(key);
+        }
+        let settings: ProjectSettings = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(settings.page_guide_width_pt, None);
+        assert_eq!(settings.card_guide_color, "#00AA50");
+        assert_eq!(settings.page_guide_line, "solid");
+        assert_eq!(settings.card_guide_corners, "square");
     }
 
     #[test]

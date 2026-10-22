@@ -127,6 +127,14 @@ export function getDefaultSettings(): ProjectSettings {
     export_back_faces_as_reverse: true,
     custom_upscale: "target",
     import_art_source: "scryfall",
+    // Mirrors project_store.rs's column defaults and pdf_layout's
+    // _MARK_COLOR / _OUTER_LINE_COLOR — the guides before they had styles.
+    page_guide_width_pt: 0.75,
+    card_guide_color: "#00AA50",
+    page_guide_color: "#000000",
+    card_guide_line: "solid",
+    page_guide_line: "solid",
+    card_guide_corners: "square",
   };
 }
 

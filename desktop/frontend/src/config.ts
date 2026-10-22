@@ -259,6 +259,13 @@ export const SET_ICONS_MIN_SERVER_VERSION = "0.5.0";
 // packaging/set-version.py must never rewrite it.
 export const PER_CARD_BACKS_MIN_SERVER_VERSION = "0.5.0";
 
+// Guide styling: PdfLayoutIn's page_guide_width_pt, per-kind colors and
+// line styles, and rounded Card Guides. Below this the server silently
+// drops the fields and prints the default guides, so the Guides section
+// disables those controls and leaves them out of the request. The release
+// these ship in; packaging/set-version.py must never rewrite it.
+export const GUIDE_STYLES_MIN_SERVER_VERSION = "0.5.0";
+
 // MPC Fill art: /api/mpcfill/* (search, previews, import), the /fetch
 // sync routes, and DeckEntryIn.face_overrides (MPC art on one face of a
 // Scryfall card). Below this the MPC Fill buttons are disabled, and a
@@ -315,6 +322,14 @@ export function serverSupportsZipExport(serverVersion: string | null): boolean {
 export function serverSupportsOriginals(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, ORIGINALS_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server understand the guide styling fields? Same
+ *  null/unparseable semantics as serverSupportsBackPrinting. */
+export function serverSupportsGuideStyles(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, GUIDE_STYLES_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

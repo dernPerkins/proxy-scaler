@@ -250,6 +250,187 @@ def test_draw_cut_marks_ink_stays_off_the_cards() -> None:
                 )
 
 
+class _StyleRecorder:
+    """Records every guide draw call along with the style in force for it
+    — enough to check colors, widths, dash state and arc geometry without
+    parsing a PDF content stream."""
+
+    def __init__(self) -> None:
+        self.color: tuple[int, ...] = ()
+        self.line_width = 0.0
+        self.dash: tuple[float, float] = (0.0, 0.0)
+        self.calls: list[dict] = []
+        self.dash_sets: list[tuple[float, float]] = []
+
+    def set_line_width(self, w: float) -> None:
+        self.line_width = w
+
+    def set_draw_color(self, *rgb: int) -> None:
+        self.color = tuple(rgb)
+
+    def set_dash_pattern(self, dash: float = 0, gap: float = 0, phase: float = 0) -> None:
+        self.dash = (dash, gap)
+        self.dash_sets.append(self.dash)
+
+    def _record(self, kind: str, **geometry) -> None:
+        self.calls.append(
+            dict(kind=kind, color=self.color, width=self.line_width, dash=self.dash, **geometry)
+        )
+
+    def line(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        self._record("line", x1=x1, y1=y1, x2=x2, y2=y2)
+
+    def arc(self, x: float, y: float, a: float, start_angle: float, end_angle: float) -> None:
+        self._record("arc", x=x, y=y, a=a, start=start_angle, end=end_angle)
+
+
+def test_page_guide_width_defaults_to_the_card_guide_width() -> None:
+    """Before the two widths split, Page Guides were drawn at
+    guide_width_pt — an unset page width has to keep doing that."""
+    assert _a4_portrait_layout(guide_width_pt=1.5).page_guide_width_pt == 1.5
+    assert (
+        _a4_portrait_layout(guide_width_pt=1.5, page_guide_width_pt=0.5).page_guide_width_pt
+        == 0.5
+    )
+
+
+def test_hex_colors_round_trip() -> None:
+    from proxy_scaler.pdf_layout import hex_to_rgb, rgb_to_hex
+
+    assert hex_to_rgb("#39ff14") == (0x39, 0xFF, 0x14)
+    assert rgb_to_hex((0x39, 0xFF, 0x14)) == "#39FF14"
+    with pytest.raises(ValueError):
+        hex_to_rgb("#fff")
+
+
+def test_each_guide_kind_draws_in_its_own_color_and_width() -> None:
+    from proxy_scaler.pdf_layout import _draw_cut_marks
+
+    layout = _a4_portrait_layout(
+        guide_width_pt=0.5,
+        page_guide_width_pt=2.0,
+        card_guide_color=(255, 0, 255),
+        page_guide_color=(0, 0, 255),
+    )
+    rec = _StyleRecorder()
+    _draw_cut_marks(rec, layout)  # type: ignore[arg-type]
+    to_mm = 25.4 / 72
+    page = [c for c in rec.calls if c["color"] == (0, 0, 255)]
+    card = [c for c in rec.calls if c["color"] == (255, 0, 255)]
+    assert page and card and len(page) + len(card) == len(rec.calls)
+    assert all(c["width"] == pytest.approx(2.0 * to_mm) for c in page)
+    assert all(c["width"] == pytest.approx(0.5 * to_mm) for c in card)
+
+
+def test_default_guides_are_solid_and_square() -> None:
+    """Out of the box nothing changes: no dash pattern is ever set and no
+    arc is drawn — just the "+" marks and the edge lines."""
+    from proxy_scaler.pdf_layout import _draw_cut_marks
+
+    rec = _StyleRecorder()
+    _draw_cut_marks(rec, _a4_portrait_layout())  # type: ignore[arg-type]
+    assert rec.dash_sets == []
+    assert {c["kind"] for c in rec.calls} == {"line"}
+
+
+@pytest.mark.parametrize("dashed_kind", ["card", "page"])
+def test_a_dashed_kind_is_dashed_alone_and_the_pattern_is_reset(dashed_kind) -> None:
+    from proxy_scaler.pdf_layout import GuideLine, _draw_cut_marks
+
+    layout = _a4_portrait_layout(
+        card_guide_line=GuideLine.DASHED if dashed_kind == "card" else GuideLine.SOLID,
+        page_guide_line=GuideLine.DASHED if dashed_kind == "page" else GuideLine.SOLID,
+        card_guide_color=(1, 1, 1),
+        page_guide_color=(2, 2, 2),
+    )
+    rec = _StyleRecorder()
+    _draw_cut_marks(rec, layout)  # type: ignore[arg-type]
+    dashed_color = (1, 1, 1) if dashed_kind == "card" else (2, 2, 2)
+    for call in rec.calls:
+        if call["color"] == dashed_color:
+            assert call["dash"][0] > 0 and call["dash"][1] > 0
+        else:
+            assert call["dash"] == (0.0, 0.0)
+    # Left solid for whatever is drawn after the guides.
+    assert rec.dash == (0.0, 0.0)
+
+
+def test_rounded_card_guides_hug_each_cards_corner() -> None:
+    """Each arc is the quarter of a circle centred on its card's own
+    rounded corner, facing away from the card, with radius R + half the
+    stroke — so the stroke's inner edge is exactly the card's curve. Each
+    tail runs along a trim edge away from its corner and stays off the
+    card."""
+    from proxy_scaler.pdf_layout import CARD_CORNER_RADIUS_MM, GuideCorners, _draw_cut_marks
+
+    layout = _a4_portrait_layout(card_guide_corners=GuideCorners.ROUNDED, spacing_x_mm=2.0)
+    rec = _StyleRecorder()
+    _draw_cut_marks(rec, layout, page_guides=False)  # type: ignore[arg-type]
+    arcs = [c for c in rec.calls if c["kind"] == "arc"]
+    tails = [c for c in rec.calls if c["kind"] == "line"]
+    corners = 4 * layout.cols * layout.rows
+    assert len(arcs) == corners and len(tails) == 2 * corners
+
+    half = layout.guide_width_pt / 72 * 25.4 / 2
+    r = CARD_CORNER_RADIUS_MM
+    xs = _card_trim_edges(
+        layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm, layout.bled_card_w_mm
+    )
+    ys = _card_trim_edges(
+        layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm, layout.bled_card_h_mm
+    )
+    # Which quarter faces away from the card, per corner (fpdf2 angles run
+    # clockwise from 3 o'clock on a y-down page).
+    want = {}
+    for i, x in enumerate(xs):
+        for j, y in enumerate(ys):
+            left, top = i % 2 == 0, j % 2 == 0
+            cx = x + r if left else x - r
+            cy = y + r if top else y - r
+            start = {(True, True): 180, (False, True): 270, (False, False): 0, (True, False): 90}[
+                (left, top)
+            ]
+            want[(round(cx, 6), round(cy, 6))] = start
+    for arc in arcs:
+        radius = arc["a"] / 2
+        assert radius == pytest.approx(r + half)
+        centre = (round(arc["x"] + radius, 6), round(arc["y"] + radius, 6))
+        assert want.pop(centre) == arc["start"]
+        assert arc["end"] == arc["start"] + 90
+    assert not want
+
+    # Tails: flush with the trim edges, so off every card's trim box.
+    eps = 1e-9
+    for col in range(layout.cols):
+        for row in range(layout.rows):
+            bx0, bx1 = xs[2 * col], xs[2 * col + 1]
+            by0, by1 = ys[2 * row], ys[2 * row + 1]
+            for t in tails:
+                sx0 = min(t["x1"], t["x2"]) - half
+                sx1 = max(t["x1"], t["x2"]) + half
+                sy0 = min(t["y1"], t["y2"]) - half
+                sy1 = max(t["y1"], t["y2"]) + half
+                overlap_x = min(sx1, bx1) - max(sx0, bx0)
+                overlap_y = min(sy1, by1) - max(sy0, by0)
+                assert not (overlap_x > eps and overlap_y > eps)
+
+
+def test_styled_guides_render_into_a_real_pdf() -> None:
+    """The recorder above stands in for fpdf2; this makes sure the real
+    calls (arc, set_dash_pattern) take the arguments we pass."""
+    from proxy_scaler.pdf_layout import GuideCorners, GuideLine, _draw_cut_marks
+
+    layout = _a4_portrait_layout(
+        card_guide_corners=GuideCorners.ROUNDED,
+        card_guide_line=GuideLine.DASHED,
+        page_guide_line=GuideLine.DASHED,
+    )
+    pdf = FPDF(orientation="portrait", unit="mm", format=(layout.page_w_mm, layout.page_h_mm))
+    pdf.add_page()
+    _draw_cut_marks(pdf, layout)
+    assert bytes(pdf.output())
+
+
 # --- Corner flatten / bleed ----------------------------------------------
 
 

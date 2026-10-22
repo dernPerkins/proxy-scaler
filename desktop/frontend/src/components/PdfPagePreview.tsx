@@ -13,55 +13,44 @@ function panelWidthPx(preview: PdfPagePreviewData): number {
 }
 const MM_PER_IN = 25.4;
 
-// Matches pdf_layout.py's own hardcoded _OUTER_LINE_COLOR / _MARK_COLOR —
-// not user-configurable there either, so not exposed via the API; just
-// mirrored as constants here. Both line kinds share the user-configurable
-// guide_width_pt stroke width.
-const OUTER_LINE_COLOR = "#000";
-const MARK_COLOR = "rgb(0, 170, 80)";
+// The guides' look before it was configurable — pdf_layout.py's
+// _OUTER_LINE_COLOR / _MARK_COLOR, and what a server older than guide
+// styling still prints, so the preview falls back to them when the
+// response doesn't carry the styling fields.
+const DEFAULT_PAGE_GUIDE_COLOR = "#000000";
+const DEFAULT_CARD_GUIDE_COLOR = "#00AA50";
+// pdf_layout.py's CARD_CORNER_RADIUS_MM — the curve a rounded Card Guide
+// follows.
+const CARD_CORNER_RADIUS_MM = 3.175;
 
-// Line segment as a thin absolutely-positioned div — always drawn as a
-// px-sized rect (never relying on CSS border, since a sub-pixel border
-// width can get rounded away entirely by the browser at this scale).
-function Line({
-  x1,
-  y1,
-  x2,
-  y2,
-  widthPx,
-  color,
-}: {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  widthPx: number;
-  color: string;
-}) {
-  const isVertical = x1 === x2;
-  return (
-    <div
-      style={{
-        position: "absolute",
-        background: color,
-        left: isVertical ? x1 - widthPx / 2 : Math.min(x1, x2),
-        top: isVertical ? Math.min(y1, y2) : y1 - widthPx / 2,
-        width: isVertical ? widthPx : Math.abs(x2 - x1),
-        height: isVertical ? Math.abs(y2 - y1) : widthPx,
-      }}
-    />
-  );
+// SVG stroke-dasharray for a dashed guide, in px. Mirrors
+// pdf_layout.py::_guide_dash_mm, but floored in screen pixels too: at
+// preview scale the PDF's sub-millimetre dashes would blur into a solid
+// line, and showing that a guide IS dashed is the point here.
+function dashArrayPx(widthMm: number, strokePx: number, scale: number): string {
+  const dashMm = Math.max(0.75, 3 * widthMm);
+  const dash = Math.max(dashMm * scale, 3 * strokePx, 3);
+  return `${dash} ${dash * 0.8}`;
 }
 
 // Each card's own pair of trim-edge coordinates along one axis — mirrors
 // pdf_layout.py::_card_trim_edges exactly (see its own comment for why
 // this is 2*count coordinates, not count+1: adjacent cards' bleed strips
-// end at two distinct nearby points, not one shared line).
-function cardTrimEdges(count: number, cellMm: number, bleedMm: number, originMm: number): number[] {
+// end at two distinct nearby points, not one shared line). The trailing
+// edge comes from the bled card's own extent, not the cell stride, which
+// also includes the spacing gap and put every right/bottom guide one gap
+// outside its card once spacing was set.
+function cardTrimEdges(
+  count: number,
+  cellMm: number,
+  bleedMm: number,
+  originMm: number,
+  cardExtentMm: number,
+): number[] {
   const edges: number[] = [];
   for (let i = 0; i < count; i++) {
     edges.push(originMm + i * cellMm + bleedMm);
-    edges.push(originMm + (i + 1) * cellMm - bleedMm);
+    edges.push(originMm + i * cellMm + cardExtentMm - bleedMm);
   }
   return edges;
 }
@@ -94,104 +83,141 @@ function clipEdgeSegment(
   return start < end ? [start, end] : null;
 }
 
-// Mirrors pdf_layout.py::_draw_cut_marks: outer lines from the page edge
-// to the card grid block, plus a small "+" crop mark at every card's own
-// trim corner (the full xs x ys cross product). Like the PDF, every guide
-// is nudged outward from its card by half the true (mm) stroke width, so
-// the ink's inner edge sits on the trim line instead of straddling it —
+// Mirrors pdf_layout.py::_draw_cut_marks: Page Guides from the page edge
+// to the card grid block, plus Card Guides at every card's own trim corner
+// (the full xs x ys cross product) — a "+", or a quarter arc hugging the
+// card's rounded corner with a tail along each edge. Like the PDF, every
+// guide is nudged outward from its card by half its own (mm) stroke width,
+// so the ink's inner edge sits on the trim line instead of straddling it —
 // even indices in cardTrimEdges are leading (left/top) edges, odd are
 // trailing (right/bottom).
+//
+// Drawn as one SVG over the page: dashes and arcs come for free, and the
+// square line caps match the PDF's.
 function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: number }) {
-  const guideWidthMm = (preview.guide_width_pt / 72) * MM_PER_IN;
-  const halfMm = guideWidthMm / 2;
-  const xs = cardTrimEdges(preview.cols, preview.cell_w_mm, preview.bleed_mm, preview.margin_x_mm)
-    .map((x, i) => (i % 2 === 0 ? x - halfMm : x + halfMm));
-  const ys = cardTrimEdges(preview.rows, preview.cell_h_mm, preview.bleed_mm, preview.margin_y_mm)
-    .map((y, i) => (i % 2 === 0 ? y - halfMm : y + halfMm));
-  const gridX0 = xs[0];
-  const gridX1 = xs[xs.length - 1];
-  const gridY0 = ys[0];
-  const gridY1 = ys[ys.length - 1];
+  const trimXs = cardTrimEdges(
+    preview.cols, preview.cell_w_mm, preview.bleed_mm, preview.margin_x_mm, preview.bled_card_w_mm,
+  );
+  const trimYs = cardTrimEdges(
+    preview.rows, preview.cell_h_mm, preview.bleed_mm, preview.margin_y_mm, preview.bled_card_h_mm,
+  );
+  const nudged = (edges: number[], halfMm: number) =>
+    edges.map((e, i) => (i % 2 === 0 ? e - halfMm : e + halfMm));
   // Real print widths (a fraction of a point) are effectively hairlines
-  // even before scaling down to a ~360px on-screen panel — sub-pixel CSS
-  // widths get anti-aliased into near-invisibility (or rounded to 0) by
-  // the browser, unlike a physical print device. Clamped to a visible
-  // minimum here (the outward nudge above still uses the true mm width);
-  // the actual PDF output is unaffected, this only touches the on-screen
-  // approximation.
-  const strokeWidthPx = Math.max(1, guideWidthMm * scale);
-  const markLenMm = preview.guide_length_mm;
+  // even before scaling down to a ~360px on-screen panel — sub-pixel
+  // widths get anti-aliased into near-invisibility by the browser, unlike
+  // a physical print device. Clamped to a visible minimum here (the
+  // outward nudge still uses the true mm width); the actual PDF output is
+  // unaffected, this only touches the on-screen approximation.
+  const strokePx = (widthMm: number) => Math.max(1, widthMm * scale);
+  const ptToMm = (pt: number) => (pt / 72) * MM_PER_IN;
 
-  const lines: ReactNode[] = [];
-  let key = 0;
-  // Registration-mark keep-out zones clip the page guides exactly as the
-  // PDF does; empty (no clipping) without a cutter or on an older server.
-  const keepOut = preview.registration_keep_out ?? [];
+  const paths: ReactNode[] = [];
 
-  // The two guide kinds share all the geometry above and are gated
-  // independently below, mirroring pdf_layout.py::_draw_cut_marks. Which
-  // page kind's flags arrive here is already resolved server-side, so a
-  // Back Page preview draws exactly what that page will carry.
+  // The two guide kinds are gated independently, mirroring
+  // pdf_layout.py::_draw_cut_marks. Which page kind's flags arrive here is
+  // already resolved server-side, so a Back Page preview draws exactly
+  // what that page will carry.
   if (!preview.hide_page_guides) {
+    const widthMm = ptToMm(preview.page_guide_width_pt ?? preview.guide_width_pt);
+    const halfMm = widthMm / 2;
+    const xs = nudged(trimXs, halfMm);
+    const ys = nudged(trimYs, halfMm);
+    const gridX0 = xs[0];
+    const gridX1 = xs[xs.length - 1];
+    const gridY0 = ys[0];
+    const gridY1 = ys[ys.length - 1];
+    // Registration-mark keep-out zones clip the page guides exactly as the
+    // PDF does; empty (no clipping) without a cutter or on an older server.
+    const keepOut = preview.registration_keep_out ?? [];
+    let d = "";
+    const v = (x: number, seg: [number, number] | null) => {
+      if (seg) d += `M${x * scale} ${seg[0] * scale}V${seg[1] * scale}`;
+    };
+    const h = (y: number, seg: [number, number] | null) => {
+      if (seg) d += `M${seg[0] * scale} ${y * scale}H${seg[1] * scale}`;
+    };
     for (const x of xs) {
-      const top = clipEdgeSegment(0, gridY0, x - halfMm, x + halfMm, keepOut, true, true);
-      if (top) {
-        lines.push(
-          <Line key={key++} x1={x * scale} y1={top[0] * scale} x2={x * scale} y2={top[1] * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-        );
-      }
-      const bottom = clipEdgeSegment(gridY1, preview.page_h_mm, x - halfMm, x + halfMm, keepOut, true, false);
-      if (bottom) {
-        lines.push(
-          <Line key={key++} x1={x * scale} y1={bottom[0] * scale} x2={x * scale} y2={bottom[1] * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-        );
-      }
+      v(x, clipEdgeSegment(0, gridY0, x - halfMm, x + halfMm, keepOut, true, true));
+      v(x, clipEdgeSegment(gridY1, preview.page_h_mm, x - halfMm, x + halfMm, keepOut, true, false));
     }
     for (const y of ys) {
-      const left = clipEdgeSegment(0, gridX0, y - halfMm, y + halfMm, keepOut, false, true);
-      if (left) {
-        lines.push(
-          <Line key={key++} x1={left[0] * scale} y1={y * scale} x2={left[1] * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-        );
-      }
-      const right = clipEdgeSegment(gridX1, preview.page_w_mm, y - halfMm, y + halfMm, keepOut, false, false);
-      if (right) {
-        lines.push(
-          <Line key={key++} x1={right[0] * scale} y1={y * scale} x2={right[1] * scale} y2={y * scale} widthPx={strokeWidthPx} color={OUTER_LINE_COLOR} />,
-        );
-      }
+      h(y, clipEdgeSegment(0, gridX0, y - halfMm, y + halfMm, keepOut, false, true));
+      h(y, clipEdgeSegment(gridX1, preview.page_w_mm, y - halfMm, y + halfMm, keepOut, false, false));
     }
+    const px = strokePx(widthMm);
+    paths.push(
+      <path
+        key="page"
+        d={d}
+        stroke={preview.page_guide_color ?? DEFAULT_PAGE_GUIDE_COLOR}
+        strokeWidth={px}
+        strokeDasharray={preview.page_guide_line === "dashed" ? dashArrayPx(widthMm, px, scale) : undefined}
+      />,
+    );
   }
 
   if (!preview.hide_card_guides) {
-    for (const x of xs) {
-      for (const y of ys) {
-        lines.push(
-          <Line
-            key={key++}
-            x1={(x - markLenMm) * scale}
-            y1={y * scale}
-            x2={(x + markLenMm) * scale}
-            y2={y * scale}
-            widthPx={strokeWidthPx}
-            color={MARK_COLOR}
-          />,
-        );
-        lines.push(
-          <Line
-            key={key++}
-            x1={x * scale}
-            y1={(y - markLenMm) * scale}
-            x2={x * scale}
-            y2={(y + markLenMm) * scale}
-            widthPx={strokeWidthPx}
-            color={MARK_COLOR}
-          />,
-        );
+    const widthMm = ptToMm(preview.guide_width_pt);
+    const halfMm = widthMm / 2;
+    const xs = nudged(trimXs, halfMm);
+    const ys = nudged(trimYs, halfMm);
+    const len = preview.guide_length_mm;
+    let d = "";
+    if (preview.card_guide_corners === "rounded") {
+      const r = CARD_CORNER_RADIUS_MM + halfMm;
+      xs.forEach((x, i) => {
+        // +1 when the card lies to the right of / below this edge.
+        const intoX = i % 2 === 0 ? 1 : -1;
+        ys.forEach((y, j) => {
+          const intoY = j % 2 === 0 ? 1 : -1;
+          // The corner's own centre, R in from both trim edges; radius
+          // R + half so the stroke's inner edge is the card's curve.
+          const cx = x + intoX * r;
+          const cy = y + intoY * r;
+          // Tail along the top/bottom edge in to the arc, round the
+          // corner, then the tail down/up the side edge. Sweep is
+          // clockwise for the top-right and bottom-left corners.
+          const sweep = intoX * intoY > 0 ? 0 : 1;
+          d +=
+            `M${(cx + intoX * len) * scale} ${y * scale}H${cx * scale}` +
+            `A${r * scale} ${r * scale} 0 0 ${sweep} ${x * scale} ${cy * scale}` +
+            `V${(cy + intoY * len) * scale}`;
+        });
+      });
+    } else {
+      for (const x of xs) {
+        for (const y of ys) {
+          d +=
+            `M${(x - len) * scale} ${y * scale}H${(x + len) * scale}` +
+            `M${x * scale} ${(y - len) * scale}V${(y + len) * scale}`;
+        }
       }
     }
+    const px = strokePx(widthMm);
+    paths.push(
+      <path
+        key="card"
+        d={d}
+        stroke={preview.card_guide_color ?? DEFAULT_CARD_GUIDE_COLOR}
+        strokeWidth={px}
+        strokeDasharray={preview.card_guide_line === "dashed" ? dashArrayPx(widthMm, px, scale) : undefined}
+      />,
+    );
   }
-  return <>{lines}</>;
+
+  return (
+    <svg
+      width={preview.page_w_mm * scale}
+      height={preview.page_h_mm * scale}
+      fill="none"
+      strokeLinecap="square"
+      style={{ position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none" }}
+      aria-hidden="true"
+    >
+      {paths}
+    </svg>
+  );
 }
 
 // Cutter registration marks, from the server's page-coordinate rects

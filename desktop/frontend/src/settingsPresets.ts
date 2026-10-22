@@ -46,6 +46,7 @@ type Validator = (v: unknown) => boolean;
 
 const isNumber: Validator = (v) => typeof v === "number" && Number.isFinite(v);
 const isBool: Validator = (v) => typeof v === "boolean";
+const isHexColor: Validator = (v) => typeof v === "string" && /^#[0-9A-Fa-f]{6}$/.test(v);
 const oneOf =
   (...values: string[]): Validator =>
   (v) => typeof v === "string" && values.includes(v);
@@ -71,6 +72,12 @@ const PDF_FIELDS = {
   hide_page_guides_front: isBool,
   hide_card_guides_back: isBool,
   hide_page_guides_back: isBool,
+  page_guide_width_pt: isNumber,
+  card_guide_color: isHexColor,
+  page_guide_color: isHexColor,
+  card_guide_line: oneOf("solid", "dashed"),
+  page_guide_line: oneOf("solid", "dashed"),
+  card_guide_corners: oneOf("square", "rounded"),
   back_printing: isBool,
   back_faces_as_reverse: isBool,
   reverse_fill: oneOf("back_image", "blank"),

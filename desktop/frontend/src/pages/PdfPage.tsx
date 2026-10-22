@@ -13,6 +13,7 @@ import {
   BACK_PRINTING_MIN_SERVER_VERSION,
   serverSupportsBackPrinting,
   serverSupportsCutterMarks,
+  serverSupportsGuideStyles,
   serverSupportsOriginals,
   serverSupportsPerCardBacks,
   useServerReadiness,
@@ -44,14 +45,7 @@ import type {
 } from "../api/types";
 import { toast } from "../toasts";
 import SidebarColumn from "../components/SidebarColumn";
-// PROTOTYPE — remove once a Guides variant is picked.
-import PrototypeSwitcher, { usePrototypeVariant } from "../components/PrototypeSwitcher";
-import {
-  GUIDE_VARIANTS,
-  VariantA as GuidesVariantA,
-  VariantB as GuidesVariantB,
-  VariantC as GuidesVariantC,
-} from "./pdf-guides.prototype";
+import GuidesSection from "../components/GuidesSection";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -177,6 +171,9 @@ export default function PdfPage() {
   // cutter scans) while the preview claimed otherwise. The controls are
   // disabled against it, and a stored cutter is sent as "none".
   const cutterSupported = serverSupportsCutterMarks(serverVersion);
+  // Below this the server drops the styling fields and prints the default
+  // guides, so they are left out of the request and their controls off.
+  const guideStylesSupported = serverSupportsGuideStyles(serverVersion);
   const cutter: Cutter = cutterSupported ? settings.cutter : "none";
   const cutterOn = cutter !== "none";
 
@@ -228,8 +225,6 @@ export default function PdfPage() {
   // hidden then, so there was no way to get back to the front.
   const [previewSideChoice, setPreviewSideChoice] = useState<"front" | "back">("front");
   const previewSide = settings.back_printing ? previewSideChoice : "front";
-  // PROTOTYPE — Guides layout variants.
-  const guidesVariant = usePrototypeVariant(GUIDE_VARIANTS.map((v) => v.key));
 
   // Persisted on the project itself (ProjectContext's `settings`, saved via
   // the same project-bar Save button as the Decklist tab's generation
@@ -255,6 +250,14 @@ export default function PdfPage() {
     hide_page_guides_front: settings.hide_page_guides_front,
     hide_card_guides_back: settings.hide_card_guides_back,
     hide_page_guides_back: settings.hide_page_guides_back,
+    ...(guideStylesSupported && {
+      page_guide_width_pt: settings.page_guide_width_pt,
+      card_guide_color: settings.card_guide_color,
+      page_guide_color: settings.page_guide_color,
+      card_guide_line: settings.card_guide_line,
+      page_guide_line: settings.page_guide_line,
+      card_guide_corners: settings.card_guide_corners,
+    }),
     back_printing: settings.back_printing,
     back_faces_as_reverse: settings.back_faces_as_reverse,
     reverse_fill: settings.reverse_fill,
@@ -734,25 +737,6 @@ export default function PdfPage() {
                     onChange={(value) => updateLayout("export_dpi", Number(value))}
                   />
                 </label>
-
-                <div style={{ display: "flex", gap: 10 }}>
-                  <label className="field">
-                    <span>Guide width (pt)</span>
-                    <NumberInput
-                      step={0.05}
-                      value={layout.guide_width_pt}
-                      onChange={(v) => updateLayout("guide_width_pt", v)}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Guide length (mm)</span>
-                    <NumberInput
-                      step={0.1}
-                      value={layout.guide_length_mm}
-                      onChange={(v) => updateLayout("guide_length_mm", v)}
-                    />
-                  </label>
-                </div>
               </div>
 
               {/* Decklist-level settings that shape the print run. Card
@@ -770,70 +754,17 @@ export default function PdfPage() {
             </div>
 
             <div>
-              {/* PROTOTYPE — ?variant=A|B|C swaps the Guides section for a
-                  throwaway layout (pdf-guides.prototype.tsx). Remove with it. */}
-              {guidesVariant === "A" && <GuidesVariantA seed={layout} />}
-              {guidesVariant === "B" && <GuidesVariantB seed={layout} />}
-              {guidesVariant === "C" && <GuidesVariantC seed={layout} />}
-              {!guidesVariant && (<>
-              {/* Guides, split by kind and by page kind. Card Guides are the
-                  small marks at each card's own trim corners; Page Guides are
-                  the lines running from the page edge in to the grid. They used
-                  to share one switch, which couldn't express the setting most
-                  duplex printers actually want: guides on the fronts you cut
-                  against, none on the backs that show. */}
-              {/* No top margin: this is the column's first heading and has to
-                  sit level with "Source images" in the other column. */}
-              <h3 style={{ marginBottom: 14 }}>
-                Guides{" "}
-                <span
-                  className="hint"
-                  title="Front pages are the side you cut against, so guides there are the ones you use. Back pages default to none — that ink lands on the visible side of the card."
-                >
-                  (?)
-                </span>
-              </h3>
-
-              <div className="field-group" data-tour="pdf-guides">
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={layout.hide_card_guides_front}
-                    onChange={(e) => updateLayout("hide_card_guides_front", e.target.checked)}
-                  />
-                  Hide card guides on front pages
-                </label>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={layout.hide_page_guides_front}
-                    onChange={(e) => updateLayout("hide_page_guides_front", e.target.checked)}
-                  />
-                  Hide page guides on front pages
-                </label>
-                {/* Still shown (not hidden) while back printing is off, so the
-                    settings stay comparable side by side — just inert, and said
-                    so rather than silently ignored. */}
-                <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-                  <input
-                    type="checkbox"
-                    disabled={!layout.back_printing}
-                    checked={layout.hide_card_guides_back}
-                    onChange={(e) => updateLayout("hide_card_guides_back", e.target.checked)}
-                  />
-                  Hide card guides on back pages
-                </label>
-                <label className="check" style={{ opacity: layout.back_printing ? 1 : 0.5 }}>
-                  <input
-                    type="checkbox"
-                    disabled={!layout.back_printing}
-                    checked={layout.hide_page_guides_back}
-                    onChange={(e) => updateLayout("hide_page_guides_back", e.target.checked)}
-                  />
-                  Hide page guides on back pages
-                </label>
-              </div>
-              </>)}
+              {/* Guides, split by kind and by page kind, each kind with its
+                  own style. They used to share one switch, which couldn't
+                  express the setting most duplex printers actually want:
+                  guides on the fronts you cut against, none on the backs
+                  that show. */}
+              <GuidesSection
+                values={settings}
+                onChange={(key, value) => setSettings((s) => ({ ...s, [key]: value }))}
+                backPrinting={settings.back_printing}
+                stylesSupported={guideStylesSupported}
+              />
 
               <h3 style={{ margin: "18px 0 14px" }}>Back printing</h3>
 
@@ -1415,8 +1346,6 @@ export default function PdfPage() {
           )}
         </div>
       </main>
-      {/* PROTOTYPE — Guides layout switcher (dev builds only). */}
-      <PrototypeSwitcher variants={GUIDE_VARIANTS} />
     </div>
   );
 }

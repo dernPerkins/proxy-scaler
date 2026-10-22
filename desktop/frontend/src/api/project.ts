@@ -15,6 +15,8 @@ import type {
   CutterOrientation,
   ExportImageFormat,
   FlipEdge,
+  GuideCorners,
+  GuideLine,
   InsetUnit,
   PageOrder,
   ReverseFill,
@@ -130,6 +132,17 @@ export interface ProjectSettings {
   // printing, or MPC Fill art picked automatically for every face (as
   // face_art — the printing still identifies the card).
   import_art_source: ImportArtSource;
+  // Guide styling (PDF tab). guide_width_pt / guide_length_mm are the Card
+  // Guides'; Page Guides have their own width. Colors are "#RRGGBB".
+  // page_guide_width_pt arrives as a number (Rust fills an unset one in
+  // with guide_width_pt) but is typed nullable for a preset or default
+  // that leaves it to follow the Card Guides.
+  page_guide_width_pt: number | null;
+  card_guide_color: string;
+  page_guide_color: string;
+  card_guide_line: GuideLine;
+  page_guide_line: GuideLine;
+  card_guide_corners: GuideCorners;
 }
 
 export type CustomUpscaleMode = "off" | "target" | "native";
