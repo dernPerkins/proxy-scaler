@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useProject } from "../context/ProjectContext";
 import {
   BUILTIN_PRESET_ID,
+  pickPresetFields,
+  presetHoldsSettings,
   type PresetKind,
   type SettingsPreset,
   type SettingsPresetStore,
@@ -19,6 +21,11 @@ import ModalOverlay from "./ModalOverlay";
 // picking it from the dropdown would, and it shows its settings. Default
 // (the built-in values) is always the first row; it can be chosen for new
 // projects but not renamed or deleted.
+//
+// A saved preset can be updated with the settings the tab had when this
+// dialog opened. Those, not the tab's live settings: selecting the row to
+// update already put the preset's own values on the tab, over the changes
+// the user came here to save.
 //
 // The table scrolls inside a capped height rather than growing the
 // dialog, so a long list never pushes the dialog past the window.
@@ -39,7 +46,10 @@ export default function PresetManagerDialog({
   onApply: (id: string) => void;
   onClose: () => void;
 }) {
-  const { settings } = useProject();
+  const { settings, setSettings } = useProject();
+  // The tab as it was when the dialog opened — what "Update" saves. See
+  // the comment at the top.
+  const [openedWith] = useState(settings);
   const [selectedId, setSelectedId] = useState<string | null>(activeId);
   const [deleting, setDeleting] = useState<SettingsPreset | null>(null);
   const [newName, setNewName] = useState("");
@@ -174,6 +184,13 @@ export default function PresetManagerDialog({
                 isNewProjectDefault={isNewProjectDefault(selected.id)}
                 onRename={(name) => store.rename(selected.id, name)}
                 onSetDefault={(on) => store.setDefault(on ? selected.id : null)}
+                upToDate={presetHoldsSettings(kind, selected, openedWith)}
+                onUpdate={() => {
+                  store.overwrite(selected.id, openedWith);
+                  // The preset now holds those settings; put them back on
+                  // the tab, which selecting the row replaced.
+                  setSettings((s) => ({ ...s, ...pickPresetFields(kind, openedWith) }));
+                }}
                 onDelete={() => setDeleting(selected)}
               />
             ) : (
@@ -217,12 +234,17 @@ function PresetSettings({
   isNewProjectDefault,
   onRename,
   onSetDefault,
+  upToDate,
+  onUpdate,
   onDelete,
 }: {
   preset: SettingsPreset;
   isNewProjectDefault: boolean;
   onRename: (name: string) => void;
   onSetDefault: (on: boolean) => void;
+  /** The preset already holds the settings Update would save. */
+  upToDate: boolean;
+  onUpdate: () => void;
   onDelete: () => void;
 }) {
   const builtin = preset.id === BUILTIN_PRESET_ID;
@@ -303,11 +325,28 @@ function PresetSettings({
       {builtin ? (
         <p className="hint">The built-in values. Choose this to have no preset on the tab.</p>
       ) : (
-        <div>
-          <button type="button" className="btn-sm btn-danger" onClick={onDelete}>
-            Delete preset
-          </button>
-        </div>
+        <>
+          <div>
+            <button
+              type="button"
+              className="btn-sm"
+              disabled={upToDate}
+              title={
+                upToDate
+                  ? "This preset already has the tab's settings"
+                  : "Replace this preset's settings with the ones the tab had when you opened Presets"
+              }
+              onClick={onUpdate}
+            >
+              Update With Tab Settings
+            </button>
+          </div>
+          <div>
+            <button type="button" className="btn-sm btn-danger" onClick={onDelete}>
+              Delete preset
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

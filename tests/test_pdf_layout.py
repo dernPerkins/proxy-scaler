@@ -355,6 +355,67 @@ def test_a_dashed_kind_is_dashed_alone_and_the_pattern_is_reset(dashed_kind) -> 
     assert rec.dash == (0.0, 0.0)
 
 
+@pytest.mark.parametrize("width_mm", [0.1, 0.26, 0.7])
+@pytest.mark.parametrize("length_mm", [0.5, 2.75, 5.0, 16.3, 41.0])
+def test_a_dashed_piece_starts_and_ends_on_a_dash(width_mm, length_mm) -> None:
+    """Dean's report: a dashed "+" looked cut short — the pattern ran out
+    partway into a gap. Fitted, every piece is a whole number of dashes:
+    n dashes and n - 1 gaps fill it exactly."""
+    from proxy_scaler.pdf_layout import _guide_dash_mm
+
+    dash, gap = _guide_dash_mm(width_mm, length_mm)
+    count = (length_mm + gap) / (dash + gap)
+    assert count == pytest.approx(round(count))
+    assert round(count) >= 1
+    assert gap == pytest.approx(0.8 * dash)
+
+
+def test_dashed_pieces_start_at_the_corner_and_the_grid() -> None:
+    """Every "+" arm is drawn out from its corner and every Page Guide out
+    from the grid, so the fitted pattern's first dash is at the point you
+    cut to and a "+" is symmetric about its corner."""
+    from proxy_scaler.pdf_layout import GuideLine, _draw_cut_marks
+
+    layout = _a4_portrait_layout(
+        card_guide_line=GuideLine.DASHED,
+        page_guide_line=GuideLine.DASHED,
+        card_guide_color=(1, 1, 1),
+        page_guide_color=(2, 2, 2),
+    )
+    rec = _StyleRecorder()
+    _draw_cut_marks(rec, layout)  # type: ignore[arg-type]
+    half = layout.guide_width_pt / 72 * 25.4 / 2
+    xs = _card_trim_edges(
+        layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm, layout.bled_card_w_mm
+    )
+    ys = _card_trim_edges(
+        layout.rows, layout.cell_h_mm, layout.bleed_mm, layout.margin_y_mm, layout.bled_card_h_mm
+    )
+    corners = {
+        (round(x - half if i % 2 == 0 else x + half, 6), round(y - half if j % 2 == 0 else y + half, 6))
+        for i, x in enumerate(xs)
+        for j, y in enumerate(ys)
+    }
+    arms = [c for c in rec.calls if c["color"] == (1, 1, 1)]
+    assert len(arms) == 4 * len(corners)
+    starts = {}
+    for arm in arms:
+        start = (round(arm["x1"], 6), round(arm["y1"], 6))
+        assert start in corners
+        starts[start] = starts.get(start, 0) + 1
+    assert set(starts.values()) == {4}
+
+    page = [c for c in rec.calls if c["color"] == (2, 2, 2)]
+    grid_x = (min(x for x, _ in corners), max(x for x, _ in corners))
+    grid_y = (min(y for _, y in corners), max(y for _, y in corners))
+    for line in page:
+        if line["x1"] == line["x2"]:  # vertical: starts on the grid's top or bottom edge
+            assert round(line["y1"], 6) in grid_y
+            assert abs(line["y2"] - line["y1"]) > 0
+        else:
+            assert round(line["x1"], 6) in grid_x
+
+
 def test_rounded_card_guides_hug_each_cards_corner() -> None:
     """Each arc is the quarter of a circle centred on its card's own
     rounded corner, facing away from the card, with radius R + half the

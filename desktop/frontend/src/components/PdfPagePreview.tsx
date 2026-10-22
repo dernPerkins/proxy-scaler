@@ -23,13 +23,21 @@ const DEFAULT_CARD_GUIDE_COLOR = "#00AA50";
 // follows.
 const CARD_CORNER_RADIUS_MM = 3.175;
 
-// SVG stroke-dasharray for a dashed guide, in px. Mirrors
-// pdf_layout.py::_guide_dash_mm, but floored in screen pixels too: at
-// preview scale the PDF's sub-millimetre dashes would blur into a solid
-// line, and showing that a guide IS dashed is the point here.
-function dashArrayPx(widthMm: number, strokePx: number, scale: number): string {
-  const dashMm = Math.max(0.75, 3 * widthMm);
-  const dash = Math.max(dashMm * scale, 3 * strokePx, 3);
+// SVG stroke-dasharray for one dashed guide piece `lengthMm` long, in px.
+// Mirrors pdf_layout.py::_guide_dash_mm: a target dash, then stretched or
+// shrunk so the piece holds a whole number of dashes and starts and ends
+// on one. The target is also floored in screen pixels — at preview scale
+// the PDF's sub-millimetre dashes would blur into a solid line, and
+// showing that a guide IS dashed is the point here — so on a small panel
+// a piece may get fewer, longer dashes than the PDF, but it still starts
+// and ends where the PDF's does. SVG restarts the pattern at every
+// subpath, as the PDF does at every stroke.
+const MIN_DASH_PX = 3;
+function dashArrayPx(widthMm: number, lengthMm: number, scale: number): string {
+  const target = Math.max(Math.max(0.75, 3 * widthMm) * scale, MIN_DASH_PX);
+  const length = lengthMm * scale;
+  const count = Math.max(1, Math.round((length + 0.8 * target) / (1.8 * target)));
+  const dash = length / (count + 0.8 * (count - 1));
   return `${dash} ${dash * 0.8}`;
 }
 
@@ -130,31 +138,49 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
     // Registration-mark keep-out zones clip the page guides exactly as the
     // PDF does; empty (no clipping) without a cutter or on an older server.
     const keepOut = preview.registration_keep_out ?? [];
-    let d = "";
-    const v = (x: number, seg: [number, number] | null) => {
-      if (seg) d += `M${x * scale} ${seg[0] * scale}V${seg[1] * scale}`;
+    // Each piece runs from the grid out toward the page edge (`from` is
+    // its grid end), like the PDF's, so its dashes start at the grid.
+    const pieces: { d: string; lengthMm: number }[] = [];
+    const v = (x: number, seg: [number, number] | null, from: number) => {
+      if (!seg) return;
+      const to = from === seg[0] ? seg[1] : seg[0];
+      pieces.push({ d: `M${x * scale} ${from * scale}V${to * scale}`, lengthMm: seg[1] - seg[0] });
     };
-    const h = (y: number, seg: [number, number] | null) => {
-      if (seg) d += `M${seg[0] * scale} ${y * scale}H${seg[1] * scale}`;
+    const h = (y: number, seg: [number, number] | null, from: number) => {
+      if (!seg) return;
+      const to = from === seg[0] ? seg[1] : seg[0];
+      pieces.push({ d: `M${from * scale} ${y * scale}H${to * scale}`, lengthMm: seg[1] - seg[0] });
     };
     for (const x of xs) {
-      v(x, clipEdgeSegment(0, gridY0, x - halfMm, x + halfMm, keepOut, true, true));
-      v(x, clipEdgeSegment(gridY1, preview.page_h_mm, x - halfMm, x + halfMm, keepOut, true, false));
+      const top = clipEdgeSegment(0, gridY0, x - halfMm, x + halfMm, keepOut, true, true);
+      v(x, top, top?.[1] ?? 0);
+      const bottom = clipEdgeSegment(gridY1, preview.page_h_mm, x - halfMm, x + halfMm, keepOut, true, false);
+      v(x, bottom, bottom?.[0] ?? 0);
     }
     for (const y of ys) {
-      h(y, clipEdgeSegment(0, gridX0, y - halfMm, y + halfMm, keepOut, false, true));
-      h(y, clipEdgeSegment(gridX1, preview.page_w_mm, y - halfMm, y + halfMm, keepOut, false, false));
+      const left = clipEdgeSegment(0, gridX0, y - halfMm, y + halfMm, keepOut, false, true);
+      h(y, left, left?.[1] ?? 0);
+      const right = clipEdgeSegment(gridX1, preview.page_w_mm, y - halfMm, y + halfMm, keepOut, false, false);
+      h(y, right, right?.[0] ?? 0);
     }
+    const stroke = preview.page_guide_color ?? DEFAULT_PAGE_GUIDE_COLOR;
     const px = strokePx(widthMm);
-    paths.push(
-      <path
-        key="page"
-        d={d}
-        stroke={preview.page_guide_color ?? DEFAULT_PAGE_GUIDE_COLOR}
-        strokeWidth={px}
-        strokeDasharray={preview.page_guide_line === "dashed" ? dashArrayPx(widthMm, px, scale) : undefined}
-      />,
-    );
+    if (preview.page_guide_line === "dashed") {
+      // Pieces differ in length, so each gets its own fitted pattern.
+      pieces.forEach((piece, i) =>
+        paths.push(
+          <path
+            key={`page-${i}`}
+            d={piece.d}
+            stroke={stroke}
+            strokeWidth={px}
+            strokeDasharray={dashArrayPx(widthMm, piece.lengthMm, scale)}
+          />,
+        ),
+      );
+    } else {
+      paths.push(<path key="page" d={pieces.map((p) => p.d).join("")} stroke={stroke} strokeWidth={px} />);
+    }
   }
 
   if (!preview.hide_card_guides) {
@@ -164,8 +190,12 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
     const ys = nudged(trimYs, halfMm);
     const len = preview.guide_length_mm;
     let d = "";
+    // The length one dashed piece is fitted over: a "+" arm, or a whole
+    // rounded mark from tip to tip.
+    let pieceMm = len;
     if (preview.card_guide_corners === "rounded") {
       const r = CARD_CORNER_RADIUS_MM + halfMm;
+      pieceMm = 2 * len + (Math.PI / 2) * r;
       xs.forEach((x, i) => {
         // +1 when the card lies to the right of / below this edge.
         const intoX = i % 2 === 0 ? 1 : -1;
@@ -175,9 +205,10 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
           // R + half so the stroke's inner edge is the card's curve.
           const cx = x + intoX * r;
           const cy = y + intoY * r;
-          // Tail along the top/bottom edge in to the arc, round the
-          // corner, then the tail down/up the side edge. Sweep is
-          // clockwise for the top-right and bottom-left corners.
+          // One subpath, so one dash pattern, tip to tip: the tail along
+          // the top/bottom edge in to the arc, round the corner, then the
+          // tail down/up the side edge. Sweep is clockwise for the
+          // top-right and bottom-left corners.
           const sweep = intoX * intoY > 0 ? 0 : 1;
           d +=
             `M${(cx + intoX * len) * scale} ${y * scale}H${cx * scale}` +
@@ -186,11 +217,13 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
         });
       });
     } else {
+      // Four arms out from each corner, so the dashes mirror about it.
       for (const x of xs) {
         for (const y of ys) {
+          const at = `M${x * scale} ${y * scale}`;
           d +=
-            `M${(x - len) * scale} ${y * scale}H${(x + len) * scale}` +
-            `M${x * scale} ${(y - len) * scale}V${(y + len) * scale}`;
+            `${at}H${(x - len) * scale}${at}H${(x + len) * scale}` +
+            `${at}V${(y - len) * scale}${at}V${(y + len) * scale}`;
         }
       }
     }
@@ -201,7 +234,7 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
         d={d}
         stroke={preview.card_guide_color ?? DEFAULT_CARD_GUIDE_COLOR}
         strokeWidth={px}
-        strokeDasharray={preview.card_guide_line === "dashed" ? dashArrayPx(widthMm, px, scale) : undefined}
+        strokeDasharray={preview.card_guide_line === "dashed" ? dashArrayPx(widthMm, pieceMm, scale) : undefined}
       />,
     );
   }

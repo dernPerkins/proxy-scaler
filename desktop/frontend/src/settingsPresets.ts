@@ -158,6 +158,22 @@ function sameValue(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
+/** Does `preset` store exactly this kind's fields of `settings` — every
+ *  one of them, at these values? Unlike matchingPresetId, a field the
+ *  preset predates counts as a difference: this asks whether saving
+ *  `settings` over the preset would change it. */
+export function presetHoldsSettings(
+  kind: PresetKind,
+  preset: SettingsPreset,
+  settings: ProjectSettings,
+): boolean {
+  return Object.entries(pickPresetFields(kind, settings)).every(
+    ([key, value]) =>
+      key in preset.settings &&
+      sameValue(preset.settings[key as keyof ProjectSettings], value),
+  );
+}
+
 /** The preset the current settings are an exact match for, if any — what
  *  the dropdown shows as selected. Fields a preset doesn't store are not
  *  compared. */
@@ -248,6 +264,17 @@ export function useSettingsPresets(kind: PresetKind) {
     return preset;
   }
 
+  /** Replaces a preset's settings with this kind's fields of `settings`,
+   *  keeping its name and whether it is the default. Also how a preset
+   *  saved before a field existed picks that field up. */
+  function overwrite(id: string, settings: ProjectSettings) {
+    const fields = pickPresetFields(kind, settings);
+    update((current) => ({
+      ...current,
+      presets: current.presets.map((p) => (p.id === id ? { ...p, settings: fields } : p)),
+    }));
+  }
+
   /** A blank name is ignored, as the project name field ignores one. */
   function rename(id: string, name: string) {
     const trimmed = name.trim();
@@ -277,6 +304,7 @@ export function useSettingsPresets(kind: PresetKind) {
     defaultId: store.default_id,
     isLoading: query.isLoading,
     create,
+    overwrite,
     rename,
     remove,
     setDefault,

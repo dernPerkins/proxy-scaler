@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -555,13 +556,24 @@ def _card_trim_edges(
     return edges
 
 
-def _guide_dash_mm(width_mm: float) -> tuple[float, float]:
-    """(dash, gap) for a dashed guide of this stroke width. Scaled with the
-    stroke so a heavy line still reads as dashed, but floored so a hairline
-    still gets dashes long enough to see — a 2.75mm arm carries about
-    three of them at the default width."""
-    dash = max(0.75, 3 * width_mm)
-    return dash, dash * 0.8
+def _guide_dash_mm(width_mm: float, length_mm: float) -> tuple[float, float]:
+    """(dash, gap) for a dashed guide piece of this stroke width and length.
+
+    The target dash scales with the stroke so a heavy line still reads as
+    dashed, floored so a hairline still gets dashes long enough to see;
+    the gap is 0.8 of the dash. Then both are stretched or shrunk a little
+    so the piece holds a whole number of dashes: it starts on a dash and
+    ends on one. Unfitted, a pattern runs out wherever it happens to, and a
+    piece that ends partway into a gap reads as cut short. Every piece is
+    drawn starting from the card corner (or the grid edge), so the dash
+    that is always there is the one at the point you cut to.
+
+    A piece too short for one dash and a gap is a single dash — solid."""
+    target = max(0.75, 3 * width_mm)
+    ratio = 0.8
+    count = max(1, round((length_mm + ratio * target) / ((1 + ratio) * target)))
+    dash = length_mm / (count + ratio * (count - 1))
+    return dash, dash * ratio
 
 
 def _draw_cut_marks(
@@ -584,6 +596,12 @@ def _draw_cut_marks(
     (PageLayout). Card Guides are a "+" per corner, or with
     GuideCorners.ROUNDED a quarter arc that hugs the card's rounded corner
     plus a straight tail of guide_length_mm along each edge.
+
+    A dashed guide's pattern is fitted per piece (see _guide_dash_mm) and
+    every piece is drawn outward from the point it marks: a "+" as four
+    arms from its corner, a Page Guide from the grid out to the page edge,
+    so the pattern is symmetric about the corner and always has ink at it.
+    A rounded mark is one piece from tip to tip, round its arc.
 
     Every guide is nudged OUTWARD from its card by half its own stroke
     width. A stroke centered on the trim coordinate puts half its ink
@@ -613,11 +631,26 @@ def _draw_cut_marks(
     def nudged(edges: list[float], half: float) -> list[float]:
         return [e - half if i % 2 == 0 else e + half for i, e in enumerate(edges)]
 
-    def dashed(line: GuideLine, width_mm: float) -> bool:
+    # The dash pattern in force, so pieces of equal length (every arm of
+    # every "+") share one set_dash_pattern call instead of each making one.
+    pattern: list[tuple[float, float, float] | None] = [None]
+
+    def dash_for(
+        line: GuideLine, width_mm: float, length_mm: float, phase_mm: float = 0.0
+    ) -> None:
+        """Fit the pattern to a piece `length_mm` long; `phase_mm` starts
+        this stroke that far into it, for a piece that continues another."""
         if line is not GuideLine.DASHED:
-            return False
-        pdf.set_dash_pattern(*_guide_dash_mm(width_mm))
-        return True
+            return
+        wanted = (*_guide_dash_mm(width_mm, length_mm), phase_mm)
+        if wanted != pattern[0]:
+            pdf.set_dash_pattern(*wanted)
+            pattern[0] = wanted
+
+    def end_dashes() -> None:
+        if pattern[0] is not None:
+            pdf.set_dash_pattern()
+            pattern[0] = None
 
     if page_guides:
         width_mm = layout.page_guide_width_pt / 72 * MM_PER_IN
@@ -627,46 +660,64 @@ def _draw_cut_marks(
         grid_y0, grid_y1 = ys[0], ys[-1]
         pdf.set_line_width(width_mm)
         pdf.set_draw_color(*layout.page_guide_color)
-        is_dashed = dashed(layout.page_guide_line, width_mm)
+        line_style = layout.page_guide_line
+
+        def page_line(x1: float, y1: float, x2: float, y2: float) -> None:
+            """From (x1, y1) at the grid out to (x2, y2) toward the edge."""
+            dash_for(line_style, width_mm, abs(x2 - x1) + abs(y2 - y1))
+            pdf.line(x1, y1, x2, y2)
+
         # start < end is the old "grid edge inside the page" test, and the
-        # clip is a no-op with no keep-out zones.
+        # clip is a no-op with no keep-out zones. Each segment runs from
+        # the grid side out, whichever end the clip trimmed.
         for x in xs:
             seg = _clip_edge_segment(
                 0.0, grid_y0, x - half, x + half, keep_out, vertical=True, from_edge=True
             )
             if seg:
-                pdf.line(x, seg[0], x, seg[1])
+                page_line(x, seg[1], x, seg[0])
             seg = _clip_edge_segment(
                 grid_y1, layout.page_h_mm, x - half, x + half, keep_out,
                 vertical=True, from_edge=False,
             )
             if seg:
-                pdf.line(x, seg[0], x, seg[1])
+                page_line(x, seg[0], x, seg[1])
         for y in ys:
             seg = _clip_edge_segment(
                 0.0, grid_x0, y - half, y + half, keep_out, vertical=False, from_edge=True
             )
             if seg:
-                pdf.line(seg[0], y, seg[1], y)
+                page_line(seg[1], y, seg[0], y)
             seg = _clip_edge_segment(
                 grid_x1, layout.page_w_mm, y - half, y + half, keep_out,
                 vertical=False, from_edge=False,
             )
             if seg:
-                pdf.line(seg[0], y, seg[1], y)
-        if is_dashed:
-            pdf.set_dash_pattern()
+                page_line(seg[0], y, seg[1], y)
+        end_dashes()
 
     if card_guides:
         width_mm = layout.guide_width_pt / 72 * MM_PER_IN
         half = width_mm / 2
         xs, ys = nudged(trim_xs, half), nudged(trim_ys, half)
         length = layout.guide_length_mm
+        line_style = layout.card_guide_line
         pdf.set_line_width(width_mm)
         pdf.set_draw_color(*layout.card_guide_color)
-        is_dashed = dashed(layout.card_guide_line, width_mm)
         if layout.card_guide_corners is GuideCorners.ROUNDED:
             r = CARD_CORNER_RADIUS_MM
+            # One rounded mark is one dashed piece — tail, arc, tail — with
+            # the pattern fitted over its whole length, so the dashes run
+            # evenly round the corner instead of doubling up where an arc's
+            # last dash meets a tail's first. The pieces are drawn
+            # separately, so each picks the pattern up where it falls:
+            # tails from their tips inward (phase 0), arcs one tail-length
+            # in. A pattern fitted end to end on a dash reads the same from
+            # either end, and the arc sits in its middle, so which way
+            # fpdf2 strokes the arc doesn't matter.
+            arc_mm = math.pi / 2 * (r + half)
+            mark_mm = 2 * length + arc_mm
+            dash_for(line_style, width_mm, mark_mm, phase_mm=length)
             for i, x in enumerate(xs):
                 # +1 when the card lies to the right of / below this edge.
                 into_x = 1 if i % 2 == 0 else -1
@@ -678,15 +729,27 @@ def _draw_cut_marks(
                     cx = x + into_x * (r + half)
                     cy = y + into_y * (r + half)
                     _corner_arc(pdf, cx, cy, r + half, into_x, into_y)
-                    pdf.line(cx, y, cx + into_x * length, y)
-                    pdf.line(x, cy, x, cy + into_y * length)
+            dash_for(line_style, width_mm, mark_mm)
+            for i, x in enumerate(xs):
+                into_x = 1 if i % 2 == 0 else -1
+                for j, y in enumerate(ys):
+                    into_y = 1 if j % 2 == 0 else -1
+                    cx = x + into_x * (r + half)
+                    cy = y + into_y * (r + half)
+                    # Each tail runs along its edge from where the arc
+                    # meets it; drawn tip first, so its pattern starts on
+                    # the tip's dash.
+                    pdf.line(cx + into_x * length, y, cx, y)
+                    pdf.line(x, cy + into_y * length, x, cy)
         else:
+            dash_for(line_style, width_mm, length)
             for x in xs:
                 for y in ys:
-                    pdf.line(x - length, y, x + length, y)
-                    pdf.line(x, y - length, x, y + length)
-        if is_dashed:
-            pdf.set_dash_pattern()
+                    pdf.line(x, y, x - length, y)
+                    pdf.line(x, y, x + length, y)
+                    pdf.line(x, y, x, y - length)
+                    pdf.line(x, y, x, y + length)
+        end_dashes()
 
 
 def _corner_arc(
