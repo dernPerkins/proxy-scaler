@@ -576,7 +576,14 @@ button:disabled {
 .app {
   max-width: 1500px;
   margin: 0 auto;
-  padding: 18px 24px 56px;
+  padding: 18px 24px 0;
+}
+/* The page's bottom space sits inside it, not under it: a tab's .layout
+   must reach the window's bottom edge, or its sticky sidebar column stops
+   that far short of it when scrolled to the end. */
+.app > :last-child:not(.layout),
+.layout > .content {
+  padding-bottom: 56px;
 }
 
 .panel {
@@ -656,18 +663,14 @@ button:disabled {
 
 /* ---------- dropzone ---------- */
 
-/* The Backs tab's upload affordance, sized and shaped to sit in the
-   library grid as its first tile — same card aspect as a back, so the row
-   reads as "your backs, and a slot to add another" rather than as a
-   separate control bolted on above them.
-
-   Rendered as a <button> rather than a styled <div>: it is genuinely a
+/* The Customs and Backs tabs' upload affordance, in the sidebar's Add
+   panel (LibraryAddPanel). Rendered as a <button> rather than a styled <div>: it is genuinely a
    control, and that gets keyboard focus and Enter/Space for free instead
    of needing tabIndex/onKeyDown bolted on to imitate them.
 
    `.is-dragging` is driven by a drag anywhere over the pane, not just
-   over this tile, so dropping slightly wide of it still works and still
-   looks like it will. */
+   over this zone, so dropping anywhere still works and looks like it
+   will. */
 .dropzone {
   display: flex;
   flex-direction: column;
@@ -681,10 +684,6 @@ button:disabled {
   color: var(--text-muted);
   cursor: pointer;
   text-align: center;
-  /* Same card proportions as the tiles beside it. A BackTile's own label
-     sits below its image box, so the dropzone carries a little extra
-     height to line its bottom edge up with theirs. */
-  aspect-ratio: 63 / 88;
   transition:
     border-color 120ms ease,
     background 120ms ease;
@@ -697,6 +696,21 @@ button:disabled {
 .dropzone:disabled {
   cursor: default;
   opacity: 0.7;
+}
+/* The sidebar panel it sits in, above the selected image's settings. */
+.library-add {
+  margin-bottom: 14px;
+}
+.library-add-drop {
+  width: 100%;
+  min-height: 112px;
+  margin-bottom: 10px;
+}
+/* The grid, while a file is dragged over the pane: where it will land. */
+.library-drop-outline {
+  outline: 2px dashed var(--accent);
+  outline-offset: 6px;
+  border-radius: var(--radius-lg);
 }
 .dropzone-icon {
   /* currentColor throughout the SVG, so the icon follows the same token
@@ -1899,16 +1913,6 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 220px;
-}
-/* The "From MPC Fill" tile beside the Customs/Backs drop zones. */
-.mpc-library-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 120px;
-  text-align: center;
 }
 .mpc-provenance {
   font-size: 12px;

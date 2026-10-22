@@ -23,7 +23,7 @@
 // declaration, and the same settings as the sidebar beside it. Viewing a
 // back does not select it: selecting changes what this project prints
 // with, and looking should never do that.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
@@ -54,39 +54,16 @@ import {
 import { UploadCanceled } from "../uploadProgress";
 import { errorText, toast } from "../toasts";
 import { blurOnEnter } from "../inputKeys";
-import { MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
+import { readPickedImage } from "../imageUpload";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import SidebarColumn from "../components/SidebarColumn";
+import LibraryAddPanel from "../components/LibraryAddPanel";
 
 // Matches proxy_scaler/backs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation — below this, a back is being asked to cover a
 // 63×88mm card with less detail than a decent printer resolves.
 const LOW_DPI = 300;
-
-/* Inline rather than an asset or an icon package: it is one drawing used
-   in one place, and `currentColor` lets it follow the dropzone's own
-   hover/drag state in both themes without a second copy for dark mode. */
-function UploadIcon() {
-  return (
-    <svg
-      className="dropzone-icon"
-      width="56"
-      height="56"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M20.4 14.5A4 4 0 0 0 18 7.5h-1.3A6 6 0 1 0 6 12.9" />
-      <path d="M12 12v9" />
-      <path d="m8.5 15.5 3.5-3.5 3.5 3.5" />
-    </svg>
-  );
-}
 
 type BleedChange = { id: number; includesBleed: boolean; bleedMm: number };
 
@@ -358,7 +335,6 @@ export default function BacksPage() {
   const { settings: upscaleSettings, update: updateUpscaleSettings } =
     useLibraryUpscaleSettings(modelsQuery.data);
 
-  const fileInput = useRef<HTMLInputElement>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [viewingId, setViewingId] = useState<number | null>(null);
   const [mpcOpen, setMpcOpen] = useState(false);
@@ -487,9 +463,33 @@ export default function BacksPage() {
     setPendingDelete({ back, uses });
   }
 
+  const mpcDisabledReason = serverUnavailable
+    ? "Generation server is unreachable"
+    : !mpcSupported
+      ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
+      : null;
+
   return (
     <div className="layout">
       <SidebarColumn>
+        <LibraryAddPanel
+          title="Add Custom Backs"
+          accept="image/png,image/jpeg,image/webp"
+          dragging={dragging}
+          busyLabel={addMutation.isPending ? "Adding…" : null}
+          tour="back-dropzone"
+          onFiles={(files) => addMutation.mutate(files[0])}
+        >
+          <button
+            type="button"
+            className="btn-sm btn-primary btn-block"
+            disabled={mpcDisabledReason != null}
+            title={mpcDisabledReason ?? "Browse community card backs on MPC Fill"}
+            onClick={() => setMpcOpen(true)}
+          >
+            Search MPC Fill Backs
+          </button>
+        </LibraryAddPanel>
         <aside className="sidebar panel">
           <h3 style={{ marginBottom: 14 }}>Back image</h3>
           {selected == null ? (
@@ -562,10 +562,10 @@ export default function BacksPage() {
 
       {/*
         Dropping a file works anywhere on this pane, not only on the
-        dropzone — the dropzone is the affordance, the whole pane is the
-        target, and dropping slightly wide of it still works. Clicking it
-        opens the picker instead. All three land in one code path, because
-        a drop hands us the same `File` the input does.
+        sidebar's dropzone — the dropzone is the affordance, the whole pane
+        is the target. Clicking it opens the picker instead. Both land in
+        one code path, because a drop hands us the same `File` the input
+        does.
 
         This only receives events because the main window sets
         `dragDropEnabled: false` (tauri.conf.json). Tauri v2 defaults that
@@ -598,107 +598,34 @@ export default function BacksPage() {
           project on this machine; turn back printing on from the PDF tab.
         </p>
 
-        {/* The dropzone is the grid's first tile rather than a control
-            above it: card-shaped and card-sized, so the row reads as
-            "your backs, and a slot to add another". It is also why the
-            empty state needs no separate copy — an empty library is just
-            the grid with one tile in it. */}
-        {/* No alignItems override: grid items stretch to their row by
-            default, which is what makes the dropzone exactly as tall as
-            the tiles beside it. A BackTile is a card-shaped image box
-            plus two lines of label, so its height can't be guessed from
-            an aspect-ratio alone — letting the row decide is the only
-            thing that stays right when a label wraps. The dropzone's own
-            aspect-ratio still governs when it is the only tile there. */}
-        <div
-          style={{
-            marginTop: 16,
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
-            gap: 12,
-          }}
-        >
-          <button
-            type="button"
-            className={`dropzone${dragging ? " is-dragging" : ""}`}
-            data-tour="back-dropzone"
-            onClick={() => fileInput.current?.click()}
-            disabled={addMutation.isPending}
-          >
-            <UploadIcon />
-            <span className="dropzone-title">
-              {addMutation.isPending ? (
-                "Adding…"
-              ) : (
-                <>
-                  Drag and drop
-                  <br />
-                  or
-                  <br />
-                  click here
-                </>
-              )}
-            </span>
-            <span className="dropzone-hint">
-              PNG, JPEG or WebP
-              <br />
-              up to {MAX_UPLOAD_MB}MB
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className="dropzone mpc-library-tile"
-            disabled={serverUnavailable || !mpcSupported}
-            title={
-              serverUnavailable
-                ? "Generation server is unreachable"
-                : !mpcSupported
-                  ? `Needs generation server v${MPC_FILL_MIN_SERVER_VERSION} or later`
-                  : "Browse community card backs on MPC Fill"
-            }
-            onClick={() => setMpcOpen(true)}
-          >
-            <span className="dropzone-title">From MPC Fill</span>
-            <span className="dropzone-hint">Browse community card backs</span>
-          </button>
-
-          {/* Lives inside the grid so it can never be orphaned from the
-              button that clicks it again — it was moved out once, which
-              silently made the whole tile do nothing. */}
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              // Reset first: picking the same file twice in a row fires
-              // no change event otherwise, which reads as the control
-              // being broken.
-              e.target.value = "";
-              if (file) addMutation.mutate(file);
-            }}
-          />
-
-          {backs.map((back) => (
-            <BackTile
-              key={back.id}
-              back={back}
-              selected={back.id === settings.back_image_id}
-              isDefault={defaultQuery.data === back.id}
-              cardsHere={cards.filter((c) => c.back_mode === "image" && c.back_image_id === back.id).length}
-              onSelect={() => setSettings((s) => ({ ...s, back_image_id: back.id }))}
-              onView={() => setViewingId(back.id)}
-            />
-          ))}
-        </div>
-
-        {backs.length === 0 && (
-          <p className="hint" style={{ marginTop: 12 }}>
-            Whatever you add is shared with every project on this machine, not just
-            this one.
+        {backs.length === 0 ? (
+          <p className="hint" style={{ marginTop: 16 }}>
+            No backs yet. Add one from the sidebar, or drop an image anywhere here.
           </p>
+        ) : (
+          <div
+            className={dragging ? "library-drop-outline" : undefined}
+            style={{
+              marginTop: 16,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))",
+              gap: 12,
+            }}
+          >
+            {backs.map((back) => (
+              <BackTile
+                key={back.id}
+                back={back}
+                selected={back.id === settings.back_image_id}
+                isDefault={defaultQuery.data === back.id}
+                cardsHere={
+                  cards.filter((c) => c.back_mode === "image" && c.back_image_id === back.id).length
+                }
+                onSelect={() => setSettings((s) => ({ ...s, back_image_id: back.id }))}
+                onView={() => setViewingId(back.id)}
+              />
+            ))}
+          </div>
         )}
       </main>
 

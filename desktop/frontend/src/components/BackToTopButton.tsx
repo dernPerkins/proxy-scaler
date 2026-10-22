@@ -1,5 +1,6 @@
 // A round "back to top" button in the bottom-right corner, shown once the
-// window has scrolled well down a long page (the MPC Fill tab's library).
+// window has scrolled well down a long page (the Decklist, the Customs and
+// MPC Fill libraries).
 // Chosen from a prototype (.scratch/mpcfill-art-picker/prototype-back-to-top/).
 //
 // It shares that corner with the toast stack, so while it is showing it

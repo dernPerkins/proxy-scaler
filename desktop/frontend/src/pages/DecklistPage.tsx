@@ -89,6 +89,7 @@ import {
 import type { Pick, PickerOpenRequest } from "../components/PrintingPicker";
 import DeckArtWalk, { type WalkApply } from "../components/DeckArtWalk";
 import SidebarColumn from "../components/SidebarColumn";
+import BackToTopButton from "../components/BackToTopButton";
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -1212,6 +1213,7 @@ export default function DecklistPage() {
           handleCustomFiles(e.dataTransfer.files);
         }}
       >
+        <BackToTopButton />
         <h2>Decklist</h2>
 
         {/* The import box is unconditional: with no project yet, importing

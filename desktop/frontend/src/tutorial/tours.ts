@@ -223,7 +223,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "custom-dropzone",
         title: "Add images",
-        body: "Drop PNG, JPEG or WebP files here, or click to browse. Each image becomes a card named after its file.",
+        body: "Drop PNG, JPEG or WebP files here or anywhere on the page, or click to browse. Each image becomes a card named after its file.",
         placement: "right",
       },
       {
@@ -302,7 +302,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "back-dropzone",
         title: "Add a back",
-        body: "Drop an image here or click to browse. Your backs are shared across every project.",
+        body: "Drop an image here or anywhere on the page, click to browse, or search MPC Fill for community backs. Your backs are shared across every project.",
         placement: "right",
       },
       {

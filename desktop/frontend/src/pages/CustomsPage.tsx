@@ -74,10 +74,10 @@ import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStor
 import { customImageRefs, getProjectSnapshot, registerCustomCards } from "../syncCustoms";
 import {
   ACCEPTED_IMAGE_TYPES,
-  MAX_UPLOAD_MB,
   addImagesSequentially,
 } from "../imageUpload";
 import SidebarColumn from "../components/SidebarColumn";
+import LibraryAddPanel from "../components/LibraryAddPanel";
 
 // The tile selected when this page was last on screen. Routes unmount
 // their page on every tab switch, so plain component state would put the
@@ -101,27 +101,6 @@ export type LibraryView = "uploads" | "mpc";
 // Matches proxy_scaler/customs.py's MIN_COMFORTABLE_DPI and the Rust
 // source_dpi calculation.
 const LOW_DPI = 300;
-
-function UploadIcon() {
-  return (
-    <svg
-      className="dropzone-icon"
-      width="56"
-      height="56"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M20.4 14.5A4 4 0 0 0 18 7.5h-1.3A6 6 0 1 0 6 12.9" />
-      <path d="M12 12v9" />
-      <path d="m8.5 15.5 3.5-3.5 3.5 3.5" />
-    </svg>
-  );
-}
 
 type BleedChange = { id: number; includesBleed: boolean; bleedMm: number };
 
@@ -256,6 +235,12 @@ function CustomTile({
       tabIndex={0}
       data-tour={selected ? "custom-tile" : undefined}
       onClick={onSelect}
+      // Like the magnifier; a double-click on one of the tile's own
+      // buttons (a fast Add) is that button's.
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).closest("button")) return;
+        onView();
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -359,7 +344,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
   const { settings: upscaleSettings, update: updateUpscaleSettings } =
     useLibraryUpscaleSettings(modelsQuery.data);
 
-  const fileInput = useRef<HTMLInputElement>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedId, setSelectedIdState] = useState<number | null>(lastSelectedId[view]);
@@ -613,6 +597,23 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
   return (
     <div className="layout">
       <SidebarColumn>
+        {view === "uploads" && (
+          <LibraryAddPanel
+            title="Add Custom Cards"
+            accept={ACCEPTED_IMAGE_TYPES}
+            multiple
+            dragging={dragging}
+            busyLabel={
+              addMutation.isPending
+                ? progress
+                  ? `Adding ${progress.done + 1} of ${progress.total}…`
+                  : "Adding…"
+                : null
+            }
+            tour="custom-dropzone"
+            onFiles={(files) => addMutation.mutate(files)}
+          />
+        )}
         <aside className="sidebar panel">
           <h3 style={{ marginBottom: 14 }}>{view === "mpc" ? "MPC Fill Art" : "Custom card"}</h3>
           {selected == null ? (
@@ -721,6 +722,7 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
           </>
         )}
 
+        <BackToTopButton />
         {view === "mpc" ? (
           <>
             {/* Sticks to the top as the grid scrolls, so search and the
@@ -735,7 +737,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
                 searchDisabledReason={mpcSearchDisabledReason}
               />
             </div>
-            <BackToTopButton />
             {mpcShown.length === 0 && !pendingTiles ? (
               <p className="hint" style={{ marginTop: 8 }}>
                 {mpcItems.length === 0 ? (
@@ -768,8 +769,13 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
               </div>
             )}
           </>
+        ) : images.length === 0 ? (
+          <p className="hint" style={{ marginTop: 16 }}>
+            No custom cards yet. Add images from the sidebar, or drop them anywhere here.
+          </p>
         ) : (
           <div
+            className={dragging ? "library-drop-outline" : undefined}
             style={{
               marginTop: 16,
               display: "grid",
@@ -777,53 +783,6 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
               gap: 12,
             }}
           >
-            <button
-              type="button"
-              className={`dropzone${dragging ? " is-dragging" : ""}`}
-              data-tour="custom-dropzone"
-              onClick={() => fileInput.current?.click()}
-              disabled={addMutation.isPending}
-            >
-              <UploadIcon />
-              <span className="dropzone-title">
-                {addMutation.isPending && progress ? (
-                  `Adding ${progress.done + 1} of ${progress.total}…`
-                ) : (
-                  <>
-                    Drag and drop
-                    <br />
-                    or
-                    <br />
-                    click here
-                  </>
-                )}
-              </span>
-              <span className="dropzone-hint">
-                PNG, JPEG or WebP
-                <br />
-                up to {MAX_UPLOAD_MB}MB each
-              </span>
-            </button>
-
-            {/* Inside the grid so it can never be orphaned from the button
-                that clicks it — moving it out once silently made the whole
-                tile do nothing (see BacksPage). */}
-            <input
-              ref={fileInput}
-              type="file"
-              multiple
-              accept={ACCEPTED_IMAGE_TYPES}
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const files = e.target.files;
-                // Reset first: picking the same file twice in a row fires no
-                // change event otherwise, which reads as a broken control.
-                const copy = files ? Array.from(files) : [];
-                e.target.value = "";
-                if (copy.length) addMutation.mutate(copy);
-              }}
-            />
-
             {images.map(renderTile)}
           </div>
         )}
