@@ -2,10 +2,10 @@
 // at a time, with ‹ Prev / Next › (or Alt+← / Alt+→) through the Decklist
 // in its current sort. Selecting a printing or MPC Fill art chooses it for
 // that card. Nothing is saved or downloaded while the walk is open, so
-// browsing past a card costs no downloads: Done, Esc, a click outside, the
-// preview's button or a double-click close it and apply every card's
-// choice. Picking the card's own printing on the Scryfall tab puts it back
-// on Scryfall art.
+// browsing past a card costs no downloads: Confirm, the preview's button
+// or a double-click close it and apply every card's choice; Close, Esc or
+// a click outside close it applying nothing. Picking the card's own
+// printing on the Scryfall tab puts it back on Scryfall art.
 // Chosen from a prototype (.scratch/mpcfill-art-picker/prototype-deck-walk/).
 import { useEffect, useState } from "react";
 import type { CardRow } from "../api/project";
@@ -149,8 +149,16 @@ export default function DeckArtWalk(props: {
           Next ›
         </button>
       </span>
-      <button type="button" className="btn-sm btn-primary" onClick={() => finish(staged)}>
-        Done
+      <button
+        type="button"
+        className="btn-sm btn-primary"
+        title="Apply your choices for every card and close"
+        onClick={() => finish(staged)}
+      >
+        Confirm
+      </button>
+      <button type="button" className="btn-sm" title="Close without applying (Esc)" onClick={props.onClose}>
+        Close
       </button>
     </>
   );
@@ -162,7 +170,8 @@ export default function DeckArtWalk(props: {
       card={card}
       preferredLang={preferredLang}
       initial={request}
-      onClose={() => finish(staged)}
+      // Esc and a click outside are Close: nothing applied.
+      onClose={props.onClose}
       onSourceChange={setSource}
       walk={{
         nav,

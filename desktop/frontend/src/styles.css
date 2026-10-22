@@ -2005,9 +2005,11 @@ button:disabled {
   font-size: 11px;
 }
 /* The change-printing modal's Scryfall | MPC Fill (and Front | Back)
-   switches, at the head's left; its buttons stay on the right. */
+   switches, at the head's left, with the tutorial's ? beside them; its
+   buttons stay on the right. */
 .picker-head-left {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-right: auto;
 }

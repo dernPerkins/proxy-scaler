@@ -683,19 +683,24 @@ export function PrintingGridModal(props: {
     );
     return (v: CardVariant) => v.lang === defaultLang || !covered.has(slotOf(v));
   }, [variants, defaultLang]);
+  // The default view also always lists the card's own printing and the
+  // one chosen for it in the walk, whatever their language, so reopening
+  // the card (Prev / Next) can land on it.
+  const stagedId = walk.staged?.printing?.scryfallId ?? null;
   const shown = useMemo(
     () =>
       sortVariants(
         variants.filter(
           (v) =>
             (langDefault
-              ? shownByDefault(v)
+              ? shownByDefault(v) || v.scryfall_id === stagedId || isCurrent(v)
               : effectiveLangs.size === 0 || effectiveLangs.has(v.lang)) &&
             (setFilter.size === 0 || setFilter.has(v.set_code)),
         ),
         sortMode,
       ),
-    [variants, langDefault, shownByDefault, effectiveLangs, setFilter, sortMode],
+    // isCurrent reads only props that are fixed while the grid is open.
+    [variants, langDefault, shownByDefault, stagedId, effectiveLangs, setFilter, sortMode],
   );
 
   function pickOf(v: CardVariant): Pick {
@@ -713,9 +718,22 @@ export function PrintingGridModal(props: {
   function choiceOf(v: CardVariant): WalkChoice {
     return { kind: "printing", pick: isCurrent(v) ? null : pickOf(v) };
   }
-  // The walk's choice for this card: a staged printing, else its own.
+  // The walk's choice for this card: a staged printing, else its own —
+  // unless a face prints MPC Fill art (the card's own, or art chosen in
+  // this walk). Then no Scryfall printing is chosen: its own printing
+  // only opens selected, and picking it is what puts it back on Scryfall
+  // art (DeckArtWalk.withChoice).
   const chosenId = walk.staged?.printing?.scryfallId ?? null;
-  const isChosen = (v: CardVariant) => (chosenId ? v.scryfall_id === chosenId : isCurrent(v));
+  const printsMpcArt = useMemo(() => {
+    const faces = new Set((card.face_art ?? []).map((fa) => fa.face));
+    for (const [face, { art }] of walk.staged?.faces ?? []) {
+      if (art) faces.add(face);
+      else faces.delete(face);
+    }
+    return faces.size > 0;
+  }, [card.face_art, walk.staged]);
+  const isChosen = (v: CardVariant) =>
+    chosenId ? v.scryfall_id === chosenId : !printsMpcArt && isCurrent(v);
 
   // Which face each double-faced tile shows. Lifted here so the tile and
   // the preview pane flip together.
@@ -763,10 +781,14 @@ export function PrintingGridModal(props: {
   useEffect(() => {
     if (placedInitialFocus.current || shown.length === 0) return;
     placedInitialFocus.current = true;
-    const index = Math.max(0, shown.findIndex(isChosen));
+    // The chosen printing, else the card's own (chosen or not: see
+    // printsMpcArt), else the first.
+    const chosen = shown.findIndex(isChosen);
+    const index = Math.max(0, chosen >= 0 ? chosen : shown.findIndex(isCurrent));
     setFocusIndex(index);
     setSelectedId(shown[index].scryfall_id);
-    // isChosen reads only what is fixed until a selection changes it.
+    // isChosen and isCurrent read only what is fixed until a selection
+    // changes it.
   }, [shown]);
   // The scroll waits for that selection to render: the preview pane it
   // mounts narrows the grid, reflowing every tile, so scrolling any
@@ -905,9 +927,11 @@ export function PrintingGridModal(props: {
 
         {/* No title: the card's name is on the preview. */}
         <div className="modal-head printing-grid-head">
-          {sourceSwitch && <span className="picker-head-left">{sourceSwitch}</span>}
-          {/* The tab bar's ? is behind this modal; replay from here. */}
-          <TutorialButton tour="decklist-picker" />
+          <span className="picker-head-left">
+            {sourceSwitch}
+            {/* The tab bar's ? is behind this modal; replay from here. */}
+            <TutorialButton tour="decklist-picker" />
+          </span>
           {walk.nav}
         </div>
 

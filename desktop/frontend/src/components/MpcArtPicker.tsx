@@ -550,6 +550,35 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
     // Only when the list itself changes.
   }, [shown.length === 0 ? null : shown[0].drive_id]);
 
+  // Reopened on a card whose art was chosen further down the results (the
+  // deck walk's Prev / Next), the grid opens on that art: load the pages
+  // through it, select it once it arrives, then scroll it into view —
+  // once per result list. Selection first and the scroll on the next
+  // pass: selecting mounts the preview pane, which narrows the grid and
+  // reflows every tile, so scrolling in the same pass lands on the wrong
+  // row (PrintingPicker does the same).
+  useEffect(() => {
+    const at = currentDriveId ? ids.indexOf(currentDriveId) : -1;
+    if (at >= pages * PAGE) setPages(Math.ceil((at + 1) / PAGE));
+    // Only to reach the chosen art; scrolling pages in further is the
+    // sentinel's job.
+  }, [ids, currentDriveId]);
+  const placedFor = useRef<unknown>(null);
+  useLayoutEffect(() => {
+    if (!currentDriveId || placedFor.current === search.data) return;
+    const index = shown.findIndex((c) => c.drive_id === currentDriveId);
+    if (index < 0) return;
+    if (selectedId !== currentDriveId) {
+      setFocusIndex(index);
+      setSelectedId(currentDriveId);
+      return;
+    }
+    placedFor.current = search.data;
+    const tile = tileRefs.current[index];
+    tile?.scrollIntoView({ block: "center" });
+    tile?.focus({ preventScroll: true });
+  }, [shown, currentDriveId, selectedId, search.data]);
+
   // The end of the grid: once it nears the view, hydrate the next page.
   const sentinelRef = useRef<HTMLDivElement>(null);
   const hasMore = pages * PAGE < ids.length;
