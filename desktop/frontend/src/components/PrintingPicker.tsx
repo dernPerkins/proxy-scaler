@@ -795,16 +795,6 @@ export function PrintingGridModal(props: {
   const artFor = (face: number) => card.face_art?.find((fa) => fa.face === face) ?? null;
   const faceLabelOf = (face: number) =>
     currentVariant?.face_names?.[face] ?? (face === 0 ? "Front" : "Back");
-  const mpcHint =
-    source === "scryfall" && card.face_art?.length
-      ? `This card prints MPC Fill art on ${
-          card.face_art.length > 1
-            ? "both faces"
-            : totalFaces > 1
-              ? `its ${card.face_art[0].face === 0 ? "front" : "back"}`
-              : "its face"
-        }. Picking a different printing goes back to Scryfall art.`
-      : null;
 
   const sourceSwitch = mpcAvailable ? (
     <span className="segmented" role="group" aria-label="Art source">
@@ -877,16 +867,6 @@ export function PrintingGridModal(props: {
                     </span>
                   )}
                 </span>
-                {(stagedFace ? stagedFace.art != null : art != null) && (
-                  <button
-                    type="button"
-                    className="btn-sm"
-                    title="Print this face from the printing's own art again"
-                    onClick={() => walk.onChoose(artChoice(null))}
-                  >
-                    Use Scryfall Art
-                  </button>
-                )}
                 {walk.nav}
               </>
             }
@@ -932,7 +912,6 @@ export function PrintingGridModal(props: {
         </div>
 
         <div className="printing-grid-notes">
-          {mpcHint && <p className="hint">{mpcHint}</p>}
           {ready && !showImages && (
             <p className="hint">
               Previews need a newer generation server (v{PRINTING_IMAGES_MIN_SERVER_VERSION} or

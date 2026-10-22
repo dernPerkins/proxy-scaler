@@ -4,7 +4,8 @@
 // that card. Nothing is saved or downloaded while the walk is open, so
 // browsing past a card costs no downloads: Done, Esc, a click outside, the
 // preview's button or a double-click close it and apply every card's
-// choice; Discard closes it applying nothing.
+// choice. Picking the card's own printing on the Scryfall tab puts it back
+// on Scryfall art.
 // Chosen from a prototype (.scratch/mpcfill-art-picker/prototype-deck-walk/).
 import { useEffect, useState } from "react";
 import type { CardRow } from "../api/project";
@@ -35,8 +36,15 @@ function withChoice(
   const faces = new Map(prev?.faces);
   if (choice.kind === "printing") {
     printing = choice.pick;
+    faces.clear();
     // A new printing prints its own art (setCardPrinting drops face art).
-    if (choice.pick) faces.clear();
+    // The card's own printing, picked on the Scryfall tab, means its own
+    // Scryfall art too: any MPC Fill art on its faces comes off.
+    if (!choice.pick) {
+      for (const fa of card.face_art ?? []) {
+        faces.set(fa.face, { totalFaces: fa.total_faces, art: null });
+      }
+    }
   } else {
     // MPC Fill art goes on the card's own printing.
     printing = null;
@@ -115,7 +123,6 @@ export default function DeckArtWalk(props: {
   });
 
   if (!card) return null;
-  const changes = staged.size;
 
   const nav = (
     <>
@@ -132,7 +139,6 @@ export default function DeckArtWalk(props: {
         <span className="walk-pos">
           Card {index + 1} of {cards.length}
         </span>
-        <span className="walk-name">{card.name}</span>
         <button
           type="button"
           className="btn-sm"
@@ -143,20 +149,6 @@ export default function DeckArtWalk(props: {
           Next ›
         </button>
       </span>
-      {changes > 0 && (
-        <span className="walk-changes">
-          {changes} {changes === 1 ? "Change" : "Changes"}
-        </span>
-      )}
-      <button
-        type="button"
-        className="btn-sm"
-        disabled={changes === 0}
-        title="Close without applying these changes"
-        onClick={props.onClose}
-      >
-        Discard
-      </button>
       <button type="button" className="btn-sm btn-primary" onClick={() => finish(staged)}>
         Done
       </button>

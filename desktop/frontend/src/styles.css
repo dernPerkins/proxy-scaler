@@ -2011,8 +2011,8 @@ button:disabled {
   gap: 8px;
   margin-right: auto;
 }
-/* The deck walk's stepper (DeckArtWalk): ‹ Prev · Card 3 of 60 · name ·
-   Next ›, then the change count, Discard and Done. */
+/* The deck walk's stepper (DeckArtWalk): ‹ Prev · Card 3 of 60 · Next ›,
+   then Done. */
 .walk-head {
   display: inline-flex;
   align-items: center;
@@ -2020,18 +2020,10 @@ button:disabled {
   margin-right: auto;
   min-width: 0;
 }
-.walk-pos,
-.walk-changes {
+.walk-pos {
   font-size: 12.5px;
   color: var(--text-muted);
   white-space: nowrap;
-}
-.walk-name {
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 220px;
 }
 .mpc-provenance {
   font-size: 12px;
@@ -2541,6 +2533,13 @@ tbody tr:last-child td {
 .modal-overlay-boot {
   z-index: 900;
 }
+/* Set on <html> while any dialog is open (ModalOverlay.tsx): the page
+   behind can't scroll, so a scroll over a part of the dialog that doesn't
+   scroll itself (the preview, the head, the backdrop) goes nowhere rather
+   than moving the Decklist underneath. */
+html.modal-open {
+  overflow: hidden;
+}
 .modal {
   width: min(85vw, 720px);
   max-height: 90vh;
@@ -2578,6 +2577,9 @@ tbody tr:last-child td {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* At its top or bottom, a wheel or trackpad scroll stops here instead of
+     carrying on to the page behind the dialog. */
+  overscroll-behavior: contain;
 }
 /* Patch Notes (PatchNotesPrompt.tsx): master-detail. Fixed height rather
    than fit-content so switching between short and long releases doesn't

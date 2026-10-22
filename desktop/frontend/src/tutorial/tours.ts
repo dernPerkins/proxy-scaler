@@ -207,7 +207,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "picker-walk",
         title: "Go through your deck",
-        body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you close with Done; Discard drops your choices.",
+        body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you close with Done.",
         placement: "bottom",
       },
     ],

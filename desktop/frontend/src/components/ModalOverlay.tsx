@@ -1,5 +1,29 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+
+// Open dialogs, counted so a dialog opened over another (a confirm over
+// the picker) doesn't unlock the page when it closes.
+let openCount = 0;
+
+/** Holds the page still behind every open dialog — see html.modal-open.
+ *  The scrollbar it hides is replaced by the same width of padding, so the
+ *  page doesn't shift sideways where scrollbars take up room. */
+function useLockPageScroll() {
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    if (openCount++ === 0) {
+      const scrollbar = window.innerWidth - root.clientWidth;
+      if (scrollbar > 0) root.style.paddingRight = `${scrollbar}px`;
+      root.classList.add("modal-open");
+    }
+    return () => {
+      if (--openCount === 0) {
+        root.classList.remove("modal-open");
+        root.style.paddingRight = "";
+      }
+    };
+  }, []);
+}
 
 // The one way to render a .modal-overlay backdrop: portaled to
 // document.body so the overlay's z-index competes in the ROOT stacking
@@ -27,6 +51,7 @@ export default function ModalOverlay({
   className?: string;
   children: ReactNode;
 }) {
+  useLockPageScroll();
   return createPortal(
     <div className={className ? `modal-overlay ${className}` : "modal-overlay"} onClick={onClick}>
       {children}
