@@ -631,6 +631,7 @@ export default function BacksPage() {
 
       {mpcOpen && (
         <MpcArtModal
+          tourAfter="backs"
           title="MPC Fill — card backs"
           initial={{}}
           cardTypes={["CARDBACK"]}

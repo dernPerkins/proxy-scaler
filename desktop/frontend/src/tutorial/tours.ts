@@ -32,6 +32,7 @@ export type TourId =
   | "decklist"
   | "decklist-cards"
   | "decklist-picker"
+  | "mpc-picker"
   | "customs"
   | "customs-card"
   | "mpc"
@@ -41,6 +42,14 @@ export type TourId =
   | "pdf-preview"
   | "export"
   | "tasks";
+
+// The deck walk's Prev / Next, explained in both pickers' tours.
+const WALK_STEP: TourStep = {
+  target: "picker-walk",
+  title: "Go through your deck",
+  body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you Confirm; closing any other way asks whether to keep your choices.",
+  placement: "bottom",
+};
 
 export const TOURS: Record<TourId, Tour> = {
   connect: {
@@ -204,12 +213,40 @@ export const TOURS: Record<TourId, Tour> = {
         body: "The chosen printing's details and every version you've already generated, by resolution and model. Use This Printing chooses it and closes.",
         placement: "right",
       },
+      WALK_STEP,
+    ],
+  },
+
+  // The MPC Fill art picker (MpcArtBrowser), the first time it shows art:
+  // in the deck walk, and from the MPC Fill and Backs tabs. The face and
+  // walk steps are the deck walk's alone.
+  "mpc-picker": {
+    steps: [
       {
-        target: "picker-walk",
-        title: "Go through your deck",
-        body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you Confirm; Close drops your choices.",
+        target: "mpc-picker-grid",
+        title: "MPC Fill art",
+        body: "Community art for this card from the MPC Fill Catalog. Click one to see it full size on the left, or double-click to use it straight away.",
+        placement: "left",
+      },
+      {
+        target: "mpc-picker-filters",
+        title: "Search and filter",
+        body: "Search another name, or narrow it down by card type, language, minimum DPI and uploader. Fuzzy finds near misses; NSFW includes art tagged as such. The language you pick is remembered.",
         placement: "bottom",
       },
+      {
+        target: "picker-face",
+        title: "Front and back",
+        body: "Each face of a double-faced card takes its own art. Switch faces here.",
+        placement: "bottom",
+      },
+      {
+        target: "mpc-picker-preview",
+        title: "Check it, then use it",
+        body: "Who uploaded it, its DPI, file size and tags. This is Google's preview copy; the full file downloads only once you use it.",
+        placement: "right",
+      },
+      WALK_STEP,
     ],
   },
 

@@ -790,6 +790,7 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
 
       {mpcOpen ? (
         <MpcArtModal
+          tourAfter="mpc"
           title="MPC Fill — card fronts"
           initial={view === "mpc" ? toPickerInitial(mpcFilters) : {}}
           cardTypes={["CARD", "TOKEN"]}

@@ -2000,10 +2000,6 @@ button:disabled {
   max-width: none;
   object-fit: fill;
 }
-.mpc-attribution {
-  margin-top: 12px;
-  font-size: 11px;
-}
 /* The change-printing modal's Scryfall | MPC Fill (and Front | Back)
    switches, at the head's left, with the tutorial's ? beside them; its
    buttons stay on the right. */

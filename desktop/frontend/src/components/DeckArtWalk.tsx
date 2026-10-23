@@ -3,13 +3,16 @@
 // in its current sort. Selecting a printing or MPC Fill art chooses it for
 // that card. Nothing is saved or downloaded while the walk is open, so
 // browsing past a card costs no downloads: Confirm, the preview's button
-// or a double-click close it and apply every card's choice; Close, Esc or
-// a click outside close it applying nothing. Picking the card's own
+// or a double-click close it and apply every card's choice. Close, Esc or
+// a click outside close it too, but with choices made they ask first —
+// Keep (apply them), Discard or Cancel — so unconfirmed work isn't lost to
+// a stray click. Picking the card's own
 // printing on the Scryfall tab puts it back on Scryfall art.
 // Chosen from a prototype (.scratch/mpcfill-art-picker/prototype-deck-walk/).
 import { useEffect, useState } from "react";
 import type { CardRow } from "../api/project";
 import type { MpcCard } from "../api/types";
+import ModalOverlay from "./ModalOverlay";
 import {
   PrintingGridModal,
   type Pick,
@@ -78,6 +81,8 @@ export default function DeckArtWalk(props: {
   // The next card opens on the tab this one was left on.
   const [request, setRequest] = useState<PickerOpenRequest>(props.startRequest);
   const [source, setSource] = useState(props.startRequest.source);
+  // Closing with choices made: Keep, Discard or Cancel.
+  const [asking, setAsking] = useState(false);
 
   const go = (next: number) => {
     const target = cards[Math.max(0, Math.min(cards.length - 1, next))];
@@ -108,11 +113,16 @@ export default function DeckArtWalk(props: {
     props.onClose();
   }
 
+  function requestClose() {
+    if (staged.size === 0) props.onClose();
+    else setAsking(true);
+  }
+
   // Alt+← / Alt+→ step through the deck from anywhere in the walk but a
   // text field, where they move by word.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+      if (asking || !e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest("input, textarea, [contenteditable]")) return;
       e.preventDefault();
@@ -157,21 +167,22 @@ export default function DeckArtWalk(props: {
       >
         Confirm
       </button>
-      <button type="button" className="btn-sm" title="Close without applying (Esc)" onClick={props.onClose}>
+      <button type="button" className="btn-sm" title="Close (Esc)" onClick={requestClose}>
         Close
       </button>
     </>
   );
 
   return (
+    <>
     <PrintingGridModal
       // A new card is a fresh grid: its own filters, selection and scroll.
       key={card.id}
       card={card}
       preferredLang={preferredLang}
       initial={request}
-      // Esc and a click outside are Close: nothing applied.
-      onClose={props.onClose}
+      // Esc and a click outside are Close.
+      onClose={requestClose}
       onSourceChange={setSource}
       walk={{
         nav,
@@ -180,5 +191,60 @@ export default function DeckArtWalk(props: {
         onChoose: (choice) => finish(choose(choice)),
       }}
     />
+    {asking && (
+      <KeepChangesDialog
+        count={staged.size}
+        onKeep={() => finish(staged)}
+        onDiscard={props.onClose}
+        onCancel={() => setAsking(false)}
+      />
+    )}
+    </>
+  );
+}
+
+/** Closing the walk with choices made. Esc and a click outside are Cancel,
+ *  the answer that changes nothing; Keep is focused, the one that loses
+ *  nothing. */
+function KeepChangesDialog(props: {
+  count: number;
+  onKeep: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  const { onCancel } = props;
+  useEffect(() => {
+    // Capturing, and marked handled, so the picker underneath (which
+    // listens for Esc too, and skips a handled one) doesn't take it as
+    // another Close.
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onCancel();
+    }
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [onCancel]);
+  return (
+    <ModalOverlay onClick={onCancel}>
+      <div className="modal modal-sm" role="alertdialog" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">Keep Your Changes?</span>
+        </div>
+        <p style={{ marginBottom: 16 }}>
+          You changed the art for {props.count} card{props.count === 1 ? "" : "s"} without
+          confirming. Discard will undo all changes.
+        </p>
+        <div className="modal-actions">
+          <button className="btn-primary" autoFocus onClick={props.onKeep}>
+            Keep
+          </button>
+          <button className="btn-danger" onClick={props.onDiscard}>
+            Discard
+          </button>
+          <button onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </ModalOverlay>
   );
 }

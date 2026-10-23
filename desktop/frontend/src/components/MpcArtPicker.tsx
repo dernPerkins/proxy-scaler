@@ -32,6 +32,9 @@ import { MPC_IMPORT_BLEED_MM } from "../mpcFill";
 import { setMpcCatalogJobId, useMpcCatalogReady } from "../mpcCatalog";
 import { errorText as toastErrorText, toast } from "../toasts";
 import SelectMenu from "./SelectMenu";
+import TutorialButton from "../tutorial/TutorialButton";
+import { useTourWhenPresent } from "../tutorial/tutorialStore";
+import type { TourId } from "../tutorial/tours";
 import {
   KEYBOARD_PREVIEW_SETTLE_MS,
   gridColumns,
@@ -256,7 +259,7 @@ function MpcPreview(props: {
           )}
         </div>
       </div>
-      <div className="printing-preview-scrim">
+      <div className="printing-preview-scrim" data-tour="mpc-picker-preview">
         <h3 className="printing-preview-name">{card.name}</h3>
         <p className="printing-preview-meta">
           {details.join(" · ")}
@@ -354,6 +357,9 @@ export interface MpcArtBrowserProps {
    *  selection, by click or arrow key, and `currentDriveId` should follow
    *  it, so the chosen tile shows only as current. */
   onSelect?: (card: MpcCard) => void;
+  /** The base tour that must be done before this picker's own
+   *  ("mpc-picker") auto-shows: the screen it was opened from. */
+  tourAfter: TourId;
 }
 
 export function MpcArtBrowser(props: MpcArtBrowserProps) {
@@ -500,6 +506,9 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = shown.find((c) => c.drive_id === selectedId) ?? null;
+  // The picker's first-open tour, once the grid and the preview are filled
+  // in. Without a catalog the grid is the download offer, so it waits.
+  useTourWhenPresent("mpc-picker", catalog.ready && !loading && selected != null, props.tourAfter);
   const [settleMs, setSettleMs] = useState(0);
   const [busy, setBusy] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -649,7 +658,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         {hydrateError && <p className="hint">Couldn't load more results: {hydrateError}</p>}
       </div>
 
-      <div className="printing-grid-controls mpc-controls">
+      <div className="printing-grid-controls mpc-controls" data-tour="mpc-picker-filters" data-tour-fit>
         <form
           className="mpc-search-form"
           onSubmit={(e) => {
@@ -731,7 +740,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         </label>
       </div>
 
-      <div className="modal-body" ref={scrollRef}>
+      <div className="modal-body" ref={scrollRef} data-tour="mpc-picker-grid">
         {!catalog.ready ? (
           <CatalogNeeded importing={catalog.importing} known={catalog.known} />
         ) : loading ? (
@@ -794,10 +803,6 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         )}
         {hasMore && <div ref={sentinelRef} className="mpc-sentinel" aria-hidden="true" />}
         {hydrating && <p className="hint">Loading more…</p>}
-        <p className="hint mpc-attribution">
-          Community art indexed by MPC Fill (mpcfill.com); images are served from each
-          uploader&apos;s Google Drive.
-        </p>
       </div>
     </>
   );
@@ -829,6 +834,8 @@ export function MpcArtModal(
           head={
             <>
               <span className="mpc-head-title">{title}</span>
+              {/* The tab bar's ? is behind this modal; replay from here. */}
+              <TutorialButton tour="mpc-picker" />
               <button type="button" className="btn-sm" onClick={onClose}>
                 Close
               </button>

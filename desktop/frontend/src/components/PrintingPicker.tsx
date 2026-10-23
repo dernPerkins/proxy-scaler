@@ -867,6 +867,7 @@ export function PrintingGridModal(props: {
               stagedFace ? (stagedFace.art?.drive_id ?? null) : (art?.mpc_drive_id ?? null)
             }
             pickLabel="Use This Art"
+            tourAfter="decklist-cards"
             onSelect={(picked) => walk.onSelect(artChoice(picked))}
             onPick={async (picked) => walk.onChoose(artChoice(picked))}
             head={
@@ -874,7 +875,7 @@ export function PrintingGridModal(props: {
                 <span className="picker-head-left">
                   {sourceSwitch}
                   {totalFaces > 1 && (
-                    <span className="segmented" role="group" aria-label="Face">
+                    <span className="segmented" role="group" aria-label="Face" data-tour="picker-face">
                       {[0, 1].map((face) => (
                         <button
                           key={face}
@@ -888,6 +889,7 @@ export function PrintingGridModal(props: {
                       ))}
                     </span>
                   )}
+                  <TutorialButton tour="mpc-picker" />
                 </span>
                 {walk.nav}
               </>
