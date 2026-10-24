@@ -23,6 +23,27 @@ export interface PatchNotesEntry {
 
 export const PATCH_NOTES: PatchNotesEntry[] = [
   {
+    version: "0.5.0",
+    date: "October 2026",
+    notes: [
+      "MPC Fill art - print any card with community art from MPC Fill. The printing picker has a Scryfall | MPC Fill switch: search by name, narrow it down by card type, language, minimum DPI and uploader, and give each face of a double-faced card its own art. Previews are Google's copies; the full file downloads only once you use it.",
+      "Art From on import - next to Import cards, choose Scryfall or MPC Fill. MPC Fill puts its top community art on every face of each imported card, and any of them can be changed from the card's printing button. Cards with no MPC Fill match keep their Scryfall art.",
+      "MPC Fill Catalog - MPC Fill searches run against a catalog you download once, from the launch prompt or the sidebar, and update when a newer one is out. At the request of MPC Fill's maintainer the app never contacts MPC Fill itself; art comes from Google Drive through your own generation server.",
+      "MPC Fill tab - art you've downloaded from MPC Fill gets its own library, apart from your uploads, with search and filters. Search all of MPC Fill from there, and Add to Project puts the art on its card in the current deck. MPC Fill art is always treated as carrying 3.175 mm (1/8\") of bleed.",
+      "MPC Autofill orders - import the .xml from MPC Fill's Download XML button on the Decklist tab. Its fronts and backs are fetched into your MPC Fill and Back libraries and the order's cards are added with their quantities and backs; you're offered the order's card back as the project's.",
+      "Printing picker - click a card's set on the Decklist to see every printing as images, newest first, showing what Scryfall would list for your project's language. Filter by set and language, sort, include Arena-only printings with Show Digital, and check each one full size alongside every version you've already generated.",
+      "Go through your whole deck in the picker - Prev and Next (Alt+← and Alt+→) move through the deck in its Decklist order, so you can choose art for every card in one sitting. Nothing downloads until you Confirm; closing any other way asks whether to keep your choices.",
+      "Per-card backs - the little card on a row gives that card its own back, leaves it blank, or uploads a new back for it; everything else keeps the universal back from the Backs tab. The PDF and both ZIP exports honour it.",
+      "Presets for the PDF and ZIP tabs - save your usual layout, offsets, guides and back printing (PDF) or format and bleed (ZIP) and pick them next time. Your first preset becomes the starting point for new projects, and Default puts the built-in settings back.",
+      "Guides you can style - the PDF tab's Guides section sets Card Guides (at each card's trim corners) and Page Guides (from the page edge in to the grid) separately: color, solid or dashed, square or rounded corners, width, length, and whether they print on fronts and backs. Backs default to hidden, since that ink lands on the visible side of the card.",
+      "Cards print without an upscale - a Scryfall card with nothing generated at your DPI now prints from its ~300 DPI original instead of being left out. The PDF and ZIP previews say which cards, since they'll come out softer.",
+      "Set symbols on every card and in the picker, colored by rarity. Universes Beyond printings show the name printed on them (Cloud Strife on Najeela, the Blade-Blossom) alongside the card's own.",
+      "View on a card's Original opens it full size.",
+      "The tab bar and toolbar stay put while you scroll, the sidebar scrolls on its own, and a Back to Top button appears once you scroll down. The Customs and Backs tabs have a refreshed upload and search area.",
+      "Ctrl+1 to Ctrl+7 (Cmd on a Mac) now that MPC Fill has a tab of its own.",
+    ],
+  },
+  {
     version: "0.4.0",
     date: "September 2026",
     notes: [

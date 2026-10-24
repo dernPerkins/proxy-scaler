@@ -452,6 +452,36 @@ def find_row_by_name(
     ).fetchone()
 
 
+def find_default_for_oracle(
+    conn: sqlite3.Connection,
+    oracle_id: str,
+    prefer_lang: str = "en",
+    *,
+    only_lang: str | None = None,
+) -> sqlite3.Row | None:
+    """find_row_by_name's choice, for a card already known by oracle_id
+    (card_search's hits): the same preference order, through the oracle_id
+    index. The name lookup's OR/LIKE match can't use an index, which costs
+    a full scan of an every-language corpus per call."""
+    lang_clause = "AND lang = ?3" if only_lang is not None else ""
+    params: tuple = (oracle_id, prefer_lang)
+    if only_lang is not None:
+        params += (only_lang,)
+    return conn.execute(
+        f"""
+        SELECT * FROM cards
+        WHERE oracle_id = ?1
+          {lang_clause}
+        ORDER BY {_NON_GAME_LAYOUT_SQL} ASC,
+                 (lang = ?2) DESC, (lang = 'en') DESC,
+                 digital ASC, highres_image DESC,
+                 released_at DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+
+
 def _row_json(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return json.loads(row["card_json"]) if row else None
 

@@ -19,7 +19,7 @@ import requests
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 
-from proxy_scaler import card_import, card_jobs, carddb, db, pipeline, thumbs
+from proxy_scaler import card_import, card_jobs, card_search, carddb, db, pipeline, thumbs
 from proxy_scaler.api.deps import get_card_db_path, get_db_path
 from proxy_scaler.api.routers.misc import DEFAULT_CACHE_DIR
 from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
@@ -44,6 +44,8 @@ from proxy_scaler.api.schemas import (
     CardLanguagesOut,
     CardRaritiesIn,
     CardRaritiesOut,
+    CardSearchHitOut,
+    CardSearchOut,
     CardVariantOut,
     CardVariantsOut,
 )
@@ -252,6 +254,40 @@ def card_variants(
         variants=[_variant_out(v) for v in variants],
         total=len(variants),
     )
+
+
+@router.get("/search", response_model=CardSearchOut)
+def card_search_route(
+    q: str = "",
+    lang: str = "en",
+    strict_lang: bool = False,
+    limit: int = Query(8, ge=1, le=50),
+) -> CardSearchOut:
+    """Cards whose names match a typed query, forgiving of partial words
+    and typos (card_search.py), each with the printing a bare-name import
+    would pick: Quick Add's dropdown and Card Search's results."""
+    db_path = get_card_db_path()
+    conn = carddb.open_if_ready(db_path)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=_IMPORT_HINT)
+    try:
+        hits = card_search.search(conn, db_path, q, lang=lang, limit=limit)
+        results = []
+        for hit in hits:
+            row = carddb.find_default_for_oracle(
+                conn, hit.oracle_id, lang, only_lang=lang if strict_lang else None
+            )
+            results.append(
+                CardSearchHitOut(
+                    name=hit.name,
+                    oracle_id=hit.oracle_id,
+                    printings=hit.printings,
+                    default=_variant_out(row) if row is not None else None,
+                )
+            )
+    finally:
+        conn.close()
+    return CardSearchOut(results=results)
 
 
 @router.post("/rarities", response_model=CardRaritiesOut)

@@ -1743,6 +1743,27 @@ def test_card_variants_face_count_for_dfc(client: TestClient) -> None:
     assert body["variants"][0]["face_count"] == 2
 
 
+def test_card_search_requires_corpus(client: TestClient) -> None:
+    resp = client.get("/api/cards/search", params={"q": "bolt"})
+    assert resp.status_code == 404
+    assert "import" in resp.json()["detail"].lower()
+
+
+def test_card_search_returns_the_default_printing(client: TestClient) -> None:
+    from proxy_scaler import card_search
+
+    card_search.clear_cache()
+    _seed_card_db()
+    body = client.get("/api/cards/search", params={"q": "lig bol"}).json()
+    assert [r["name"] for r in body["results"]] == ["Lightning Bolt"]
+    assert body["results"][0]["default"]["scryfall_id"] == "bolt-lea"
+    # Strictly Japanese: the card matches, but has no printing to add.
+    body = client.get(
+        "/api/cards/search", params={"q": "bolt", "lang": "ja", "strict_lang": True}
+    ).json()
+    assert body["results"][0]["default"] is None
+
+
 def test_card_variants_unknown_card_404(client: TestClient) -> None:
     _seed_card_db()
     resp = client.get("/api/cards/variants", params={"name": "Storm Crow"})

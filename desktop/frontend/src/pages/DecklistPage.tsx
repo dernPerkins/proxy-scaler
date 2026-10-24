@@ -1393,7 +1393,7 @@ export default function DecklistPage() {
             >
               Import the order (.xml)
             </button>
-            . Its art is fetched into your Custom and Back libraries.
+            . Its art is fetched into your MPC Fill and Back libraries.
           </p>
           <input
             ref={orderFileInput}

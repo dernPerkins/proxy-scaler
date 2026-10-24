@@ -525,3 +525,19 @@ def test_rarities_by_id_skips_unknown_and_null(conn) -> None:
         ],
     )
     assert carddb.rarities_by_id(conn, ["a", "b", "missing", "a"]) == {"a": "rare"}
+
+
+def test_find_default_for_oracle_matches_the_name_lookup(conn) -> None:
+    carddb.upsert_cards(
+        conn,
+        [
+            _card(id="token", layout="token", released_at="2024-01-01"),
+            _card(id="old", released_at="1993-08-05"),
+            _card(id="new", released_at="2021-01-01"),
+            _card(id="new-ja", lang="ja", released_at="2022-01-01"),
+        ],
+    )
+    for prefer, only in (("en", None), ("ja", None), ("ja", "ja"), ("de", "de")):
+        by_name = carddb.find_row_by_name(conn, "Lightning Bolt", prefer, only_lang=only)
+        by_oracle = carddb.find_default_for_oracle(conn, "oracle-1", prefer, only_lang=only)
+        assert (by_name and by_name["id"]) == (by_oracle and by_oracle["id"])

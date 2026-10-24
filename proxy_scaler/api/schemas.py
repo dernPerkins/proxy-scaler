@@ -944,6 +944,22 @@ class CardVariantOut(BaseModel):
     rarity: str | None = None
 
 
+class CardSearchHitOut(BaseModel):
+    name: str
+    oracle_id: str
+    # English printings, the stand-in for popularity the results are
+    # ranked by.
+    printings: int
+    # The printing a bare-name import would pick (carddb.find_row_by_name):
+    # what Quick Add adds. None when strict_lang leaves no printing.
+    default: CardVariantOut | None = None
+
+
+class CardSearchOut(BaseModel):
+    # Best match first. Empty for an empty query.
+    results: list[CardSearchHitOut]
+
+
 class CardRaritiesIn(BaseModel):
     ids: list[str] = Field(max_length=2000)
 
