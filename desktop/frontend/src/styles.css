@@ -1434,7 +1434,8 @@ button:disabled {
 }
 /* The change-printing picker (PrintingPicker.tsx's modal) is a grid: the
    preview fills the first column top to bottom, and the second stacks
-   Close, notes, the filter row and the scrolling tile grid. The preview is
+   Close, notes, the filter row, the scrolling tile grid and the deck
+   walk's bar (Prev / Next, Confirm). The preview is
    a subgrid of those rows, so its card shares the tile grid's row and the
    two line up. Two classes: .modal's own width, padding and flex layout
    are defined later in this file and would otherwise win. */
@@ -1444,7 +1445,7 @@ button:disabled {
   padding: 0;
   display: grid;
   grid-template-columns: clamp(300px, 34%, 460px) minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }
 .modal-head.printing-grid-head {
   grid-column: 2;
@@ -2009,8 +2010,18 @@ button:disabled {
   gap: 8px;
   margin-right: auto;
 }
-/* The deck walk's stepper (DeckArtWalk): ‹ Prev · Card 3 of 60 · Next ›,
-   then Done. */
+/* The deck walk's bar under the grid (DeckArtWalk): ‹ Prev · Card 3 of
+   60 · Next › on the left, Confirm on the right. Out of the head, which
+   keeps its width for a double-faced card's Front / Back switch. */
+.walk-footer {
+  grid-column: 2;
+  grid-row: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 12px 16px;
+  border-top: 1px solid var(--border);
+}
 .walk-head {
   display: inline-flex;
   align-items: center;
@@ -2316,6 +2327,14 @@ button:disabled {
 }
 body.has-back-to-top .toast-stack {
   bottom: 78px;
+}
+/* Behind an open dialog the page can't scroll (html.modal-open), and the
+   button sits above the dialog's backdrop: hide it there, toasts back down. */
+html.modal-open .back-to-top {
+  display: none;
+}
+html.modal-open body.has-back-to-top .toast-stack {
+  bottom: 18px;
 }
 
 /* Split button: [Action][▾] read as one control; the menu is CompareMenu's. */

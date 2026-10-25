@@ -41,14 +41,26 @@ _SKIP_LINES = {
 
 @dataclass(frozen=True)
 class FaceOverride:
-    """A face of a Scryfall entry printed from a Custom Image instead (see
-    DeckEntryIn.face_overrides). `face` is the face's position: 0 for a
-    single-faced card or a DFC's front, 1 for a DFC's back."""
+    """A face of a Scryfall entry printed from something other than the
+    entry's own printing (see DeckEntryIn.face_overrides): a Custom Image
+    (custom_hash), or one face of another Scryfall printing of the same
+    card (scryfall_id + source_face). `face` is the face's position: 0 for
+    a single-faced card or a DFC's front, 1 for a DFC's back."""
 
     face: int
     total_faces: int
-    # None while the art is chosen but not downloaded (FaceOverrideIn).
+    # None while the art is chosen but not downloaded (FaceOverrideIn),
+    # and always None for a printing override.
     custom_hash: str | None
+    # Set instead of custom_hash: the printing whose face `source_face`
+    # prints here. source_face None means the same position as `face`.
+    scryfall_id: str | None = None
+    source_face: int | None = None
+
+    @property
+    def source_position(self) -> int:
+        """Which face of the `scryfall_id` printing prints here."""
+        return self.face if self.source_face is None else self.source_face
 
 
 @dataclass(frozen=True)
@@ -78,8 +90,8 @@ class DeckEntry:
     back_mode: str = "inherit"
     back_hash: str | None = None
     # Client-only too: faces of this Scryfall card printed from a Custom
-    # Image (MPC Fill art) rather than the printing's own art. A tuple so
-    # the entry stays hashable.
+    # Image (MPC Fill art) or another printing's face rather than the
+    # printing's own art. A tuple so the entry stays hashable.
     face_overrides: tuple[FaceOverride, ...] = ()
 
     @property

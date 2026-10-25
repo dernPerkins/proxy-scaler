@@ -25,6 +25,7 @@ import {
 } from "../components/RowIcons";
 import ServerSwitcher from "../components/ServerSwitcher";
 import StatusBadge from "../components/StatusBadge";
+import SetIcon from "../components/SetIcon";
 import {
   CUSTOM_SOURCE_MODEL,
   DEFAULT_GEN_PATHS,
@@ -58,8 +59,8 @@ import {
   fetchPendingFaceArt,
   hasPendingFaceArt,
   dismissPendingFaceArt,
+  downloadCardFaces,
   downloadPickedPrinting,
-  downloadScryfallFaces,
   pendingFaceArtKey,
   pendingPrintingKey,
   queueFaceArtPick,
@@ -171,6 +172,7 @@ export default function DecklistPage() {
     setCardPrinting,
     setCardFaceArt,
     setCardFaceArtPending,
+    setCardFacePrinting,
     clearCardFaceArt,
     resetCardBacks,
     applyCardResolutions,
@@ -364,7 +366,19 @@ export default function DecklistPage() {
   // that 404. Keyed on the identity set, not `cards` itself, so quantity
   // edits don't re-fire it; best-effort because a failure only means the
   // status poll shows a stale view until the next reconcile.
-  const cardIdentities = cards.map(localCardIdentity).sort().join("|");
+  // A face printed from another printing is part of the card's identity
+  // here: choosing one adopts that printing's images too.
+  const cardIdentities = cards
+    .map((c) =>
+      [
+        localCardIdentity(c),
+        ...(c.face_art ?? []).flatMap((fa) =>
+          fa.scryfall ? [`${fa.face}@${fa.scryfall.scryfall_id}:${fa.scryfall.source_face}`] : [],
+        ),
+      ].join("+"),
+    )
+    .sort()
+    .join("|");
   // Bumped when the deck walk closes: its previews may have downloaded
   // originals (registered server-side, project-less) that this deck's
   // cards should now adopt — "300 · Original" badges included — even when
@@ -1038,33 +1052,14 @@ export default function DecklistPage() {
   }
 
   const walkApply: WalkApply = {
-    printing: (card, printing: Pick) => {
-      // Persisting the pick changes the card's identity string, which
-      // re-fires the adopt effect above (badges re-bucket to whatever
-      // exists for the new printing); the status query refresh makes that
-      // visible without waiting for the 3s poll.
-      setCardPrinting(card.id, printing)
-        .then(() => {
-          // Fetch the picked printing's full-size image now, as a queued
-          // download task (the Download button's), so its "300 · Original"
-          // lands without another click.
-          downloadPickedPrinting(
-            {
-              ...card,
-              scryfall_id: printing.scryfallId,
-              name: printing.name,
-              set_code: printing.setCode,
-              collector_number: printing.collectorNumber,
-              lang: printing.lang,
-              printed_name: printing.printedName,
-              flavor_name: printing.flavorName ?? null,
-              face_art: [],
-            },
-            projectTag,
-            refetchStatus,
-          );
-        })
-        .catch(() => {});
+    // Persisting the pick changes the card's identity string, which
+    // re-fires the adopt effect above (badges re-bucket to whatever exists
+    // for the new printing). The walk's download fetches its images.
+    printing: async (card, printing: Pick) => {
+      await setCardPrinting(card.id, printing);
+    },
+    facePrinting: async (card, face, totalFaces, source) => {
+      await setCardFacePrinting(card.id, face, totalFaces, source);
     },
     // Downloads in the background (pickDownloads.ts); the row shows the
     // face as downloading meanwhile.
@@ -1081,26 +1076,13 @@ export default function DecklistPage() {
         refreshStatus: refetchStatus,
       });
     },
-    clearFaceArt: (card, face) => void clearFaceArt(card, face).catch(() => {}),
-    // Every card the walk visited, as it prints now. Face by face where
-    // MPC Fill art is involved, so each face shows its own progress;
-    // otherwise the row's Download (the server expands every face).
-    download: (card, faces) => {
-      if (faces) {
-        void fetchPendingFaceArt([{ ...card, face_art: faces.kept }], pendingArtOpts);
-        downloadScryfallFaces(card, faces.totalFaces, faces.mpcFaces, projectTag, refetchStatus);
-      } else if (card.face_art?.length) {
-        void fetchPendingFaceArt([card], pendingArtOpts);
-        downloadScryfallFaces(
-          card,
-          Math.max(...card.face_art.map((fa) => fa.total_faces)),
-          card.face_art.map((fa) => ({ face: fa.face, customHash: fa.custom_hash ?? null })),
-          projectTag,
-          refetchStatus,
-        );
-      } else {
-        downloadCard(card);
-      }
+    clearFaceArt: (card, face) => clearFaceArt(card, face),
+    // Every card the walk visited, as it prints now: its Scryfall faces
+    // (its own printing's, or another printing's) face by face, and any
+    // MPC Fill art chosen but not downloaded yet.
+    download: (card) => {
+      void fetchPendingFaceArt([card], pendingArtOpts);
+      downloadCardFaces(card, projectTag, refetchStatus);
     },
   };
 
@@ -1615,6 +1597,12 @@ export default function DecklistPage() {
           onClose={() => {
             setWalk(null);
             setAdoptNonce((n) => n + 1);
+            // A double-faced card's other face loads behind the one on
+            // show (PrintingPreview), so it can land just after a quick
+            // close: adopt again once it has had time to.
+            for (const ms of [5_000, 15_000]) {
+              setTimeout(() => setAdoptNonce((n) => n + 1), ms);
+            }
           }}
         />
       )}
@@ -1843,6 +1831,17 @@ function CardRowView(props: {
         faces.map((face, i) => (
           <div key={i} className="variants" data-tour="card-variants">
             {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
+            {/* A face printed from another printing names it: the row's set
+                is the front's. */}
+            {face.art?.scryfall && (
+              <span
+                className="variant-note mono"
+                title={`Printed from ${face.art.scryfall.set_code.toUpperCase()} #${face.art.scryfall.collector_number}`}
+              >
+                <SetIcon setCode={face.art.scryfall.set_code} rarity={face.art.scryfall.rarity} />
+                {face.art.scryfall.set_code.toUpperCase()} #{face.art.scryfall.collector_number}
+              </span>
+            )}
             {face.pick && (
               <StatusBadge
                 status={
@@ -1866,7 +1865,7 @@ function CardRowView(props: {
                 card's "Not Generated Yet", rather than a status badge. */}
             {face.art && !face.pick && face.variants.length === 0 && (
               <span className="variant-note" title="Download images or Generate fetches it">
-                Not Downloaded Yet
+                {face.art.scryfall ? "Not Generated Yet" : "Not Downloaded Yet"}
               </span>
             )}
             {face.variants.map((v) => (
@@ -1977,7 +1976,25 @@ function CardRowView(props: {
                         to replace it is to upload a different one. The
                         server rejects the call outright; hiding the
                         button is how the user finds that out first. */}
-                    {face.art ? (
+                    {face.art?.scryfall ? (
+                      <>
+                        <button
+                          className="btn-sm"
+                          onClick={() => onRefetch(originalSource.galleryItemId)}
+                          disabled={disabled}
+                          title="Re-download the original from Scryfall (overwrites the cached copy)"
+                        >
+                          Re-Fetch
+                        </button>
+                        <button
+                          className="btn-sm"
+                          onClick={() => void onClearFaceArt(face.art!.face).catch(() => {})}
+                          title="Print this face from the card's own printing again, following its front"
+                        >
+                          Use Front&apos;s Printing
+                        </button>
+                      </>
+                    ) : face.art ? (
                       <>
                         <button
                           className="btn-sm"

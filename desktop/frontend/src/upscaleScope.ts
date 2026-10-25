@@ -7,7 +7,7 @@
 // mix kinds — Scryfall faces with MPC art on one — so each scope sends
 // exactly the cards and face overrides it covers, and the server is told
 // whether to upscale Scryfall faces at all (GenerateRequest.scryfall_upscale).
-import type { CardRow } from "./api/project";
+import { isImageFaceArt, type CardRow } from "./api/project";
 import type { DeckEntryIn } from "./api/types";
 import { cardToEntry } from "./deckEntries";
 
@@ -70,8 +70,11 @@ export function scopeRequest(
       continue;
     }
     // Art still to be downloaded counts by its provenance too: an MPC
-    // pick is MPC art.
-    const faces = (card.face_art ?? []).filter((fa) => (fa.mpc_drive_id != null) === wantMpc);
+    // pick is MPC art. A face from another printing is Scryfall art,
+    // which neither scope covers.
+    const faces = (card.face_art ?? []).filter(
+      (fa) => isImageFaceArt(fa) && (fa.mpc_drive_id != null) === wantMpc,
+    );
     if (faces.length === 0) continue;
     const entry = cardToEntry({ ...card, face_art: faces });
     entries.push(entry);

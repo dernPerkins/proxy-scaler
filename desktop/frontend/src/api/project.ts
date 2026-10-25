@@ -200,9 +200,12 @@ export interface CardRow {
   face_art: CardFaceArt[];
 }
 
-/** Mirrors face_art::CardFaceArt (Rust). The image fields are null for
- *  MPC Fill art chosen (by an import) but not downloaded yet; mpc_* then
- *  say what to download. */
+/** Mirrors face_art::CardFaceArt (Rust): what one face prints instead of
+ *  the card's own printing. Either a Custom Image (MPC Fill art, mpc_*
+ *  set) or, with `scryfall` set, that face of another printing of the
+ *  same card (a DFC's back picked apart from its front). The image fields
+ *  are null for MPC Fill art chosen (by an import) but not downloaded yet;
+ *  mpc_* then say what to download. See faceArtKind. */
 export interface CardFaceArt {
   /** 0 for a single-faced card or a DFC's front, 1 for a DFC's back. */
   face: number;
@@ -212,6 +215,34 @@ export interface CardFaceArt {
   label: string;
   mpc_drive_id: string | null;
   mpc_source: string | null;
+  scryfall?: ScryfallFaceSource | null;
+}
+
+/** Mirrors face_art::ScryfallFaceSource (Rust): face `source_face` of the
+ *  printing `scryfall_id`, with what the row shows for it. */
+export interface ScryfallFaceSource {
+  scryfall_id: string;
+  source_face: number;
+  name: string;
+  set_code: string;
+  collector_number: string;
+  lang: string;
+  printed_name: string | null;
+  flavor_name: string | null;
+  rarity: string | null;
+}
+
+/** What a face_art entry prints: another printing's face, MPC Fill art,
+ *  or an uploaded custom image. */
+export function faceArtKind(fa: CardFaceArt): "scryfall" | "mpc" | "custom" {
+  if (fa.scryfall) return "scryfall";
+  return fa.mpc_drive_id ? "mpc" : "custom";
+}
+
+/** Face art that prints a Custom Image (MPC Fill or uploaded), not another
+ *  printing. */
+export function isImageFaceArt(fa: CardFaceArt): boolean {
+  return fa.scryfall == null;
 }
 
 // A parsed-but-unresolved decklist line, as returned by the Rust parser
@@ -619,6 +650,16 @@ export const projectApi = {
       mpcSource: art.mpcSource,
       mpcName: art.mpcName,
     }),
+
+  /** Print face `face` of a Scryfall card from another printing of it.
+   *  A source that is the card's own printing and face clears the face
+   *  instead (it follows the card's printing again). */
+  setCardFacePrinting: (
+    cardId: number,
+    face: number,
+    totalFaces: number,
+    source: ScryfallFaceSource,
+  ) => invokeCommand<void>("set_card_face_printing", { cardId, face, totalFaces, source }),
 
   /** Back to the printing's own art for one face, or every face (null). */
   clearCardFaceArt: (cardId: number, face: number | null) =>

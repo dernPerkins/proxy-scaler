@@ -45,11 +45,19 @@ export function cardToEntry(card: CardRow): DeckEntryIn {
     // exactly what an older server has always accepted.
     ...(card.face_art?.length
       ? {
-          face_overrides: card.face_art.map((fa) => ({
-            face: fa.face,
-            total_faces: fa.total_faces,
-            custom_hash: fa.custom_hash,
-          })),
+          // A face from another printing names that printing's face;
+          // anything else is its Custom Image (MPC Fill or uploaded).
+          face_overrides: card.face_art.map((fa) =>
+            fa.scryfall
+              ? {
+                  face: fa.face,
+                  total_faces: fa.total_faces,
+                  custom_hash: null,
+                  scryfall_id: fa.scryfall.scryfall_id,
+                  source_face: fa.scryfall.source_face,
+                }
+              : { face: fa.face, total_faces: fa.total_faces, custom_hash: fa.custom_hash },
+          ),
         }
       : {}),
   };

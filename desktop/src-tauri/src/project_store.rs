@@ -2248,17 +2248,7 @@ pub fn set_card_printing(
     flavor_name: Option<String>,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
-    // Art picked for a face belongs to the printing it was picked for; a
-    // different printing (perhaps with a different number of faces)
-    // starts from its own art. Done here, not in apply_card_resolution,
-    // which the background re-resolve also uses.
-    conn.execute(
-        "UPDATE project_cards SET face_art = NULL
-         WHERE id = ?1 AND scryfall_id IS NOT ?2",
-        params![card_id, scryfall_id],
-    )
-    .map_err(|e| e.to_string())?;
-    apply_card_resolution(
+    set_card_printing_row(
         &conn,
         &CardResolutionUpdate {
             card_id,
@@ -2272,6 +2262,14 @@ pub fn set_card_printing(
             rarity,
         },
     )
+}
+
+fn set_card_printing_row(conn: &Connection, update: &CardResolutionUpdate) -> Result<(), String> {
+    // The front's art was picked for the old printing and goes; the back's
+    // override is the user's choice for the back and stays. Done here, not
+    // in apply_card_resolution, which the background re-resolve also uses.
+    crate::face_art::retarget_face_art_for_printing(conn, update.card_id, &update.scryfall_id)?;
+    apply_card_resolution(conn, update)
 }
 
 /// The three back modes a card can store. Validated here rather than typed
@@ -4404,6 +4402,41 @@ mod tests {
             card.original_import_line, "1 Sol Ring (c21) 263",
             "the original pasted line is history, not display state — untouched"
         );
+    }
+
+    #[test]
+    fn set_card_printing_keeps_the_back_override_and_drops_the_front() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Delver of Secrets (isd) 51").expect("import");
+        conn.execute(
+            "UPDATE project_cards SET scryfall_id = 'delver-isd',
+             face_art = '{\"0\":{\"total_faces\":2,\"mpc\":{\"drive_id\":\"d\",\"source\":\"s\",\"name\":\"n\"}},\"1\":{\"total_faces\":2,\"mpc\":{\"drive_id\":\"d1\",\"source\":\"s\",\"name\":\"n\"}}}'
+             WHERE id = ?1",
+            params![cards[0].id],
+        )
+        .expect("seed art");
+
+        set_card_printing_row(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "delver-pisd".to_string(),
+                name: "Delver of Secrets".to_string(),
+                set_code: "pisd".to_string(),
+                collector_number: "51".to_string(),
+                lang: "en".to_string(),
+                printed_name: None,
+                flavor_name: None,
+                rarity: None,
+            },
+        )
+        .expect("change printing");
+
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.scryfall_id.as_deref(), Some("delver-pisd"));
+        assert_eq!(card.face_art.iter().map(|f| f.face).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(card.face_art[0].mpc_drive_id.as_deref(), Some("d1"));
     }
 
     #[test]

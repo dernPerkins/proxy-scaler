@@ -257,20 +257,41 @@ def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> li
     machine, so a variant upscaled from the Customs tab (dpi.LIBRARY_TAG)
     or by another project is as printable here as one this project made;
     match_quantities and _pick_dpi_variant then apply the preferred
-    DPI/model to customs exactly as they do to cards. Deduped by registry
-    id, and the declared bleed is attached to every custom row."""
+    DPI/model to customs exactly as they do to cards. A face override
+    printing another printing's face pulls that face's rows in the same
+    way, so it prints even before the project has adopted them. Deduped by
+    registry id, and the declared bleed is attached to every custom row."""
     raw_items = db.list_gallery_items(project_tag, db_path=db_path)
     seen = {int(d["id"]) for d in raw_items}
+
+    def _add(rows: list[dict]) -> None:
+        for d in rows:
+            if int(d["id"]) not in seen:
+                seen.add(int(d["id"]))
+                raw_items.append(d)
+
     custom_hashes = {e.custom_hash for e in entries if e.custom_hash}
     # Customs printed on a face of a Scryfall card (face overrides) too.
     custom_hashes |= {
         o.custom_hash for e in entries for o in e.face_overrides if o.custom_hash
     }
     for custom_hash in custom_hashes:
-        for d in db.list_registry_items_for_custom(custom_hash, db_path=db_path):
-            if int(d["id"]) not in seen:
-                seen.add(int(d["id"]))
-                raw_items.append(d)
+        _add(db.list_registry_items_for_custom(custom_hash, db_path=db_path))
+    printing_faces: dict[str, set[int]] = {}
+    for e in entries:
+        for o in e.face_overrides:
+            if o.scryfall_id:
+                printing_faces.setdefault(o.scryfall_id, set()).add(o.source_position)
+    for scryfall_id, faces in printing_faces.items():
+        # Only the overriding face: the printing's other face is not part
+        # of the deck.
+        _add(
+            [
+                d
+                for d in db.list_registry_items_for_printing(scryfall_id, db_path=db_path)
+                if (d["face_index"] or 0) in faces
+            ]
+        )
     items = [FaceResult.from_dict(d) for d in raw_items]
     customs.attach_bleed(items)
     return items

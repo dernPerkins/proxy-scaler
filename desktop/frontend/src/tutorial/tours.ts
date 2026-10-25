@@ -198,7 +198,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "picker-grid",
         title: "Pick a printing",
-        body: "Every printing of this card, newest first. Click one to choose it and see it full size on the left, or double-click to choose it and close.",
+        body: "Every printing of this card, newest first. Click one to choose it and see it full size on the left, or double-click to choose it and close. A double-faced card's Front and Back are chosen separately: the back follows the front's printing until you give it one of its own.",
         placement: "left",
       },
       {
@@ -237,7 +237,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "picker-face",
         title: "Front and back",
-        body: "Each face of a double-faced card takes its own art. Switch faces here.",
+        body: "Each face of a double-faced card takes its own art or printing, on either tab. Switch faces here.",
         placement: "bottom",
       },
       {

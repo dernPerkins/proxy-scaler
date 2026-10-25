@@ -541,6 +541,9 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
   }
 
   function onGridKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    // Alt+←/→ is the deck walk's Prev / Next. Moving focus first would
+    // select (and so choose) the neighbouring tile on the card being left.
+    if (e.altKey) return;
     const columns = gridColumns(gridRef.current);
     const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -columns, ArrowDown: columns }[e.key];
     if (delta === undefined) return;

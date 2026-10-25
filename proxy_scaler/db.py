@@ -1806,6 +1806,22 @@ def list_registry_items_for_custom(
     return [_gallery_row_to_dict(g) for g in rows]
 
 
+def list_registry_items_for_printing(
+    scryfall_id: str, db_path: Path | str | None = None
+) -> list[dict[str, Any]]:
+    """Every registry row of one Scryfall printing, whatever project made
+    it — for a face override printing another printing's face, which the
+    PDF/ZIP paths merge into the project's gallery the same way they do a
+    custom's rows."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM generated_images WHERE scryfall_id = ? "
+            "ORDER BY dpi ASC, face_index ASC",
+            (scryfall_id,),
+        ).fetchall()
+    return [_gallery_row_to_dict(g) for g in rows]
+
+
 def prune_stale_library_records(
     *,
     custom_hash: str | None = None,

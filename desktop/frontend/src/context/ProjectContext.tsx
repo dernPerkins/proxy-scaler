@@ -6,11 +6,13 @@ import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../co
 import { setProjectSnapshot } from "../syncCustoms";
 import { defaultPresetOverlay, pickPresetFields, presetQueryOptions } from "../settingsPresets";
 import type {
+  CardFaceArt,
   CardRow,
   CustomCardItem,
   LoadedProject,
   ProjectSettings,
   ResolvedImportCard,
+  ScryfallFaceSource,
 } from "../api/project";
 import type { BackImage, BackMode, CustomImage, MpcCard } from "../api/types";
 
@@ -237,6 +239,15 @@ interface ProjectContextValue {
     face: number,
     totalFaces: number,
     image: CustomImage,
+  ) => Promise<void>;
+  /** Print one face of a Scryfall card from another printing of it (a
+   *  DFC's back picked apart from its front). The card's own printing and
+   *  face clears the face instead: it follows the card's printing again. */
+  setCardFacePrinting: (
+    cardId: number,
+    face: number,
+    totalFaces: number,
+    source: ScryfallFaceSource,
   ) => Promise<void>;
   /** Back to the printing's own art for one face (or all, with null). */
   clearCardFaceArt: (cardId: number, face: number | null) => Promise<void>;
@@ -780,8 +791,21 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 printed_name: printing.printedName,
                 flavor_name: printing.flavorName ?? null,
                 rarity: printing.rarity,
-                // Rust clears face art picked for a different printing.
-                face_art: c.scryfall_id === printing.scryfallId ? c.face_art : [],
+                // Mirrors set_card_printing: the front now prints the new
+                // printing, so its own face art goes. The back keeps what
+                // was chosen for it — unless that is the new printing's own
+                // back, which it now follows anyway.
+                face_art:
+                  c.scryfall_id === printing.scryfallId
+                    ? c.face_art
+                    : (c.face_art ?? []).filter(
+                        (fa) =>
+                          fa.face !== 0 &&
+                          !(
+                            fa.scryfall?.scryfall_id === printing.scryfallId &&
+                            fa.scryfall.source_face === fa.face
+                          ),
+                      ),
               }
             : c,
         ),
@@ -1280,6 +1304,32 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             label: art.name,
             mpc_drive_id: art.drive_id,
             mpc_source: art.source_name,
+          };
+          return { ...c, face_art: [...kept, chosen].sort((a, b) => a.face - b.face) };
+        }),
+      );
+    },
+    setCardFacePrinting: async (cardId, face, totalFaces, source) => {
+      await projectApi.setCardFacePrinting(cardId, face, totalFaces, source);
+      setCards((prev) =>
+        prev.map((c) => {
+          if (c.id !== cardId) return c;
+          // Mirrors face_art.rs, including its normalization.
+          const kept = (c.face_art ?? []).filter(
+            (fa) => fa.face !== face && fa.total_faces === totalFaces,
+          );
+          if (c.scryfall_id === source.scryfall_id && source.source_face === face) {
+            return { ...c, face_art: kept };
+          }
+          const chosen: CardFaceArt = {
+            face,
+            total_faces: totalFaces,
+            custom_image_id: null,
+            custom_hash: null,
+            label: source.name,
+            mpc_drive_id: null,
+            mpc_source: null,
+            scryfall: source,
           };
           return { ...c, face_art: [...kept, chosen].sort((a, b) => a.face - b.face) };
         }),

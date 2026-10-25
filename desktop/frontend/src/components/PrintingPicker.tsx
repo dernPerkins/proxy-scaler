@@ -24,7 +24,7 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
-import { projectApi } from "../api/project";
+import { isImageFaceArt, projectApi } from "../api/project";
 import {
   PRINTING_IMAGES_MIN_SERVER_VERSION,
   serverSupportsMpcFill,
@@ -397,6 +397,21 @@ function PrintingPreview(props: {
   const fullLoaded = fullUrl != null && loadedUrl === fullUrl;
   const thumbShown = thumbUrl != null && thumbFailed !== thumbUrl;
 
+  // Loading a face full size is its download (see above), so a
+  // double-faced printing's other face loads behind it: looking at a card
+  // leaves the whole card downloaded, not just its front. In the
+  // background, once the face on show has loaded, so it never slows that.
+  useEffect(() => {
+    if (!fullLoaded || faceCount < 2 || origin == null) return;
+    const other = new Image();
+    other.onload = () =>
+      void queryClient.invalidateQueries({ queryKey: ["printing-generated", v.scryfall_id] });
+    other.src = generationApi.cardOriginalUrl(v.scryfall_id, face === 0 ? 1 : 0, origin);
+    return () => {
+      other.onload = null;
+    };
+  }, [fullLoaded, faceCount, origin, v.scryfall_id, face, queryClient]);
+
   return (
     <aside className="printing-preview" aria-label="Selected printing">
       {thumbShown && (
@@ -490,24 +505,50 @@ export interface PickerOpenRequest {
 
 export type PickerSource = "scryfall" | "mpc";
 
-/** One choice made in the deck walk for the card on screen. */
+/** One choice made in the deck walk for one face of the card on screen:
+ *  a Scryfall printing (that face of it) or MPC Fill art. Faces are
+ *  chosen independently. The front's printing is the card's printing;
+ *  the back follows it unless the back is given its own. */
 export type WalkChoice =
-  /** null: the card's own printing. */
-  | { kind: "printing"; pick: Pick | null }
-  /** null: the printing's own art for that face. */
-  | { kind: "art"; face: number; totalFaces: number; art: MpcCard | null };
+  | { kind: "printing"; face: number; totalFaces: number; pick: Pick }
+  | { kind: "art"; face: number; totalFaces: number; art: MpcCard };
 
-/** What the deck walk will apply to one card when it closes. */
+/** What the deck walk will apply to one face when it closes. */
+export type FaceChoice =
+  | { kind: "printing"; totalFaces: number; pick: Pick }
+  | { kind: "art"; totalFaces: number; art: MpcCard };
+
+/** What the deck walk will apply to one card when it closes, by face. */
 export interface StagedChanges {
-  /** A different printing; picking one drops the card's MPC Fill art. */
-  printing: Pick | null;
-  /** Per face: MPC Fill art to print, or null for the printing's own. */
-  faces: ReadonlyMap<number, { totalFaces: number; art: MpcCard | null }>;
+  faces: ReadonlyMap<number, FaceChoice>;
+}
+
+/** The printing a face prints from, once `staged` applies: a Scryfall id,
+ *  or null when it prints MPC Fill or custom art. Face 0 is the card's
+ *  printing; face 1 has its own only when given one, else it follows the
+ *  front's printing (even while the front prints MPC Fill art). */
+export function facePrinting(
+  card: CardRow,
+  staged: StagedChanges | null,
+  face: number,
+): string | null {
+  const chosen = staged?.faces.get(face);
+  if (chosen) return chosen.kind === "printing" ? chosen.pick.scryfallId : null;
+  const own = card.face_art?.find((fa) => fa.face === face);
+  if (own) return own.scryfall ? own.scryfall.scryfall_id : null;
+  return frontPrinting(card, staged);
+}
+
+/** The card's printing once `staged` applies: the front's chosen printing,
+ *  else the card's own. */
+export function frontPrinting(card: CardRow, staged: StagedChanges | null): string | null {
+  const front = staged?.faces.get(0);
+  return front?.kind === "printing" ? front.pick.scryfallId : card.scryfall_id;
 }
 
 /** The deck walk's side of the modal (DeckArtWalk.tsx). */
 export interface WalkHooks {
-  /** The deck navigation, in the modal head. */
+  /** The walk's buttons in the modal head (Close). */
   nav: ReactNode;
   staged: StagedChanges | null;
   /** Something was selected: it is the card's choice now. */
@@ -515,6 +556,8 @@ export interface WalkHooks {
   /** Chosen with the pane's button, a double-click or Enter: choose it
    *  and close the walk. */
   onChoose: (choice: WalkChoice) => void;
+  /** The deck navigation and Confirm, in a bar under the grid. */
+  footer: ReactNode;
 }
 
 export function PrintingGridModal(props: {
@@ -533,7 +576,9 @@ export function PrintingGridModal(props: {
     setSourceState(next);
     props.onSourceChange(next);
   };
-  const [mpcFace, setMpcFace] = useState(props.initial.face);
+  // The face being chosen for, on both tabs: a double-faced card's faces
+  // are chosen independently (the head's Front | Back switch).
+  const [face, setFaceState] = useState(props.initial.face);
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
   // Starts on "<defaultLang> + Exclusives" (see shownByDefault); after
@@ -647,13 +692,18 @@ export function PrintingGridModal(props: {
         icon: <SetIcon setCode={code} />,
       }));
   }, [variants]);
-  const currentId = card.scryfall_id;
+  // What this face prints now: the card's printing, or for a back given
+  // its own, that printing (null while it prints MPC Fill art).
+  const currentId = facePrinting(card, null, face);
   const isCurrent = (v: CardVariant) =>
-    currentId
+    card.scryfall_id
       ? v.scryfall_id === currentId
       : v.set_code === (card.set_code ?? "").toLowerCase() &&
         v.collector_number === (card.collector_number ?? "") &&
         v.lang === cardLang;
+  // The card's own printing (its front's), whatever this face prints.
+  const isCardPrinting = (v: CardVariant) =>
+    card.scryfall_id ? v.scryfall_id === card.scryfall_id : isCurrent(v);
 
   // The default view's language. Normally the card's own; but when the
   // card is currently an exclusive (a printing with no English version,
@@ -661,7 +711,7 @@ export function PrintingGridModal(props: {
   // user prints in, so the Project's import language stands in — and
   // follows the import dropdown when that changes.
   const defaultLang = useMemo(() => {
-    const current = variants.find(isCurrent);
+    const current = variants.find(isCardPrinting);
     if (!current || current.lang === "en") return cardLang;
     const slot = slotOf(current);
     const hasEnglish = variants.some((v) => v.lang === "en" && slotOf(v) === slot);
@@ -683,10 +733,10 @@ export function PrintingGridModal(props: {
     );
     return (v: CardVariant) => v.lang === defaultLang || !covered.has(slotOf(v));
   }, [variants, defaultLang]);
-  // The default view also always lists the card's own printing and the
+  // The default view also always lists this face's own printing and the
   // one chosen for it in the walk, whatever their language, so reopening
   // the card (Prev / Next) can land on it.
-  const stagedId = walk.staged?.printing?.scryfallId ?? null;
+  const stagedId = facePrinting(card, walk.staged, face);
   const shown = useMemo(
     () =>
       sortVariants(
@@ -699,8 +749,8 @@ export function PrintingGridModal(props: {
         ),
         sortMode,
       ),
-    // isCurrent reads only props that are fixed while the grid is open.
-    [variants, langDefault, shownByDefault, stagedId, effectiveLangs, setFilter, sortMode],
+    // isCurrent reads only the face and props fixed while the grid is open.
+    [variants, langDefault, shownByDefault, stagedId, effectiveLangs, setFilter, sortMode, face],
   );
 
   function pickOf(v: CardVariant): Pick {
@@ -716,29 +766,19 @@ export function PrintingGridModal(props: {
     };
   }
   function choiceOf(v: CardVariant): WalkChoice {
-    return { kind: "printing", pick: isCurrent(v) ? null : pickOf(v) };
+    return { kind: "printing", face, totalFaces: Math.min(2, v.face_count ?? 1), pick: pickOf(v) };
   }
-  // The walk's choice for this card: a staged printing, else its own —
-  // unless a face prints MPC Fill art (the card's own, or art chosen in
-  // this walk). Then no Scryfall printing is chosen: its own printing
-  // only opens selected, and picking it is what puts it back on Scryfall
-  // art (DeckArtWalk.withChoice).
-  const chosenId = walk.staged?.printing?.scryfallId ?? null;
-  const printsMpcArt = useMemo(() => {
-    const faces = new Set((card.face_art ?? []).map((fa) => fa.face));
-    for (const [face, { art }] of walk.staged?.faces ?? []) {
-      if (art) faces.add(face);
-      else faces.delete(face);
-    }
-    return faces.size > 0;
-  }, [card.face_art, walk.staged]);
-  const isChosen = (v: CardVariant) =>
-    chosenId ? v.scryfall_id === chosenId : !printsMpcArt && isCurrent(v);
+  // The walk's choice for this face: its staged printing, else what it
+  // prints now. None while it prints MPC Fill art: its own printing then
+  // only opens selected, and picking it puts it back on Scryfall art.
+  const isChosen = (v: CardVariant) => stagedId != null && v.scryfall_id === stagedId;
 
-  // Which face each double-faced tile shows. Lifted here so the tile and
-  // the preview pane flip together.
+  // Which face each double-faced tile shows: the face being chosen for,
+  // unless flipped to look at the other. Lifted here so the tile and the
+  // preview pane flip together.
   const [faceById, setFaceById] = useState<ReadonlyMap<string, number>>(new Map());
-  const faceOf = (v: CardVariant) => faceById.get(v.scryfall_id) ?? 0;
+  const faceOf = (v: CardVariant) =>
+    faceById.get(v.scryfall_id) ?? Math.min(face, (v.face_count ?? 1) - 1);
   const flip = (v: CardVariant) =>
     setFaceById((prev) => new Map(prev).set(v.scryfall_id, faceOf(v) === 0 ? 1 : 0));
 
@@ -767,6 +807,9 @@ export function PrintingGridModal(props: {
   }
 
   function onGridKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    // Alt+←/→ is the deck walk's Prev / Next. Moving focus first would
+    // select (and so choose) the neighbouring tile on the card being left.
+    if (e.altKey) return;
     const columns = gridColumns(gridRef.current);
     const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -columns, ArrowDown: columns }[e.key];
     if (delta === undefined) return;
@@ -775,48 +818,74 @@ export function PrintingGridModal(props: {
     moveFocus(clampedFocus + delta);
   }
 
-  // On open, the current printing is selected, focused and scrolled into
-  // view, once, the first time the grid has tiles to show.
-  const placedInitialFocus = useRef(false);
+  // On open, and on each switch of face, that face's printing is
+  // selected, focused and scrolled into view, once, the first time the
+  // grid has tiles to show.
+  const placedFor = useRef<number | null>(null);
   useEffect(() => {
-    if (placedInitialFocus.current || shown.length === 0) return;
-    placedInitialFocus.current = true;
-    // The chosen printing, else the card's own (chosen or not: see
-    // printsMpcArt), else the first.
+    if (placedFor.current === face || shown.length === 0) return;
+    placedFor.current = face;
+    // The chosen printing, else the face's own (while it prints MPC Fill
+    // art, none is chosen), else the first.
     const chosen = shown.findIndex(isChosen);
     const index = Math.max(0, chosen >= 0 ? chosen : shown.findIndex(isCurrent));
     setFocusIndex(index);
     setSelectedId(shown[index].scryfall_id);
     // isChosen and isCurrent read only what is fixed until a selection
     // changes it.
-  }, [shown]);
+  }, [shown, face]);
   // The scroll waits for that selection to render: the preview pane it
   // mounts narrows the grid, reflowing every tile, so scrolling any
   // earlier lands on the wrong row. A layout effect, so it happens before
   // the first paint with the pane.
-  const scrolledToSelection = useRef(false);
+  const scrolledFor = useRef<number | null>(null);
   useLayoutEffect(() => {
-    if (scrolledToSelection.current || selected == null || source !== "scryfall") return;
-    scrolledToSelection.current = true;
+    if (scrolledFor.current === face || selected == null || source !== "scryfall") return;
+    if (placedFor.current !== face) return;
+    scrolledFor.current = face;
     const tile = tileRefs.current[clampedFocus];
     tile?.scrollIntoView({ block: "center" });
     tile?.focus({ preventScroll: true });
-  }, [selected, clampedFocus, source]);
+  }, [selected, clampedFocus, source, face]);
 
   // isPending, not isLoading: also while the query waits on Show Digital.
   const loadingPrintings = variantsQuery.isPending;
 
-  // MPC Fill mode works on the current printing's faces: how many, and
-  // what each is called. Known once the printings load; until then, what
-  // the card's existing face art says (or one face).
-  const currentVariant = variants.find(isCurrent);
+  // The card's faces: how many, and what each is called. Known once the
+  // printings load; until then, what the card's face art says (or one).
+  const cardVariant = variants.find(isCardPrinting);
   const totalFaces = Math.min(
     2,
-    currentVariant?.face_count ?? card.face_art?.[0]?.total_faces ?? 1,
+    cardVariant?.face_count ?? card.face_art?.[0]?.total_faces ?? 1,
   );
-  const artFor = (face: number) => card.face_art?.find((fa) => fa.face === face) ?? null;
-  const faceLabelOf = (face: number) =>
-    currentVariant?.face_names?.[face] ?? (face === 0 ? "Front" : "Back");
+  // This face's MPC Fill (or custom) art, if it prints some.
+  const artFor = (f: number) =>
+    card.face_art?.find((fa) => fa.face === f && isImageFaceArt(fa)) ?? null;
+  const faceLabelOf = (f: number) =>
+    cardVariant?.face_names?.[f] ?? (f === 0 ? "Front" : "Back");
+  function setFace(next: number) {
+    if (next === face) return;
+    setFaceState(next);
+    // Each face opens on its own printing, showing that side.
+    setFaceById(new Map());
+    setSelectedId(null);
+  }
+  const faceSwitch =
+    totalFaces > 1 ? (
+      <span className="segmented" role="group" aria-label="Face" data-tour="picker-face">
+        {[0, 1].map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`btn-sm${face === f ? " active" : ""}`}
+            aria-pressed={face === f}
+            onClick={() => setFace(f)}
+          >
+            {faceLabelOf(f)}
+          </button>
+        ))}
+      </span>
+    ) : null;
 
   const sourceSwitch = mpcAvailable ? (
     <span className="segmented" role="group" aria-label="Art source">
@@ -841,11 +910,11 @@ export function PrintingGridModal(props: {
   ) : null;
 
   if (source === "mpc" && mpcAvailable) {
-    const art = artFor(mpcFace);
-    const stagedFace = walk.staged?.faces.get(mpcFace);
-    const artChoice = (picked: MpcCard | null): WalkChoice => ({
+    const art = artFor(face);
+    const stagedFace = walk.staged?.faces.get(face);
+    const artChoice = (picked: MpcCard): WalkChoice => ({
       kind: "art",
-      face: mpcFace,
+      face,
       totalFaces,
       art: picked,
     });
@@ -859,12 +928,16 @@ export function PrintingGridModal(props: {
         >
           <MpcArtBrowser
             // A new face is a new search.
-            key={mpcFace}
-            initial={{ scryfallId: card.scryfall_id, face: mpcFace }}
+            key={face}
+            initial={{ scryfallId: card.scryfall_id, face }}
             cardTypes={["CARD", "TOKEN"]}
             defaultLang={card.lang}
             currentDriveId={
-              stagedFace ? (stagedFace.art?.drive_id ?? null) : (art?.mpc_drive_id ?? null)
+              stagedFace
+                ? stagedFace.kind === "art"
+                  ? stagedFace.art.drive_id
+                  : null
+                : (art?.mpc_drive_id ?? null)
             }
             pickLabel="Use This Art"
             tourAfter="decklist-cards"
@@ -874,27 +947,14 @@ export function PrintingGridModal(props: {
               <>
                 <span className="picker-head-left">
                   {sourceSwitch}
-                  {totalFaces > 1 && (
-                    <span className="segmented" role="group" aria-label="Face" data-tour="picker-face">
-                      {[0, 1].map((face) => (
-                        <button
-                          key={face}
-                          type="button"
-                          className={`btn-sm${mpcFace === face ? " active" : ""}`}
-                          aria-pressed={mpcFace === face}
-                          onClick={() => setMpcFace(face)}
-                        >
-                          {faceLabelOf(face)}
-                        </button>
-                      ))}
-                    </span>
-                  )}
+                  {faceSwitch}
                   <TutorialButton tour="mpc-picker" />
                 </span>
                 {walk.nav}
               </>
             }
           />
+          <div className="walk-footer">{walk.footer}</div>
         </div>
       </ModalOverlay>
     );
@@ -931,6 +991,7 @@ export function PrintingGridModal(props: {
         <div className="modal-head printing-grid-head">
           <span className="picker-head-left">
             {sourceSwitch}
+            {faceSwitch}
             {/* The tab bar's ? is behind this modal; replay from here. */}
             <TutorialButton tour="decklist-picker" />
           </span>
@@ -1071,6 +1132,7 @@ export function PrintingGridModal(props: {
             </div>
           </>
         )}
+        <div className="walk-footer">{walk.footer}</div>
       </div>
     </ModalOverlay>
   );
@@ -1106,14 +1168,11 @@ export default function PrintingPicker(props: {
         title={disabled ? "Generation server is unreachable" : "Change printing"}
         disabled={disabled}
         // A card printing MPC Fill art opens on that art, at its first
-        // overridden face; everything else on its printings.
-        onClick={() =>
-          onOpen(
-            card.face_art?.length
-              ? { source: "mpc", face: card.face_art[0].face }
-              : { source: "scryfall", face: 0 },
-          )
-        }
+        // face printing some; everything else on its printings.
+        onClick={() => {
+          const art = card.face_art?.find(isImageFaceArt);
+          onOpen(art ? { source: "mpc", face: art.face } : { source: "scryfall", face: 0 });
+        }}
       >
         <SetIcon setCode={card.set_code} rarity={rarity} />
         {label} ▾

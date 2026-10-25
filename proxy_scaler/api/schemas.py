@@ -78,18 +78,25 @@ class DeviceOut(BaseModel):
 
 
 class FaceOverrideIn(BaseModel):
-    """One face of a Scryfall card printed from a Custom Image instead of
-    its own art (MPC Fill art picked in the client's change-printing
-    modal). `face` is the face's position (0 front, 1 back) and
-    `total_faces` how many faces the printing has, which the print paths
-    need and can't look up without a corpus."""
+    """One face of a Scryfall card printed from something other than its
+    own art: a Custom Image (MPC Fill art picked in the client's
+    change-printing modal), or one face of another Scryfall printing of
+    the same card. `face` is the face's position (0 front, 1 back) and
+    `total_faces` how many faces the entry's printing has, which the print
+    paths need and can't look up without a corpus."""
 
     face: int = Field(ge=0, le=1)
     total_faces: int = Field(ge=1, le=2)
-    # None: MPC Fill art chosen but not downloaded yet. The face then
-    # prints nothing (reported missing) rather than its Scryfall art, and
-    # Generate/Download leave its Scryfall image alone.
+    # None (with scryfall_id also None): MPC Fill art chosen but not
+    # downloaded yet. The face then prints nothing (reported missing)
+    # rather than its Scryfall art, and Generate/Download leave its
+    # Scryfall image alone.
     custom_hash: str | None = None
+    # Set instead of custom_hash (never both): the face prints face
+    # `source_face` of this Scryfall printing, which Generate/Download
+    # fetch on their own. source_face defaults to `face`.
+    scryfall_id: str | None = None
+    source_face: int | None = Field(default=None, ge=0, le=1)
 
 
 class DeckEntryIn(BaseModel):
@@ -114,10 +121,12 @@ class DeckEntryIn(BaseModel):
     # manifest, which carries the bleed declaration.
     back_mode: Literal["inherit", "blank", "image"] = "inherit"
     back_hash: str | None = None
-    # Faces of this (Scryfall) entry printed from a Custom Image instead.
-    # Generate skips those faces' Scryfall download/upscale and registers
-    # (and, with custom_upscale, upscales) the custom; PDF/ZIP print it in
-    # the face's place. An older server drops the field and prints the
+    # Faces of this (Scryfall) entry printed from a Custom Image or another
+    # printing's face instead. Generate skips those faces' own Scryfall
+    # download/upscale and does the override's work instead (registers,
+    # and with custom_upscale upscales, the custom; or the other
+    # printing's face, like any Scryfall face); PDF/ZIP print it in the
+    # face's place. An older server drops the field and prints the
     # Scryfall art, which is why the client gates on the server version.
     face_overrides: list[FaceOverrideIn] = Field(default_factory=list, max_length=2)
 

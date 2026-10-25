@@ -900,18 +900,32 @@ BackKey = tuple[str, str | None]
 """(back_mode, back_hash) as match_quantities groups copies by it."""
 
 SubstKey = tuple[str, int, int] | None
-"""For a custom image printed on a face of a Scryfall card (a face
-override): (scryfall_id, face, total_faces) — copies of one override merge,
-and stay apart from the same image printed as a card of its own (None)."""
+"""For a custom image or another printing's face printed on a face of a
+Scryfall card (a face override): (scryfall_id, face, total_faces) — copies
+of one override merge, and stay apart from the same image printed as a
+card of its own (None)."""
+
+
+def _override_prints(override: FaceOverride, rep: FaceResult) -> bool:
+    """Whether face group `rep` is what `override` prints: its custom, or
+    the chosen face of its other printing."""
+    if rep.is_custom:
+        return override.custom_hash is not None and override.custom_hash == rep.custom_hash
+    return (
+        override.scryfall_id is not None
+        and override.scryfall_id == rep.scryfall_id
+        and override.source_position == (rep.face_index or 0)
+    )
 
 
 def _substitute(best: FaceResult, entry: DeckEntry, override: FaceOverride) -> FaceResult:
-    """The custom image `best`, standing in for face `override.face` of the
-    Scryfall card `entry` names: it takes the card's identity (so DFC
-    pairing, ordering and descriptions treat it as that face) and keeps
-    its own file, DPI and bleed. Lives only for this print run — it names
-    two identities at once, which the registry's one-identity CHECK would
-    rightly refuse, so it must never be written back."""
+    """The image `best` (a custom, or a face of another printing),
+    standing in for face `override.face` of the Scryfall card `entry`
+    names: it takes the card's identity (so DFC pairing, ordering and
+    descriptions treat it as that face) and keeps its own file, DPI and
+    bleed. Lives only for this print run — it names two identities at
+    once, which the registry's one-identity CHECK would rightly refuse, so
+    it must never be written back."""
     double = override.total_faces > 1
     return dataclasses.replace(
         best,
@@ -1140,6 +1154,11 @@ def match_quantities(
     first entry that asked for that back. Entries that never say (older
     clients) all read as "inherit" and merge exactly as before.
 
+    A face an entry overrides (DeckEntry.face_overrides) never takes the
+    entry's own printing's image: it takes the override's face group — a
+    custom by hash, or the chosen face of another printing by scryfall_id
+    — dressed as the entry's face (_substitute), in a unit of its own.
+
     Returns (units, missing, missing_at_dpi).
     """
     def _eligible(item: FaceResult) -> bool:
@@ -1195,8 +1214,9 @@ def match_quantities(
             faces_taken[i] = faces_taken.get(i, 0) + 1
 
         def _overridden(entry: DeckEntry) -> bool:
-            # This Scryfall face prints from a custom instead, for this
-            # entry: its own image must neither print nor count.
+            # This Scryfall face prints from a custom or another printing
+            # instead, for this entry: its own image must neither print
+            # nor count.
             return entry.override_for(rep.face_index) is not None
 
         if rep.is_custom:
@@ -1208,7 +1228,7 @@ def match_quantities(
                 if entry.custom_hash == rep.custom_hash:
                     _take(i, entry)
                 for override in entry.face_overrides:
-                    if override.custom_hash == rep.custom_hash:
+                    if _override_prints(override, rep):
                         _take(i, entry, override)
         elif set_code and collector:
             rep_lang = (rep.lang or "en").lower()
@@ -1243,6 +1263,14 @@ def match_quantities(
                     or ename.split(" // ")[0] == card_name
                 ):
                     _take(i, entry)
+        if not rep.is_custom:
+            # Another printing's face printed on an entry's face: taken
+            # after the name fallback above, so an override never stops a
+            # name-only line from finding this printing.
+            for i, entry in enumerate(entries):
+                for override in entry.face_overrides:
+                    if _override_prints(override, rep):
+                        _take(i, entry, override)
 
         if not matched_indices:
             # No current decklist entry wants this printing any more (e.g.
@@ -1261,12 +1289,11 @@ def match_quantities(
             # generated" — a group excluded at the requested DPI gets its
             # own, more precise report instead.
             matched_face_counts[i] += faces_taken[i]
-            # A custom printed on a face counts toward its Scryfall card,
-            # whose face count the override carries.
+            # A custom or another printing's face printed on a face counts
+            # toward the entry's own card, whose face count the override
+            # carries.
             override_faces = [
-                o.total_faces
-                for o in entries[i].face_overrides
-                if rep.is_custom and o.custom_hash == rep.custom_hash
+                o.total_faces for o in entries[i].face_overrides if _override_prints(o, rep)
             ]
             if override_faces:
                 expected_faces_by_entry[i] = override_faces[0]

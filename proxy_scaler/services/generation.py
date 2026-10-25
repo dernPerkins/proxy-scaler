@@ -8,6 +8,7 @@ return value instead and are responsible for tracking them client-side.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from proxy_scaler import db
@@ -55,10 +56,20 @@ def custom_face(entry) -> CardFaceImage:
     )
 
 
+@dataclass(frozen=True)
+class _PrintingFace(DeckEntry):
+    """One face of another printing that a face override prints (see
+    _override_printings): resolved like any pinned entry, but only face
+    `only_face` of it is generated."""
+
+    only_face: int = 0
+
+
 def _faces_for(entry, pre, on_note) -> list[CardFaceImage]:
     """Faces to generate for one decklist entry, from either world. A face
-    the entry prints from a Custom Image instead (face_overrides) is left
-    out: its custom is registered through _override_customs."""
+    the entry prints from something else instead (face_overrides) is left
+    out: its custom is registered through _override_customs, its other
+    printing's face generated through _override_printings."""
     if getattr(entry, "custom_hash", None):
         return [custom_face(entry)]
     if isinstance(pre, ScryfallError):
@@ -70,7 +81,36 @@ def _faces_for(entry, pre, on_note) -> list[CardFaceImage]:
     faces = list(expand_faces(card))
     if getattr(entry, "face_overrides", ()):
         faces = [f for f in faces if entry.override_for(f.face_index) is None]
+    if isinstance(entry, _PrintingFace):
+        faces = [f for f in faces if (f.face_index or 0) == entry.only_face]
     return faces
+
+
+def _override_printings(entries: list) -> list:
+    """One pinned entry per distinct (printing, face) the entries print on
+    a face of another printing, so that face is downloaded/upscaled like
+    any Scryfall face — and only that face: the rest of the printing is
+    not part of the deck."""
+    seen: set[tuple[str, int]] = set()
+    out = []
+    for entry in entries:
+        for override in getattr(entry, "face_overrides", ()):
+            if override.scryfall_id is None:
+                continue
+            key = (override.scryfall_id, override.source_position)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                _PrintingFace(
+                    quantity=1,
+                    name=entry.name,
+                    raw_line=entry.raw_line or entry.name,
+                    scryfall_id=override.scryfall_id,
+                    only_face=override.source_position,
+                )
+            )
+    return out
 
 
 def _override_customs(entries: list) -> list:
@@ -285,6 +325,9 @@ def enqueue_decklist_entries(
     # (custom_upscale): "off" keeps the upload as prepared; "target" and
     # "native" queue model passes for the selected targets it doesn't
     # already reach (dpi.custom_upscale_targets).
+    # Another printing's face printed on a card is an ordinary Scryfall
+    # face from here on (its card's own face is skipped in _faces_for).
+    entries = [*entries, *_override_printings(entries)]
     overrides = _override_customs(entries)
     customs = [e for e in entries if getattr(e, "custom_hash", None)] + overrides
     queued = 0
@@ -537,8 +580,9 @@ def enqueue_download_entries(
     db.enqueue_task requires them NOT NULL — the download handler ignores
     both. Returns (queued_count, failed_count, task_ids)."""
     # Customs printed on a face of a Scryfall card register like any other
-    # custom (their Scryfall face is skipped in _faces_for).
-    entries = [*entries, *_override_customs(entries)]
+    # custom, and another printing's face downloads like any Scryfall face
+    # (the card's own face is skipped in _faces_for).
+    entries = [*entries, *_override_customs(entries), *_override_printings(entries)]
     resolver = CardResolver(card_db_path=card_db_path)
     resolved = _resolve_pairs(entries, resolver)
     active = active_task_keys(project_tag, db_path=db_path)

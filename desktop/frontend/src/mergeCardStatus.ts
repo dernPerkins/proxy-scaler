@@ -253,8 +253,9 @@ export function statusForPairs(faceItems: GalleryItem[], faceTasks: Task[]): Var
 }
 
 /** One face of a card row as the Decklist shows it. `art` is set when the
- *  face prints a Custom Image (MPC Fill art) in place of the printing's
- *  own: its variants are that image's then. */
+ *  face prints something in place of the printing's own — a Custom Image
+ *  (MPC Fill art), or that face of another printing — and its variants
+ *  are that image's or that printing face's then. */
 export interface CardFaceStatus<A> {
   faceLabel: string | null;
   variants: VariantStatus[];
@@ -262,16 +263,26 @@ export interface CardFaceStatus<A> {
 }
 
 /**
- * Swap each overridden face's Scryfall variants for those of the Custom
- * Image it prints instead. The custom's own rows live under its
- * `custom:<hash>` identity, single-faced and unlabelled, so they are
- * fetched from there and labelled as the face they stand in for. Faces
- * come back front first; an overridden face shows even before anything
- * has been registered for it (with no variants), so the row says where
- * its art comes from.
+ * Swap each overridden face's Scryfall variants for those of what it
+ * prints instead. A Custom Image's rows live under its `custom:<hash>`
+ * identity, single-faced and unlabelled; another printing's under that
+ * printing's identity, filtered to the face it lends. Either is labelled
+ * as the face it stands in for. Faces come back front first; an
+ * overridden face shows even before anything has been registered for it
+ * (with no variants), so the row says where its art comes from.
  */
 export function applyFaceArt<
-  A extends { face: number; total_faces: number; custom_hash: string | null },
+  A extends {
+    face: number;
+    total_faces: number;
+    custom_hash: string | null;
+    scryfall?: {
+      set_code: string;
+      collector_number: string;
+      lang: string;
+      source_face: number;
+    } | null;
+  },
 >(
   scryfallFaces: { faceIndex: number | null; face: CardFaceStatus<A> }[],
   faceArt: A[],
@@ -284,16 +295,24 @@ export function applyFaceArt<
     .filter((f) => !overridden.has(f.faceIndex ?? 0))
     .map((f) => ({ position: f.faceIndex ?? 0, face: f.face }));
   for (const art of faceArt) {
-    // Chosen but not downloaded yet: nothing on the server to show.
-    const identity = art.custom_hash
-      ? cardIdentity(null, null, null, null, null, art.custom_hash)
-      : null;
-    const variants = identity
-      ? statusForPairs(
-          galleryByCard.get(identity) ?? [],
-          tasksByCard.get(identity) ?? [],
-        ).filter((v) => v.status !== "canceled")
-      : [];
+    let variants: VariantStatus[] = [];
+    if (art.scryfall) {
+      const { set_code, collector_number, lang, source_face } = art.scryfall;
+      const identity = cardIdentity(set_code, collector_number, null, null, lang);
+      const ofFace = <T extends { face_index: number | null }>(rows: T[]) =>
+        rows.filter((r) => (r.face_index ?? 0) === source_face);
+      variants = statusForPairs(
+        ofFace(galleryByCard.get(identity) ?? []),
+        ofFace(tasksByCard.get(identity) ?? []),
+      ).filter((v) => v.status !== "canceled");
+    } else if (art.custom_hash) {
+      // (No hash: chosen but not downloaded yet, nothing on the server.)
+      const identity = cardIdentity(null, null, null, null, null, art.custom_hash);
+      variants = statusForPairs(
+        galleryByCard.get(identity) ?? [],
+        tasksByCard.get(identity) ?? [],
+      ).filter((v) => v.status !== "canceled");
+    }
     out.push({
       position: art.face,
       face: {

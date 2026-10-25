@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { generationApi } from "../api/generation";
+import { useServerReadiness } from "../config";
 import { useConnection } from "../connection";
 import ModalOverlay from "./ModalOverlay";
 import { isTauri } from "../tauri";
@@ -36,7 +37,11 @@ import {
 // genuinely in flight — see generation.py::cancel_all_tasks), so cancel
 // covers the queue and an in-flight task finishes first.
 //
-// The flow, once per connection:
+// The flow, once per connection — and again whenever the server comes
+// up anew underneath it (ServerBootModal's Retry restarts the local
+// sidecar, held again, without the connection changing), and after a
+// failed check. A held worker nobody releases sits on every download and
+// upscale queued from then on, with nothing on screen to say why:
 //   - held with zero leftovers → release silently, no dialog.
 //   - held with leftovers → ask: Resume (release) or Cancel all
 //     (cancel pending AND orphaned running rows — allowed by the server
@@ -52,7 +57,11 @@ import {
 // fetching and the silent paths don't wait; only the modal does.
 export default function ResumeTasksPrompt() {
   const { status } = useConnection();
+  const readiness = useServerReadiness();
+  const serverReady = readiness.status === "ready";
   const queryClient = useQueryClient();
+  // Bumped to run the check again after it failed.
+  const [attempt, setAttempt] = useState(0);
   // null = nothing to ask (not checked yet, or already decided).
   const [leftover, setLeftover] = useState<number | null>(null);
   const [held, setHeld] = useState(false);
@@ -70,10 +79,11 @@ export default function ResumeTasksPrompt() {
   const patchNotesSettled = useSyncExternalStore(subscribeUpdateStore, getPatchNotesSettled);
   const patchNotesOpen = useSyncExternalStore(subscribeUpdateStore, getPatchNotesPromptOpen);
 
-  // Once per connection, not once per mount: a local↔remote switch (or a
-  // switch between remote hosts) passes through a non-"connected" status
-  // on its way to the new server, so resetting the ref there makes the
-  // check run again against whatever was just connected to.
+  // Once per connection and server start, not once per mount: a
+  // local↔remote switch (or a switch between remote hosts) passes through
+  // a non-"connected" status on its way to the new server, and a restarted
+  // local sidecar through a non-ready one, so resetting the ref there
+  // makes the check run again against whatever is now answering.
   const checkedThisConnection = useRef(false);
 
   // Publish this component's link in the boot-dialog chain (see
@@ -85,7 +95,7 @@ export default function ResumeTasksPrompt() {
   }, []);
 
   useEffect(() => {
-    if (status.kind !== "connected") {
+    if (status.kind !== "connected" || !serverReady) {
       checkedThisConnection.current = false;
       return;
     }
@@ -94,6 +104,7 @@ export default function ResumeTasksPrompt() {
     checkedThisConnection.current = true;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // Set only when a run reaches one of its real outcomes (nothing to
     // ask / released / dialog up). StrictMode's dev-only
     // mount→unmount→remount cancels the first run mid-flight — that run
@@ -130,17 +141,25 @@ export default function ResumeTasksPrompt() {
       } catch (err) {
         // Reaching here means the server stopped answering right after
         // connecting — in which case a release call would fail too.
-        // Leaving a held worker held is the safe direction: nothing heavy
-        // starts, and the next launch simply asks again. Deliberately
-        // not `settled`: if the component remounts, the check retries.
+        // Leaving a held worker held is the safe direction (nothing heavy
+        // starts), but only for now: try again shortly, or every task
+        // queued this session would wait on a hold nobody releases.
+        // Deliberately not `settled`, so the retry (or a remount) runs.
         console.error("leftover-task check failed", err);
+        if (!cancelled) {
+          retryTimer = setTimeout(() => {
+            checkedThisConnection.current = false;
+            setAttempt((n) => n + 1);
+          }, 5_000);
+        }
       }
     })();
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
       if (!settled) checkedThisConnection.current = false;
     };
-  }, [status.kind, queryClient]);
+  }, [status.kind, serverReady, attempt, queryClient]);
 
   if (
     leftover === null ||

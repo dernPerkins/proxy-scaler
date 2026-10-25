@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from proxy_scaler import db
 from proxy_scaler.api.deps import get_card_db_path, get_db_path
+from proxy_scaler.api.entries import to_deck_entry
 from proxy_scaler.api.schemas import (
     AdoptGalleryIn,
     AdoptGalleryOut,
@@ -101,6 +102,14 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
             custom_hash=e.custom_hash,
         )
         for e in body.entries
+    ]
+    # Another printing whose face a card prints (a face override) is
+    # adopted too, so the card's row shows that face's badges.
+    entries += [
+        DeckEntry(quantity=1, name=e.name, scryfall_id=o.scryfall_id)
+        for e in body.entries
+        for o in to_deck_entry(e).face_overrides
+        if o.scryfall_id
     ]
     adopted = db.adopt_gallery_items(
         body.project_tag,

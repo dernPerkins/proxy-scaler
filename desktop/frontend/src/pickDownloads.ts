@@ -18,7 +18,7 @@
 // the modal closing; cancelPendingFaceArt drops the ones not yet started.
 import { useSyncExternalStore } from "react";
 import { generationApi } from "./api/generation";
-import type { CardRow } from "./api/project";
+import { isImageFaceArt, type CardRow } from "./api/project";
 import type { CustomImage, MpcBestResult, MpcCard } from "./api/types";
 import { DEFAULT_GEN_PATHS } from "./constants";
 import { cardToEntry } from "./deckEntries";
@@ -66,25 +66,30 @@ export function downloadPickedPrinting(
 }
 
 /**
- * Download the Scryfall originals of a card's faces that print no MPC Fill
- * art: the deck walk's Confirm after MPC Fill art went on (or came off)
- * some faces, so a double-faced card's other face arrives with its new
- * front rather than waiting for Download or Generate. `mpcFaces` are the
- * faces printing MPC Fill art once Confirm applies (hash null while that
- * art is still downloading); the server skips every face they list. Each
- * Scryfall face shows as downloading on its own, beside any MPC face's
- * own progress. Best-effort, like downloadPickedPrinting.
+ * Download a card's faces that print from Scryfall — its own printing's,
+ * or a face given another printing of the card — as one queued download
+ * task, each face showing as downloading on its own beside any MPC Fill
+ * face's own progress. The deck walk's Confirm, so a double-faced card's
+ * every face arrives together. The faces printing MPC Fill (or custom)
+ * art are sent as overrides, which the server skips (hash null while the
+ * art is still on its way). A card with no face art at all is the row's
+ * Download instead (downloadPickedPrinting): the server knows its faces.
+ * Best-effort, like downloadPickedPrinting.
  */
-export function downloadScryfallFaces(
+export function downloadCardFaces(
   card: CardRow,
-  totalFaces: number,
-  mpcFaces: { face: number; customHash: string | null }[],
   projectTag: string | null,
   refreshStatus: () => Promise<unknown>,
 ): void {
   if (projectTag == null || card.scryfall_id == null) return;
-  const mpc = new Set(mpcFaces.map((f) => f.face));
-  const faces = Array.from({ length: totalFaces }, (_, face) => face).filter((f) => !mpc.has(f));
+  const faceArt = card.face_art ?? [];
+  if (faceArt.length === 0) {
+    downloadPickedPrinting(card, projectTag, refreshStatus);
+    return;
+  }
+  const totalFaces = Math.max(...faceArt.map((fa) => fa.total_faces));
+  const images = new Set(faceArt.filter(isImageFaceArt).map((fa) => fa.face));
+  const faces = Array.from({ length: totalFaces }, (_, face) => face).filter((f) => !images.has(f));
   if (faces.length === 0) return;
   const mine = new Map<string, PendingFaceArt>();
   for (const face of faces) {
@@ -101,16 +106,7 @@ export function downloadScryfallFaces(
   void generationApi
     .downloadOriginals({
       project_tag: projectTag,
-      entries: [
-        {
-          ...cardToEntry(card),
-          face_overrides: mpcFaces.map((f) => ({
-            face: f.face,
-            total_faces: totalFaces,
-            custom_hash: f.customHash,
-          })),
-        },
-      ],
+      entries: [cardToEntry(card)],
       output_dir: DEFAULT_GEN_PATHS.output_dir,
       cache_dir: DEFAULT_GEN_PATHS.cache_dir,
       weights_dir: DEFAULT_GEN_PATHS.weights_dir,

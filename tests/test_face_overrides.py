@@ -1,7 +1,8 @@
-"""Face overrides: a Custom Image (MPC Fill art) printed in place of one
-face of a Scryfall card. Generation skips that face's Scryfall work and
-registers the custom; print matching swaps the custom in under the
-card's identity, so DFC pairing and per-line quantities keep working."""
+"""Face overrides: a Custom Image (MPC Fill art), or one face of another
+printing of the same card, printed in place of one face of a Scryfall
+card. Generation skips that face's Scryfall work and does the override's
+instead; print matching swaps the override in under the card's identity,
+so DFC pairing and per-line quantities keep working."""
 
 from __future__ import annotations
 
@@ -367,3 +368,228 @@ def test_the_api_accepts_art_chosen_but_not_downloaded(tmp_path, monkeypatch, re
     assert resp.status_code == 200, resp.text
     tasks = db.list_tasks(db_path=db_path)
     assert [t.face_index for t in tasks if t.scryfall_id] == [0]
+
+
+# --- another printing's face -------------------------------------------------
+
+# Printing X is DELVER above (the entry's own); printing Y is another
+# printing of the same card whose back the entry prints instead of X's.
+Y_ID = "0a1b2c3d-0000-4000-8000-00000000000b"
+DELVER_Y = {
+    **DELVER,
+    "id": Y_ID,
+    "set": "inr",
+    "collector_number": "77",
+    "card_faces": [
+        {"name": "Delver of Secrets", "image_uris": {"png": "https://example.com/y0.png"}},
+        {"name": "Insectile Aberration", "image_uris": {"png": "https://example.com/y1.png"}},
+    ],
+}
+
+
+@pytest.fixture
+def resolves_both(monkeypatch) -> None:
+    by_id = {"delver-id": DELVER, Y_ID: DELVER_Y}
+    monkeypatch.setattr(
+        ScryfallClient,
+        "resolve_many",
+        lambda self, entries: [(by_id[e.scryfall_id], []) for e in entries],
+    )
+
+
+def _y_back(source_face: int | None = 1) -> FaceOverride:
+    return FaceOverride(1, 2, None, scryfall_id=Y_ID, source_face=source_face)
+
+
+def test_converter_takes_a_printing_override() -> None:
+    from fastapi import HTTPException
+
+    from proxy_scaler.api.entries import to_deck_entry
+    from proxy_scaler.api.schemas import DeckEntryIn
+
+    entry = to_deck_entry(
+        DeckEntryIn(
+            name="Delver",
+            scryfall_id="delver-id",
+            face_overrides=[{"face": 1, "total_faces": 2, "scryfall_id": Y_ID.upper()}],
+        )
+    )
+    # Canonical id; source_face defaults to the overridden face.
+    assert entry.face_overrides == (_y_back(),)
+    swapped = to_deck_entry(
+        DeckEntryIn(
+            name="Delver",
+            scryfall_id="delver-id",
+            face_overrides=[
+                {"face": 1, "total_faces": 2, "scryfall_id": Y_ID, "source_face": 0}
+            ],
+        )
+    )
+    assert swapped.face_overrides[0].source_position == 0
+
+    for bad in (
+        # Not a UUID: it reaches cache filenames.
+        {"face": 1, "total_faces": 2, "scryfall_id": "../../etc/passwd"},
+        # A custom and a printing at once.
+        {"face": 1, "total_faces": 2, "scryfall_id": Y_ID, "custom_hash": HASH},
+    ):
+        with pytest.raises(HTTPException) as info:
+            to_deck_entry(DeckEntryIn(name="x", scryfall_id="delver-id", face_overrides=[bad]))
+        assert info.value.status_code == 400
+
+
+def test_download_queues_only_the_other_printings_face(
+    db_path, tmp_path, resolves_both
+) -> None:
+    queued, failed, _ids = generation.enqueue_download_entries(
+        [_delver(_y_back())],
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        weights_dir=tmp_path / "weights",
+        project_tag="tag",
+        db_path=db_path,
+    )
+    assert failed == 0
+    faces = sorted((t.scryfall_id, t.face_index) for t in db.list_tasks(db_path=db_path))
+    # X's front and Y's back: never X's back, never Y's front.
+    assert faces == sorted([("delver-id", 0), (Y_ID, 1)])
+
+
+def test_generate_upscales_the_other_printings_face_once(
+    db_path, tmp_path, resolves_both
+) -> None:
+    _enqueue([_delver(_y_back()), _delver(_y_back(), quantity=2)], tmp_path, db_path)
+    faces = sorted((t.scryfall_id, t.face_index) for t in db.list_tasks(db_path=db_path))
+    assert faces == sorted([("delver-id", 0), (Y_ID, 1)])
+
+
+def _y_face(face_index: int, dpi: int = 1200) -> FaceResult:
+    face = _scryfall_face(face_index, dpi, set_code="inr", collector="77")
+    face.scryfall_id = Y_ID
+    face.out_path = Path(f"/o/delver-y-{face_index}-{dpi}.png")
+    return face
+
+
+def test_match_quantities_prints_the_other_printings_back_paired_with_the_front() -> None:
+    gallery = [_scryfall_face(0), _scryfall_face(1), _y_face(0), _y_face(1)]
+    entry = _delver(_y_back(), quantity=3)
+    units, missing, missing_at_dpi = match_quantities([entry], gallery, preferred_dpi=1200)
+    assert missing == [] and missing_at_dpi == []
+    front, back = units
+    assert front.best.out_path == Path("/o/delver-0-1200.png")
+    # Y's back file, dressed as X's back.
+    assert back.best.out_path == Path("/o/delver-y-1-1200.png")
+    assert back.best.scryfall_id == "delver-id"
+    assert back.best.face_index == 1 and back.best.face_label == "back"
+    assert back.best.set_code == "isd" and back.quantity == 3
+
+    slots = build_print_slots(units, pair_back_faces=True)
+    assert len(slots) == 3
+    assert slots[0].front.out_path == Path("/o/delver-0-1200.png")
+    assert slots[0].reverse is not None
+    assert slots[0].reverse.out_path == Path("/o/delver-y-1-1200.png")
+
+
+def test_a_front_from_the_other_printings_back_face() -> None:
+    gallery = [_scryfall_face(0), _scryfall_face(1), _y_face(1)]
+    entry = _delver(FaceOverride(0, 2, None, scryfall_id=Y_ID, source_face=1))
+    units, missing, _ = match_quantities([entry], gallery)
+    assert missing == []
+    by_face = {u.best.face_index: u.best.out_path for u in units}
+    assert by_face == {0: Path("/o/delver-y-1-1200.png"), 1: Path("/o/delver-1-1200.png")}
+
+
+def test_the_other_printing_as_its_own_line_still_prints() -> None:
+    gallery = [_scryfall_face(0), _scryfall_face(1), _y_face(0), _y_face(1)]
+    y_line = DeckEntry(
+        quantity=2, name="Delver of Secrets", set_code="inr", collector_number="77",
+        scryfall_id=Y_ID,
+    )
+    units, missing, _ = match_quantities([_delver(_y_back()), y_line], gallery)
+    assert missing == []
+    y_back_units = sorted(
+        (u.best.scryfall_id, u.quantity)
+        for u in units
+        if u.best.out_path == Path("/o/delver-y-1-1200.png")
+    )
+    assert y_back_units == sorted([("delver-id", 1), (Y_ID, 2)])
+
+
+def test_an_other_printing_face_never_generated_is_missing() -> None:
+    units, missing, _ = match_quantities(
+        [_delver(_y_back())], [_scryfall_face(0), _scryfall_face(1), _y_face(0)]
+    )
+    # Neither X's back nor Y's front stands in.
+    assert [u.best.out_path for u in units] == [Path("/o/delver-0-1200.png")]
+    assert missing and "1 of 2" in missing[0]
+
+
+@pytest.fixture
+def api(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "api.db"
+    db.init_db(db_path)
+    monkeypatch.setenv("PROXY_SCALER_DB_PATH", str(db_path))
+    monkeypatch.setenv("PROXY_SCALER_WORKER_LOCK_PATH", str(tmp_path / "worker.lock"))
+    monkeypatch.setenv("PROXY_SCALER_CARD_DB_PATH", str(tmp_path / "cards.db"))
+    from proxy_scaler.api.app import app
+
+    return TestClient(app), db_path
+
+
+def _register(db_path, tmp_path, face: FaceResult, tag: str) -> None:
+    out = tmp_path / face.out_path.name
+    out.write_bytes(b"png")
+    face.out_path = out
+    db.upsert_gallery_item(tag, face, db_path=db_path)
+
+
+def test_adopt_and_print_gallery_include_the_other_printing(api, tmp_path) -> None:
+    from proxy_scaler.api.routers.pdf import gallery_for_print
+
+    client, db_path = api
+    _register(db_path, tmp_path, _y_face(0), "elsewhere")
+    _register(db_path, tmp_path, _y_face(1), "elsewhere")
+    entry = {
+        "quantity": 1,
+        "name": "Delver of Secrets",
+        "set_code": "isd",
+        "collector_number": "51",
+        "scryfall_id": "delver-id",
+        "face_overrides": [{"face": 1, "total_faces": 2, "scryfall_id": Y_ID}],
+    }
+
+    # Printable before any adopt: the override's face rows are pulled in,
+    # and only that face.
+    from proxy_scaler.api.entries import to_deck_entry
+    from proxy_scaler.api.schemas import DeckEntryIn
+
+    items = gallery_for_print("tag", [to_deck_entry(DeckEntryIn(**entry))], db_path)
+    assert [(i.scryfall_id, i.face_index) for i in items] == [(Y_ID, 1)]
+
+    resp = client.post("/api/gallery/adopt", json={"project_tag": "tag", "entries": [entry]})
+    assert resp.status_code == 200, resp.text
+    gallery = client.get("/api/gallery", params={"project_tag": "tag"}).json()
+    assert {(g["scryfall_id"], g["face_index"]) for g in gallery} >= {(Y_ID, 1)}
+
+
+def test_the_api_refuses_a_malformed_printing_override(api) -> None:
+    client, _db_path = api
+    resp = client.post(
+        "/api/gallery/adopt",
+        json={
+            "project_tag": "tag",
+            "entries": [
+                {
+                    "name": "Delver of Secrets",
+                    "scryfall_id": "delver-id",
+                    "face_overrides": [
+                        {"face": 1, "total_faces": 2, "scryfall_id": "not-a-uuid"}
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
