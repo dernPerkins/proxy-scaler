@@ -108,13 +108,13 @@ export const TOURS: Record<TourId, Tour> = {
       },
       {
         target: "server-switcher",
-        title: "Generation server",
+        title: "Generation Server",
         body: "Shows where upscaling runs. Local (this computer) is the default and all you need.",
         placement: "right",
       },
       {
         target: "model-select",
-        title: "Upscale model",
+        title: "Upscale Model",
         body: "We've pre-picked the recommended model for your GPU, so start with that. If results look off (odd textures, weird faces, crashes), try another one. The Vulkan models work on almost any graphics card. Generate a single card first and compare until you find one you like.",
         placement: "right",
       },
@@ -132,7 +132,7 @@ export const TOURS: Record<TourId, Tour> = {
       },
       {
         target: "custom-upscale-select",
-        title: "Custom images",
+        title: "Custom Images",
         body: "Your own uploaded images print as they are unless you change this. \"Upscale to target DPI\" brings a low-resolution upload up to the DPI you ticked above. \"Upscale 4×\" keeps the model's full result, up to 2400 DPI. Uploads that are already sharp enough are left alone either way.",
         placement: "right",
       },

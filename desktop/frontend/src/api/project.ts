@@ -332,7 +332,9 @@ export const projectApi = {
   parseDecklist: (text: string) =>
     invokeCommand<ParsedDeckEntry[]>("parse_decklist", { text }),
   // The second half: insert already-resolved (fully pinned) cards in one
-  // transaction, deduped like importDecklistText. Returns the full list.
+  // transaction. A card already in the deck (or earlier in the same list)
+  // takes the line's copies instead — a plain row of it first. Returns the
+  // full list.
   importResolvedCards: (projectId: number, text: string, cards: ResolvedImportCard[]) =>
     invokeCommand<CardRow[]>("import_resolved_cards", { projectId, text, cards }),
   removeCard: (cardId: number) => invokeCommand<void>("remove_card", { cardId }),
@@ -629,7 +631,8 @@ export const projectApi = {
    *  resolve-gated, unlike every other import path — there is nothing to
    *  resolve, which is what lets this work with no server reachable. */
   // One resolved Scryfall card with a library image on one face (the MPC
-  // Fill tab's Add to Project); reuses the card if the deck has it.
+  // Fill tab's Add to Project): always a card of its own, never merged into
+  // one already in the deck — unless that one prints this very art.
   addCardWithFaceArt: (
     projectId: number,
     card: ResolvedImportCard,

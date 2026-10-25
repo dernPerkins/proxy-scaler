@@ -433,7 +433,7 @@ export default function DecklistPage() {
   // A card-database update can bring what wasn't there before (flavor
   // names arrive only with a corpus imported after they were kept), so
   // a finished import asks about every card again. Same query as the
-  // sidebar's Card database panel, which refreshes it when an import ends.
+  // sidebar's Card Database panel, which refreshes it when an import ends.
   const cardDbQuery = useQuery({
     queryKey: ["card-db-status"],
     queryFn: () => generationApi.cardDbStatus(),
@@ -1136,7 +1136,7 @@ export default function DecklistPage() {
                 checked={settings.skip_existing}
                 onChange={(e) => setSettings((s) => ({ ...s, skip_existing: e.target.checked }))}
               />
-              Skip existing output files
+              Skip Existing Output Files
             </label>
 
             {/* How custom and MPC Fill art comes out when an upscale button
@@ -1149,8 +1149,8 @@ export default function DecklistPage() {
               <span>Custom & MPC Fill Upscales</span>
               <SelectMenu
                 options={[
-                  { value: "target", label: "Match target DPI" },
-                  { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                  { value: "target", label: "Match Target DPI" },
+                  { value: "native", label: "Keep Full 4× (Up to 2400 DPI)" },
                 ]}
                 value={customResult === "native" ? "native" : "target"}
                 disabled={!customUpscaleSupported}
@@ -1177,7 +1177,7 @@ export default function DecklistPage() {
           </div>
 
           <div className="danger-zone">
-            <h3>Danger zone</h3>
+            <h3>Danger Zone</h3>
             <p className="hint">
               Deletes the generated images and download cache (the output and cache directories
               above). Model weights, uploaded custom images and MPC Fill downloads are kept; the
@@ -1188,12 +1188,12 @@ export default function DecklistPage() {
               onClick={() => setConfirmClearOpen(true)}
               disabled={clearGeneratedMutation.isPending}
             >
-              Delete all generated images &amp; cache
+              Delete All Generated Images &amp; Cache
             </button>
             {confirmClearOpen && (
               <ConfirmDialog
-                title="Delete all generated images & cache?"
-                confirmLabel="Delete everything"
+                title="Delete All Generated Images & Cache?"
+                confirmLabel="Delete Everything"
                 onConfirm={() => {
                   setConfirmClearOpen(false);
                   clearGeneratedMutation.mutate();

@@ -1785,54 +1785,81 @@ fn import_resolved_cards_into(
     )
     .map_err(|e| e.to_string())?;
 
-    let mut seen_keys: HashSet<String> = HashSet::new();
+    // Every key a card already in the deck answers to, and the row an
+    // import of it adds its quantity to. Where rows share a key, a plain
+    // row (no face art) wins, then the earliest: a card added from the MPC
+    // Fill tab with art on its face is a card of its own, and must not
+    // soak up a plain line of the same card.
+    let mut row_for_key: HashMap<String, (bool, i64, i64)> = HashMap::new();
     let mut next_sort_order: i64 = 0;
     {
         let mut stmt = tx
             .prepare(
-                "SELECT sort_order, name, set_code, collector_number, printed_name, lang,
-                        custom_image_id
+                "SELECT id, sort_order, name, set_code, collector_number, printed_name, lang,
+                        custom_image_id, face_art
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![project_id], |row| {
-                let sort_order: i64 = row.get(0)?;
-                let name: String = row.get(1)?;
-                let set_code: Option<String> = row.get(2)?;
-                let collector_number: Option<String> = row.get(3)?;
-                let printed_name: Option<String> = row.get(4)?;
-                let lang: Option<String> = row.get(5)?;
-                let custom_image_id: Option<i64> = row.get(6)?;
                 Ok((
-                    sort_order,
-                    name,
-                    set_code,
-                    collector_number,
-                    printed_name,
-                    lang,
-                    custom_image_id,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number, printed_name, lang, custom_image_id) =
-                row.map_err(|e| e.to_string())?;
-            seen_keys.extend(stored_card_dedup_keys(
+            let (
+                id,
+                sort_order,
+                name,
+                set_code,
+                collector_number,
+                printed_name,
+                lang,
+                custom_image_id,
+                face_art,
+            ) = row.map_err(|e| e.to_string())?;
+            // (has face art, sort order, id): the smallest is preferred.
+            let rank = (crate::face_art::has_face_art(face_art.as_deref()), sort_order, id);
+            for key in stored_card_dedup_keys(
                 set_code.as_deref(),
                 collector_number.as_deref(),
                 &name,
                 printed_name.as_deref(),
                 lang.as_deref(),
                 custom_image_id,
-            ));
+            ) {
+                row_for_key
+                    .entry(key)
+                    .and_modify(|best| {
+                        if rank < *best {
+                            *best = rank;
+                        }
+                    })
+                    .or_insert(rank);
+            }
             next_sort_order = next_sort_order.max(sort_order + 1);
         }
     }
 
     for card in cards {
         let key = entry_dedup_key(Some(&card.set_code), Some(&card.collector_number), &card.name, Some(&card.lang));
-        if !seen_keys.insert(key) {
+        // Already in the deck (or earlier in this same list): the line's
+        // copies add to that card.
+        if let Some(&(_, _, id)) = row_for_key.get(&key) {
+            tx.execute(
+                "UPDATE project_cards SET quantity = COALESCE(quantity, 1) + ?1 WHERE id = ?2",
+                params![card.quantity.max(1), id],
+            )
+            .map_err(|e| e.to_string())?;
             continue;
         }
         tx.execute(
@@ -1856,6 +1883,18 @@ fn import_resolved_cards_into(
             ],
         )
         .map_err(|e| e.to_string())?;
+        let id = tx.last_insert_rowid();
+        let rank = (false, next_sort_order, id);
+        for key in std::iter::once(key).chain(stored_card_dedup_keys(
+            Some(&card.set_code),
+            Some(&card.collector_number),
+            &card.name,
+            card.printed_name.as_deref(),
+            Some(&card.lang),
+            None,
+        )) {
+            row_for_key.entry(key).or_insert(rank);
+        }
         next_sort_order += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -1863,9 +1902,11 @@ fn import_resolved_cards_into(
     cards_for_project(conn, project_id)
 }
 
-/// Put a library image on one face of a resolved Scryfall card: the card
-/// already in the project if there is one (same printing and language,
-/// not itself a custom card), else a new card appended after the rest.
+/// Put a library image on one face of a resolved Scryfall card, as a new
+/// card appended after the rest — never onto a card already in the
+/// project, which keeps its own art (a plain row of the printing, or one
+/// printing other art). Only a card already printing this very image on
+/// this face is reused, unchanged.
 /// What the MPC Fill tab's "Add to Deck" does, so a downloaded piece of
 /// MPC art enters a deck the way a printing-picker pick would — with the
 /// card's printing, faces and back behind it — rather than as a custom
@@ -1885,17 +1926,34 @@ fn add_card_with_face_art_into(
         params![now, project_id],
     )
     .map_err(|e| e.to_string())?;
-    let existing: Option<i64> = tx
-        .query_row(
-            "SELECT id FROM project_cards
-             WHERE project_id = ?1 AND custom_image_id IS NULL
-               AND set_code = ?2 AND collector_number = ?3 AND COALESCE(lang, 'en') = ?4
-             ORDER BY sort_order LIMIT 1",
-            params![project_id, card.set_code, card.collector_number, card.lang],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
+    // Only a row already printing this very image on this face is the
+    // same card: any other row of the printing (plain, or with other art)
+    // is left alone, and the art becomes a card of its own.
+    let existing: Option<i64> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, face_art FROM project_cards
+                 WHERE project_id = ?1 AND custom_image_id IS NULL
+                   AND set_code = ?2 AND collector_number = ?3 AND COALESCE(lang, 'en') = ?4
+                 ORDER BY sort_order",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![project_id, card.set_code, card.collector_number, card.lang],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut found = None;
+        for row in rows {
+            let (id, raw) = row.map_err(|e| e.to_string())?;
+            if crate::face_art::prints_image_on_face(raw.as_deref(), face, custom_image_id) {
+                found = Some(id);
+                break;
+            }
+        }
+        found
+    };
     let card_id = match existing {
         Some(id) => id,
         None => {
@@ -3649,7 +3707,7 @@ mod tests {
         assert_eq!(cards[0].scryfall_id.as_deref(), Some("c21-263"));
         assert_eq!(cards[1].set_code.as_deref(), Some("clu"));
 
-        // Re-importing the same resolved cards is a no-op.
+        // Re-importing a card already in the deck adds its copies to it.
         let cards = import_resolved_cards_into(
             &mut conn,
             id,
@@ -3658,6 +3716,54 @@ mod tests {
         )
         .expect("re-import");
         assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].quantity, Some(2));
+        assert_eq!(cards[1].quantity, Some(1));
+    }
+
+    #[test]
+    fn a_card_listed_twice_in_one_import_is_one_card() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_resolved_cards_into(
+            &mut conn,
+            id,
+            "1 Sol Ring\n2 Sol Ring",
+            &[
+                _resolved("1 Sol Ring", "Sol Ring", "c21", "263"),
+                ResolvedImportCard { quantity: 2, .._resolved("2 Sol Ring", "Sol Ring", "c21", "263") },
+            ],
+        )
+        .expect("import");
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].quantity, Some(3));
+    }
+
+    #[test]
+    fn an_import_adds_to_the_plain_row_not_one_with_mpc_art() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        conn.execute(
+            "INSERT INTO custom_images
+                (content_hash, label, original_filename, file_name, thumb_name, created_at)
+             VALUES ('h1', 'Sol Ring', 'sol.png', 'h1.png', 'h1_thumb.jpg', '1')",
+            [],
+        )
+        .expect("image");
+        let image_id = conn.last_insert_rowid();
+        let sol = _resolved("1 Sol Ring", "Sol Ring", "c21", "263");
+        // A plain Sol Ring, then the MPC Fill tab's own Sol Ring card.
+        import_resolved_cards_into(&mut conn, id, "1 Sol Ring", &[sol.clone()]).expect("import");
+        add_card_with_face_art_into(&mut conn, id, &sol, 0, 1, image_id).expect("mpc add");
+        let cards = import_resolved_cards_into(&mut conn, id, "2 Sol Ring", &[
+            ResolvedImportCard { quantity: 2, ..sol },
+        ])
+        .expect("import again");
+        // Both answer to the line; the plain card takes its copies.
+        assert_eq!(cards.len(), 2);
+        let mpc = cards.iter().find(|c| !c.face_art.is_empty()).expect("mpc row");
+        let plain = cards.iter().find(|c| c.face_art.is_empty()).expect("plain row");
+        assert_eq!(mpc.quantity, Some(1));
+        assert_eq!(plain.quantity, Some(3));
     }
 
     #[test]
@@ -3757,6 +3863,7 @@ mod tests {
             import_resolved_cards_into(&mut conn, id, "1 Aang der Luftnomade 210", &[de])
                 .expect("re-import");
         assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].quantity, Some(2), "the re-paste added its copy");
         let cards = import_decklist_into(&mut conn, id, "1 Aang der Luftnomade 210")
             .expect("legacy re-import of the raw line");
         assert_eq!(cards.len(), 1, "printed-name dedup tier caught it");
@@ -4249,7 +4356,7 @@ mod tests {
             add_card_with_face_art_into(&mut conn, id, &card, 0, 1, image_id).expect("add");
         }
         let cards = cards_for_project(&conn, id).expect("cards");
-        assert_eq!(cards.len(), 1, "a second add reuses the card");
+        assert_eq!(cards.len(), 1, "a second add of the same art reuses the card");
         assert_eq!(cards[0].custom_image_id, None);
         let face_art: String = conn
             .query_row("SELECT face_art FROM project_cards WHERE id = ?1", params![cards[0].id], |r| {
@@ -4257,6 +4364,33 @@ mod tests {
             })
             .expect("face art");
         assert!(face_art.contains(&format!("\"custom_image_id\":{image_id}")), "{face_art}");
+    }
+
+    #[test]
+    fn add_card_with_face_art_adds_other_art_as_new_cards() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let mut images = Vec::new();
+        for hash in ["h1", "h2"] {
+            conn.execute(
+                "INSERT INTO custom_images
+                    (content_hash, label, original_filename, file_name, thumb_name, created_at)
+                 VALUES (?1, 'Sol Ring', 'sol.png', ?1, ?1, '1')",
+                params![hash],
+            )
+            .expect("image");
+            images.push(conn.last_insert_rowid());
+        }
+        let sol = _resolved("1 Sol Ring", "Sol Ring", "c21", "263");
+        import_resolved_cards_into(&mut conn, id, "1 Sol Ring", &[sol.clone()]).expect("import");
+        for image in &images {
+            add_card_with_face_art_into(&mut conn, id, &sol, 0, 1, *image).expect("add");
+        }
+        let cards = cards_for_project(&conn, id).expect("cards");
+        assert_eq!(cards.len(), 3, "the plain card plus one card per art");
+        assert!(cards[0].face_art.is_empty(), "the plain card is untouched");
+        assert_eq!(cards[1].face_art[0].custom_image_id, Some(images[0]));
+        assert_eq!(cards[2].face_art[0].custom_image_id, Some(images[1]));
     }
 
     #[test]

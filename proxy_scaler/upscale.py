@@ -155,14 +155,14 @@ class UpscaleModel(str, Enum):
         label so a forgotten member fails loudly, not silently."""
         return {
             UpscaleModel.REALESRGAN_ANIME_FAST: "Fastest",
-            UpscaleModel.ILLUSTRATIONJANAI: "Best for illustrations — slowest",
-            UpscaleModel.ULTRASHARP_V2: "Best quality — slowest",
+            UpscaleModel.ILLUSTRATIONJANAI: "Best for Illustrations — Slowest",
+            UpscaleModel.ULTRASHARP_V2: "Best Quality — Slowest",
             UpscaleModel.ULTRASHARP_V2_LITE: "Balanced",
             UpscaleModel.REALESRGAN_ANIME_FAST_VK: "Fastest",
             UpscaleModel.ANIMESHARP_VK: "Balanced",
             UpscaleModel.ILLUSTRATIONJANAI_ESRGAN_VK: "Balanced",
-            UpscaleModel.ULTRASHARP_V2_ORT: "Best quality — slowest",
-            UpscaleModel.ILLUSTRATIONJANAI_ORT: "Best for illustrations — slowest",
+            UpscaleModel.ULTRASHARP_V2_ORT: "Best Quality — Slowest",
+            UpscaleModel.ILLUSTRATIONJANAI_ORT: "Best for Illustrations — Slowest",
         }[self]
 
     @property
@@ -223,12 +223,12 @@ class TilePreset:
 # the medium tier, and a failed pass steps down the tiers (largest first)
 # before falling to the CPU. Tile numbers are provisional until the bake-off.
 VRAM_TIERS: tuple[TilePreset, ...] = (
-    TilePreset("low", "Low VRAM (4 GB or less)", 128),
+    TilePreset("low", "Low VRAM (4 GB or Less)", 128),
     TilePreset("medium", "Medium VRAM (6–8 GB)", 256),
     TilePreset("high", "High VRAM (12 GB+)", 384),
     TilePreset("max", "Max VRAM (16 GB+)", 512),
 )
-AUTO_TILE_PRESET = TilePreset("auto", "Auto (measure free VRAM)", 0)
+AUTO_TILE_PRESET = TilePreset("auto", "Auto (Measure Free VRAM)", 0)
 TORCH_TILE_PRESETS: tuple[TilePreset, ...] = (AUTO_TILE_PRESET,) + VRAM_TIERS
 NCNN_TILE_PRESETS: tuple[TilePreset, ...] = VRAM_TIERS
 TORCH_DEFAULT_PRESET = "auto"
@@ -255,7 +255,7 @@ NCNN_DEFAULT_PRESET = "medium"
 # there is no Max tier.
 ONNX_TILE_PAD = 32
 ONNX_TILE_PRESETS: tuple[TilePreset, ...] = (
-    TilePreset("low", "Low VRAM (4 GB or less)", 128),
+    TilePreset("low", "Low VRAM (4 GB or Less)", 128),
     TilePreset("medium", "Medium VRAM (6–8 GB)", 192),
     TilePreset("high", "High VRAM (12 GB+)", 320),
 )

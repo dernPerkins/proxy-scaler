@@ -420,6 +420,18 @@ pub(crate) fn detach_custom_image_references(
     Ok(touched)
 }
 
+/// Whether a card's stored face art prints this image on this face.
+pub(crate) fn prints_image_on_face(raw: Option<&str>, face: u8, custom_image_id: i64) -> bool {
+    parse(raw)
+        .get(&face.to_string())
+        .is_some_and(|entry| entry.custom_image_id == Some(custom_image_id))
+}
+
+/// Whether a card prints anything but its own printing on some face.
+pub(crate) fn has_face_art(raw: Option<&str>) -> bool {
+    !parse(raw).is_empty()
+}
+
 /// How many project cards (in any project) print this image on a face.
 pub(crate) fn count_face_art_using_row(conn: &Connection, custom_image_id: i64) -> Result<i64, String> {
     let mut stmt = conn

@@ -521,8 +521,8 @@ export default function BacksPage() {
                   <span>Result</span>
                   <SelectMenu
                     options={[
-                      { value: "target", label: "Match target DPI" },
-                      { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                      { value: "target", label: "Match Target DPI" },
+                      { value: "native", label: "Keep Full 4× (Up to 2400 DPI)" },
                     ]}
                     value={upscaleSettings.mode}
                     onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}

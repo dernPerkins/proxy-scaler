@@ -167,8 +167,8 @@ interface ProjectContextValue {
   importDecklistText: (text: string) => Promise<void>;
   importingDecklistText: boolean;
   /** The resolve-gated import's persist step: inserts already-resolved
-   *  (fully pinned) cards in one transaction, deduped like
-   *  importDecklistText, and remembers `text` as decklistText. Creates the
+   *  (fully pinned) cards in one transaction — a card already in the deck
+   *  takes the line's copies instead — and remembers `text` as decklistText. Creates the
    *  Unnamed Project on first use the same way. The caller (DecklistPage)
    *  owns the parse + resolve halves. */
   /** Resolves with the project's whole card list after the import. */

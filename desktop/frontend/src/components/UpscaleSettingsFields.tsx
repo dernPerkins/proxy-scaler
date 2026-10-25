@@ -53,7 +53,7 @@ export default function UpscaleSettingsFields({ value, onChange, tourPrefix = ""
   return (
     <>
       <label className="field" data-tour={`${tourPrefix}model-select`}>
-        <span>Upscale model</span>
+        <span>Upscale Model</span>
         <ModelSelect
           value={value.model}
           models={modelsQuery.data}
@@ -120,7 +120,7 @@ export default function UpscaleSettingsFields({ value, onChange, tourPrefix = ""
               ...vramPresets.map((p) => ({ value: p.key, label: p.label })),
               ...(vramPresets.some((p) => p.tile === value.tile_size)
                 ? []
-                : [{ value: "custom", label: `Custom (${value.tile_size} px tile)` }]),
+                : [{ value: "custom", label: `Custom (${value.tile_size} px Tile)` }]),
             ]}
             value={vramPresets.find((p) => p.tile === value.tile_size)?.key ?? "custom"}
             onChange={(key) => {
@@ -131,7 +131,7 @@ export default function UpscaleSettingsFields({ value, onChange, tourPrefix = ""
         </label>
       ) : (
         <label className="field" data-tour={`${tourPrefix}vram-select`}>
-          <span>Tile size (0 = auto)</span>
+          <span>Tile Size (0 = Auto)</span>
           <input
             type="number"
             min={0}

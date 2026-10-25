@@ -1,7 +1,8 @@
 // The MPC Fill tab's "Add to Project": MPC art enters a deck the way a
 // change-printing pick would — as its Scryfall card with the art on one
 // face — so it keeps the card's printing, other face and back, shows MPC
-// badges, and can go back to Scryfall art in the picker. Art whose name
+// badges, and can go back to Scryfall art in the picker. Each add is a new
+// card, beside any of the same name already in the deck. Art whose name
 // no card has (custom designs, typos) is added as a plain custom card.
 import { useSyncExternalStore } from "react";
 import type { QueryClient } from "@tanstack/react-query";

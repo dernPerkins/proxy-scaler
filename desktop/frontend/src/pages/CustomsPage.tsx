@@ -720,8 +720,8 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
                   <span>Result</span>
                   <SelectMenu
                     options={[
-                      { value: "target", label: "Match target DPI" },
-                      { value: "native", label: "Keep full 4× (up to 2400 DPI)" },
+                      { value: "target", label: "Match Target DPI" },
+                      { value: "native", label: "Keep Full 4× (Up to 2400 DPI)" },
                     ]}
                     value={upscaleSettings.mode}
                     onChange={(value) => updateUpscaleSettings({ mode: value as LibraryUpscaleMode })}
@@ -757,7 +757,7 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
           )}
           {view === "mpc" && (
             <div className="danger-zone">
-              <h3>Danger zone</h3>
+              <h3>Danger Zone</h3>
               <p className="hint">
                 Deletes every MPC Fill image you&apos;ve downloaded, here and on the generation
                 server. Cards printing one on a face keep it chosen and download it again when

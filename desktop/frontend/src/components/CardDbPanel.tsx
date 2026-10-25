@@ -110,15 +110,15 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
 
   return (
     <div className="field divided">
-      <span>Card database</span>
+      <span>Card Database</span>
       {local ? (
         <p className="hint" style={{ margin: 0 }}>
-          {local.dataset_type === "all_cards" ? "All languages" : "English only"} ·{" "}
-          {local.card_count.toLocaleString()} cards · updated {formatDate(local.dataset_updated_at)}
+          {local.dataset_type === "all_cards" ? "All Languages" : "English Only"} ·{" "}
+          {local.card_count.toLocaleString()} Cards · Updated {formatDate(local.dataset_updated_at)}
         </p>
       ) : (
         <p className="hint" style={{ margin: 0 }}>
-          {importRunning ? "Import in progress…" : "Not imported yet."}
+          {importRunning ? "Import in Progress…" : "Not Imported Yet"}
         </p>
       )}
       {!importRunning && nudge && <p className="error-text">{nudge}</p>}
@@ -128,9 +128,9 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         options={[
           {
             value: "default_cards",
-            label: `English only (~${APPROX_DOWNLOAD_MB.default_cards} MB)`,
+            label: `English Only (~${APPROX_DOWNLOAD_MB.default_cards} MB)`,
           },
-          { value: "all_cards", label: `All languages (~${APPROX_DOWNLOAD_MB.all_cards} MB)` },
+          { value: "all_cards", label: `All Languages (~${APPROX_DOWNLOAD_MB.all_cards} MB)` },
         ]}
         value={dataset}
         onChange={(value) => setDataset(value as CardDataset)}
@@ -145,7 +145,7 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
         disabled={serverUnavailable || importRunning || startMutation.isPending}
         title={serverUnavailable ? "Generation server is unreachable" : undefined}
       >
-        {local ? "Update card database" : "Import card database"}
+        {local ? "Update Card Database" : "Import Card Database"}
       </button>
       {local && (
         <button
@@ -153,13 +153,13 @@ export default function CardDbPanel(props: { serverUnavailable: boolean }) {
           onClick={() => setConfirmDeleteOpen(true)}
           disabled={serverUnavailable || importRunning || deleteMutation.isPending}
         >
-          Delete card database
+          Delete Card Database
         </button>
       )}
       {confirmDeleteOpen && (
         <ConfirmDialog
-          title="Delete the card database?"
-          confirmLabel="Delete card database"
+          title="Delete the Card Database?"
+          confirmLabel="Delete Card Database"
           onConfirm={() => {
             setConfirmDeleteOpen(false);
             deleteMutation.mutate();

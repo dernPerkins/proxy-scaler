@@ -1008,7 +1008,7 @@ export function PrintingGridModal(props: {
           {variantsQuery.isError && (
             <p className="hint">
               {variantsQuery.error instanceof ApiError && variantsQuery.error.status === 404
-                ? "No local card database on this server — import it from the sidebar's Card database panel to change printings."
+                ? "No local card database on this server — import it from the sidebar's Card Database panel to change printings."
                 : `Couldn't load printings: ${
                     variantsQuery.error instanceof Error
                       ? variantsQuery.error.message

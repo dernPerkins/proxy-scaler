@@ -73,14 +73,14 @@ export default function ServerSwitcher() {
   return (
     <div style={{ marginBottom: 16 }} data-tour="server-switcher">
       <div className="field" style={{ marginBottom: 6 }}>
-        <span>Generation server</span>
+        <span>Generation Server</span>
         <div className="segmented">
           <button
             className={mode === "local" ? "active" : ""}
             onClick={() => request("local")}
             disabled={busy}
           >
-            This device
+            This Device
           </button>
           <button
             className={mode === "remote" ? "active" : ""}
