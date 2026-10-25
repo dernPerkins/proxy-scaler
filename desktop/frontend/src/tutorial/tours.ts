@@ -47,7 +47,7 @@ export type TourId =
 const WALK_STEP: TourStep = {
   target: "picker-walk",
   title: "Go through your deck",
-  body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you Confirm; closing any other way asks whether to keep your choices.",
+  body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you Confirm, which downloads every card you looked at, both faces of a double-faced card included. Closing any other way asks whether to keep your choices.",
   placement: "bottom",
 };
 

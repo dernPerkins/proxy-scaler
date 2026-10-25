@@ -65,8 +65,70 @@ export function downloadPickedPrinting(
     });
 }
 
+/**
+ * Download the Scryfall originals of a card's faces that print no MPC Fill
+ * art: the deck walk's Confirm after MPC Fill art went on (or came off)
+ * some faces, so a double-faced card's other face arrives with its new
+ * front rather than waiting for Download or Generate. `mpcFaces` are the
+ * faces printing MPC Fill art once Confirm applies (hash null while that
+ * art is still downloading); the server skips every face they list. Each
+ * Scryfall face shows as downloading on its own, beside any MPC face's
+ * own progress. Best-effort, like downloadPickedPrinting.
+ */
+export function downloadScryfallFaces(
+  card: CardRow,
+  totalFaces: number,
+  mpcFaces: { face: number; customHash: string | null }[],
+  projectTag: string | null,
+  refreshStatus: () => Promise<unknown>,
+): void {
+  if (projectTag == null || card.scryfall_id == null) return;
+  const mpc = new Set(mpcFaces.map((f) => f.face));
+  const faces = Array.from({ length: totalFaces }, (_, face) => face).filter((f) => !mpc.has(f));
+  if (faces.length === 0) return;
+  const mine = new Map<string, PendingFaceArt>();
+  for (const face of faces) {
+    mine.set(keyOf(card.id, face), {
+      cardId: card.id,
+      face,
+      totalFaces,
+      name: card.name,
+      status: "downloading",
+      source: "scryfall",
+    });
+  }
+  publish(new Map([...pending, ...mine]));
+  void generationApi
+    .downloadOriginals({
+      project_tag: projectTag,
+      entries: [
+        {
+          ...cardToEntry(card),
+          face_overrides: mpcFaces.map((f) => ({
+            face: f.face,
+            total_faces: totalFaces,
+            custom_hash: f.customHash,
+          })),
+        },
+      ],
+      output_dir: DEFAULT_GEN_PATHS.output_dir,
+      cache_dir: DEFAULT_GEN_PATHS.cache_dir,
+      weights_dir: DEFAULT_GEN_PATHS.weights_dir,
+    })
+    .then((result) => waitForTasks(result.task_ids))
+    .then(refreshStatus)
+    .catch(() => {})
+    .finally(() => {
+      // Unless the face was picked again meanwhile.
+      const next = new Map(pending);
+      for (const [key, entry] of mine) if (next.get(key) === entry) next.delete(key);
+      publish(next);
+    });
+}
+
 /** Something just picked for a card that is still on its way: MPC Fill
- *  art for one face, or (source "scryfall") a whole new printing. */
+ *  art for one face, or (source "scryfall") a whole new printing or one
+ *  face's original. */
 export interface PendingFaceArt {
   cardId: number;
   face: number;

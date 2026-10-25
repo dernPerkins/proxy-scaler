@@ -59,6 +59,7 @@ import {
   hasPendingFaceArt,
   dismissPendingFaceArt,
   downloadPickedPrinting,
+  downloadScryfallFaces,
   pendingFaceArtKey,
   pendingPrintingKey,
   queueFaceArtPick,
@@ -1081,6 +1082,26 @@ export default function DecklistPage() {
       });
     },
     clearFaceArt: (card, face) => void clearFaceArt(card, face).catch(() => {}),
+    // Every card the walk visited, as it prints now. Face by face where
+    // MPC Fill art is involved, so each face shows its own progress;
+    // otherwise the row's Download (the server expands every face).
+    download: (card, faces) => {
+      if (faces) {
+        void fetchPendingFaceArt([{ ...card, face_art: faces.kept }], pendingArtOpts);
+        downloadScryfallFaces(card, faces.totalFaces, faces.mpcFaces, projectTag, refetchStatus);
+      } else if (card.face_art?.length) {
+        void fetchPendingFaceArt([card], pendingArtOpts);
+        downloadScryfallFaces(
+          card,
+          Math.max(...card.face_art.map((fa) => fa.total_faces)),
+          card.face_art.map((fa) => ({ face: fa.face, customHash: fa.custom_hash ?? null })),
+          projectTag,
+          refetchStatus,
+        );
+      } else {
+        downloadCard(card);
+      }
+    },
   };
 
   return (

@@ -1,16 +1,18 @@
 // The deck walk: the change-printing modal (PrintingGridModal) for one card
 // at a time, with ‹ Prev / Next › (or Alt+← / Alt+→) through the Decklist
 // in its current sort. Selecting a printing or MPC Fill art chooses it for
-// that card. Nothing is saved or downloaded while the walk is open, so
-// browsing past a card costs no downloads: Confirm, the preview's button
-// or a double-click close it and apply every card's choice. Close, Esc or
-// a click outside close it too, but with choices made they ask first —
-// Keep (apply them), Discard or Cancel — so unconfirmed work isn't lost to
-// a stray click. Picking the card's own
-// printing on the Scryfall tab puts it back on Scryfall art.
+// that card. Nothing is saved while the walk is open: Confirm, the
+// preview's button or a double-click close it, apply every card's choice
+// and download every card the walk visited, changed or not, each as it
+// will print (both faces of a double-faced card) — looking at a card and
+// confirming is confirming it. Close, Esc or a click outside close it
+// without downloading; with choices made they ask first — Keep (the same
+// as Confirm), Discard or Cancel — so unconfirmed work isn't lost to a
+// stray click. Picking the card's own printing on the Scryfall tab puts it
+// back on Scryfall art.
 // Chosen from a prototype (.scratch/mpcfill-art-picker/prototype-deck-walk/).
 import { useEffect, useState } from "react";
-import type { CardRow } from "../api/project";
+import type { CardFaceArt, CardRow } from "../api/project";
 import type { MpcCard } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import {
@@ -26,6 +28,40 @@ export interface WalkApply {
   printing: (card: CardRow, printing: Pick) => void;
   faceArt: (card: CardRow, face: number, totalFaces: number, art: MpcCard) => void;
   clearFaceArt: (card: CardRow, face: number) => void;
+  /** Download a card the walk visited, as it prints once its choices are
+   *  applied. `faces` is null for a card the walk left as it was. A card
+   *  given a new printing isn't passed: `printing` downloads it. */
+  download: (card: CardRow, faces: FacesAfter | null) => void;
+}
+
+/** A card's faces once the walk's face changes to it apply. */
+export interface FacesAfter {
+  /** How many faces its printing has. */
+  totalFaces: number;
+  /** The faces printing MPC Fill art (hash null while still downloading). */
+  mpcFaces: { face: number; customHash: string | null }[];
+  /** Its MPC Fill art on faces the walk didn't change, which may still be
+   *  undownloaded (an import's choice). */
+  kept: CardFaceArt[];
+}
+
+function facesAfter(card: CardRow, change: StagedChanges): FacesAfter {
+  const mpc = new Map<number, string | null>();
+  let totalFaces = 1;
+  for (const fa of card.face_art ?? []) {
+    mpc.set(fa.face, fa.custom_hash ?? null);
+    totalFaces = Math.max(totalFaces, fa.total_faces);
+  }
+  for (const [face, { totalFaces: total, art }] of change.faces) {
+    if (art) mpc.set(face, null);
+    else mpc.delete(face);
+    totalFaces = Math.max(totalFaces, total);
+  }
+  return {
+    totalFaces,
+    mpcFaces: [...mpc].map(([face, customHash]) => ({ face, customHash })),
+    kept: (card.face_art ?? []).filter((fa) => !change.faces.has(fa.face)),
+  };
 }
 
 /** A card's staged changes with one more choice folded in; undefined when
@@ -78,6 +114,8 @@ export default function DeckArtWalk(props: {
   const index = Math.max(0, cards.findIndex((c) => c.id === cardId));
   const card = cards[index];
   const [staged, setStaged] = useState<ReadonlyMap<number, StagedChanges>>(new Map());
+  // Every card shown so far: Confirm downloads them all.
+  const [visited, setVisited] = useState<ReadonlySet<number>>(() => new Set([props.startCardId]));
   // The next card opens on the tab this one was left on.
   const [request, setRequest] = useState<PickerOpenRequest>(props.startRequest);
   const [source, setSource] = useState(props.startRequest.source);
@@ -88,6 +126,7 @@ export default function DeckArtWalk(props: {
     const target = cards[Math.max(0, Math.min(cards.length - 1, next))];
     if (!target || target.id === card?.id) return;
     setCardId(target.id);
+    setVisited((prev) => new Set(prev).add(target.id));
     setRequest({ source, face: target.face_art?.[0]?.face ?? 0 });
   };
 
@@ -101,13 +140,24 @@ export default function DeckArtWalk(props: {
   };
 
   function finish(changes: ReadonlyMap<number, StagedChanges>) {
-    for (const [id, change] of changes) {
+    for (const id of new Set([...visited, ...changes.keys()])) {
       const target = cards.find((c) => c.id === id);
       if (!target) continue;
+      const change = changes.get(id);
+      if (!change) {
+        props.apply.download(target, null);
+        continue;
+      }
+      // A new printing downloads all of its faces itself.
       if (change.printing) props.apply.printing(target, change.printing);
       for (const [face, { totalFaces, art }] of change.faces) {
         if (art) props.apply.faceArt(target, face, totalFaces, art);
         else props.apply.clearFaceArt(target, face);
+      }
+      // Every face that prints downloads, not just the one chosen: a
+      // double-faced card's other face arrives with its new front.
+      if (!change.printing && change.faces.size > 0) {
+        props.apply.download(target, facesAfter(target, change));
       }
     }
     props.onClose();
