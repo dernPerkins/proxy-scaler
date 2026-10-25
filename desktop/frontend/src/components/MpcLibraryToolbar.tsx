@@ -10,7 +10,7 @@
 // Library rows know an image's name, uploader, DPI and date, but not its
 // card type, language or tags; useMpcLibraryItems fills those in from
 // /api/mpcfill/cards (the downloaded catalog), batched.
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import type { CustomImage, MpcCard, MpcCardType } from "../api/types";
@@ -197,6 +197,7 @@ export default function MpcLibraryToolbar({
   filters: f,
   onChange,
   shown,
+  pager,
   onSearchMpc,
   searchDisabledReason,
 }: {
@@ -205,6 +206,8 @@ export default function MpcLibraryToolbar({
   onChange: (next: MpcLibraryFilters) => void;
   /** How many tiles the filters leave. */
   shown: number;
+  /** The grid's page controls, beside the count (when there are pages). */
+  pager?: ReactNode;
   onSearchMpc: () => void;
   searchDisabledReason: string | null;
 }) {
@@ -288,6 +291,7 @@ export default function MpcLibraryToolbar({
       <span className="mpc-library-count">
         {shown} of {items.length}
       </span>
+      {pager}
       <span className="mpc-library-spacer" />
       <button
         type="button"

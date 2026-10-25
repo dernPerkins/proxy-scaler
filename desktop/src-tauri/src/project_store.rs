@@ -2578,6 +2578,39 @@ pub fn set_mpc_fill_language(app: AppHandle, language: String) -> Result<(), Str
     write_mpc_fill_language(&conn, &language)
 }
 
+// The MPC Fill tab's page size, remembered app-wide: how many library
+// images one page of its grid shows (CustomsPage.tsx). 60 until changed.
+
+const MPC_LIBRARY_PAGE_SIZE_KEY: &str = "mpc_library_page_size";
+const MPC_LIBRARY_PAGE_SIZES: [u32; 3] = [30, 60, 120];
+const MPC_LIBRARY_DEFAULT_PAGE_SIZE: u32 = 60;
+
+fn read_mpc_library_page_size(conn: &Connection) -> Result<u32, String> {
+    Ok(read_app_setting(conn, MPC_LIBRARY_PAGE_SIZE_KEY)?
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| MPC_LIBRARY_PAGE_SIZES.contains(n))
+        .unwrap_or(MPC_LIBRARY_DEFAULT_PAGE_SIZE))
+}
+
+fn write_mpc_library_page_size(conn: &Connection, size: u32) -> Result<(), String> {
+    if !MPC_LIBRARY_PAGE_SIZES.contains(&size) {
+        return Err(format!("Unsupported page size {size}."));
+    }
+    write_app_setting(conn, MPC_LIBRARY_PAGE_SIZE_KEY, &size.to_string())
+}
+
+#[tauri::command]
+pub fn get_mpc_library_page_size(app: AppHandle) -> Result<u32, String> {
+    let conn = open_db(&app)?;
+    read_mpc_library_page_size(&conn)
+}
+
+#[tauri::command]
+pub fn set_mpc_library_page_size(app: AppHandle, size: u32) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_mpc_library_page_size(&conn, size)
+}
+
 // --- App Settings' "Use Proxy Scaler image cache" ---------------------------
 //
 // Which image origin this client asks the generation server to fetch card
@@ -4054,6 +4087,22 @@ mod tests {
         // Garbage already stored reads as the default.
         write_app_setting(&conn, MPC_FILL_LANGUAGE_KEY, "??").expect("raw");
         assert_eq!(read_mpc_fill_language(&conn).expect("read"), "any");
+    }
+
+    #[test]
+    fn mpc_library_page_size_defaults_to_60_and_roundtrips() {
+        let conn = test_conn();
+        assert_eq!(read_mpc_library_page_size(&conn).expect("read"), 60);
+        for size in [30, 120, 60] {
+            write_mpc_library_page_size(&conn, size).expect("write");
+            assert_eq!(read_mpc_library_page_size(&conn).expect("read"), size);
+        }
+        assert!(write_mpc_library_page_size(&conn, 45).is_err());
+        // Garbage already stored reads as the default.
+        write_app_setting(&conn, MPC_LIBRARY_PAGE_SIZE_KEY, "lots").expect("raw");
+        assert_eq!(read_mpc_library_page_size(&conn).expect("read"), 60);
+        write_app_setting(&conn, MPC_LIBRARY_PAGE_SIZE_KEY, "45").expect("raw");
+        assert_eq!(read_mpc_library_page_size(&conn).expect("read"), 60);
     }
 
     #[test]

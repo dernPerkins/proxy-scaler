@@ -1681,6 +1681,44 @@ def test_card_variants_carry_rarity(client: TestClient) -> None:
     assert body["variants"][0]["rarity"] == "common"
 
 
+def test_card_face_counts_lists_double_faced_printings(client: TestClient) -> None:
+    assert client.post("/api/cards/face-counts", json={"ids": ["bolt-lea"]}).json() == {
+        "face_counts": {}
+    }
+    _seed_card_db()
+    from proxy_scaler import carddb
+
+    conn = carddb.connect(os.environ["PROXY_SCALER_CARD_DB_PATH"])
+    try:
+        carddb.upsert_cards(
+            conn,
+            [
+                {
+                    "id": "delver-isd",
+                    "oracle_id": "oracle-delver",
+                    "name": "Delver of Secrets // Insectile Aberration",
+                    "lang": "en",
+                    "set": "isd",
+                    "set_name": "Innistrad",
+                    "collector_number": "51",
+                    "released_at": "2011-09-30",
+                    "layout": "transform",
+                    "digital": False,
+                    "image_status": "highres_scan",
+                    "highres_image": True,
+                    "card_faces": [
+                        {"name": "Delver of Secrets", "image_uris": {"png": "https://img.example/d0.png"}},
+                        {"name": "Insectile Aberration", "image_uris": {"png": "https://img.example/d1.png"}},
+                    ],
+                }
+            ],
+        )
+    finally:
+        conn.close()
+    resp = client.post("/api/cards/face-counts", json={"ids": ["bolt-lea", "delver-isd", "nope"]})
+    assert resp.json() == {"face_counts": {"delver-isd": 2}}
+
+
 def test_card_rarities_maps_known_ids(client: TestClient) -> None:
     _seed_card_db(rarity="common")
     resp = client.post("/api/cards/rarities", json={"ids": ["bolt-lea", "nope"]})

@@ -983,6 +983,16 @@ class CardRaritiesOut(BaseModel):
     flavor_names: dict[str, str] = Field(default_factory=dict)
 
 
+class CardFaceCountsIn(BaseModel):
+    ids: list[str] = Field(max_length=2000)
+
+
+class CardFaceCountsOut(BaseModel):
+    # scryfall_id -> face count, for the printings the corpus holds with
+    # more than one face. Single-faced and unknown ids are absent.
+    face_counts: dict[str, int]
+
+
 class CardVariantsOut(BaseModel):
     # The printing the query anchored on (resolved by scryfall_id, then
     # set+collector, then exact name) plus every printing sharing its

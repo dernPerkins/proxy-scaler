@@ -38,6 +38,8 @@ from proxy_scaler.scryfall import (
 from proxy_scaler.api.schemas import (
     CardDbLocalOut,
     CardDbStatusOut,
+    CardFaceCountsIn,
+    CardFaceCountsOut,
     CardImportIn,
     CardImportStartedOut,
     CardImportStatusOut,
@@ -303,6 +305,21 @@ def card_rarities(body: CardRaritiesIn) -> CardRaritiesOut:
             rarities=carddb.rarities_by_id(conn, body.ids),
             flavor_names=carddb.flavor_names_by_id(conn, body.ids),
         )
+    finally:
+        conn.close()
+
+
+@router.post("/face-counts", response_model=CardFaceCountsOut)
+def card_face_counts(body: CardFaceCountsIn) -> CardFaceCountsOut:
+    """How many faces each double-faced printing in a deck has, in one
+    request: the deck list shows a Front and a Back for such a card before
+    either has an image. No corpus is an empty map, not a 404: rows then
+    learn their faces from their images, as before."""
+    conn = carddb.open_if_ready(get_card_db_path())
+    if conn is None:
+        return CardFaceCountsOut(face_counts={})
+    try:
+        return CardFaceCountsOut(face_counts=carddb.face_counts_by_id(conn, body.ids))
     finally:
         conn.close()
 

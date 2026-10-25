@@ -381,6 +381,45 @@ pub(crate) fn strip_custom_image_references(
     Ok(touched)
 }
 
+/// Every face printing this image goes back to "chosen, not downloaded
+/// yet": the MPC Fill art it stands for is kept (`mpc`), so the next
+/// Download, Upscale or picker Confirm fetches it again, and the card's
+/// row says so meanwhile. For deleting downloaded MPC Fill art without
+/// losing what was chosen (custom_images.rs delete_mpc_downloads). Returns
+/// how many cards it touched.
+pub(crate) fn detach_custom_image_references(
+    conn: &Connection,
+    custom_image_id: i64,
+    mpc: &MpcProvenance,
+) -> Result<usize, String> {
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, face_art FROM project_cards WHERE face_art IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        mapped.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let mut touched = 0;
+    for (card_id, raw) in rows {
+        let mut map = parse(Some(&raw));
+        let mut changed = false;
+        for entry in map.values_mut() {
+            if entry.custom_image_id == Some(custom_image_id) {
+                entry.custom_image_id = None;
+                entry.mpc = Some(mpc.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            write_card(conn, card_id, &map)?;
+            touched += 1;
+        }
+    }
+    Ok(touched)
+}
+
 /// How many project cards (in any project) print this image on a face.
 pub(crate) fn count_face_art_using_row(conn: &Connection, custom_image_id: i64) -> Result<i64, String> {
     let mut stmt = conn

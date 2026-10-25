@@ -31,7 +31,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
-import { projectApi } from "../api/project";
+import { projectApi, type MpcDownloadsSummary } from "../api/project";
 import type { CustomImage } from "../api/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import SelectMenu from "../components/SelectMenu";
@@ -77,6 +77,7 @@ import {
   addImagesSequentially,
 } from "../imageUpload";
 import SidebarColumn from "../components/SidebarColumn";
+import { useTileVisibility, type ObserveTile } from "../components/imageGrid";
 import LibraryAddPanel from "../components/LibraryAddPanel";
 
 // The tile selected when this page was last on screen. Routes unmount
@@ -205,6 +206,7 @@ function CustomTile({
   inProject,
   selected,
   adding,
+  observe,
   onSelect,
   onAdd,
   onView,
@@ -213,14 +215,25 @@ function CustomTile({
   inProject: boolean;
   selected: boolean;
   adding: boolean;
+  observe: ObserveTile;
   onSelect: () => void;
   onAdd: () => void;
   onView: () => void;
 }) {
+  // The thumbnail (a data URL over IPC) loads once the tile nears the
+  // view, not on mount: a library of hundreds otherwise made hundreds of
+  // round trips before the tab settled. Cached for the session after.
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [nearView, setNearView] = useState(false);
+  useEffect(() => {
+    if (!frameRef.current) return;
+    return observe(frameRef.current, () => setNearView(true));
+  }, [observe]);
   const thumbQuery = useQuery({
     queryKey: ["custom-thumb", image.id],
     queryFn: () => projectApi.customImageThumbnail(image.id),
     staleTime: Infinity,
+    enabled: nearView,
   });
   const lowRes = image.source_dpi < LOW_DPI;
   // A file declared to carry bleed (every MPC Fill download) shows as cut:
@@ -257,6 +270,7 @@ function CustomTile({
       }}
     >
       <div
+        ref={frameRef}
         style={{
           position: "relative",
           aspectRatio: "63 / 88",
@@ -412,6 +426,32 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     () => applyMpcLibraryFilters(mpcItems, mpcFilters),
     [mpcItems, mpcFilters],
   );
+  // The MPC Fill tab's grid in pages (30, 60 or 120 a page, remembered
+  // app-wide). A new filter or page size starts over at the first page.
+  const pageSizeQuery = useQuery({
+    queryKey: ["mpc-library-page-size"],
+    queryFn: () => projectApi.getMpcLibraryPageSize(),
+    staleTime: Infinity,
+  });
+  const pageSize = pageSizeQuery.data ?? 60;
+  const setPageSize = useMutation({
+    mutationFn: (size: number) => projectApi.setMpcLibraryPageSize(size),
+    onSuccess: (_data, size) => queryClient.setQueryData(["mpc-library-page-size"], size),
+  });
+  const [mpcPage, setMpcPage] = useState(0);
+  useEffect(() => setMpcPage(0), [mpcFilters, pageSize]);
+  const pageCount = Math.max(1, Math.ceil(mpcShown.length / pageSize));
+  // Clamped: a delete can shrink the list under the page.
+  const currentPage = Math.min(mpcPage, pageCount - 1);
+  const pageItems = mpcShown.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  function goToPage(page: number) {
+    setMpcPage(Math.max(0, Math.min(pageCount - 1, page)));
+    window.scrollTo({ top: 0 });
+  }
+  // Tiles load their thumbnails as they near the view; the window is what
+  // scrolls on these tabs, so the observer's root is the viewport (null).
+  const viewportRef = useRef<HTMLElement | null>(null);
+  const observeTile = useTileVisibility(viewportRef);
   const selected = images.find((i) => i.id === selectedId) ?? null;
   const viewing = images.find((i) => i.id === viewingId) ?? null;
   // Everything ever made for the selected image, whichever project or
@@ -515,6 +555,40 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
     },
   });
 
+  // The MPC Fill tab's "Delete All MPC Fill Downloads": counted first, so
+  // the confirmation can say what goes (cards that are MPC Fill art) and
+  // what stays (faces keep their art chosen, to download again).
+  const [mpcDeleteCount, setMpcDeleteCount] = useState<MpcDownloadsSummary | null>(null);
+  const mpcCountMutation = useMutation({
+    mutationFn: () => projectApi.countMpcDownloads(),
+    onSuccess: (count) => setMpcDeleteCount(count),
+    onError: (err: Error) => toast(errorText(err), "err", { key: "mpc-delete" }),
+  });
+  const mpcDeleteMutation = useMutation({
+    mutationFn: async () => {
+      const done = await projectApi.deleteMpcDownloads();
+      // The server's copies too, best-effort: they are only its cache of
+      // the library, and a later sync uploads anything needed again.
+      if (!serverUnavailable) {
+        await Promise.allSettled(done.hashes.map((h) => generationApi.deleteServerCustom(h)));
+      }
+      return done;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["custom-images"] });
+      // Cards that were MPC Fill art are gone, and faces now read as not
+      // downloaded: the open project's card list is stale.
+      await reloadCards();
+      setMpcDeleteCount(null);
+      setSelectedId(null);
+      setViewingId(null);
+    },
+    onError: (err: Error) => {
+      setMpcDeleteCount(null);
+      toast(errorText(err), "err", { key: "mpc-delete" });
+    },
+  });
+
   // The declaration about the file. Recorded locally, then pushed to the
   // connected server right away for any card already using the image:
   // the sync re-uploads under the new amount and the server discards the
@@ -563,6 +637,7 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
       inProject={idsInProject.has(image.id)}
       selected={image.id === selectedId}
       adding={addingId === image.id}
+      observe={observeTile}
       onSelect={() => setSelectedId(image.id)}
       onView={() => {
         setSelectedId(image.id);
@@ -680,6 +755,40 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
               </button>
             </div>
           )}
+          {view === "mpc" && (
+            <div className="danger-zone">
+              <h3>Danger zone</h3>
+              <p className="hint">
+                Deletes every MPC Fill image you&apos;ve downloaded, here and on the generation
+                server. Cards printing one on a face keep it chosen and download it again when
+                needed; cards that are MPC Fill art are removed. Card backs are kept.
+              </p>
+              <button
+                className="btn-danger btn-block"
+                onClick={() => mpcCountMutation.mutate()}
+                disabled={
+                  images.length === 0 || mpcCountMutation.isPending || mpcDeleteMutation.isPending
+                }
+              >
+                {mpcDeleteMutation.isPending ? "Deleting…" : "Delete All MPC Fill Downloads"}
+              </button>
+              {mpcDeleteCount && (
+                <ConfirmDialog
+                  title="Delete All MPC Fill Downloads?"
+                  confirmLabel="Delete Downloads"
+                  onConfirm={() => mpcDeleteMutation.mutate()}
+                  onCancel={() => setMpcDeleteCount(null)}
+                >
+                  This deletes {mpcDeleteCount.images} MPC Fill{" "}
+                  {mpcDeleteCount.images === 1 ? "image" : "images"}.
+                  {mpcDeleteCount.cards > 0 &&
+                    ` ${mpcDeleteCount.cards} ${mpcDeleteCount.cards === 1 ? "card that is" : "cards that are"} MPC Fill art will be removed from ${mpcDeleteCount.cards === 1 ? "its project" : "their projects"}.`}
+                  {mpcDeleteCount.faces > 0 &&
+                    ` ${mpcDeleteCount.faces} ${mpcDeleteCount.faces === 1 ? "card keeps its" : "cards keep their"} MPC Fill art chosen and download it again when needed.`}
+                </ConfirmDialog>
+              )}
+            </div>
+          )}
         </aside>
       </SidebarColumn>
 
@@ -735,6 +844,33 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
                 shown={mpcShown.length}
                 onSearchMpc={() => setMpcOpen(true)}
                 searchDisabledReason={mpcSearchDisabledReason}
+                pager={
+                  pageCount > 1 ? (
+                    <span className="mpc-pager-compact">
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        disabled={currentPage === 0}
+                        onClick={() => goToPage(currentPage - 1)}
+                        aria-label="Previous page"
+                      >
+                        ‹
+                      </button>
+                      <span className="mpc-pager-label">
+                        Page {currentPage + 1} of {pageCount}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        disabled={currentPage === pageCount - 1}
+                        onClick={() => goToPage(currentPage + 1)}
+                        aria-label="Next page"
+                      >
+                        ›
+                      </button>
+                    </span>
+                  ) : null
+                }
               />
             </div>
             {mpcShown.length === 0 && !pendingTiles ? (
@@ -764,9 +900,19 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
                   gap: 12,
                 }}
               >
-                {pendingTiles}
-                {mpcShown.map((item) => renderTile(item.image))}
+                {currentPage === 0 && pendingTiles}
+                {pageItems.map((item) => renderTile(item.image))}
               </div>
+            )}
+            {mpcShown.length > 0 && (
+              <MpcPager
+                page={currentPage}
+                pageCount={pageCount}
+                pageSize={pageSize}
+                total={mpcShown.length}
+                onPage={goToPage}
+                onPageSize={(size) => setPageSize.mutate(size)}
+              />
             )}
           </>
         ) : images.length === 0 ? (
@@ -840,5 +986,84 @@ export function CustomLibraryPage({ view }: { view: LibraryView }) {
         </ConfirmDialog>
       ) : null}
     </div>
+  );
+}
+
+/** The pages a pager lists: the first, the last, and the current one with
+ *  its neighbours; null marks a gap (an ellipsis). */
+function pageList(page: number, pageCount: number): (number | null)[] {
+  const keep = new Set([0, pageCount - 1, page - 1, page, page + 1]);
+  const out: (number | null)[] = [];
+  for (let p = 0; p < pageCount; p++) {
+    if (!keep.has(p)) continue;
+    if (out.length > 0 && p - (out[out.length - 1] as number) > 1) out.push(null);
+    out.push(p);
+  }
+  return out;
+}
+
+/** The MPC Fill library's pages, under its grid: ‹ Prev · 1 2 … 6 · Next ›
+ *  with what's shown, and the page size. */
+function MpcPager(props: {
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  onPage: (page: number) => void;
+  onPageSize: (size: number) => void;
+}) {
+  const { page, pageCount, pageSize, total } = props;
+  const first = page * pageSize + 1;
+  const last = Math.min(total, (page + 1) * pageSize);
+  return (
+    <nav className="mpc-pager" aria-label="Pages">
+      {pageCount > 1 && (
+        <span className="mpc-pager-pages">
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={page === 0}
+            onClick={() => props.onPage(page - 1)}
+          >
+            ‹ Prev
+          </button>
+          {pageList(page, pageCount).map((p, i) =>
+            p == null ? (
+              <span key={`gap-${i}`} className="mpc-pager-gap">
+                …
+              </span>
+            ) : (
+              <button
+                key={p}
+                type="button"
+                className={`btn-sm${p === page ? " active" : ""}`}
+                aria-current={p === page ? "page" : undefined}
+                onClick={() => props.onPage(p)}
+              >
+                {p + 1}
+              </button>
+            ),
+          )}
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={page === pageCount - 1}
+            onClick={() => props.onPage(page + 1)}
+          >
+            Next ›
+          </button>
+        </span>
+      )}
+      <span className="mpc-pager-range">
+        {first}–{last} of {total}
+      </span>
+      <SelectMenu
+        ariaLabel="Images per page"
+        title="Images per page"
+        options={[30, 60, 120].map((n) => ({ value: String(n), label: `${n} per page` }))}
+        value={String(pageSize)}
+        onChange={(value) => props.onPageSize(Number(value))}
+      />
+    </nav>
   );
 }

@@ -111,6 +111,12 @@ function localCardIdentity(card: CardRow): string {
   );
 }
 
+/** A face's label as the row shows it: "Front", "Back" (stored lower case,
+ *  as the server labels faces). */
+function faceLabelText(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
 // One face of a row; `art` when it prints MPC Fill art (face_art).
 type DisplayFace = CardFaceStatus<CardFaceArt> & {
   /** MPC Fill art picked for this face and still on its way. */
@@ -1043,6 +1049,27 @@ export default function DecklistPage() {
   const { galleryByName, tasksByName } = groupByCardName(gallery, tasks);
 
   const sortedCards = sortCards(cards, settings.sort_primary);
+  // Which of the deck's printings are double-faced, from the card
+  // database: their rows list a Front and a Back before either has an
+  // image. Without a corpus (or from an older server), rows learn their
+  // faces from their images alone.
+  const faceCountIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          cards.flatMap((c) => (c.scryfall_id && c.custom_image_id == null ? [c.scryfall_id] : [])),
+        ),
+      ].sort(),
+    [cards],
+  );
+  const faceCountsQuery = useQuery({
+    queryKey: ["card-face-counts", faceCountIds.join(",")],
+    queryFn: () => generationApi.cardFaceCounts(faceCountIds),
+    enabled: faceCountIds.length > 0 && !serverUnavailable,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const faceCounts = faceCountsQuery.data?.face_counts ?? {};
   // The deck walk goes through the cards with printings, in this order.
   const walkCards = sortedCards.filter((c) => c.custom_image_id == null);
 
@@ -1153,7 +1180,8 @@ export default function DecklistPage() {
             <h3>Danger zone</h3>
             <p className="hint">
               Deletes the generated images and download cache (the output and cache directories
-              above). Model weights and uploaded custom images are kept.
+              above). Model weights, uploaded custom images and MPC Fill downloads are kept; the
+              MPC Fill tab deletes those.
             </p>
             <button
               className="btn-danger btn-block"
@@ -1173,9 +1201,9 @@ export default function DecklistPage() {
                 onCancel={() => setConfirmClearOpen(false)}
               >
                 This deletes every generated image and the download cache (the
-                output and cache directories in the sidebar). Model weights and
-                your uploaded custom images are kept. Cards can be re-generated
-                any time.
+                output and cache directories in the sidebar). Model weights, your
+                uploaded custom images and MPC Fill downloads are kept. Cards can
+                be re-generated any time.
               </ConfirmDialog>
             )}
             {clearGeneratedMutation.data && (
@@ -1534,6 +1562,25 @@ export default function DecklistPage() {
               };
             })
             .filter(({ face }) => face.variants.length > 0);
+          // A double-faced card lists both faces once anything says it has
+          // two (a face's own row, or face art), so a face with nothing yet
+          // shows as such rather than missing — say, a Scryfall front
+          // beside a back printing MPC Fill art, or a back that never
+          // downloaded beside its front.
+          const doubleFaced =
+            (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
+            faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
+            (card.face_art ?? []).some((fa) => fa.total_faces > 1);
+          if (doubleFaced) {
+            for (const position of [0, 1]) {
+              if (scryfallFaces.some((f) => (f.faceIndex ?? 0) === position)) continue;
+              scryfallFaces.push({
+                faceIndex: position,
+                face: { faceLabel: position === 0 ? "front" : "back", variants: [] },
+              });
+            }
+            scryfallFaces.sort((a, b) => (a.faceIndex ?? 0) - (b.faceIndex ?? 0));
+          }
           // A face printing MPC Fill art shows that image's variants in
           // its place (they live under the image's own identity).
           const faces: DisplayFace[] = withPendingPicks(
@@ -1830,12 +1877,12 @@ function CardRowView(props: {
       ) : (
         faces.map((face, i) => (
           <div key={i} className="variants" data-tour="card-variants">
-            {face.faceLabel && <span className="variant-face">{face.faceLabel}</span>}
+            {face.faceLabel && <span className="variant-face">{faceLabelText(face.faceLabel)}</span>}
             {/* A face printed from another printing names it: the row's set
                 is the front's. */}
             {face.art?.scryfall && (
               <span
-                className="variant-note mono"
+                className="variant-note variant-printing mono"
                 title={`Printed from ${face.art.scryfall.set_code.toUpperCase()} #${face.art.scryfall.collector_number}`}
               >
                 <SetIcon setCode={face.art.scryfall.set_code} rarity={face.art.scryfall.rarity} />
@@ -1863,9 +1910,9 @@ function CardRowView(props: {
             )}
             {/* Chosen MPC art not fetched yet: a plain note, like a Scryfall
                 card's "Not Generated Yet", rather than a status badge. */}
-            {face.art && !face.pick && face.variants.length === 0 && (
+            {!face.pick && face.variants.length === 0 && (
               <span className="variant-note" title="Download images or Generate fetches it">
-                {face.art.scryfall ? "Not Generated Yet" : "Not Downloaded Yet"}
+                {face.art && !face.art.scryfall ? "Not Downloaded Yet" : "Not Generated Yet"}
               </span>
             )}
             {face.variants.map((v) => (
@@ -1964,7 +2011,7 @@ function CardRowView(props: {
                       className="btn-sm"
                       onClick={() =>
                         setViewTarget({
-                          title: `${card.name}${face.faceLabel ? ` (${face.faceLabel})` : ""} — Original`,
+                          title: `${card.name}${face.faceLabel ? ` (${faceLabelText(face.faceLabel)})` : ""} — Original`,
                           src: generationApi.imageUrl(originalSource.galleryItemId, "original"),
                         })
                       }

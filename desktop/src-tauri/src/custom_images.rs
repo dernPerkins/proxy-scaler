@@ -481,6 +481,124 @@ pub fn delete_custom_image(app: AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// What deleting every MPC Fill download would do (the MPC Fill tab's
+/// "Delete All MPC Fill Downloads", asked before it runs; and what it did).
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct MpcDownloadsSummary {
+    /// MPC Fill images in the library.
+    pub images: i64,
+    /// Project cards that ARE one of those images (MPC order fronts, adds
+    /// whose name matched no card): deleted with it.
+    pub cards: i64,
+    /// Project cards printing one on a face: kept, the art chosen but not
+    /// downloaded until it is fetched again.
+    pub faces: i64,
+    /// The deleted images' content hashes, for clearing the server's
+    /// copies. Empty in the count.
+    pub hashes: Vec<String>,
+}
+
+struct MpcDownload {
+    id: i64,
+    content_hash: String,
+    file_name: String,
+    thumb_name: String,
+    mpc: MpcProvenance,
+}
+
+fn mpc_downloads(conn: &Connection) -> Result<Vec<MpcDownload>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, content_hash, file_name, thumb_name, mpc_drive_id,
+                    COALESCE(mpc_source, ''), COALESCE(mpc_name, label)
+             FROM custom_images WHERE mpc_drive_id IS NOT NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(MpcDownload {
+                id: row.get(0)?,
+                content_hash: row.get(1)?,
+                file_name: row.get(2)?,
+                thumb_name: row.get(3)?,
+                mpc: MpcProvenance {
+                    drive_id: row.get(4)?,
+                    source: row.get(5)?,
+                    name: row.get(6)?,
+                },
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+fn cards_using(conn: &Connection, custom_image_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM project_cards WHERE custom_image_id = ?1",
+        params![custom_image_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn count_mpc_downloads_rows(conn: &Connection) -> Result<MpcDownloadsSummary, String> {
+    let mut summary = MpcDownloadsSummary::default();
+    for download in mpc_downloads(conn)? {
+        summary.images += 1;
+        summary.cards += cards_using(conn, download.id)?;
+        summary.faces += crate::face_art::count_face_art_using_row(conn, download.id)?;
+    }
+    Ok(summary)
+}
+
+/// Delete every MPC Fill image from the library, in one transaction: the
+/// cards that are one go with it (a Custom Image IS its card, see
+/// delete_custom_image_row), and faces printing one keep it as chosen but
+/// not downloaded. Returns the summary and the files to remove once
+/// committed.
+fn delete_mpc_downloads_rows(
+    conn: &mut Connection,
+) -> Result<(MpcDownloadsSummary, Vec<String>), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut summary = MpcDownloadsSummary::default();
+    let mut files = Vec::new();
+    for download in mpc_downloads(&tx)? {
+        summary.cards += tx
+            .execute(
+                "DELETE FROM project_cards WHERE custom_image_id = ?1",
+                params![download.id],
+            )
+            .map_err(|e| e.to_string())? as i64;
+        summary.faces +=
+            crate::face_art::detach_custom_image_references(&tx, download.id, &download.mpc)? as i64;
+        tx.execute("DELETE FROM custom_images WHERE id = ?1", params![download.id])
+            .map_err(|e| e.to_string())?;
+        summary.images += 1;
+        summary.hashes.push(download.content_hash);
+        files.push(download.file_name);
+        files.push(download.thumb_name);
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((summary, files))
+}
+
+#[tauri::command]
+pub fn count_mpc_downloads(app: AppHandle) -> Result<MpcDownloadsSummary, String> {
+    count_mpc_downloads_rows(&open_db(&app)?)
+}
+
+#[tauri::command]
+pub fn delete_mpc_downloads(app: AppHandle) -> Result<MpcDownloadsSummary, String> {
+    let mut conn = open_db(&app)?;
+    let (summary, files) = delete_mpc_downloads_rows(&mut conn)?;
+    let dir = customs_dir(&app)?;
+    // Best-effort, as delete_custom_image: the rows are already gone.
+    for file in files {
+        let _ = std::fs::remove_file(dir.join(file));
+    }
+    Ok(summary)
+}
+
 /// The library thumbnail as a data URL, for rendering the gallery grid and
 /// the decklist rows. Small by construction (the webview made it), so this
 /// is the one place a custom image's pixels legitimately cross IPC.
@@ -702,6 +820,87 @@ mod tests {
         )
         .expect("insert custom");
         conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn deleting_mpc_downloads_keeps_face_choices_and_uploads() {
+        use crate::project_store::test_support::test_conn;
+        let mut conn = test_conn();
+        let mpc_image = |conn: &Connection, hash: &str, drive: &str| {
+            conn.execute(
+                "INSERT INTO custom_images
+                    (content_hash, label, original_filename, file_name, thumb_name,
+                     width, height, created_at, mpc_drive_id, mpc_source, mpc_name)
+                 VALUES (?1, 'Bolt', 'a.png', ?2, ?3, 818, 1114, '1', ?4, 'Chilli_Axe', 'Bolt (MPC)')",
+                params![hash, format!("{hash}.png"), format!("{hash}_thumb.jpg"), drive],
+            )
+            .expect("insert mpc");
+            conn.last_insert_rowid()
+        };
+        let on_face = mpc_image(&conn, "m1", "1taR38keSBJgplwmZkX3NETXQSblhPYSh");
+        let as_card = mpc_image(&conn, "m2", "2taR38keSBJgplwmZkX3NETXQSblhPYSh");
+        let upload = insert_custom(&conn, "u1");
+        conn.execute(
+            "INSERT INTO projects (tag, name, import_decklist_text, created_at, updated_at)
+             VALUES ('t', 'p', '', '1', '1')",
+            [],
+        )
+        .expect("project");
+        let project = conn.last_insert_rowid();
+        let add_card = |conn: &Connection, scryfall_id: Option<&str>, custom: Option<i64>| {
+            conn.execute(
+                "INSERT INTO project_cards (project_id, sort_order, original_import_line, quantity,
+                                            name, scryfall_id, custom_image_id)
+                 VALUES (?1, 0, 'x', 1, 'Delver', ?2, ?3)",
+                params![project, scryfall_id, custom],
+            )
+            .expect("card");
+            conn.last_insert_rowid()
+        };
+        let delver = add_card(&conn, Some("sid"), None);
+        crate::face_art::set_card_face_art_row(&conn, delver, 0, 2, on_face).expect("face art");
+        add_card(&conn, None, Some(as_card));
+        let own_upload = add_card(&conn, None, Some(upload));
+
+        let count = count_mpc_downloads_rows(&conn).expect("count");
+        assert_eq!((count.images, count.cards, count.faces), (2, 1, 1));
+        assert!(count.hashes.is_empty());
+
+        let (done, files) = delete_mpc_downloads_rows(&mut conn).expect("delete");
+        assert_eq!((done.images, done.cards, done.faces), (2, 1, 1));
+        assert_eq!(done.hashes, vec!["m1".to_string(), "m2".to_string()]);
+        assert_eq!(files.len(), 4);
+
+        // Only the upload is left in the library, and its card.
+        let left: Vec<String> = conn
+            .prepare("SELECT content_hash FROM custom_images")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(left, vec!["u1".to_string()]);
+        let cards: Vec<i64> = conn
+            .prepare("SELECT id FROM project_cards ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(cards, vec![delver, own_upload]);
+
+        // Delver's front keeps its MPC Fill art, chosen but not downloaded.
+        let raw: Option<String> = conn
+            .query_row("SELECT face_art FROM project_cards WHERE id = ?1", params![delver], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let faces = crate::face_art::load_card_face_art(&conn, raw.as_deref(), &mut Default::default())
+            .expect("load");
+        assert_eq!(faces.len(), 1);
+        assert_eq!(faces[0].custom_image_id, None);
+        assert_eq!(faces[0].mpc_drive_id.as_deref(), Some("1taR38keSBJgplwmZkX3NETXQSblhPYSh"));
+        assert_eq!(faces[0].mpc_source.as_deref(), Some("Chilli_Axe"));
     }
 
     #[test]

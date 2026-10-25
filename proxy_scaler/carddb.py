@@ -554,6 +554,31 @@ def flavor_names_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str
     return out
 
 
+def face_counts_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str, int]:
+    """scryfall_id -> how many images the printing prints as (2 for a
+    double-faced card), for whichever of `ids` the corpus holds with more
+    than one — the deck list lists both faces of such a card before either
+    has an image."""
+    unique = list(dict.fromkeys(ids))
+    out: dict[str, int] = {}
+    for start in range(0, len(unique), 500):
+        chunk = unique[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        # The LIKE skips decoding the blob of every single-faced card.
+        for row in conn.execute(
+            f"SELECT id, card_json FROM cards WHERE id IN ({marks})"
+            " AND card_json LIKE '%\"card_faces\"%'",
+            chunk,
+        ):
+            try:
+                count = expected_face_count(json.loads(row["card_json"] or "{}"))
+            except (TypeError, ValueError):
+                continue
+            if count > 1:
+                out[row["id"]] = count
+    return out
+
+
 def variants_for_oracle_id(
     conn: sqlite3.Connection, oracle_id: str, *, include_digital: bool = False
 ) -> list[dict[str, Any]]:

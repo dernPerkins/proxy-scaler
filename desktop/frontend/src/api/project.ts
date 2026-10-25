@@ -218,6 +218,18 @@ export interface CardFaceArt {
   scryfall?: ScryfallFaceSource | null;
 }
 
+/** Mirrors custom_images::MpcDownloadsSummary (Rust). */
+export interface MpcDownloadsSummary {
+  /** MPC Fill images in the library. */
+  images: number;
+  /** Project cards that are one of them: removed with it. */
+  cards: number;
+  /** Project cards printing one on a face: kept, to download again. */
+  faces: number;
+  /** The deleted images' content hashes (empty in a count). */
+  hashes: string[];
+}
+
 /** Mirrors face_art::ScryfallFaceSource (Rust): face `source_face` of the
  *  printing `scryfall_id`, with what the row shows for it. */
 export interface ScryfallFaceSource {
@@ -402,6 +414,11 @@ export const projectApi = {
   getMpcFillLanguage: () => invokeCommand<string>("get_mpc_fill_language"),
   setMpcFillLanguage: (language: string) =>
     invokeCommand<void>("set_mpc_fill_language", { language }),
+
+  /** The MPC Fill tab's page size (30, 60 or 120), remembered app-wide. */
+  getMpcLibraryPageSize: () => invokeCommand<number>("get_mpc_library_page_size"),
+  setMpcLibraryPageSize: (size: number) =>
+    invokeCommand<void>("set_mpc_library_page_size", { size }),
 
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>
@@ -592,6 +609,13 @@ export const projectApi = {
 
   deleteCustomImage: (id: number) =>
     invokeCommand<void>("delete_custom_image", { id }),
+
+  /** What deleting every MPC Fill download would do (hashes empty). */
+  countMpcDownloads: () => invokeCommand<MpcDownloadsSummary>("count_mpc_downloads"),
+  /** Delete every MPC Fill image from the library. Cards that are one go
+   *  with it; faces printing one keep it chosen, not downloaded. Returns
+   *  what it did, with the deleted images' hashes. */
+  deleteMpcDownloads: () => invokeCommand<MpcDownloadsSummary>("delete_mpc_downloads"),
 
   customImageThumbnail: (id: number) =>
     invokeCommand<string | null>("custom_image_thumbnail", { id }),

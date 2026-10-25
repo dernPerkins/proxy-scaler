@@ -365,6 +365,10 @@ export const generationApi = {
     if (params.include_digital) search.set("include_digital", "true");
     return request<CardVariantsResult>(`/api/cards/variants?${search}`);
   },
+  /** Remove a Custom Image's stored copy from this server (the client's
+   *  library copy is canonical). */
+  deleteServerCustom: (contentHash: string) =>
+    request<{ removed: number }>(`/api/customs/${contentHash}`, { method: "DELETE" }),
   // An <img> src, not a fetch: one face of one printing as a JPEG, served
   // from the server's thumbnail cache or fetched through `via`. `version`
   // (CardVariant.image_version) makes the URL name exactly one image, which
@@ -423,6 +427,14 @@ export const generationApi = {
   // Only for servers serverSupportsSetIcons() accepts — older ones 404.
   setIconUrl: (setCode: string) =>
     `${getApiBaseUrl()}/api/sets/${encodeURIComponent(setCode.toLowerCase())}/icon`,
+  // scryfall_id -> face count for a deck's double-faced printings (single-
+  // faced and unknown ids are absent). An older server 404s: rows then
+  // learn their faces from their images alone.
+  cardFaceCounts: (ids: string[]) =>
+    request<{ face_counts: Record<string, number> }>("/api/cards/face-counts", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
   // scryfall_id -> rarity for a deck's pinned printings; ids the corpus
   // lacks (or holds no rarity for) are absent. Same server floor.
   cardRarities: (ids: string[]) =>

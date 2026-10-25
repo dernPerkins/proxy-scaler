@@ -2124,6 +2124,16 @@ button:disabled {
 .variant-note {
   color: var(--text-faint);
   font-size: 13px;
+  align-self: center;
+}
+/* A face printed from another printing names it (set symbol, set and
+   number), centred on the row's badges like the face label. */
+.variant-printing {
+  display: inline-flex;
+  align-items: center;
+}
+.variant-printing .set-icon {
+  vertical-align: 0;
 }
 
 .thumbs {
@@ -2279,6 +2289,48 @@ button:disabled {
 }
 .mpc-library-spacer {
   flex: 1;
+}
+/* The MPC Fill library's pages (CustomsPage.tsx): ‹ Page 2 of 6 › beside
+   the toolbar's count, and the full row under the grid with the page
+   size at its end. */
+.mpc-pager-compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mpc-pager-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding: 0 2px;
+}
+.mpc-pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 18px 0 8px;
+}
+.mpc-pager-pages {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.mpc-pager-pages .btn-sm.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.mpc-pager-gap {
+  color: var(--text-faint);
+  padding: 0 2px;
+}
+.mpc-pager-range {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  margin-left: auto;
 }
 
 /* The MPC Fill tab's toolbar stays on screen while the grid scrolls: a
