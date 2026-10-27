@@ -67,13 +67,11 @@ import {
   usePendingFaceArt,
   type PendingFaceArt,
 } from "../pickDownloads";
-import SplitPill from "../components/SplitPill";
 import { parseMpcOrder } from "../mpcOrder";
 import type { BackImage } from "../api/types";
 import { UploadCanceled } from "../uploadProgress";
 import {
   ACCEPTED_IMAGE_TYPES,
-  MAX_UPLOAD_MB,
   addImagesSequentially,
 } from "../imageUpload";
 import { runDownload, useDownloadStatus } from "../download";
@@ -92,6 +90,8 @@ import type { Pick, PickerOpenRequest } from "../components/PrintingPicker";
 import DeckArtWalk, { type WalkApply } from "../components/DeckArtWalk";
 import SidebarColumn from "../components/SidebarColumn";
 import BackToTopButton from "../components/BackToTopButton";
+import LibraryAddPanel from "../components/LibraryAddPanel";
+import AddCards from "../components/AddCards";
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -673,11 +673,6 @@ export default function DecklistPage() {
     },
   });
 
-  function handleCustomFiles(list: FileList | null) {
-    const files = Array.from(list ?? []);
-    if (files.length) addCustomImagesMutation.mutate(files);
-  }
-
   // MPC Fill art an import chose but didn't download is fetched by the
   // same buttons that fetch a Scryfall import's images: Download images
   // queues it, Generate waits for it (it may be upscaled). Each face shows
@@ -1113,9 +1108,131 @@ export default function DecklistPage() {
     },
   };
 
+  const importNotes = (
+    <>
+      {findingArt && <p className="hint">Finding MPC Fill art…</p>}
+      {serverUnavailable && (
+        <p className="hint">
+          Importing needs the generation server — cards are matched
+          before they're added.
+        </p>
+      )}
+      {importFailures.length > 0 && (
+        <ul className="import-failures">
+          {importFailures.map((f) => (
+            <li key={f.line} className="error-text">
+              <span className="mono">{f.line}</span> — {f.error}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+  const orderNotes = (
+    <>
+      {orderProgress && importOrderMutation.isPending && (
+        <p className="hint">
+          Fetching art {Math.min(orderProgress.done + 1, orderProgress.total)} of{" "}
+          {orderProgress.total}
+          {orderProgress.name ? ` — ${orderProgress.name}` : ""}…{" "}
+          <button
+            type="button"
+            className="linklike"
+            onClick={() => {
+              orderCanceled.current = true;
+            }}
+          >
+            Cancel
+          </button>
+        </p>
+      )}
+    </>
+  );
+  const fileInputs = (
+    <>
+      <input
+        ref={customFileInput}
+        type="file"
+        multiple
+        accept={ACCEPTED_IMAGE_TYPES}
+        style={{ display: "none" }}
+        onChange={(e) => {
+          // Copy before resetting: picking the same file twice in a
+          // row fires no change event otherwise, which reads as the
+          // control being broken.
+          const files = e.target.files ? Array.from(e.target.files) : [];
+          e.target.value = "";
+          if (files.length) addCustomImagesMutation.mutate(files);
+        }}
+      />
+      <input
+        ref={orderFileInput}
+        type="file"
+        accept=".xml,text/xml,application/xml"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) {
+            importOrderMutation.mutate(file);
+          }
+        }}
+      />
+      {orderCardback && (
+        <ConfirmDialog
+          title="Use the order's card back?"
+          confirmLabel="Use this back"
+          tone="primary"
+          onConfirm={() => {
+            const backId = orderCardback.id;
+            setSettings((s) => ({ ...s, back_image_id: backId }));
+            setOrderCardback(null);
+          }}
+          onCancel={() => setOrderCardback(null)}
+        >
+          The order prints &ldquo;{orderCardback.label}&rdquo; on the back of every card
+          without its own. Make it this project&apos;s back?
+        </ConfirmDialog>
+      )}
+    </>
+  );
   return (
     <div className="layout">
       <SidebarColumn>
+        {/* Adding from files at the top of the sidebar, as the Customs tab
+            does. Not disabled when the server is unreachable, unlike
+            importing a list: an uploaded image has nothing to resolve, so
+            this is the one way into a project that works with no server at
+            all. */}
+        <LibraryAddPanel
+            title="Add from Files"
+            accept={ACCEPTED_IMAGE_TYPES}
+            multiple
+            dragging={dragDepth > 0}
+            busyLabel={
+              addCustomImagesMutation.isPending
+                ? customProgress
+                  ? `Adding ${Math.min(customProgress.done + 1, customProgress.total)} of ${customProgress.total}…`
+                  : "Adding…"
+                : null
+            }
+            tour="custom-drop"
+            onFiles={(files) => addCustomImagesMutation.mutate(files)}
+          >
+            <button
+              type="button"
+              className="btn-sm btn-block"
+              onClick={() => orderFileInput.current?.click()}
+              disabled={importOrderMutation.isPending || serverUnavailable || !mpcSupported}
+              title="Import the .xml file MPC Fill's Download XML button saves"
+            >
+              Import MPC Fill Order…
+            </button>
+            <p className="hint" style={{ marginTop: 6 }}>
+              An order&apos;s .xml can be dropped here too.
+            </p>
+            {orderNotes}
+          </LibraryAddPanel>
         <aside className="sidebar panel">
           <h3 style={{ marginBottom: 14 }}>Settings</h3>
 
@@ -1241,11 +1358,15 @@ export default function DecklistPage() {
         onDrop={(e) => {
           e.preventDefault();
           setDragDepth(0);
-          handleCustomFiles(e.dataTransfer.files);
+          // A dropped MPC Fill order (.xml) imports; the rest are images.
+          const files = Array.from(e.dataTransfer.files);
+          const order = files.find((f) => f.name.toLowerCase().endsWith(".xml"));
+          if (order) importOrderMutation.mutate(order);
+          const images = files.filter((f) => f !== order);
+          if (images.length) addCustomImagesMutation.mutate(images);
         }}
       >
         <BackToTopButton />
-        <h2>Decklist</h2>
 
         {/* The import box is unconditional: with no project yet, importing
             is what creates one (see ProjectContext's importDecklistText).
@@ -1255,223 +1376,49 @@ export default function DecklistPage() {
             generation server, which importing doesn't touch — so it sits
             beside the box rather than in place of it. */}
         {readiness.status === "starting" && (
-          <p className="hint" style={{ marginTop: 10 }}>
+          <p className="hint" style={{ marginBottom: 10 }}>
             Starting local server — your last project will load automatically.
           </p>
         )}
 
-        <div className="import-box panel" style={{ marginTop: 10 }} data-tour="import-box">
-          <p className="hint">
-            One card per line — best format:{" "}
-            <code>4 Card Name (set) 123</code>. Set and collector number are
-            optional; <code>4x</code> works too.
-          </p>
-          <textarea
-            value={decklistDraft}
-            onChange={(e) => setDecklistDraft(e.target.value)}
-            rows={6}
-            style={{ width: "100%" }}
-            placeholder={"1 Sol Ring (c21) 263\n2 Arcane Signet 117\n4 Lightning Bolt"}
-          />
-          <div className="import-actions import-actions-wide">
-            <button
-              className="btn-primary"
-              onClick={() => void handleImport()}
-              disabled={!decklistDraft.trim() || importing || serverUnavailable}
-              title={
-                serverUnavailable
-                  ? "Generation server is required to import"
-                  : shortcutLabel("Enter")
-              }
-            >
-              {importing ? "Importing…" : "Import cards"}
-            </button>
-            {/* The language this import demands ("strictly literal" — a
-                card without a version in this language errors and is not
-                added), unless "All Languages" hands matching back to
-                best-effort. Options are the full Scryfall list, served by
-                the server regardless of which corpus is imported. */}
-            <SelectMenu
-              ariaLabel="Card language to import"
-              title="Card language to import"
-              options={(languages.includes(settings.preferred_lang)
-                ? languages
-                : [settings.preferred_lang, ...languages]
-              ).map((lang) => ({ value: lang, label: lang.toUpperCase() }))}
-              value={settings.preferred_lang}
-              disabled={settings.lang_any}
-              onChange={(value) => setSettings((s) => ({ ...s, preferred_lang: value }))}
-            />
-            <label className="check" title="Match any language, best effort">
-              <input
-                type="checkbox"
-                checked={settings.lang_any}
-                onChange={(e) =>
-                  setSettings((s) => ({ ...s, lang_any: e.target.checked }))
-                }
-              />
-              All Languages
-            </label>
-            {/* Where imported cards' art comes from. MPC Fill still matches
-                each line against Scryfall (that's the card), then prints
-                MPC Fill's top art for every face in its place. */}
-            <span className="import-art-source">
-              <span className="hint">Art From</span>
-              <SplitPill
-                ariaLabel="Where imported cards' art comes from"
-                value={settings.import_art_source}
-                onChange={(value) => setSettings((s) => ({ ...s, import_art_source: value }))}
-                options={[
-                  {
-                    value: "scryfall",
-                    label: "Scryfall",
-                    title: "Each card's own printing (upscaled when you Generate)",
-                  },
-                  {
-                    value: "mpc",
-                    label: "MPC Fill",
-                    title: !mpcSupported
-                      ? "Needs a newer generation server"
-                      : !mpcCatalog.ready
-                        ? "Download the MPC Fill Catalog first (sidebar)"
-                        : "MPC Fill's top community art for every face, picked automatically on import. Change any of them from the card's printing button.",
-                    disabled: !mpcSupported || !mpcCatalog.ready,
-                  },
-                ]}
-              />
-            </span>
-          </div>
-          {findingArt && <p className="hint">Finding MPC Fill art…</p>}
-          {serverUnavailable && (
-            <p className="hint">
-              Importing needs the generation server — cards are matched
-              before they're added.
-            </p>
-          )}
-          {importFailures.length > 0 && (
-            <ul className="import-failures">
-              {importFailures.map((f) => (
-                <li key={f.line} className="error-text">
-                  <span className="mono">{f.line}</span> — {f.error}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Adding your own art, beside the decklist box rather than on a
-            tab of its own, because the result is the same thing: cards in
-            this project.
-
-            Deliberately NOT disabled when the server is unreachable,
-            unlike the import button above. Importing a decklist has to
-            match each line against Scryfall before it can add anything; an
-            uploaded image has nothing to resolve, so this is the one way
-            into a project that works with no server at all. */}
-        <div
-          className={`import-box panel custom-drop${dragDepth > 0 ? " is-dragging" : ""}`}
-          style={{ marginTop: 10 }}
-          data-tour="custom-drop"
-        >
-          <p className="hint">
-            Or use your own art — drop image files anywhere on this page, or{" "}
-            <button
-              type="button"
-              className="linklike"
-              onClick={() => customFileInput.current?.click()}
-              disabled={addCustomImagesMutation.isPending}
-            >
-              choose files
-            </button>
-            . Each becomes a card named after its file. PNG, JPEG or WebP up to{" "}
-            {MAX_UPLOAD_MB}MB each.
-          </p>
-          <input
-            ref={customFileInput}
-            type="file"
-            multiple
-            accept={ACCEPTED_IMAGE_TYPES}
-            style={{ display: "none" }}
-            onChange={(e) => {
-              // Copy before resetting: picking the same file twice in a
-              // row fires no change event otherwise, which reads as the
-              // control being broken.
-              const files = e.target.files ? Array.from(e.target.files) : [];
-              e.target.value = "";
-              if (files.length) addCustomImagesMutation.mutate(files);
-            }}
-          />
-          {customProgress && addCustomImagesMutation.isPending && (
-            <p className="hint">
-              Adding {Math.min(customProgress.done + 1, customProgress.total)} of{" "}
-              {customProgress.total}…
-            </p>
-          )}
-          <p className="hint">
-            Have an MPC Autofill order?{" "}
-            <button
-              type="button"
-              className="linklike"
-              onClick={() => orderFileInput.current?.click()}
-              disabled={importOrderMutation.isPending || serverUnavailable || !mpcSupported}
-              title={
-                serverUnavailable
-                  ? "Generation server is unreachable"
-                  : !mpcSupported
-                    ? "Needs a newer generation server"
-                    : "Import the .xml file MPC Fill's Download XML button saves"
-              }
-            >
-              Import the order (.xml)
-            </button>
-            . Its art is fetched into your MPC Fill and Back libraries.
-          </p>
-          <input
-            ref={orderFileInput}
-            type="file"
-            accept=".xml,text/xml,application/xml"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) {
-                importOrderMutation.mutate(file);
-              }
-            }}
-          />
-          {orderProgress && importOrderMutation.isPending && (
-            <p className="hint">
-              Fetching art {Math.min(orderProgress.done + 1, orderProgress.total)} of{" "}
-              {orderProgress.total}
-              {orderProgress.name ? ` — ${orderProgress.name}` : ""}…{" "}
-              <button
-                type="button"
-                className="linklike"
-                onClick={() => {
-                  orderCanceled.current = true;
-                }}
-              >
-                Cancel
-              </button>
-            </p>
-          )}
-          {orderCardback && (
-            <ConfirmDialog
-              title="Use the order's card back?"
-              confirmLabel="Use this back"
-              tone="primary"
-              onConfirm={() => {
-                const backId = orderCardback.id;
-                setSettings((s) => ({ ...s, back_image_id: backId }));
-                setOrderCardback(null);
-              }}
-              onCancel={() => setOrderCardback(null)}
-            >
-              The order prints &ldquo;{orderCardback.label}&rdquo; on the back of every card
-              without its own. Make it this project&apos;s back?
-            </ConfirmDialog>
-          )}
-        </div>
+        <AddCards
+          draft={decklistDraft}
+          setDraft={setDecklistDraft}
+          onImport={() => void handleImport()}
+          canImport={!!decklistDraft.trim() && !importing && !serverUnavailable}
+          importing={importing}
+          importTitle={
+            serverUnavailable ? "Generation server is required to import" : shortcutLabel("Enter")
+          }
+          notes={importNotes}
+          onChooseFiles={() => customFileInput.current?.click()}
+          onChooseOrder={() => orderFileInput.current?.click()}
+          orderDisabled={importOrderMutation.isPending || serverUnavailable || !mpcSupported}
+          settings={{
+            // The full Scryfall list, served by the server whichever corpus
+            // is imported.
+            languages: languages.includes(settings.preferred_lang)
+              ? languages
+              : [settings.preferred_lang, ...languages],
+            lang: settings.preferred_lang,
+            setLang: (value) => setSettings((s) => ({ ...s, preferred_lang: value })),
+            langAny: settings.lang_any,
+            setLangAny: (value) => setSettings((s) => ({ ...s, lang_any: value })),
+            artSource: settings.import_art_source,
+            setArtSource: (value) => setSettings((s) => ({ ...s, import_art_source: value })),
+            mpcArtUnavailable: !mpcSupported
+              ? "Needs a newer generation server"
+              : !mpcCatalog.ready
+                ? "Download the MPC Fill Catalog first (sidebar)"
+                : null,
+          }}
+          afterAdd={(added) => {
+            if (added.length > 0 && settings.import_art_source === "mpc" && mpcSupported && mpcCatalog.ready) {
+              void pickMpcArtFor(added);
+            }
+          }}
+        />
+        {fileInputs}
 
         <div className="decklist-head">
           <h2>
@@ -1525,7 +1472,7 @@ export default function DecklistPage() {
 
         {cards.length === 0 && (
           <p className="empty-note">
-            No cards yet — paste a decklist above and click Import cards.
+            No cards yet — search for a card above, or switch to List to paste a decklist.
           </p>
         )}
 

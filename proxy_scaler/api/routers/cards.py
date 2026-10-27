@@ -94,6 +94,12 @@ def card_db_status() -> CardDbStatusOut:
     when to re-import is the user's call, made from the sidebar; the import
     job fetches the catalog itself when they make it."""
     active = card_jobs.active_job()
+    # The client asks this at launch, so it's the moment to build the
+    # Add Cards search index (a second or so on a big corpus) in the
+    # background, before the first keystroke needs it. Not mid-import: the
+    # corpus is about to change.
+    if active is None:
+        card_search.warm(get_card_db_path())
     return CardDbStatusOut(
         local=_local_status(),
         import_running=active is not None,

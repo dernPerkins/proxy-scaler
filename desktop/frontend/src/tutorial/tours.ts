@@ -83,16 +83,16 @@ export const TOURS: Record<TourId, Tour> = {
     followUps: ["decklist-cards", "decklist-picker"],
     steps: [
       {
-        target: "import-box",
+        target: "add-cards",
         title: "This is the Decklist tab",
-        body: "Let's take a quick look around, starting here: paste your decklist, one card per line. \"4 Lightning Bolt\" works, but we recommend including the set code and number, formatted like \"1 Sol Ring (c21) 263\". Choose a language, then click Import cards.",
+        body: "Let's take a quick look around, starting here: type a card's name and press Enter to add it, or Ctrl+Enter (Cmd on a Mac) to choose its printing. Switch to List to paste a whole decklist, one card per line, like \"1 Sol Ring (c21) 263\". Ctrl+K opens a palette with every way to add cards.",
         placement: "bottom",
       },
       {
         target: "custom-drop",
         title: "Or use your own art",
-        body: "Drop image files anywhere on this page and each one becomes a card.",
-        placement: "top",
+        body: "Drop image files here or anywhere on this page and each one becomes a card. An MPC Fill order's .xml can be dropped too.",
+        placement: "right",
       },
       {
         target: "tabs",

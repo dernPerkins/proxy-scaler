@@ -435,6 +435,17 @@ export interface CardVariant {
   rarity?: string | null;
 }
 
+/** One card a typed name search matched (GET /api/cards/search). */
+export interface CardSearchHit {
+  name: string;
+  oracle_id: string;
+  /** English printings — what results are ranked by after match quality. */
+  printings: number;
+  /** The printing a bare-name import would pick: what Quick Add adds.
+   *  Null when the strict language has no printing of it. */
+  default: CardVariant | null;
+}
+
 export interface CardVariantsResult {
   anchor: CardVariant;
   variants: CardVariant[];

@@ -12,6 +12,7 @@ import type {
   CardDataset,
   CardDbStatus,
   CardImportStatus,
+  CardSearchHit,
   CardVariantsResult,
   DeckEntryIn,
   Device,
@@ -369,6 +370,15 @@ export const generationApi = {
    *  library copy is canonical). */
   deleteServerCustom: (contentHash: string) =>
     request<{ removed: number }>(`/api/customs/${contentHash}`, { method: "DELETE" }),
+  /** Card names matching a typed query, forgiving of partial words and
+   *  typos ("so rin" finds Sol Ring). Answered from the local corpus;
+   *  404 without one. */
+  searchCards: (q: string, opts: { lang: string; strictLang: boolean; limit?: number }) => {
+    const search = new URLSearchParams({ q, lang: opts.lang });
+    if (opts.strictLang) search.set("strict_lang", "true");
+    if (opts.limit) search.set("limit", String(opts.limit));
+    return request<{ results: CardSearchHit[] }>(`/api/cards/search?${search}`);
+  },
   // An <img> src, not a fetch: one face of one printing as a JPEG, served
   // from the server's thumbnail cache or fetched through `via`. `version`
   // (CardVariant.image_version) makes the URL name exactly one image, which

@@ -371,6 +371,8 @@ function PrintingPreview(props: {
   settleMs: number;
   onFlip: () => void;
   onPick: () => void;
+  /** The pick button's label; "Use This Printing" unless given. */
+  pickLabel?: string;
 }) {
   const { v, face, current, origin, showImages, settleMs } = props;
   const queryClient = useQueryClient();
@@ -489,7 +491,7 @@ function PrintingPreview(props: {
           <PreviewVersions v={v} face={face} enabled={showImages} />
         </div>
         <button type="button" className="printing-preview-cta" onClick={props.onPick}>
-          Use This Printing
+          {props.pickLabel ?? "Use This Printing"}
         </button>
       </div>
     </aside>
@@ -569,6 +571,9 @@ export function PrintingGridModal(props: {
   /** The Scryfall | MPC Fill switch moved. */
   onSourceChange: (source: PickerSource) => void;
   walk: WalkHooks;
+  /** The pick buttons' labels, for a use other than the deck walk
+   *  (Add Cards' Card Search: "Add To Deck"). */
+  pickLabels?: { printing: string; art: string };
 }) {
   const { card, preferredLang, onClose, walk } = props;
   const [source, setSourceState] = useState<PickerSource>(props.initial.source);
@@ -939,7 +944,7 @@ export function PrintingGridModal(props: {
                   : null
                 : (art?.mpc_drive_id ?? null)
             }
-            pickLabel="Use This Art"
+            pickLabel={props.pickLabels?.art ?? "Use This Art"}
             tourAfter="decklist-cards"
             onSelect={(picked) => walk.onSelect(artChoice(picked))}
             onPick={async (picked) => walk.onChoose(artChoice(picked))}
@@ -984,6 +989,7 @@ export function PrintingGridModal(props: {
             settleMs={settleMs}
             onFlip={() => flip(selected)}
             onPick={() => walk.onChoose(choiceOf(selected))}
+            pickLabel={props.pickLabels?.printing}
           />
         )}
 
