@@ -38,8 +38,10 @@ import type { TourId } from "../tutorial/tours";
 import {
   KEYBOARD_PREVIEW_SETTLE_MS,
   gridColumns,
+  useQueuedThumb,
+  useThumbnailQueue,
   useTileVisibility,
-  type ObserveTile,
+  type ThumbnailQueue,
 } from "./imageGrid";
 
 // How many previews are hydrated (name, uploader, DPI) at a time as the
@@ -126,25 +128,24 @@ function MpcTile(props: {
   card: MpcCard;
   selected: boolean;
   current: boolean;
+  /** The selected art, whose thumbnail loads before the rest. */
+  first: boolean;
   tabIndex: number;
-  observe: ObserveTile;
+  queue: ThumbnailQueue;
   buttonRef: (el: HTMLButtonElement | null) => void;
   onFocus: () => void;
   onSelect: () => void;
   onPick: () => void;
 }) {
-  const { card, selected, current, observe } = props;
+  const { card, selected, current } = props;
   const frameRef = useRef<HTMLSpanElement>(null);
-  const [nearView, setNearView] = useState(false);
+  // The thumbnail waits its turn: the selection first, then what's in
+  // view, then the margin (imageGrid.ts).
+  const { load, settle } = useQueuedThumb(props.queue, frameRef, true, props.first);
   const [failed, setFailed] = useState(false);
   // MPC Fill art carries its bleed; the tile shows the card as cut.
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const trimmed = mpcTrimStyle(natural);
-  useEffect(() => {
-    if (!frameRef.current) return;
-    return observe(frameRef.current, () => setNearView(true));
-  }, [observe]);
-
   return (
     <div className={`printing-tile${current ? " active" : ""}${selected ? " selected" : ""}`}>
       <button
@@ -169,7 +170,7 @@ function MpcTile(props: {
               <span className="printing-tile-placeholder-name">{card.name}</span>
               <span className="printing-set-name">{card.source_name}</span>
             </span>
-          ) : nearView ? (
+          ) : load ? (
             <img
               src={generationApi.mpcThumbUrl(card.drive_id, "small")}
               alt=""
@@ -177,10 +178,14 @@ function MpcTile(props: {
               draggable={false}
               className={trimmed ? "mpc-trimmed" : undefined}
               style={trimmed ?? undefined}
-              onLoad={(e) =>
-                setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
-              }
-              onError={() => setFailed(true)}
+              onLoad={(e) => {
+                settle();
+                setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+              }}
+              onError={() => {
+                settle();
+                setFailed(true);
+              }}
             />
           ) : null}
         </span>
@@ -529,6 +534,8 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const thumbQueue = useThumbnailQueue(scrollRef);
+  // Only for the paging sentinel below: it loads no image.
   const observeTile = useTileVisibility(scrollRef);
   const tileRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [focusIndex, setFocusIndex] = useState(0);
@@ -780,8 +787,9 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
                   !(props.onSelect && card.drive_id === currentDriveId)
                 }
                 current={card.drive_id === currentDriveId}
+                first={card.drive_id === selectedId}
                 tabIndex={i === clampedFocus ? 0 : -1}
-                observe={observeTile}
+                queue={thumbQueue}
                 buttonRef={(el) => {
                   tileRefs.current[i] = el;
                 }}

@@ -49,8 +49,9 @@ import SelectMenu from "./SelectMenu";
 import {
   KEYBOARD_PREVIEW_SETTLE_MS,
   gridColumns,
-  useTileVisibility,
-  type ObserveTile,
+  useQueuedThumb,
+  useThumbnailQueue,
+  type ThumbnailQueue,
 } from "./imageGrid";
 
 export type Pick = {
@@ -219,8 +220,10 @@ function PrintingTile(props: {
   /** null: the setting hasn't loaded yet, so no image is requested. */
   origin: ImageOrigin | null;
   showImages: boolean;
+  /** The selected printing, whose thumbnail loads before the rest. */
+  first: boolean;
   tabIndex: number;
-  observe: ObserveTile;
+  queue: ThumbnailQueue;
   buttonRef: (el: HTMLButtonElement | null) => void;
   onFocus: () => void;
   onSelect: () => void;
@@ -232,21 +235,21 @@ function PrintingTile(props: {
   const [failedFaces, setFailedFaces] = useState<ReadonlySet<number>>(new Set());
   const faceName = faceNameOf(v, face);
   const frameRef = useRef<HTMLSpanElement>(null);
-  const [nearView, setNearView] = useState(false);
-  const { observe } = props;
-  // In an effect, not the ref callback: effects run after the whole tree
-  // has committed, so the scroll container the observer is rooted on
-  // exists by now.
-  useEffect(() => {
-    if (!showImages || !frameRef.current) return;
-    return observe(frameRef.current, () => setNearView(true));
-  }, [observe, showImages]);
+  // The thumbnail waits its turn: the selection first, then what's in
+  // view, then the margin (imageGrid.ts).
+  const { load, settle } = useQueuedThumb(
+    props.queue,
+    frameRef,
+    showImages && origin != null,
+    props.first,
+  );
 
   let image;
   if (!showImages || failedFaces.has(face)) {
     image = <TilePlaceholder v={v} faceName={faceName} altName={faceAltName(v, face)} />;
-  } else if (origin == null || !nearView) {
-    // The empty frame: off-screen, or the origin setting hasn't loaded.
+  } else if (origin == null || !load) {
+    // The empty frame: waiting its turn, or the origin setting hasn't
+    // loaded.
     image = null;
   } else {
     image = (
@@ -256,7 +259,11 @@ function PrintingTile(props: {
         alt=""
         decoding="async"
         draggable={false}
-        onError={() => setFailedFaces((prev) => new Set(prev).add(face))}
+        onLoad={settle}
+        onError={() => {
+          settle();
+          setFailedFaces((prev) => new Set(prev).add(face));
+        }}
       />
     );
   }
@@ -800,7 +807,7 @@ export function PrintingGridModal(props: {
   // arrow keys move it in grid order, and selection with it.
   const gridRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const observeTile = useTileVisibility(scrollRef);
+  const thumbQueue = useThumbnailQueue(scrollRef);
   const tileRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [focusIndex, setFocusIndex] = useState(0);
   const clampedFocus = Math.min(focusIndex, Math.max(0, shown.length - 1));
@@ -1084,16 +1091,17 @@ export function PrintingGridModal(props: {
               </label>
             </div>
             {/* Mounted for as long as the grid is, even when the filters
-                match nothing: the tile observer is rooted on this element.
+                match nothing: the thumbnail queue is rooted on this element.
                 (Switching to MPC Fill and back does remount it; the
-                observer rebuilds on the new element — imageGrid.ts.) */}
+                queue rebuilds on the new element — imageGrid.ts.) */}
             <div className="modal-body" ref={scrollRef} data-tour="picker-grid">
               {shown.length === 0 ? (
                 <p className="hint">No printings match this filter.</p>
               ) : (
                 /* No virtualisation: ~870 tiles (a basic land) is well
                    within what a plain CSS grid handles once thumbnails
-                   load only near the view (useTileVisibility). */
+                   load only near the view, what's in view first
+                   (useThumbnailQueue). */
                 <div className="printing-grid" ref={gridRef} onKeyDown={onGridKeyDown}>
                   {shown.map((v, i) => (
                     <PrintingTile
@@ -1108,8 +1116,9 @@ export function PrintingGridModal(props: {
                       face={faceOf(v)}
                       origin={origin}
                       showImages={showImages}
+                      first={v.scryfall_id === selectedId}
                       tabIndex={i === clampedFocus ? 0 : -1}
-                      observe={observeTile}
+                      queue={thumbQueue}
                       buttonRef={(el) => {
                         tileRefs.current[i] = el;
                       }}
