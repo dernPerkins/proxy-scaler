@@ -232,7 +232,7 @@ def test_status_prunes_versions_whose_file_is_gone(client: TestClient, tmp_path:
     Path(gone["out_path"]).unlink()
     task_id = db.enqueue_task(
         "e" * 32, custom_hash=content_hash, face_index=None, face_label=None, face_name="My Alter",
-        card_name="My Alter", dpi=1200, model="ultrasharp_v2", output_dir=str(tmp_path / "out"),
+        card_name="My Alter", dpi=1200, model="ultrasharp_v2", task_type="upscale", output_dir=str(tmp_path / "out"),
         cache_dir=str(tmp_path / "cache"), weights_dir="w", db_path=db_path,
     )
     db.mark_task_done(task_id, db_path=db_path)

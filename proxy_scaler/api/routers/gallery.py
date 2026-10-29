@@ -24,7 +24,7 @@ from proxy_scaler.api.schemas import (
     RegenerateGalleryItemIn,
 )
 from proxy_scaler.decklist import DeckEntry
-from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+from proxy_scaler.dpi import BACK_SOURCE_MODEL, CUSTOM_SOURCE_MODEL, ORIGINAL_DPI, ORIGINAL_MODEL
 from proxy_scaler.services import generation as generation_service
 
 router = APIRouter(prefix="/api/gallery", tags=["gallery"])
@@ -219,6 +219,14 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
     whose regeneration this is."""
     db_path = get_db_path()
     item = _find_item(gallery_item_id)
+    # Regenerating redoes an upscale (the task is queued as one). A source
+    # variant has none to redo: an original is fetched again by Re-Fetch,
+    # and an uploaded custom or back is its own file.
+    if item["model"] in (ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL, BACK_SOURCE_MODEL):
+        raise HTTPException(
+            status_code=422,
+            detail="Only an upscaled version can be regenerated; use Re-Fetch for an original.",
+        )
     task_ids = generation_service.enqueue_face(
         scryfall_id=item["scryfall_id"],
         custom_hash=item["custom_hash"],
@@ -232,6 +240,7 @@ def regenerate(gallery_item_id: int, body: RegenerateGalleryItemIn) -> GenerateO
         png_url=item["png_url"],
         dpi_targets=[item["dpi"]],
         model=item["model"],
+        task_type="upscale",
         tile_size=body.tile_size,
         output_dir=Path(body.output_dir),
         cache_dir=Path(body.cache_dir),
@@ -293,6 +302,7 @@ def refetch_original(gallery_item_id: int, body: RefetchOriginalIn) -> GenerateO
         png_url=item["png_url"],
         dpi_targets=[ORIGINAL_DPI],
         model=ORIGINAL_MODEL,
+        task_type="download",
         tile_size=0,
         output_dir=Path(body.output_dir),
         cache_dir=Path(body.cache_dir),

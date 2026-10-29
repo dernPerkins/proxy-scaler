@@ -41,6 +41,7 @@ export const PATCH_NOTES: PatchNotesEntry[] = [
       "View on a card's Original opens it full size.",
       "The tab bar and toolbar stay put while you scroll, the sidebar scrolls on its own, and a Back to Top button appears once you scroll down. The Customs and Backs tabs have a refreshed upload and search area.",
       "Ctrl+1 to Ctrl+7 (Cmd on a Mac) now that MPC Fill has a tab of its own.",
+      "The Tasks tab shows each task's type: Download, Upscale or Add (your own art or backs added as they are). Tasks queued by an earlier version show a dash.",
     ],
   },
   {

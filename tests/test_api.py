@@ -72,7 +72,7 @@ def _sol_ring_entry(**overrides) -> dict:
 
 
 def _write_gallery_item(
-    tmp_path: Path, db_path: Path, project_tag: str, **task_overrides
+    tmp_path: Path, db_path: Path, project_tag: str, *, model: str = "ultrasharp_v2", **task_overrides
 ) -> dict:
     """Fakes a completed task's on-disk output + gallery row the way the
     worker normally would, without a real Scryfall/GPU round trip."""
@@ -89,7 +89,7 @@ def _write_gallery_item(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="ultrasharp_v2",
+        model=model,
     )
     task_kwargs = dict(
         id=1,
@@ -104,7 +104,7 @@ def _write_gallery_item(
         collector_number="263",
         png_url="https://example.com/sol.png",
         dpi=800,
-        model="ultrasharp_v2",
+        model=model,
         tile_size=0,
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
@@ -459,6 +459,7 @@ def test_generate_enqueues_tasks_for_pushed_entries(
     assert tasks[0]["status"] == "pending"
     assert tasks[0]["dpi"] == 800
     assert tasks[0]["project_tag"] == "tag-a"
+    assert tasks[0]["task_type"] == "upscale"
 
     # A different project_tag sees none of this project's tasks.
     assert client.get("/api/tasks", params={"project_tag": "tag-b"}).json() == []
@@ -545,6 +546,7 @@ def test_cancel_all_tasks_cancels_only_pending(client: TestClient, tmp_path: Pat
         png_url="https://example.com/sol.png",
         dpi=800,
         model="ultrasharp_v2",
+        task_type="upscale",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
@@ -605,6 +607,7 @@ def _enqueue_for_tag(tmp_path: Path, db_path: str, project_tag: str, **overrides
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
+        task_type="upscale",
         db_path=db_path,
     )
     kwargs.update(overrides)
@@ -1127,6 +1130,7 @@ def test_clear_generated_data_with_project_tag_clears_records_too(
         png_url="https://example.com/sol.png",
         dpi=800,
         model="ultrasharp_v2",
+        task_type="upscale",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
@@ -1145,6 +1149,7 @@ def test_clear_generated_data_with_project_tag_clears_records_too(
         png_url="https://example.com/sol.png",
         dpi=1200,
         model="ultrasharp_v2",
+        task_type="upscale",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),
@@ -2350,6 +2355,42 @@ def test_gallery_redo_actions_carry_image_origin(
     assert resp.status_code == 200
     [task_id] = resp.json()["task_ids"]
     assert db.get_task(task_id, db_path=db_path).image_origin == "scryfall"
+
+
+@pytest.mark.parametrize(
+    ("action", "task_type"), [("regenerate", "upscale"), ("refetch", "download")]
+)
+def test_gallery_redo_actions_store_their_task_type(
+    client: TestClient, tmp_path: Path, action: str, task_type: str
+) -> None:
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a")
+    resp = client.post(f"/api/gallery/{item['id']}/{action}", json=_redo_body(tmp_path))
+    assert resp.status_code == 200
+    [task] = client.get("/api/tasks", params={"project_tag": "tag-a"}).json()
+    assert task["task_type"] == task_type
+
+
+def test_regenerate_refuses_a_source_variant(client: TestClient, tmp_path: Path) -> None:
+    """Regenerate queues an upscale; an original has none to redo (Re-Fetch
+    fetches it again), so it is refused rather than queued as the wrong
+    type."""
+    from proxy_scaler.dpi import ORIGINAL_MODEL
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    item = _write_gallery_item(tmp_path, db_path, "tag-a", model=ORIGINAL_MODEL)
+    resp = client.post(f"/api/gallery/{item['id']}/regenerate", json=_redo_body(tmp_path))
+    assert resp.status_code == 422
+    assert client.get("/api/tasks", params={"project_tag": "tag-a"}).json() == []
+
+
+def _redo_body(tmp_path: Path) -> dict:
+    return {
+        "project_tag": "tag-a",
+        "output_dir": str(tmp_path),
+        "cache_dir": str(tmp_path),
+        "weights_dir": str(tmp_path),
+    }
 
 
 def test_generate_rejects_an_unknown_image_origin(client: TestClient, tmp_path: Path) -> None:

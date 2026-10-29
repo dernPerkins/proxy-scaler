@@ -65,6 +65,7 @@ def test_enqueue_face_queues_one_task_per_dpi(db_path: Path, tmp_path: Path) -> 
         png_url="https://example.com/sol.png",
         dpi_targets=[600, 800],
         model="ultrasharp_v2",
+        task_type="upscale",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -95,6 +96,7 @@ def test_enqueue_face_passes_total_faces_through_to_task(
         png_url="https://example.com/delver.png",
         dpi_targets=[800],
         model="ultrasharp_v2",
+        task_type="upscale",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -126,6 +128,7 @@ def test_active_task_keys_reflects_pending_and_running_only(
         png_url="https://example.com/sol.png",
         dpi_targets=[800],
         model="ultrasharp_v2",
+        task_type="upscale",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -396,6 +399,7 @@ def test_enqueue_decklist_entries_skips_active_task_regardless_of_skip_existing(
         png_url="https://example.com/sol.png",
         dpi_targets=[800],
         model="ultrasharp_v2",
+        task_type="upscale",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -441,6 +445,7 @@ def test_enqueue_decklist_entries_skips_active_task_for_tagged_project(
         png_url="https://example.com/sol.png",
         dpi_targets=[800],
         model="ultrasharp_v2",
+        task_type="upscale",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -563,6 +568,7 @@ def test_enqueue_download_entries_queues_one_sentinel_task_per_face(
     assert task.model == ORIGINAL_MODEL
     assert task.dpi == ORIGINAL_DPI
     assert task.status == "pending"
+    assert task.task_type == "download"
 
 
 def test_enqueue_download_entries_skips_active_download(
@@ -586,6 +592,7 @@ def test_enqueue_download_entries_skips_active_download(
         png_url="https://example.com/sol.png",
         dpi_targets=[ORIGINAL_DPI],
         model=ORIGINAL_MODEL,
+        task_type="download",
         tile_size=0,
         output_dir=tmp_path / "out",
         cache_dir=tmp_path / "cache",
@@ -695,7 +702,7 @@ def test_enqueue_face_force_lands_on_rows(db_path: Path, tmp_path: Path) -> None
         scryfall_id="sol-id", face_index=None, face_label=None,
         face_name="Sol Ring", card_name="Sol Ring", set_code="c21",
         collector_number="263", png_url="https://example.com/sol.png",
-        dpi_targets=[600, 800], model="ultrasharp_v2", tile_size=0,
+        dpi_targets=[600, 800], model="ultrasharp_v2", task_type="upscale", tile_size=0,
         output_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
         weights_dir=tmp_path / "weights", project_tag=None,
         force=True, db_path=db_path,

@@ -277,6 +277,7 @@ def test_enqueue_task_accepts_a_custom_hash_instead_of_a_scryfall_id(db_path: Pa
         card_name="My Alter",
         dpi=1200,
         model="ultrasharp_v2",
+        task_type="upscale",
         output_dir="/tmp/out",
         cache_dir="/tmp/cache",
         weights_dir="/tmp/weights",
@@ -300,6 +301,7 @@ def test_enqueue_task_requires_exactly_one_identity(db_path: Path) -> None:
         card_name="X",
         dpi=1200,
         model="ultrasharp_v2",
+        task_type="upscale",
         output_dir="/o",
         cache_dir="/c",
         weights_dir="/w",
@@ -703,6 +705,8 @@ def test_custom_source_task_registers_the_upload_as_printable(
     task = db_module.get_task(task_ids[0], db_path=db_path)
     assert task.model == CUSTOM_SOURCE_MODEL
     assert task.custom_hash == content_hash
+    # The upload is added as it is, not downloaded.
+    assert task.task_type == "add"
     # The DPI was measured at enqueue time and frozen onto the row, so the
     # variant key can't drift between enqueue, skip-check and the worker.
     assert task.dpi == pytest.approx(300, abs=1)
@@ -805,6 +809,7 @@ def test_prune_survives_done_custom_tasks(tmp_path: Path, db_path: Path) -> None
         png_url=None,
         dpi=346,
         model=CUSTOM_SOURCE_MODEL,
+        task_type="add",
         tile_size=0,
         output_dir=str(tmp_path / "out"),
         cache_dir=str(cache_dir),
@@ -827,6 +832,7 @@ def test_prune_survives_done_custom_tasks(tmp_path: Path, db_path: Path) -> None
         png_url=None,
         dpi=600,
         model="ultrasharp_v2_lite",
+        task_type="upscale",
         tile_size=0,
         output_dir=str(tmp_path / "out"),
         cache_dir=str(cache_dir),

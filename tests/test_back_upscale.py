@@ -111,7 +111,7 @@ def test_registry_and_tasks_accept_exactly_one_identity(db_path: Path) -> None:
     init_db(db_path)
     common = dict(
         face_index=None, face_label=None, face_name="b", card_name="b", dpi=1200, model="ultrasharp_v2",
-        output_dir="o", cache_dir="c", weights_dir="w", db_path=db_path,
+        task_type="upscale", output_dir="o", cache_dir="c", weights_dir="w", db_path=db_path,
     )
     task_id = db_module.enqueue_task(LIBRARY_TAG, back_hash=HASH_A, **common)
     task = db_module.get_task(task_id, db_path=db_path)
@@ -263,6 +263,10 @@ def test_upscale_queues_source_and_targets_under_the_library_tag(
     ]
     task = db_module.get_task(out["task_ids"][-1], db_path=db_path)
     assert task.back_hash == content_hash and task.card_name == "Dragon back"
+    assert [db_module.get_task(t, db_path=db_path).task_type for t in out["task_ids"]] == [
+        "add",
+        "upscale",
+    ]
     # Idempotent while in flight.
     again = client.post("/api/library/upscale", json=_body(tmp_path, content_hash)).json()
     assert again["queued"] == 0

@@ -56,6 +56,7 @@ def _enqueue(db_path: Path, **overrides) -> int:
         output_dir=str(db_path.parent / "out"),
         cache_dir=str(db_path.parent / "cache"),
         weights_dir=str(db_path.parent / "weights"),
+        task_type="upscale",
         db_path=db_path,
     )
     kwargs.update(overrides)

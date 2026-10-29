@@ -4,10 +4,17 @@ import StatusBadge from "../components/StatusBadge";
 import { ORIGINAL_DPI, ORIGINAL_MODEL } from "../constants";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView } from "../tutorial/tutorialStore";
-import type { Task, TaskStatus } from "../api/types";
+import type { Task, TaskStatus, TaskType } from "../api/types";
 import { toast } from "../toasts";
 
 const STATUS_ORDER: TaskStatus[] = ["running", "pending", "done", "failed", "canceled"];
+
+// The server's stored task type, as the Type column shows it.
+const TASK_TYPE_LABELS: Record<TaskType, string> = {
+  download: "Download",
+  upscale: "Upscale",
+  add: "Add",
+};
 
 export default function TasksPage() {
   const queryClient = useQueryClient();
@@ -144,6 +151,7 @@ export default function TasksPage() {
             <thead>
               <tr>
                 <th>Card</th>
+                <th>Type</th>
                 <th>DPI</th>
                 <th>Model</th>
                 <th>Status</th>
@@ -159,6 +167,15 @@ export default function TasksPage() {
                     {task.face_label && (
                       <span className="variant-face" style={{ marginLeft: 6 }} title={task.face_name}>
                         {task.face_label}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {task.task_type ? (
+                      TASK_TYPE_LABELS[task.task_type]
+                    ) : (
+                      <span className="hint" title="Queued by an earlier version">
+                        —
                       </span>
                     )}
                   </td>

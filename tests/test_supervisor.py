@@ -196,6 +196,7 @@ def _enqueue_running_task(db_path: Path, **overrides) -> int:
         output_dir="/tmp/out",
         cache_dir="/tmp/cache",
         weights_dir="/tmp/weights",
+        task_type="upscale",
         db_path=db_path,
     )
     kwargs.update(overrides)

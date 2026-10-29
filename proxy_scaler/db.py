@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple, Sequence, get_args
 
 from .customs import identity_key
 from .dpi import BACK_SOURCE_MODEL, CUSTOM_SOURCE_MODEL
@@ -227,6 +227,11 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
     -- 'scryfall' (direct only). The client's choice, carried per request
     -- (scryfall.download_png, migration 011).
     image_origin TEXT NOT NULL DEFAULT 'worker',
+    -- What the task does, as whoever queued it said (TaskType): 'download'
+    -- (a Scryfall original), 'upscale', or 'add' (an uploaded custom or
+    -- back registered as-is). Shown on the Tasks tab. NULL for tasks
+    -- queued before migration 012, which have no honest value to give.
+    task_type TEXT,
     CHECK ((scryfall_id IS NOT NULL) + (custom_hash IS NOT NULL) + (back_hash IS NOT NULL) = 1)
 );
 
@@ -328,6 +333,14 @@ CREATE TABLE IF NOT EXISTS worker_control (
 """
 
 
+# What a task does, assigned by whoever queues it (services/generation.py,
+# api/routers/gallery.py) and stored, so the Tasks tab can show it rather
+# than work it out from the model. The worker still branches on the model
+# (pipeline.process_task); this is what the task says it is.
+TaskType = Literal["download", "upscale", "add"]
+TASK_TYPES: tuple[str, ...] = get_args(TaskType)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -381,6 +394,8 @@ class TaskRow:
     attempts: int = 0
     # scryfall.ImageOrigin the worker downloads through (migration 011).
     image_origin: str = DEFAULT_IMAGE_ORIGIN
+    # TaskType (migration 012); None for a task queued before it.
+    task_type: str | None = None
 
     @property
     def identity_key(self) -> str:
@@ -429,6 +444,7 @@ class TaskRow:
             image_origin=(
                 row["image_origin"] if "image_origin" in row.keys() else DEFAULT_IMAGE_ORIGIN
             ),
+            task_type=row["task_type"] if "task_type" in row.keys() else None,
         )
 
 
@@ -906,6 +922,27 @@ def _migration_011_add_task_image_origin(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_012_add_task_type(conn: sqlite3.Connection) -> None:
+    """Add generation_tasks.task_type — what a task does (TaskType), as
+    whoever queued it said, for the Tasks tab. Nullable with no backfill:
+    tasks queued before this have no stored type, and the tab shows them
+    as unknown rather than guessing. Guarded/no-op the same way as 011."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "generation_tasks" not in tables:
+        return
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(generation_tasks)").fetchall()
+    }
+    if "task_type" not in cols:
+        conn.execute("ALTER TABLE generation_tasks ADD COLUMN task_type TEXT")
+
+
 def _migration_006_split_gallery_registry(conn: sqlite3.Connection) -> None:
     """Split project_gallery_items into the global generated_images
     registry plus the project_gallery_memberships relation (see _SCHEMA).
@@ -1304,8 +1341,15 @@ _MIGRATIONS: list[Migration] = [
         "straight from Scryfall",
         _migration_011_add_task_image_origin,
     ),
+    Migration(
+        12,
+        "add task_type to generation_tasks — what a task does (download, "
+        "upscale or add), stored when it is queued so the Tasks tab can "
+        "show it",
+        _migration_012_add_task_type,
+    ),
 ]
-SCHEMA_VERSION = 11  # kept in sync with _MIGRATIONS[-1].version
+SCHEMA_VERSION = 12  # kept in sync with _MIGRATIONS[-1].version
 assert _MIGRATIONS[-1].version == SCHEMA_VERSION
 
 # Tables from every schema shape this database has ever had — legacy ones
@@ -1390,6 +1434,7 @@ def enqueue_task(
     png_url: str | None = None,
     dpi: int,
     model: str,
+    task_type: TaskType,
     output_dir: str,
     cache_dir: str,
     weights_dir: str,
@@ -1403,6 +1448,7 @@ def enqueue_task(
     """Add one (face, dpi, model) unit of generation work to the queue,
     picked up by the background worker (see worker.py). force=True marks a
     user-initiated regeneration that must bypass the x4 upscale cache.
+    task_type is what the work is (TaskType), stored for the Tasks tab.
 
     Pass exactly one of scryfall_id (a Scryfall printing), custom_hash (a
     user-uploaded card front) or back_hash (a Back Image); the database
@@ -1410,6 +1456,8 @@ def enqueue_task(
     only applies to the first.
     """
     identity_key(scryfall_id, custom_hash, back_hash)  # raises before touching the DB
+    if task_type not in TASK_TYPES:
+        raise ValueError(f"Unknown task_type {task_type!r}; expected one of {TASK_TYPES}")
     now = _utc_now()
     with connect(db_path) as conn:
         cur = conn.execute(
@@ -1418,8 +1466,9 @@ def enqueue_task(
                 project_tag, status, scryfall_id, custom_hash, back_hash, face_index,
                 face_label, face_name, card_name, set_code, collector_number,
                 png_url, dpi, model, tile_size, output_dir, cache_dir,
-                weights_dir, created_at, total_faces, lang, force, image_origin
-            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                weights_dir, created_at, total_faces, lang, force, image_origin,
+                task_type
+            ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_tag,
@@ -1444,6 +1493,7 @@ def enqueue_task(
                 lang,
                 int(force),
                 image_origin,
+                task_type,
             ),
         )
         conn.commit()

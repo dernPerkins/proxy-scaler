@@ -348,6 +348,10 @@ class TaskOut(BaseModel):
     started_at: str | None
     completed_at: str | None
     lang: str = "en"
+    # What the task does: "download", "upscale" or "add" (db.TaskType).
+    # None for a task queued before the server stored it (db migration
+    # 012); defaulted so older clients parse fine.
+    task_type: str | None = None
 
 
 class WorkerStatusOut(BaseModel):

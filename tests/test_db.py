@@ -542,6 +542,7 @@ def _enqueue_sol_ring(db_path: Path, **overrides) -> int:
         output_dir="/tmp/out",
         cache_dir="/tmp/cache",
         weights_dir="/tmp/weights",
+        task_type="upscale",
         db_path=db_path,
     )
     kwargs.update(overrides)
@@ -720,6 +721,30 @@ def test_migration_011_adds_image_origin_defaulting_to_worker(tmp_path: Path) ->
     with sqlite3.connect(path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
     assert get_task(tid, db_path=path).image_origin == "worker"
+
+
+def test_migration_012_adds_task_type_leaving_old_tasks_unknown(tmp_path: Path) -> None:
+    """A schema-11 database's tasks come up at 12 with no task type: there
+    is no honest value to give them, and the Tasks tab shows them as
+    unknown. Tasks queued after carry the type they were given."""
+    path = tmp_path / "old.db"
+    init_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE generation_tasks DROP COLUMN task_type")
+        conn.execute("PRAGMA user_version = 11")
+    old_id = _enqueue_sol_ring_raw(path)
+    init_db(path)  # migrates 11 -> 12
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db_module.SCHEMA_VERSION
+    assert get_task(old_id, db_path=path).task_type is None
+    new_id = _enqueue_sol_ring(path, task_type="download")
+    assert get_task(new_id, db_path=path).task_type == "download"
+
+
+def test_enqueue_task_rejects_an_unknown_task_type(db_path: Path) -> None:
+    with pytest.raises(ValueError, match="task_type"):
+        _enqueue_sol_ring(db_path, task_type="generate")
+    assert list_tasks(db_path=db_path) == []
 
 
 def _enqueue_sol_ring_raw(path: Path) -> int:
@@ -1701,6 +1726,7 @@ def test_enqueue_and_gallery_carry_lang(db_path: Path, tmp_path: Path) -> None:
         png_url="https://example.com/sol-ja.png",
         dpi=800,
         model="ultrasharp_v2",
+        task_type="upscale",
         output_dir=str(tmp_path),
         cache_dir=str(tmp_path),
         weights_dir=str(tmp_path),

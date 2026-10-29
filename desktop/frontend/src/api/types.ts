@@ -295,7 +295,13 @@ export interface Task {
   started_at: string | null;
   completed_at: string | null;
   lang?: string;
+  /** What the task does, as the server stored it when it was queued.
+   *  null for a task queued before it did (db migration 012); absent from
+   *  an older server. */
+  task_type?: TaskType | null;
 }
+
+export type TaskType = "download" | "upscale" | "add";
 
 export interface WorkerStatus {
   running: boolean;

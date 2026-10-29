@@ -40,6 +40,7 @@ def _task_out(t: db.TaskRow) -> TaskOut:
         started_at=t.started_at,
         completed_at=t.completed_at,
         lang=t.lang,
+        task_type=t.task_type,
     )
 
 

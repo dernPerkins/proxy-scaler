@@ -190,6 +190,7 @@ def enqueue_face(
     custom_hash: str | None = None,
     back_hash: str | None = None,
     model: str,
+    task_type: db.TaskType,
     tile_size: int,
     output_dir: Path,
     cache_dir: Path,
@@ -209,7 +210,8 @@ def enqueue_face(
     force=False (first generation, the default) lets the worker reuse the
     x4 upscale cache — sibling DPI tasks of one face then share a single
     model pass. force=True is the user-initiated Regenerate path: bypass
-    the cache and re-run inference."""
+    the cache and re-run inference. task_type is what the work is, as the
+    caller says (db.TaskType) — stored for the Tasks tab."""
     return [
         db.enqueue_task(
             project_tag,
@@ -227,6 +229,7 @@ def enqueue_face(
             png_url=png_url or None,
             dpi=dpi,
             model=model,
+            task_type=task_type,
             tile_size=tile_size,
             output_dir=str(output_dir),
             cache_dir=str(cache_dir),
@@ -522,6 +525,7 @@ def enqueue_decklist_entries(
                     png_url=face.png_url,
                     dpi_targets=targets_needed,
                     model=model,
+                    task_type="upscale",
                     tile_size=tile_size,
                     output_dir=output_dir,
                     cache_dir=cache_dir,
@@ -608,6 +612,8 @@ def enqueue_download_entries(
                     CUSTOM_SOURCE_MODEL if face.is_custom else ORIGINAL_MODEL
                 )
                 variant_dpi = _custom_source_dpi(face) if face.is_custom else ORIGINAL_DPI
+                # The upload is added as it is; a Scryfall face downloads.
+                variant_type: db.TaskType = "add" if face.is_custom else "download"
 
                 if (
                     face.identity_key,
@@ -663,6 +669,7 @@ def enqueue_download_entries(
                     png_url=face.png_url,
                     dpi_targets=[variant_dpi],
                     model=variant_model,
+                    task_type=variant_type,
                     tile_size=0,
                     output_dir=output_dir,
                     cache_dir=cache_dir,
@@ -767,12 +774,22 @@ def enqueue_back_upscale(
     )
     if wanted(BACK_SOURCE_MODEL, source_dpi):
         task_ids.extend(
-            enqueue_face(scryfall_id=None, dpi_targets=[source_dpi], model=BACK_SOURCE_MODEL, **common)
+            enqueue_face(
+                scryfall_id=None,
+                dpi_targets=[source_dpi],
+                model=BACK_SOURCE_MODEL,
+                task_type="add",
+                **common,
+            )
         )
         queued += 1
     targets = [d for d in custom_upscale_targets(mode, source_dpi, dpi_targets) if wanted(model, d)]
     if targets:
-        task_ids.extend(enqueue_face(scryfall_id=None, dpi_targets=targets, model=model, **common))
+        task_ids.extend(
+            enqueue_face(
+                scryfall_id=None, dpi_targets=targets, model=model, task_type="upscale", **common
+            )
+        )
         queued += len(targets)
     if queued == 0 and on_note:
         on_note("Every requested version of this back already exists or is queued.")
