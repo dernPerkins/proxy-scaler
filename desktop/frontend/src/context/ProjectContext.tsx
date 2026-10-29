@@ -5,6 +5,13 @@ import { projectApi } from "../api/project";
 import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
 import { setProjectSnapshot } from "../syncCustoms";
 import { defaultPresetOverlay, pickPresetFields, presetQueryOptions } from "../settingsPresets";
+import {
+  importDefaultsOverlay,
+  importDefaultsQueryOptions,
+  importFieldsChanged,
+  pickImportFields,
+  saveImportDefaults,
+} from "../importDefaults";
 import type {
   CardFaceArt,
   CardRow,
@@ -411,12 +418,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // the debounce belongs to the field: what is typed is the field's until
   // it commits, and the context only ever holds the stored name.
   const nameCommitFlush = useRef<(() => Promise<void>) | null>(null);
-  // Set while the settings on screen carry a default preset that no row
-  // holds yet. The row a blank slate eventually gets is born from SQL
-  // column defaults (an import creates it without writing settings), so
-  // ensureProjectRow uses this to write the preset's fields into it —
-  // otherwise the project would come back from a relaunch without them.
-  const presetOverlayPending = useRef(false);
+  // Set while the settings on screen carry a default preset or the last
+  // import choices (importDefaults.ts) that no row holds yet. The row a
+  // blank slate eventually gets is born from SQL column defaults (an
+  // import creates it without writing settings), so ensureProjectRow uses
+  // this to write those fields into it — otherwise the project would come
+  // back from a relaunch without them, and the first import would run in
+  // the column default's language.
+  const newRowOverlayPending = useRef(false);
 
   function adoptProjectId(id: number | null) {
     projectIdRef.current = id;
@@ -439,12 +448,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }
 
   // What a new project starts from: the built-in defaults with the PDF
-  // and ZIP tabs' default presets laid over them (settingsPresets.ts).
-  // Reads the preset cache, which is prefetched on mount, so it can run
-  // inside the synchronous createNew().
+  // and ZIP tabs' default presets laid over them (settingsPresets.ts), and
+  // the import choices the user last made (importDefaults.ts). Reads
+  // caches prefetched on mount, so it can run inside the synchronous
+  // createNew().
   function newProjectSettings(): ProjectSettings {
-    const overlay = defaultPresetOverlay(queryClient);
-    presetOverlayPending.current = Object.keys(overlay).length > 0;
+    const overlay = { ...defaultPresetOverlay(queryClient), ...importDefaultsOverlay(queryClient) };
+    newRowOverlayPending.current = Object.keys(overlay).length > 0;
     return { ...getDefaultSettings(), ...overlay };
   }
 
@@ -467,18 +477,21 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // bar's field holds whatever the user is in the middle of typing.
     adoptProjectId(unnamed.id);
     adoptProjectTag(unnamed.tag);
-    // A blank slate started from default presets: the new row holds the
-    // SQL column defaults, not what the PDF/ZIP tabs are showing. Write
-    // just the preset-owned fields over it — the rest of the row, such as
-    // the default back Rust copied in, stays as Rust made it.
-    if (presetOverlayPending.current) {
-      presetOverlayPending.current = false;
+    // A blank slate started from default presets or the last import
+    // choices: the new row holds the SQL column defaults, not what the
+    // tabs are showing. Write just those fields over it — the rest of the
+    // row, such as the default back Rust copied in, stays as Rust made it.
+    // Awaited before returning, so an import that created the row runs in
+    // the carried-over language (Rust reads it off the row).
+    if (newRowOverlayPending.current) {
+      newRowOverlayPending.current = false;
       try {
         const row = await projectApi.getProject(unnamed.id);
         await projectApi.updateProject(unnamed.id, "", {
           ...row.settings,
           ...pickPresetFields("pdf", settingsRef.current),
           ...pickPresetFields("zip", settingsRef.current),
+          ...pickImportFields(settingsRef.current),
         });
       } catch {
         // Best-effort: the next settings change writes everything anyway.
@@ -560,6 +573,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     const prev = settingsRef.current;
     const next = typeof updater === "function" ? updater(prev) : updater;
     if (next.model !== prev.model) modelIsDefault.current = false;
+    // The user's own import choices are what the next new project starts
+    // from. Only edits come through here (a load is applyLoaded), so
+    // opening an older project never changes what is remembered.
+    if (importFieldsChanged(prev, next)) saveImportDefaults(queryClient, next);
     applySettings(next);
     scheduleSettingsWrite(next);
   }
@@ -570,7 +587,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     adoptProjectTag(project.tag);
     setProjectName(project.name);
     applySettings(project.settings);
-    presetOverlayPending.current = false;
+    newRowOverlayPending.current = false;
     // A saved project's stored model is an explicit choice, whatever it
     // happens to be — never second-guess it when the probe lands.
     modelIsDefault.current = false;
@@ -1179,21 +1196,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // afterward should never be silently overridden by this.
   useEffect(() => {
     let cancelled = false;
-    // Both preset stores, fetched up front so createNew() can read them
-    // synchronously from the cache.
+    // Both preset stores and the last import choices, fetched up front so
+    // createNew() can read them synchronously from the cache.
     const presetsLoaded = Promise.all([
       queryClient.fetchQuery(presetQueryOptions("pdf")),
       queryClient.fetchQuery(presetQueryOptions("zip")),
+      queryClient.fetchQuery(importDefaultsQueryOptions()),
     ]).catch(() => undefined);
     // A launch that lands on a blank slate is a new project too, so it
-    // gets the default presets — unless something has already moved on
-    // (a project loaded, or the user started editing) while they loaded.
+    // gets the default presets and the last import choices — unless
+    // something has already moved on (a project loaded, or the user started
+    // editing) while they loaded.
     async function applyDefaultPresetsToBlankSlate() {
       await presetsLoaded;
       if (cancelled || projectIdRef.current != null || pendingSettingsWrite.current != null) return;
-      const overlay = defaultPresetOverlay(queryClient);
+      const overlay = { ...defaultPresetOverlay(queryClient), ...importDefaultsOverlay(queryClient) };
       if (Object.keys(overlay).length === 0) return;
-      presetOverlayPending.current = true;
+      newRowOverlayPending.current = true;
       applySettings({ ...settingsRef.current, ...overlay });
     }
     (async () => {

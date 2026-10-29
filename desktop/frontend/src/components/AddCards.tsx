@@ -8,9 +8,14 @@
 // (.scratch/deck-add-prototype/).
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, generationApi } from "../api/generation";
-import type { CardRow, ImportArtSource, ResolvedImportCard } from "../api/project";
+import {
+  projectApi,
+  type CardRow,
+  type ImportArtSource,
+  type ResolvedImportCard,
+} from "../api/project";
 import type { CardSearchHit, CardVariant, MpcCard } from "../api/types";
 import { useServerVersion } from "../config";
 import { useProject } from "../context/ProjectContext";
@@ -66,7 +71,7 @@ export default function AddCards(props: AddCardsProps) {
   const adds = useDeckAdds(props.afterAdd);
   const [cardSearchFor, setCardSearchFor] = useState<CardSearchHit | null | undefined>(undefined);
   const quick = useQuickAdd(lang, adds, (hit) => setCardSearchFor(hit));
-  const [mode, setMode] = useState<"search" | "paste">(draft.trim() ? "paste" : "search");
+  const { mode, setMode, chooseMode } = useAddMode(draft);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const fieldRef = useRef<HTMLInputElement>(null);
   useCmdK(() => setPaletteOpen(true));
@@ -91,7 +96,7 @@ export default function AddCards(props: AddCardsProps) {
         <SplitPill
           ariaLabel="Add cards by"
           value={mode}
-          onChange={setMode}
+          onChange={chooseMode}
           options={[
             { value: "search", label: "Search", title: "Find cards by name" },
             { value: "paste", label: "List", title: "Paste a list, one card per line" },
@@ -219,6 +224,36 @@ export default function AddCards(props: AddCardsProps) {
 }
 
 const countLines = (text: string) => text.split("\n").filter((l) => l.trim()).length;
+
+type AddMode = "search" | "paste";
+
+/** Search or List. Opens the way the user last chose (saved across
+ *  restarts; see project_store.rs), or on List while a pasted list is
+ *  still waiting. Only the user's own choice is saved: the flip back to
+ *  Search after a list imports is the app's, so it doesn't count. */
+function useAddMode(draft: string) {
+  const queryClient = useQueryClient();
+  const saved = useQuery({
+    queryKey: ["add-cards-mode"],
+    queryFn: () => projectApi.getAddCardsMode(),
+    staleTime: Infinity,
+  });
+  const save = useMutation({
+    mutationFn: (mode: AddMode) => projectApi.setAddCardsMode(mode),
+    onSuccess: (_data, mode) => queryClient.setQueryData(["add-cards-mode"], mode),
+  });
+  // null until set this session: the saved choice may still be loading.
+  const [chosen, setChosen] = useState<AddMode | null>(draft.trim() ? "paste" : null);
+  const mode: AddMode = chosen ?? saved.data ?? "search";
+  return {
+    mode,
+    setMode: setChosen,
+    chooseMode: (next: AddMode) => {
+      setChosen(next);
+      save.mutate(next);
+    },
+  };
+}
 
 function importLabel(importing: boolean, lines: number) {
   if (importing) return "Importing…";

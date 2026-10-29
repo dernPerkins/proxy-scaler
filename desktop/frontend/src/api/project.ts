@@ -422,6 +422,11 @@ export const projectApi = {
   setMpcLibraryPageSize: (size: number) =>
     invokeCommand<void>("set_mpc_library_page_size", { size }),
 
+  // The Decklist's Add Cards mode, Search or List: an app preference, so
+  // the next launch opens the way the user last chose.
+  getAddCardsMode: () => invokeCommand<"search" | "paste">("get_add_cards_mode"),
+  setAddCardsMode: (mode: "search" | "paste") => invokeCommand<void>("set_add_cards_mode", { mode }),
+
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>
     invokeCommand<void>("set_show_digital_printings", { show }),
@@ -472,6 +477,12 @@ export const projectApi = {
     invokeCommand<string | null>("get_settings_presets", { kind }),
   setSettingsPresets: (kind: "pdf" | "zip", json: string) =>
     invokeCommand<void>("set_settings_presets", { kind, json }),
+
+  // The last-chosen import Language / All Languages / Art From, which a
+  // new project starts from — one opaque JSON blob (importDefaults.ts owns
+  // the shape). Null until the user first changes one.
+  getImportDefaults: () => invokeCommand<string | null>("get_import_defaults"),
+  setImportDefaults: (json: string) => invokeCommand<void>("set_import_defaults", { json }),
 
   getCompletedTutorials: () => invokeCommand<string[]>("get_completed_tutorials"),
   markTutorialCompleted: (id: string) =>

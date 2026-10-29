@@ -2598,6 +2598,42 @@ pub fn set_show_digital_printings(app: AppHandle, show: bool) -> Result<(), Stri
     write_show_digital_printings(&conn, show)
 }
 
+// --- The Decklist's Add Cards mode ------------------------------------------
+//
+// Search or List: how the user last chose to add cards, kept across
+// restarts because they tend to work the same way each time. An app
+// preference rather than a project setting, like "Show digital"; absent (or
+// anything unexpected) means Search.
+
+const ADD_CARDS_MODE_KEY: &str = "add_cards_mode";
+
+fn read_add_cards_mode(conn: &Connection) -> Result<String, String> {
+    Ok(match read_app_setting(conn, ADD_CARDS_MODE_KEY)?.as_deref() {
+        Some("paste") => "paste",
+        _ => "search",
+    }
+    .to_string())
+}
+
+fn write_add_cards_mode(conn: &Connection, mode: &str) -> Result<(), String> {
+    if mode != "search" && mode != "paste" {
+        return Err(format!("Unknown Add Cards mode {mode:?}"));
+    }
+    write_app_setting(conn, ADD_CARDS_MODE_KEY, mode)
+}
+
+#[tauri::command]
+pub fn get_add_cards_mode(app: AppHandle) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    read_add_cards_mode(&conn)
+}
+
+#[tauri::command]
+pub fn set_add_cards_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_add_cards_mode(&conn, &mode)
+}
+
 // The MPC Fill browser's language filter, remembered app-wide: whatever
 // was last chosen in its dropdown is where the next one starts. "any"
 // (the default: MPC Fill is nearly all English), "card" (the card's own
@@ -2995,6 +3031,27 @@ pub fn set_settings_presets(app: AppHandle, kind: String, json: String) -> Resul
     let key = settings_presets_key(&kind)?;
     let conn = open_db(&app)?;
     write_app_setting(&conn, key, &json)
+}
+
+// --- Import defaults --------------------------------------------------------
+//
+// The Decklist's last-chosen Language, All Languages and Art From, which a
+// new project starts from (existing projects keep their own). Stored as
+// the client's JSON (importDefaults.ts owns and validates the shape), like
+// the presets above; absent until the user first changes one.
+
+const IMPORT_DEFAULTS_KEY: &str = "import_defaults";
+
+#[tauri::command]
+pub fn get_import_defaults(app: AppHandle) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    read_app_setting(&conn, IMPORT_DEFAULTS_KEY)
+}
+
+#[tauri::command]
+pub fn set_import_defaults(app: AppHandle, json: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_app_setting(&conn, IMPORT_DEFAULTS_KEY, &json)
 }
 
 // --- Recent remote hosts --------------------------------------------------
@@ -3867,6 +3924,30 @@ mod tests {
         let cards = import_decklist_into(&mut conn, id, "1 Aang der Luftnomade 210")
             .expect("legacy re-import of the raw line");
         assert_eq!(cards.len(), 1, "printed-name dedup tier caught it");
+    }
+
+    #[test]
+    fn import_defaults_roundtrip_and_start_absent() {
+        let conn = test_conn();
+        assert_eq!(read_app_setting(&conn, IMPORT_DEFAULTS_KEY).expect("read"), None);
+        let json = r#"{"preferred_lang":"ja","lang_any":true,"import_art_source":"mpc"}"#;
+        write_app_setting(&conn, IMPORT_DEFAULTS_KEY, json).expect("write");
+        assert_eq!(
+            read_app_setting(&conn, IMPORT_DEFAULTS_KEY).expect("read").as_deref(),
+            Some(json)
+        );
+    }
+
+    #[test]
+    fn add_cards_mode_roundtrips_and_defaults_to_search() {
+        let conn = test_conn();
+        assert_eq!(read_add_cards_mode(&conn).expect("default"), "search");
+        write_add_cards_mode(&conn, "paste").expect("set paste");
+        assert_eq!(read_add_cards_mode(&conn).expect("read"), "paste");
+        write_add_cards_mode(&conn, "search").expect("set search");
+        assert_eq!(read_add_cards_mode(&conn).expect("read"), "search");
+        assert!(write_add_cards_mode(&conn, "list").is_err());
+        assert_eq!(read_add_cards_mode(&conn).expect("unchanged"), "search");
     }
 
     #[test]
