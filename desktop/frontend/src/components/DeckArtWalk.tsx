@@ -5,7 +5,8 @@
 // front's printing is the card's printing; the back follows it until the
 // back is given a printing or art of its own, and keeps that when the
 // front changes (choosing the front's printing for the back re-links it).
-// Nothing is saved while the walk is open: Confirm, the preview's button
+// The filters, on both tabs, carry from card to card: set once, they hold
+// for the rest of the walk. Nothing is saved while the walk is open: Confirm, the preview's button
 // or a double-click close it, apply every card's choice and download every
 // card the walk visited, changed or not, each as it will print (both faces
 // of a double-faced card) — looking at a card and confirming is confirming
@@ -18,8 +19,10 @@ import { isImageFaceArt, type CardFaceArt, type CardRow, type ScryfallFaceSource
 import type { MpcCard } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
 import {
+  DEFAULT_PICKER_FILTERS,
   PrintingGridModal,
   facePrinting,
+  type PickerFilters,
   type Pick,
   type PickerOpenRequest,
   type StagedChanges,
@@ -164,6 +167,8 @@ export default function DeckArtWalk(props: {
   // The next card opens on the tab this one was left on.
   const [request, setRequest] = useState<PickerOpenRequest>(props.startRequest);
   const [source, setSource] = useState(props.startRequest.source);
+  // ... and with the filters it was left with.
+  const [filters, setFilters] = useState<PickerFilters>(DEFAULT_PICKER_FILTERS);
   // Closing with choices made: Keep, Discard or Cancel.
   const [asking, setAsking] = useState(false);
 
@@ -299,7 +304,8 @@ export default function DeckArtWalk(props: {
   return (
     <>
     <PrintingGridModal
-      // A new card is a fresh grid: its own filters, selection and scroll.
+      // A new card is a fresh grid: its own selection and scroll, but the
+      // filters carry over.
       key={card.id}
       card={card}
       preferredLang={preferredLang}
@@ -307,6 +313,13 @@ export default function DeckArtWalk(props: {
       // Esc and a click outside are Close.
       onClose={requestClose}
       onSourceChange={setSource}
+      filters={filters}
+      onFiltersChange={(patch) =>
+        setFilters((prev) => ({
+          printing: patch.printing ?? prev.printing,
+          mpc: { ...prev.mpc, ...patch.mpc },
+        }))
+      }
       walk={{
         nav,
         staged: staged.get(card.id) ?? null,

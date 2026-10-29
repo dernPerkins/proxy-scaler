@@ -31,7 +31,7 @@ import {
   serverSupportsPrintingImages,
   useServerVersion,
 } from "../config";
-import { MpcArtBrowser } from "./MpcArtPicker";
+import { MpcArtBrowser, type MpcFilters } from "./MpcArtPicker";
 import { LoadingGrid, LoadingStage } from "./PickerLoading";
 import { useProject } from "../context/ProjectContext";
 import { modelDisplayName } from "../constants";
@@ -514,6 +514,26 @@ export interface PickerOpenRequest {
 
 export type PickerSource = "scryfall" | "mpc";
 
+/** The printing grid's filters. */
+export interface PrintingFilters {
+  /** "<language> + Exclusives"; when off, `langs` (none ticked: every one). */
+  langDefault: boolean;
+  langs: ReadonlySet<string>;
+  sets: ReadonlySet<string>;
+  sort: SortMode;
+}
+
+/** Both tabs' filters, which the deck walk carries from card to card. */
+export interface PickerFilters {
+  printing: PrintingFilters;
+  mpc: MpcFilters;
+}
+
+export const DEFAULT_PICKER_FILTERS: PickerFilters = {
+  printing: { langDefault: true, langs: new Set(), sets: new Set(), sort: "newest" },
+  mpc: {},
+};
+
 /** One choice made in the deck walk for one face of the card on screen:
  *  a Scryfall printing (that face of it) or MPC Fill art. Faces are
  *  chosen independently. The front's printing is the card's printing;
@@ -581,6 +601,11 @@ export function PrintingGridModal(props: {
   /** The pick buttons' labels, for a use other than the deck walk
    *  (Add Cards' Card Search: "Add To Deck"). */
   pickLabels?: { printing: string; art: string };
+  /** The filters to open with (the deck walk's, carried from the last
+   *  card); the defaults without. */
+  filters?: PickerFilters;
+  /** A filter changed on one tab. */
+  onFiltersChange?: (patch: Partial<PickerFilters>) => void;
 }) {
   const { card, preferredLang, onClose, walk } = props;
   const [source, setSourceState] = useState<PickerSource>(props.initial.source);
@@ -593,12 +618,18 @@ export function PrintingGridModal(props: {
   const [face, setFaceState] = useState(props.initial.face);
   const queryClient = useQueryClient();
   const cardLang = card.lang ?? preferredLang ?? "en";
-  // Starts on "<defaultLang> + Exclusives" (see shownByDefault); after
-  // that, any number of languages can be ticked, none meaning every one.
-  const [langDefault, setLangDefault] = useState(true);
-  const [langFilter, setLangFilter] = useState<ReadonlySet<string>>(() => new Set());
-  const [setFilter, setSetFilter] = useState<ReadonlySet<string>>(new Set());
-  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  // Language starts on "<defaultLang> + Exclusives" (see shownByDefault);
+  // after that, any number of languages can be ticked, none meaning every
+  // one.
+  const [printingFilters, setPrintingFilters] = useState<PrintingFilters>(
+    props.filters?.printing ?? DEFAULT_PICKER_FILTERS.printing,
+  );
+  const updatePrintingFilters = (patch: Partial<PrintingFilters>) => {
+    const next = { ...printingFilters, ...patch };
+    setPrintingFilters(next);
+    props.onFiltersChange?.({ printing: next });
+  };
+  const { langDefault, langs: langFilter, sets: setFilter, sort: sortMode } = printingFilters;
   const serverVersion = useServerVersion();
   const showImages = serverSupportsPrintingImages(serverVersion);
   const mpcAvailable = card.scryfall_id != null && serverSupportsMpcFill(serverVersion);
@@ -651,6 +682,14 @@ export function PrintingGridModal(props: {
   });
 
   const variants = useMemo(() => variantsQuery.data?.variants ?? [], [variantsQuery.data]);
+  // A 404 is either no card database at all or a card newer than it
+  // (imported through live Scryfall): the shared status query tells which.
+  const cardDbQuery = useQuery({
+    queryKey: ["card-db-status"],
+    queryFn: () => generationApi.cardDbStatus(),
+    enabled: variantsQuery.error instanceof ApiError && variantsQuery.error.status === 404,
+  });
+  const cardDb = cardDbQuery.data?.local ?? null;
   // Loaded and got something — until then (still loading, or 404 because
   // there's no card corpus on the server) the filter controls have nothing
   // to filter and render disabled placeholders instead of pretending.
@@ -704,6 +743,12 @@ export function PrintingGridModal(props: {
         icon: <SetIcon setCode={code} />,
       }));
   }, [variants]);
+  // Likewise sets: one ticked on an earlier card that this card was never
+  // printed in doesn't count.
+  const effectiveSets = useMemo<ReadonlySet<string>>(
+    () => new Set([...setFilter].filter((s) => setOptions.some((o) => o.value === s))),
+    [setFilter, setOptions],
+  );
   // What this face prints now: the card's printing, or for a back given
   // its own, that printing (null while it prints MPC Fill art).
   const currentId = facePrinting(card, null, face);
@@ -757,12 +802,12 @@ export function PrintingGridModal(props: {
             (langDefault
               ? shownByDefault(v) || v.scryfall_id === stagedId || isCurrent(v)
               : effectiveLangs.size === 0 || effectiveLangs.has(v.lang)) &&
-            (setFilter.size === 0 || setFilter.has(v.set_code)),
+            (effectiveSets.size === 0 || effectiveSets.has(v.set_code)),
         ),
         sortMode,
       ),
     // isCurrent reads only the face and props fixed while the grid is open.
-    [variants, langDefault, shownByDefault, stagedId, effectiveLangs, setFilter, sortMode, face],
+    [variants, langDefault, shownByDefault, stagedId, effectiveLangs, effectiveSets, sortMode, face],
   );
 
   function pickOf(v: CardVariant): Pick {
@@ -941,7 +986,8 @@ export function PrintingGridModal(props: {
           <MpcArtBrowser
             // A new face is a new search.
             key={face}
-            initial={{ scryfallId: card.scryfall_id, face }}
+            initial={{ scryfallId: card.scryfall_id, face, ...props.filters?.mpc }}
+            onFiltersChange={(mpc) => props.onFiltersChange?.({ mpc })}
             cardTypes={["CARD", "TOKEN"]}
             defaultLang={card.lang}
             currentDriveId={
@@ -1021,7 +1067,11 @@ export function PrintingGridModal(props: {
           {variantsQuery.isError && (
             <p className="hint">
               {variantsQuery.error instanceof ApiError && variantsQuery.error.status === 404
-                ? "No local card database on this server — import it from the sidebar's Card Database panel to change printings."
+                ? cardDb
+                  ? `${card.name} is newer than this server's card database (updated ${cardDb.dataset_updated_at.slice(0, 10)}). Update it from the sidebar's Card Database panel to change its printing.`
+                  : cardDbQuery.isFetched
+                    ? "No local card database on this server — import it from the sidebar's Card Database panel to change printings."
+                    : "Loading printings…"
                 : `Couldn't load printings: ${
                     variantsQuery.error instanceof Error
                       ? variantsQuery.error.message
@@ -1046,8 +1096,8 @@ export function PrintingGridModal(props: {
               </span>
               <MultiSelectFilter
                 options={setOptions}
-                selected={setFilter}
-                onChange={setSetFilter}
+                selected={effectiveSets}
+                onChange={(next) => updatePrintingFilters({ sets: next })}
                 disabled={!ready}
                 allLabel="All Sets"
                 ariaLabel="Sets"
@@ -1056,10 +1106,7 @@ export function PrintingGridModal(props: {
               <MultiSelectFilter
                 options={languageOptions}
                 selected={langDefault ? new Set() : effectiveLangs}
-                onChange={(next) => {
-                  setLangDefault(false);
-                  setLangFilter(next);
-                }}
+                onChange={(next) => updatePrintingFilters({ langDefault: false, langs: next })}
                 disabled={!ready}
                 allLabel="All Languages"
                 ariaLabel="Languages"
@@ -1067,7 +1114,7 @@ export function PrintingGridModal(props: {
                   label: `${defaultLang.toUpperCase()} + Exclusives`,
                   title: `${LANGUAGE_NAMES[defaultLang] ?? defaultLang.toUpperCase()} printings, plus printings that only exist in another language`,
                   active: langDefault,
-                  onSelect: () => setLangDefault(true),
+                  onSelect: () => updatePrintingFilters({ langDefault: true }),
                 }}
               />
               <SelectMenu
@@ -1079,7 +1126,7 @@ export function PrintingGridModal(props: {
                 ]}
                 value={sortMode}
                 disabled={!ready}
-                onChange={(value) => setSortMode(value as SortMode)}
+                onChange={(value) => updatePrintingFilters({ sort: value as SortMode })}
               />
               <label className="check">
                 <input

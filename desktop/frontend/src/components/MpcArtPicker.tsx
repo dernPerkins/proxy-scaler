@@ -342,6 +342,11 @@ export interface MpcPickerInitial {
   source?: string;
 }
 
+/** The filters the deck walk carries from card to card: not the search
+ *  itself or the card type, which are the card's. */
+export type MpcFilters = Pick<MpcPickerInitial, "langChoice" | "minDpi" | "nsfw" | "fuzzy" | "source">;
+const MPC_FILTER_KEYS = ["langChoice", "minDpi", "nsfw", "fuzzy", "source"] as const;
+
 export interface MpcArtBrowserProps {
   initial: MpcPickerInitial;
   /** The card types offered; the first is the default. CARDBACK alone
@@ -362,6 +367,8 @@ export interface MpcArtBrowserProps {
    *  selection, by click or arrow key, and `currentDriveId` should follow
    *  it, so the chosen tile shows only as current. */
   onSelect?: (card: MpcCard) => void;
+  /** A filter changed (only those that did). */
+  onFiltersChange?: (patch: MpcFilters) => void;
   /** The base tour that must be done before this picker's own
    *  ("mpc-picker") auto-shows: the screen it was opened from. */
   tourAfter: TourId;
@@ -632,6 +639,11 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
         ...patch,
       };
     });
+    const changed: MpcFilters = {};
+    for (const key of MPC_FILTER_KEYS) {
+      if (patch[key] != null) Object.assign(changed, { [key]: patch[key] });
+    }
+    if (Object.keys(changed).length > 0) props.onFiltersChange?.(changed);
   }
 
   const errorText =
