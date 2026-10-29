@@ -403,6 +403,16 @@ function useQuickAdd(
 
 type QuickAdd = ReturnType<typeof useQuickAdd>;
 
+/** How many adds since `key` last changed (or since mount): the palette
+ *  counts what it added while open, Card Search what it added for the card
+ *  it shows. Never below 0, which an earlier card's add could take it to
+ *  if it fails after the switch. */
+function useAddedSince(adds: DeckAdds, key: unknown): number {
+  const [since, setSince] = useState({ key, base: adds.added });
+  if (since.key !== key) setSince({ key, base: adds.added });
+  return Math.max(0, adds.added - since.base);
+}
+
 /** ⌘K from anywhere on the tab. */
 function useCmdK(onCmdK: () => void) {
   const ref = useRef(onCmdK);
@@ -504,6 +514,7 @@ function Palette({
   onCardSearch: (hit: CardSearchHit) => void;
 }) {
   const quick = useQuickAdd(lang, adds, onCardSearch);
+  const added = useAddedSince(adds, null);
   const [listMode, setListMode] = useState(draft.trim().length > 0);
   const [cmd, setCmd] = useState(0);
   const commands: { label: string; hint: string; run: () => void; disabled?: boolean }[] = [
@@ -647,7 +658,7 @@ function Palette({
               <span>
                 <kbd>esc</kbd> Close
               </span>
-              {adds.added > 0 && <span className="add-cards-count">{adds.added} Added</span>}
+              {added > 0 && <span className="add-cards-count">{added} Added</span>}
             </div>
           </>
         )}
@@ -674,6 +685,7 @@ function CardSearchModal({
   onClose: () => void;
 }) {
   const [hit, setHit] = useState<CardSearchHit | null>(initial);
+  const added = useAddedSince(adds, hit?.oracle_id ?? null);
   const [source, setSource] = useState<PickerSource>("scryfall");
   const nav = (
     <span className="card-search-nav">
@@ -683,8 +695,8 @@ function CardSearchModal({
   const footer = (
     <>
       <span className="walk-head">
-        {adds.added > 0 ? (
-          <span className="add-cards-count">{adds.added} Added</span>
+        {added > 0 ? (
+          <span className="add-cards-count">{added} Added</span>
         ) : (
           <span className="walk-pos">Double-click a printing or art to add it. This stays open.</span>
         )}
