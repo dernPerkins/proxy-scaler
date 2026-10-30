@@ -21,7 +21,7 @@ const DEFAULT_PAGE_GUIDE_COLOR = "#000000";
 const DEFAULT_CARD_GUIDE_COLOR = "#00AA50";
 // pdf_layout.py's CARD_CORNER_RADIUS_MM — the curve a rounded Card Guide
 // follows.
-const CARD_CORNER_RADIUS_MM = 3.175;
+const CARD_CORNER_RADIUS_MM = 2.7;
 
 // SVG stroke-dasharray for one dashed guide piece `lengthMm` long, in px.
 // Mirrors pdf_layout.py::_guide_dash_mm: a target dash, then stretched or

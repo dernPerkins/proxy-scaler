@@ -1337,7 +1337,7 @@ export default function PdfPage() {
               disabled={downloading || serverUnavailable || serverTooOld}
               title={
                 cutterOn
-                  ? "An SVG of every card's trim box plus the registration marks, in the cutter's orientation, for import into Silhouette Studio."
+                  ? "An SVG of every card's trim box, in the cutter's orientation, for import into Silhouette Studio. It carries no registration marks: turn on Studio's own in Page Setup."
                   : "An SVG of every card's trim box, no registration marks, in the page's own frame — for cutters that cut against the mat, like Cricut: print the sheet, load it square in the mat's corner, and import this file."
               }
             >

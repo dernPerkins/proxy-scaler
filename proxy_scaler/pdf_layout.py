@@ -144,8 +144,13 @@ REG_THICKNESS_MM = 1.0  # 0.039 in, Silhouette Studio's maximum
 REG_KEEP_OUT_MM = 3.0
 REG_INSET_MIN_MM = 5.0
 REG_INSET_DEFAULT_MM = 10.0  # Studio's "Standard" inset, 0.394 in
-# 1/8 in — the corner radius a cut file rounds each card's trim box to.
-CARD_CORNER_RADIUS_MM = 3.175
+# The corner radius a cut file rounds each card's trim box to, and the
+# rounded Card Guides' arc. 2.7mm is the card's own corner as Scryfall's
+# alpha draws it (Beta onward; measured on 745px and 1200dpi renders alike).
+# It was 1/8 in (3.175mm), which put the arc ~0.2mm deeper into the card
+# than the art's corner along the diagonal — most of a 0.75pt stroke — so
+# a die cut true to the card kept a sliver of guide ink at every corner.
+CARD_CORNER_RADIUS_MM = 2.7
 
 
 class CutterMarkStyle(str, Enum):

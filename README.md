@@ -197,12 +197,12 @@ keep-out zones and warns when cards sit under one — the default 3×3 grid
 does, so drop to fewer rows or columns — and page guides stop short of
 those corners so they can't confuse the scanner. On duplex sheets the
 marks can be hidden per side (backs are hidden by default). **Download
-cut file (SVG)** gives you every card's trim box plus the marks in the
-cutter's orientation, ready to import into Studio (SVG import needs the
-Designer Edition; set the imported marks to no-cut and line them up with
-Studio's own). In Silhouette Studio, match the marks with Type 1 (or just
-"On" in 4.3+), thickness 0.039 in, length 0.35 in, and the inset you
-chose here. Bleed of about 0.5 mm suits the cutter better than the 1 mm
+cut file (SVG)** gives you every card's trim box in the cutter's
+orientation, ready to import into Studio (SVG import needs the Designer
+Edition). The file carries no marks — Studio scans the ones it draws
+itself, and anything in an imported SVG gets cut. In Studio's Page Setup,
+turn registration marks on and match them with Type 1 (or just "On" in
+4.3+), thickness 0.039 in, length 0.35 in, and the inset you chose here. Bleed of about 0.5 mm suits the cutter better than the 1 mm
 default.
 
 **Cricut** (and any machine that cuts against the mat rather than
