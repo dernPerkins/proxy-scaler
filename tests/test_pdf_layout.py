@@ -476,6 +476,90 @@ def test_rounded_card_guides_hug_each_cards_corner() -> None:
                 assert not (overlap_x > eps and overlap_y > eps)
 
 
+def test_cell_corner_radii_follow_alpha_corners() -> None:
+    """Off is the modern corner everywhere; All Cards is Alpha's
+    everywhere, empty cells included; Alpha Cards picks out Limited
+    Edition Alpha printings only — not a Custom Image (no set code), not
+    an empty position."""
+    from proxy_scaler.pdf_layout import (
+        ALPHA_CORNER_RADIUS_MM,
+        CARD_CORNER_RADIUS_MM,
+        AlphaCorners,
+        cell_corner_radii,
+    )
+
+    alpha = _slot(_face("bolt", None, "Lightning Bolt", "Lightning Bolt", "LEA", "161", 800))
+    modern = _slot(_face("sol", None, "Sol Ring", "Sol Ring", "c21", "263", 800))
+    custom = _slot(_face("cus", None, "Mine", "Mine", "", "", 800))
+    cells = [alpha, modern, None, custom]
+    A, M = ALPHA_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM
+
+    off = _a4_portrait_layout()
+    assert cell_corner_radii(cells, off) == [M] * 9
+    every = _a4_portrait_layout(alpha_corners=AlphaCorners.ALL_CARDS)
+    assert cell_corner_radii(cells, every) == [A] * 9
+    only = _a4_portrait_layout(alpha_corners=AlphaCorners.ALPHA_CARDS)
+    assert cell_corner_radii(cells, only) == [A] + [M] * 8
+
+
+def test_alpha_corner_follows_its_card_to_the_mirrored_back_cell() -> None:
+    from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, AlphaCorners, cell_corner_radii
+
+    layout = _a4_portrait_layout(alpha_corners=AlphaCorners.ALPHA_CARDS)
+    alpha = _slot(_face("bolt", None, "Lightning Bolt", "Lightning Bolt", "lea", "161", 800))
+    modern = _slot(_face("sol", None, "Sol Ring", "Sol Ring", "c21", "263", 800))
+    back = back_page_cells([alpha, modern, modern], layout=layout, flip_edge=FlipEdge.LONG)
+    radii = cell_corner_radii(back, layout)
+    where = back.index(alpha)
+    assert where != 0
+    assert [i for i, r in enumerate(radii) if r == ALPHA_CORNER_RADIUS_MM] == [where]
+
+
+def test_rounded_card_guides_take_each_cells_own_radius() -> None:
+    """An Alpha cell's four marks follow Alpha's corner; every other
+    card's follow the modern one. Each radius gets its own dash fit."""
+    from proxy_scaler.pdf_layout import (
+        ALPHA_CORNER_RADIUS_MM,
+        CARD_CORNER_RADIUS_MM,
+        GuideCorners,
+        GuideLine,
+        _draw_cut_marks,
+    )
+
+    layout = _a4_portrait_layout(
+        card_guide_corners=GuideCorners.ROUNDED,
+        card_guide_line=GuideLine.DASHED,
+        spacing_x_mm=2.0,
+    )
+    radii = [CARD_CORNER_RADIUS_MM] * 9
+    radii[4] = ALPHA_CORNER_RADIUS_MM  # the middle card
+    rec = _StyleRecorder()
+    _draw_cut_marks(rec, layout, page_guides=False, corner_radii=radii)  # type: ignore[arg-type]
+    half = layout.guide_width_pt / 72 * 25.4 / 2
+    arcs = [c for c in rec.calls if c["kind"] == "arc"]
+    by_radius: dict[float, list[dict]] = {}
+    for arc in arcs:
+        by_radius.setdefault(round(arc["a"] / 2, 6), []).append(arc)
+    assert len(by_radius[round(ALPHA_CORNER_RADIUS_MM + half, 6)]) == 4
+    assert len(by_radius[round(CARD_CORNER_RADIUS_MM + half, 6)]) == 32
+    # The Alpha arcs centre on the middle card's corners: R in from its
+    # trim edges (edges 2 and 3 on each axis).
+    xs = _card_trim_edges(
+        layout.cols, layout.cell_w_mm, layout.bleed_mm, layout.margin_x_mm, layout.bled_card_w_mm
+    )
+    r = ALPHA_CORNER_RADIUS_MM + half
+    centres = {
+        (round(arc["x"] + r, 6), round(arc["y"] + r, 6))
+        for arc in by_radius[round(r, 6)]
+    }
+    assert {c[0] for c in centres} == {
+        round(xs[2] - half + r, 6),
+        round(xs[3] + half - r, 6),
+    }
+    # Two mark lengths, so two dash fits (plus their arc/tail phases).
+    assert len({d for d in rec.dash_sets if d != (0.0, 0.0)}) == 2
+
+
 def test_styled_guides_render_into_a_real_pdf() -> None:
     """The recorder above stands in for fpdf2; this makes sure the real
     calls (arc, set_dash_pattern) take the arguments we pass."""

@@ -34,7 +34,7 @@ import {
   setDownloadPhase,
 } from "../download";
 import { OriginalsFallbackNote } from "../components/OriginalsFallbackNote";
-import { cutFileFilename, pdfFilename } from "../pdfFilename";
+import { cutFileFilename, cutFileIsPerSheet, pdfFilename } from "../pdfFilename";
 import type {
   Cutter,
   FlipEdge,
@@ -45,7 +45,7 @@ import type {
 } from "../api/types";
 import { toast } from "../toasts";
 import SidebarColumn from "../components/SidebarColumn";
-import GuidesSection from "../components/GuidesSection";
+import GuidesSection, { ALPHA_CUT_FILE_NOTE } from "../components/GuidesSection";
 
 // Render progress ticks about once a second per card image, so a
 // sub-second poll keeps the bar responsive without hammering the server.
@@ -257,6 +257,7 @@ export default function PdfPage() {
       card_guide_line: settings.card_guide_line,
       page_guide_line: settings.page_guide_line,
       card_guide_corners: settings.card_guide_corners,
+      alpha_corners: settings.alpha_corners,
     }),
     back_printing: settings.back_printing,
     back_faces_as_reverse: settings.back_faces_as_reverse,
@@ -281,6 +282,12 @@ export default function PdfPage() {
   // Sorted before mapping: the server prints/paginates in entries order,
   // so this is where the shared sort dropdown reaches the actual PDF.
   const entries = sortCards(cards, settings.sort_primary).map(cardToEntry);
+  // Alpha Corners' Alpha Cards with an Alpha card in the deck: the cut
+  // file is one SVG per sheet, in a ZIP. Only once the setting is sent.
+  const cutFilePerSheet = cutFileIsPerSheet(
+    guideStylesSupported ? settings.alpha_corners : undefined,
+    entries,
+  );
 
   // Populates the "Preferred model" picker. Same source as the Decklist
   // tab's generation-model dropdown, but used here to choose which
@@ -488,17 +495,18 @@ export default function PdfPage() {
     }
   }
 
-  /** The cut file. No render phase and no gallery read server-side —
-   *  pure geometry — so unlike the PDF there is nothing to poll or to
-   *  sync first; Rust POSTs the layout body and streams the SVG to disk,
-   *  like the ZIP export. Not gated on a cutter: with none selected the
-   *  file is the trim boxes alone, which is what a mat-aligned machine
-   *  (Cricut) wants. */
+  /** The cut file. No render phase server-side — pure geometry, plus a
+   *  gallery read when it is one SVG per sheet (Alpha Corners) — so unlike
+   *  the PDF there is nothing to poll or to sync first; Rust POSTs the
+   *  layout body and streams the SVG (or ZIP) to disk, like the ZIP
+   *  export. Not gated on a cutter: with none selected the file is the
+   *  trim boxes alone, which is what a mat-aligned machine (Cricut)
+   *  wants. */
   async function handleCutFileDownload() {
     if (projectTag == null || serverUnavailable) return;
     setDownloading(true);
     try {
-      await runDownload(cutFileFilename(projectName), {
+      await runDownload(cutFileFilename(projectName, { zip: cutFilePerSheet }), {
         url: generationApi.pdfCutFileUrl(),
         body: { project_tag: projectTag, entries, project_name: projectName, ...layout },
       });
@@ -1331,18 +1339,22 @@ export default function PdfPage() {
             {downloading ? "Generating…" : "Generate & Download PDF"}
           </button>
           {cutterSupported && (
-            <button
-              data-tour="pdf-cut-file"
-              onClick={() => handleCutFileDownload()}
-              disabled={downloading || serverUnavailable || serverTooOld}
-              title={
-                cutterOn
-                  ? "An SVG of every card's trim box, in the cutter's orientation, for import into Silhouette Studio. It carries no registration marks: turn on Studio's own in Page Setup."
-                  : "An SVG of every card's trim box, no registration marks, in the page's own frame — for cutters that cut against the mat, like Cricut: print the sheet, load it square in the mat's corner, and import this file."
-              }
-            >
-              Download cut file (SVG)
-            </button>
+            <div className="export-btn-stack">
+              <button
+                data-tour="pdf-cut-file"
+                onClick={() => handleCutFileDownload()}
+                disabled={downloading || serverUnavailable || serverTooOld}
+                title={
+                  (cutterOn
+                    ? "An SVG of every card's trim box, in the cutter's orientation, for import into Silhouette Studio. It carries no registration marks: turn on Studio's own in Page Setup."
+                    : "An SVG of every card's trim box, no registration marks, in the page's own frame — for cutters that cut against the mat, like Cricut: print the sheet, load it square in the mat's corner, and import this file.") +
+                  (cutFilePerSheet ? ` ${ALPHA_CUT_FILE_NOTE}.` : "")
+                }
+              >
+                {cutFilePerSheet ? "Download cut files (ZIP)" : "Download cut file (SVG)"}
+              </button>
+              {cutFilePerSheet && <p className="hint export-btn-note">{ALPHA_CUT_FILE_NOTE}</p>}
+            </div>
           )}
         </div>
       </main>

@@ -1060,6 +1060,122 @@ def test_cut_file_without_a_cutter_is_trim_boxes_only(client: TestClient) -> Non
     assert root.get("width") == "210.000mm"
 
 
+def _write_alpha_bolt(tmp_path: Path, db_path: Path, project_tag: str) -> None:
+    """A Limited Edition Alpha card in the gallery, next to whatever else
+    the test wrote: the set code is all Alpha Corners looks at."""
+    img_path = tmp_path / "bolt.png"
+    Image.new("RGBA", (200, 280), (90, 20, 10, 255)).save(img_path, format="PNG")
+    common = dict(
+        scryfall_id="bolt-id",
+        face_index=None,
+        face_name="Lightning Bolt",
+        card_name="Lightning Bolt",
+        set_code="lea",
+        collector_number="161",
+        png_url="https://example.com/bolt.png",
+        dpi=800,
+        model="ultrasharp_v2",
+    )
+    result = FaceResult(out_path=img_path, original_path=img_path, **common)
+    task = db.TaskRow(
+        id=2,
+        project_tag=project_tag,
+        status="done",
+        face_label=None,
+        tile_size=0,
+        output_dir=str(tmp_path),
+        cache_dir=str(tmp_path),
+        weights_dir=str(tmp_path),
+        error=None,
+        created_at="2026-01-01T00:00:00Z",
+        started_at=None,
+        completed_at=None,
+        total_faces=None,
+        **common,
+    )
+    db.upsert_gallery_item_for_task(task, result, db_path=db_path)
+
+
+def _bolt_entry() -> dict:
+    return _sol_ring_entry(
+        name="Lightning Bolt",
+        set_code="lea",
+        collector_number="161",
+        raw_line="1 Lightning Bolt (lea) 161",
+    )
+
+
+def _cut_rx(svg: bytes | str) -> list[float]:
+    from xml.etree import ElementTree as ET
+
+    root = ET.fromstring(svg)
+    return [float(r.get("rx")) for r in root.iter("{http://www.w3.org/2000/svg}rect")]
+
+
+def test_cut_file_corner_follows_alpha_corners(client: TestClient, tmp_path: Path) -> None:
+    from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    _write_alpha_bolt(tmp_path, db_path, "tag-a")
+    entries = [_bolt_entry(), _sol_ring_entry()]
+
+    off = client.post("/api/pdf/cut-file", json=_pdf_layout_body(entries=entries))
+    assert off.headers["content-type"].startswith("image/svg+xml")
+    assert set(_cut_rx(off.content)) == {CARD_CORNER_RADIUS_MM}
+
+    every = client.post(
+        "/api/pdf/cut-file", json=_pdf_layout_body(entries=entries, alpha_corners="all_cards")
+    )
+    assert every.headers["content-type"].startswith("image/svg+xml")
+    assert set(_cut_rx(every.content)) == {ALPHA_CORNER_RADIUS_MM}
+
+    # Alpha Cards with no Alpha card in the deck: still the one SVG.
+    no_alpha = client.post(
+        "/api/pdf/cut-file",
+        json=_pdf_layout_body(entries=[_sol_ring_entry()], alpha_corners="alpha_cards"),
+    )
+    assert no_alpha.headers["content-type"].startswith("image/svg+xml")
+    assert set(_cut_rx(no_alpha.content)) == {CARD_CORNER_RADIUS_MM}
+
+    # With one: a ZIP, one SVG per sheet, the Alpha card's cell rounder.
+    import zipfile
+
+    mixed = client.post(
+        "/api/pdf/cut-file",
+        json=_pdf_layout_body(entries=entries, alpha_corners="alpha_cards", project_name="Deck"),
+    )
+    assert mixed.status_code == 200
+    assert mixed.headers["content-type"] == "application/zip"
+    assert 'filename="Deck-cut.zip"' in mixed.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(mixed.content)) as archive:
+        assert archive.namelist() == ["Deck-cut-page-01.svg"]
+        rx = _cut_rx(archive.read("Deck-cut-page-01.svg"))
+    assert rx.count(ALPHA_CORNER_RADIUS_MM) == 1
+    assert rx.count(CARD_CORNER_RADIUS_MM) == 8
+
+
+def test_pdf_preview_page_reports_each_cells_corner_radius(
+    client: TestClient, tmp_path: Path
+) -> None:
+    from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM
+
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item(tmp_path, db_path, "tag-a")
+    _write_alpha_bolt(tmp_path, db_path, "tag-a")
+    body = _pdf_layout_body(
+        entries=[_sol_ring_entry(), _bolt_entry()],
+        alpha_corners="alpha_cards",
+        card_guide_corners="rounded",
+    )
+    page = client.post("/api/pdf/preview/page", json=body).json()
+    assert page["alpha_corners"] == "alpha_cards"
+    assert page["corner_radius_mm"] == pytest.approx(CARD_CORNER_RADIUS_MM)
+    radii = {s["card_name"]: s["corner_radius_mm"] for s in page["slots"]}
+    assert radii["Lightning Bolt"] == pytest.approx(ALPHA_CORNER_RADIUS_MM)
+    assert radii["Sol Ring"] == pytest.approx(CARD_CORNER_RADIUS_MM)
+
+
 def test_pdf_preview_page_no_entries_is_400(client: TestClient) -> None:
     resp = client.post("/api/pdf/preview/page", json=_pdf_layout_body(entries=[]))
     assert resp.status_code == 400

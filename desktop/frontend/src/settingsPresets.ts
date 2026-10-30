@@ -78,6 +78,7 @@ const PDF_FIELDS = {
   card_guide_line: oneOf("solid", "dashed"),
   page_guide_line: oneOf("solid", "dashed"),
   card_guide_corners: oneOf("square", "rounded"),
+  alpha_corners: oneOf("off", "alpha_cards", "all_cards"),
   back_printing: isBool,
   back_faces_as_reverse: isBool,
   reverse_fill: oneOf("back_image", "blank"),

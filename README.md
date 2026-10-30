@@ -179,7 +179,12 @@ or, for a double-faced card, missing one of its two faces — before you
 print. Guides are switchable per kind and per side: **card guides** (the
 marks at each card's own corners) and **page guides** (the lines running
 in from the page edge), each independently hideable on front and back
-pages.
+pages. Card guides can be a "+" or a rounded corner that follows the
+card's own 2.5 mm curve, so a corner die or punch lines up with it.
+**Alpha Corners** is for anyone who owns a die for Limited Edition
+Alpha's rounder 4 mm corner: *Alpha Cards* gives Alpha printings that
+corner and leaves the rest modern, *All Cards* gives it to every card.
+It applies to the cut file too.
 
 **Back printing** puts something on the reverse of every card so a sheet
 can be duplex-printed. See [Backs](#backs).
@@ -203,7 +208,9 @@ Edition). The file carries no marks — Studio scans the ones it draws
 itself, and anything in an imported SVG gets cut. In Studio's Page Setup,
 turn registration marks on and match them with Type 1 (or just "On" in
 4.3+), thickness 0.039 in, length 0.35 in, and the inset you chose here. Bleed of about 0.5 mm suits the cutter better than the 1 mm
-default.
+default. With Alpha Corners on *Alpha Cards* and an Alpha card in the
+deck, the sheets no longer share one cut, so the download is a ZIP with
+one SVG per sheet, numbered by page.
 
 **Cricut** (and any machine that cuts against the mat rather than
 scanning marks): leave **Electronic cutter** on *None*. Design Space

@@ -144,6 +144,7 @@ export function getDefaultSettings(): ProjectSettings {
     card_guide_line: "solid",
     page_guide_line: "solid",
     card_guide_corners: "square",
+    alpha_corners: "off",
   };
 }
 

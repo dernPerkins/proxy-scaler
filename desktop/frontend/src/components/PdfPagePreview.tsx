@@ -20,8 +20,8 @@ const MM_PER_IN = 25.4;
 const DEFAULT_PAGE_GUIDE_COLOR = "#000000";
 const DEFAULT_CARD_GUIDE_COLOR = "#00AA50";
 // pdf_layout.py's CARD_CORNER_RADIUS_MM — the curve a rounded Card Guide
-// follows.
-const CARD_CORNER_RADIUS_MM = 2.7;
+// follows, for a server too old to send each cell's own (Alpha Corners).
+const CARD_CORNER_RADIUS_MM = 2.5;
 
 // SVG stroke-dasharray for one dashed guide piece `lengthMm` long, in px.
 // Mirrors pdf_layout.py::_guide_dash_mm: a target dash, then stretched or
@@ -189,18 +189,29 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
     const xs = nudged(trimXs, halfMm);
     const ys = nudged(trimYs, halfMm);
     const len = preview.guide_length_mm;
-    let d = "";
-    // The length one dashed piece is fitted over: a "+" arm, or a whole
-    // rounded mark from tip to tip.
-    let pieceMm = len;
+    // One path per dash fit: the length one dashed piece is fitted over
+    // is a "+" arm, or a whole rounded mark from tip to tip — which
+    // depends on the mark's radius, so each radius is its own path.
+    const groups = new Map<number, { d: string; pieceMm: number }>();
     if (preview.card_guide_corners === "rounded") {
-      const r = CARD_CORNER_RADIUS_MM + halfMm;
-      pieceMm = 2 * len + (Math.PI / 2) * r;
+      // Each cell's corner radius: the server's per-slot answer (Alpha
+      // Corners), its base for a cell with no slot, or — from a server
+      // that predates both — the modern corner.
+      const baseR = preview.corner_radius_mm ?? CARD_CORNER_RADIUS_MM;
+      const cellR = (cell: number) => preview.slots[cell]?.corner_radius_mm ?? baseR;
       xs.forEach((x, i) => {
         // +1 when the card lies to the right of / below this edge.
         const intoX = i % 2 === 0 ? 1 : -1;
         ys.forEach((y, j) => {
           const intoY = j % 2 === 0 ? 1 : -1;
+          // Trim edge i is column i / 2's, edge j row j / 2's.
+          const cardR = cellR(Math.floor(j / 2) * preview.cols + Math.floor(i / 2));
+          const r = cardR + halfMm;
+          let group = groups.get(cardR);
+          if (!group) {
+            group = { d: "", pieceMm: 2 * len + (Math.PI / 2) * r };
+            groups.set(cardR, group);
+          }
           // The corner's own centre, R in from both trim edges; radius
           // R + half so the stroke's inner edge is the card's curve.
           const cx = x + intoX * r;
@@ -210,7 +221,7 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
           // tail down/up the side edge. Sweep is clockwise for the
           // top-right and bottom-left corners.
           const sweep = intoX * intoY > 0 ? 0 : 1;
-          d +=
+          group.d +=
             `M${(cx + intoX * len) * scale} ${y * scale}H${cx * scale}` +
             `A${r * scale} ${r * scale} 0 0 ${sweep} ${x * scale} ${cy * scale}` +
             `V${(cy + intoY * len) * scale}`;
@@ -218,6 +229,7 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
       });
     } else {
       // Four arms out from each corner, so the dashes mirror about it.
+      let d = "";
       for (const x of xs) {
         for (const y of ys) {
           const at = `M${x * scale} ${y * scale}`;
@@ -226,17 +238,20 @@ function CutMarks({ preview, scale }: { preview: PdfPagePreviewData; scale: numb
             `${at}V${(y - len) * scale}${at}V${(y + len) * scale}`;
         }
       }
+      groups.set(0, { d, pieceMm: len });
     }
     const px = strokePx(widthMm);
-    paths.push(
-      <path
-        key="card"
-        d={d}
-        stroke={preview.card_guide_color ?? DEFAULT_CARD_GUIDE_COLOR}
-        strokeWidth={px}
-        strokeDasharray={preview.card_guide_line === "dashed" ? dashArrayPx(widthMm, pieceMm, scale) : undefined}
-      />,
-    );
+    for (const [key, { d, pieceMm }] of groups) {
+      paths.push(
+        <path
+          key={`card-${key}`}
+          d={d}
+          stroke={preview.card_guide_color ?? DEFAULT_CARD_GUIDE_COLOR}
+          strokeWidth={px}
+          strokeDasharray={preview.card_guide_line === "dashed" ? dashArrayPx(widthMm, pieceMm, scale) : undefined}
+        />,
+      );
+    }
   }
 
   return (

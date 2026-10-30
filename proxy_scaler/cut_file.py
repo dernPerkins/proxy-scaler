@@ -3,7 +3,10 @@
 An SVG for import into the cutter's software: one rounded rectangle per
 card trim box on the "cut-lines" layer. Pure geometry — no images, no
 database — so it can be produced without a single card having been
-generated.
+generated. The one exception is AlphaCorners.ALPHA_CARDS: which cells get
+Alpha's rounder corner depends on which cards sit where, so the caller
+passes each cell's radius (pdf_layout.cell_corner_radii) and a deck whose
+sheets differ gets one file per sheet.
 
 With a cutter selected (Silhouette Studio) the file is emitted in the
 CUTTER's frame, not the page's: when the marks are rotated (see
@@ -26,14 +29,15 @@ imports this file.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from xml.etree import ElementTree as ET
 
 from .dpi import CARD_HEIGHT_MM, CARD_WIDTH_MM
 from .pdf_layout import (
-    CARD_CORNER_RADIUS_MM,
     PageLayout,
     Rect,
     RegistrationMarks,
+    cell_corner_radii,
     cutter_frame,
     page_rect_to_cutter,
 )
@@ -64,12 +68,20 @@ def card_trim_rects(layout: PageLayout) -> list[Rect]:
     return rects
 
 
-def build_cut_file_svg(layout: PageLayout, marks: RegistrationMarks | None) -> str:
+def build_cut_file_svg(
+    layout: PageLayout,
+    marks: RegistrationMarks | None,
+    corner_radii: Sequence[float] | None = None,
+) -> str:
     """The SVG document, as text. Uses the FRONT layout: you cut from the
     side the marks are read on. Only `marks.orientation` matters here — it
     picks the frame; the marks are never drawn (see the module docstring).
     `marks` None (no cutter selected) means no rotation: the page frame as
-    printed."""
+    printed. `corner_radii` is each cell's corner radius, row-major; None
+    is the layout's base radius everywhere (cell_corner_radii of an empty
+    page), which is the whole answer unless Alpha Cards is on."""
+    if corner_radii is None:
+        corner_radii = cell_corner_radii((), layout)
     if marks is None:
         frame_w, frame_h, rotated = layout.page_w_mm, layout.page_h_mm, False
     else:
@@ -87,7 +99,7 @@ def build_cut_file_svg(layout: PageLayout, marks: RegistrationMarks | None) -> s
         },
     )
     cuts = ET.SubElement(root, "g", {"id": "cut-lines"})
-    for page_rect in card_trim_rects(layout):
+    for page_rect, radius in zip(card_trim_rects(layout), corner_radii, strict=True):
         r = page_rect_to_cutter(page_rect, layout.page_w_mm, layout.page_h_mm, rotated)
         ET.SubElement(
             cuts,
@@ -97,8 +109,8 @@ def build_cut_file_svg(layout: PageLayout, marks: RegistrationMarks | None) -> s
                 "y": _fmt(r.y),
                 "width": _fmt(r.w),
                 "height": _fmt(r.h),
-                "rx": _fmt(CARD_CORNER_RADIUS_MM),
-                "ry": _fmt(CARD_CORNER_RADIUS_MM),
+                "rx": _fmt(radius),
+                "ry": _fmt(radius),
                 "fill": "none",
                 "stroke": "#f00",
                 "stroke-width": "0.1",

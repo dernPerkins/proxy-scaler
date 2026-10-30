@@ -39,8 +39,29 @@ export function pdfFilename(projectName: string | null | undefined, today?: Date
   return `${projectName || defaultPdfBasename(today)}.pdf`;
 }
 
-/** The cut file that goes with the sheet — same stem, `-cut.svg`, matching
- *  the server's Content-Disposition in routers/pdf.py::cut_file. */
-export function cutFileFilename(projectName: string | null | undefined, today?: Date): string {
-  return `${projectName || defaultPdfBasename(today)}-cut.svg`;
+/** The cut file that goes with the sheet — same stem, `-cut.svg`, or
+ *  `-cut.zip` when it is one SVG per sheet (Alpha Corners' Alpha Cards on
+ *  a deck with an Alpha card), matching the server's Content-Disposition
+ *  in routers/pdf.py::cut_file. */
+export function cutFileFilename(
+  projectName: string | null | undefined,
+  { zip = false, today }: { zip?: boolean; today?: Date } = {},
+): string {
+  return `${projectName || defaultPdfBasename(today)}-cut.${zip ? "zip" : "svg"}`;
+}
+
+/** Limited Edition Alpha's set code: pdf_layout.ALPHA_SET_CODE. */
+const ALPHA_SET_CODE = "lea";
+
+/** Whether the cut file comes as a ZIP of one SVG per sheet: the same test
+ *  routers/pdf.py::cut_file makes, from the decklist alone, so the save
+ *  dialog can offer the right name before the request is sent. */
+export function cutFileIsPerSheet(
+  alphaCorners: string | undefined,
+  entries: readonly { set_code?: string | null }[],
+): boolean {
+  return (
+    alphaCorners === "alpha_cards" &&
+    entries.some((e) => (e.set_code ?? "").toLowerCase() === ALPHA_SET_CODE)
+  );
 }

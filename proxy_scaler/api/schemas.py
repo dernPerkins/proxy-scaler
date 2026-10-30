@@ -436,6 +436,12 @@ class GuideCornersIn(str, Enum):
     ROUNDED = "rounded"
 
 
+class AlphaCornersIn(str, Enum):
+    OFF = "off"
+    ALPHA_CARDS = "alpha_cards"
+    ALL_CARDS = "all_cards"
+
+
 # "#RRGGBB" — what an <input type="color"> produces.
 _HEX_COLOR = r"^#[0-9A-Fa-f]{6}$"
 
@@ -514,6 +520,9 @@ class PdfLayoutIn(BaseModel):
     card_guide_line: GuideLineIn = GuideLineIn.SOLID
     page_guide_line: GuideLineIn = GuideLineIn.SOLID
     card_guide_corners: GuideCornersIn = GuideCornersIn.SQUARE
+    # Which cards' rounded Card Guides and cut-file trim boxes follow
+    # Alpha's rounder corner (pdf_layout.AlphaCorners).
+    alpha_corners: AlphaCornersIn = AlphaCornersIn.OFF
 
     # --- Electronic cutter -----------------------------------------------
     #
@@ -640,6 +649,9 @@ class PdfPageSlotOut(BaseModel):
     # The frontend labels it differently — "Card back" is not a card name,
     # and showing it in the same style would read as a card called that.
     is_back_image: bool = False
+    # This position's rounded Card Guide radius (see
+    # PdfPagePreviewOut.corner_radius_mm).
+    corner_radius_mm: float | None = None
 
 
 class RectOut(BaseModel):
@@ -680,6 +692,12 @@ class PdfPagePreviewOut(BaseModel):
     card_guide_line: GuideLineIn = GuideLineIn.SOLID
     page_guide_line: GuideLineIn = GuideLineIn.SOLID
     card_guide_corners: GuideCornersIn = GuideCornersIn.SQUARE
+    alpha_corners: AlphaCornersIn = AlphaCornersIn.OFF
+    # The rounded Card Guides' radius for a cell with no slot below (an
+    # empty position); a slot's own corner_radius_mm overrides it. Decided
+    # here so the client never needs set codes or the Alpha radius. None
+    # from a server that predates it: the client uses its own constant.
+    corner_radius_mm: float | None = None
     # Total size of the card grid. Reported so the client can warn when it
     # exceeds the page — resolve_page_layout deliberately does not raise
     # on that (a custom offset may push past an edge on purpose), and asks

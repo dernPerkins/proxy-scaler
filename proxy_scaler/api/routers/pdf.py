@@ -4,6 +4,7 @@ import base64
 import io
 import re
 import threading
+import zipfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -15,6 +16,7 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.entries import to_deck_entry
 from proxy_scaler.api.schemas import (
+    AlphaCornersIn,
     BackImageIn,
     CutterIn,
     GuideCornersIn,
@@ -33,6 +35,8 @@ from proxy_scaler.pdf_jobs import PdfRenderCanceled
 from proxy_scaler import backs
 from proxy_scaler.cut_file import build_cut_file_svg
 from proxy_scaler.pdf_layout import (
+    ALPHA_SET_CODE,
+    AlphaCorners,
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
     MM_PER_IN,
@@ -59,6 +63,7 @@ from proxy_scaler.pdf_layout import (
     build_print_slots,
     match_quantities,
     paginate,
+    cell_corner_radii,
     printing_from_originals,
     registration_conflict,
     registration_keep_out,
@@ -242,6 +247,7 @@ def _layout_from_body(body: PdfLayoutIn, offset_x: float, offset_y: float) -> Pa
         card_guide_line=GuideLine(body.card_guide_line.value),
         page_guide_line=GuideLine(body.page_guide_line.value),
         card_guide_corners=GuideCorners(body.card_guide_corners.value),
+        alpha_corners=AlphaCorners(body.alpha_corners.value),
     )
 
 
@@ -613,6 +619,11 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
     # carries marks if they are not hidden there. Deliberately not "always
     # the front layout" — the conflict warning has to describe the page
     # the user is looking at.
+    # Each position's rounded Card Guide radius, from the same cells the
+    # renderer draws (a Back Page's mirrored cells carry their fronts).
+    for slot_out, radius in zip(slots, cell_corner_radii(cells, layout)):
+        slot_out.corner_radius_mm = radius
+
     registration = _registration(body)
     marks: list[Rect] = []
     keep_out: list[Rect] = []
@@ -644,6 +655,8 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         card_guide_line=GuideLineIn(layout.card_guide_line.value),
         page_guide_line=GuideLineIn(layout.page_guide_line.value),
         card_guide_corners=GuideCornersIn(layout.card_guide_corners.value),
+        alpha_corners=AlphaCornersIn(layout.alpha_corners.value),
+        corner_radius_mm=cell_corner_radii((), layout)[0],
         # Identical for the front and back layouts — they differ only in
         # their position offsets — so one value serves whichever side is
         # being previewed.
@@ -686,21 +699,50 @@ def generate_pdf(body: PdfLayoutIn) -> Response:
 
 @router.post("/cut-file")
 def cut_file(body: PdfLayoutIn) -> Response:
-    """The cut file that goes with the sheet: an SVG of every card's trim
-    box, plus the registration marks in the cutter's own frame when a
-    cutter is selected (for import into Silhouette Studio). With no cutter
-    it is the trim boxes alone in the page frame — the mat-aligned route
-    for a Cricut, which cannot scan third-party marks. Pure geometry — the
-    body's entries are accepted (it is the same PdfLayoutIn the preview
-    sends) but never read, so this needs no generated images and no
-    database."""
+    """The cut file that goes with the sheet: an SVG of every card's
+    rounded trim box, in the cutter's own frame when a cutter is selected
+    (for import into Silhouette Studio). With no cutter it is the trim
+    boxes alone in the page frame — the mat-aligned route for a Cricut,
+    which cannot scan third-party marks.
+
+    Pure geometry — the body's entries are accepted (it is the same
+    PdfLayoutIn the preview sends) but not read — except under Alpha
+    Corners' Alpha Cards, where a cell's corner depends on the card in it.
+    Then, if the decklist has an Alpha printing in it, the deck is laid out
+    as the PDF would be and the download is a ZIP of one SVG per page
+    (`<deck>-cut-page-NN.svg`), since the sheets no longer share one cut.
+    Decided from the decklist, not from what matched, so the client can
+    name the file before asking (the save dialog comes first): the same
+    test as PdfPage's deckHasAlphaCards. Any other deck gets the single
+    SVG."""
     layout = _layout_from_body(body, body.offset_x_mm, body.offset_y_mm)
-    svg = build_cut_file_svg(layout, _registration(body))
-    filename = f"{_slugify(body.project_name or _default_pdf_basename())}-cut.svg"
+    registration = _registration(body)
+    deck = _slugify(body.project_name or _default_pdf_basename())
+    alpha_deck = layout.alpha_corners is AlphaCorners.ALPHA_CARDS and any(
+        (e.set_code or "").lower() == ALPHA_SET_CODE for e in body.entries
+    )
+    if not alpha_deck:
+        return Response(
+            content=build_cut_file_svg(layout, registration).encode("utf-8"),
+            media_type="image/svg+xml",
+            headers={"Content-Disposition": f'attachment; filename="{deck}-cut.svg"'},
+        )
+    # Nothing matched at all still gets one sheet's file: the ZIP was
+    # promised, and an empty one is no use to anybody.
+    page_radii = [cell_corner_radii(page, layout) for page in _prepare(body).pages] or [
+        cell_corner_radii((), layout)
+    ]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        for number, radii in enumerate(page_radii, start=1):
+            archive.writestr(
+                f"{deck}-cut-page-{number:02d}.svg",
+                build_cut_file_svg(layout, registration, radii),
+            )
     return Response(
-        content=svg.encode("utf-8"),
-        media_type="image/svg+xml",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{deck}-cut.zip"'},
     )
 
 

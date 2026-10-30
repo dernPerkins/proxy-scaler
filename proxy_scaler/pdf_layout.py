@@ -145,12 +145,16 @@ REG_KEEP_OUT_MM = 3.0
 REG_INSET_MIN_MM = 5.0
 REG_INSET_DEFAULT_MM = 10.0  # Studio's "Standard" inset, 0.394 in
 # The corner radius a cut file rounds each card's trim box to, and the
-# rounded Card Guides' arc. 2.7mm is the card's own corner as Scryfall's
-# alpha draws it (Beta onward; measured on 745px and 1200dpi renders alike).
-# It was 1/8 in (3.175mm), which put the arc ~0.2mm deeper into the card
-# than the art's corner along the diagonal — most of a 0.75pt stroke — so
-# a die cut true to the card kept a sliver of guide ink at every corner.
-CARD_CORNER_RADIUS_MM = 2.7
+# rounded Card Guides' arc: the physical card's 2.5mm (Beta onward).
+# Scryfall's alpha mask draws it a little rounder, ~2.7mm, so a 2.5mm die
+# keeps ~0.08mm of edge-extended bleed at the diagonal — harmless, where
+# any guide radius larger than the die's leaves guide ink on the card.
+# (It was 1/8 in, 3.175mm, and did exactly that.)
+CARD_CORNER_RADIUS_MM = 2.5
+# Limited Edition Alpha's rounder die. Scryfall draws it at 4.42mm against
+# 2.74mm for Beta onward; the same ratio on the physical 2.5mm gives 4.0mm.
+ALPHA_CORNER_RADIUS_MM = 4.0
+ALPHA_SET_CODE = "lea"
 
 
 class CutterMarkStyle(str, Enum):
@@ -417,6 +421,18 @@ class GuideCorners(str, Enum):
     ROUNDED = "rounded"
 
 
+class AlphaCorners(str, Enum):
+    """Which cards get Alpha's rounder corner (ALPHA_CORNER_RADIUS_MM) on
+    their rounded Card Guides and cut-file trim box, for someone who owns
+    an Alpha die. "off": every card gets the modern corner, what an
+    ordinary die or corner punch cuts. "alpha_cards": Limited Edition
+    Alpha printings only. "all_cards": every card."""
+
+    OFF = "off"
+    ALPHA_CARDS = "alpha_cards"
+    ALL_CARDS = "all_cards"
+
+
 def hex_to_rgb(color: str) -> tuple[int, int, int]:
     """Parse "#RRGGBB" into (r, g, b). The API validates the shape; this
     raises on anything else rather than guessing."""
@@ -457,6 +473,7 @@ class PageLayout:
     card_guide_line: GuideLine = GuideLine.SOLID
     page_guide_line: GuideLine = GuideLine.SOLID
     card_guide_corners: GuideCorners = GuideCorners.SQUARE
+    alpha_corners: AlphaCorners = AlphaCorners.OFF
 
 
 def resolve_page_layout(
@@ -478,6 +495,7 @@ def resolve_page_layout(
     card_guide_line: GuideLine = GuideLine.SOLID,
     page_guide_line: GuideLine = GuideLine.SOLID,
     card_guide_corners: GuideCorners = GuideCorners.SQUARE,
+    alpha_corners: AlphaCorners = AlphaCorners.OFF,
 ) -> PageLayout:
     """Resolve a full print-grid geometry from freely user-configurable
     dimensions. Does NOT raise if the grid doesn't fit the page — unlike
@@ -531,6 +549,7 @@ def resolve_page_layout(
         card_guide_line=card_guide_line,
         page_guide_line=page_guide_line,
         card_guide_corners=card_guide_corners,
+        alpha_corners=alpha_corners,
     )
 
 
@@ -581,6 +600,31 @@ def _guide_dash_mm(width_mm: float, length_mm: float) -> tuple[float, float]:
     return dash, dash * ratio
 
 
+def is_alpha_face(face: FaceResult) -> bool:
+    """A Limited Edition Alpha printing. A Custom Image has no set code,
+    so it never is."""
+    return (face.set_code or "").lower() == ALPHA_SET_CODE
+
+
+def cell_corner_radii(
+    cells: Sequence[PrintSlot | None], layout: PageLayout
+) -> list[float]:
+    """The corner radius of each grid cell, row-major, `cards_per_page`
+    long: what that cell's rounded Card Guides and cut-file trim box
+    follow, per layout.alpha_corners. An empty cell (a partial page, or
+    cells shorter than the grid) takes the page's base radius. A Back
+    Page cell carries the same PrintSlot as its front, so the card's
+    Alpha-ness follows it to the mirrored position."""
+    if layout.alpha_corners is AlphaCorners.ALL_CARDS:
+        return [ALPHA_CORNER_RADIUS_MM] * layout.cards_per_page
+    radii = [CARD_CORNER_RADIUS_MM] * layout.cards_per_page
+    if layout.alpha_corners is AlphaCorners.ALPHA_CARDS:
+        for i, slot in enumerate(cells[: layout.cards_per_page]):
+            if slot is not None and is_alpha_face(slot.front):
+                radii[i] = ALPHA_CORNER_RADIUS_MM
+    return radii
+
+
 def _draw_cut_marks(
     pdf: FPDF,
     layout: PageLayout,
@@ -588,6 +632,7 @@ def _draw_cut_marks(
     card_guides: bool = True,
     page_guides: bool = True,
     keep_out: Sequence[Rect] = (),
+    corner_radii: Sequence[float] | None = None,
 ) -> None:
     """Draw Page Guides (lines from the page edge to the grid block —
     outer margins, nothing to obscure there; two closely-spaced lines per
@@ -620,7 +665,10 @@ def _draw_cut_marks(
 
     `keep_out` (registration-mark zones, see registration_keep_out) clips
     Page Guides only: they are the ones that run out to the page edge and
-    through the corners the cutter scans. Card Guides stay inside the grid."""
+    through the corners the cutter scans. Card Guides stay inside the grid.
+
+    `corner_radii` (see cell_corner_radii) gives each cell's rounded-mark
+    radius; None is CARD_CORNER_RADIUS_MM everywhere."""
     if not card_guides and not page_guides:
         return
 
@@ -710,7 +758,21 @@ def _draw_cut_marks(
         pdf.set_line_width(width_mm)
         pdf.set_draw_color(*layout.card_guide_color)
         if layout.card_guide_corners is GuideCorners.ROUNDED:
-            r = CARD_CORNER_RADIUS_MM
+            radii = (
+                [CARD_CORNER_RADIUS_MM] * layout.cards_per_page
+                if corner_radii is None
+                else corner_radii
+            )
+            # Every corner, with the radius of the card it belongs to:
+            # trim edge i is column i // 2's, edge j row j // 2's.
+            corners_by_r: dict[float, list[tuple[float, float, int, int]]] = {}
+            for i, x in enumerate(xs):
+                # +1 when the card lies to the right of / below this edge.
+                into_x = 1 if i % 2 == 0 else -1
+                for j, y in enumerate(ys):
+                    into_y = 1 if j % 2 == 0 else -1
+                    r = radii[(j // 2) * layout.cols + i // 2]
+                    corners_by_r.setdefault(r, []).append((x, y, into_x, into_y))
             # One rounded mark is one dashed piece — tail, arc, tail — with
             # the pattern fitted over its whole length, so the dashes run
             # evenly round the corner instead of doubling up where an arc's
@@ -719,26 +781,21 @@ def _draw_cut_marks(
             # tails from their tips inward (phase 0), arcs one tail-length
             # in. A pattern fitted end to end on a dash reads the same from
             # either end, and the arc sits in its middle, so which way
-            # fpdf2 strokes the arc doesn't matter.
-            arc_mm = math.pi / 2 * (r + half)
-            mark_mm = 2 * length + arc_mm
-            dash_for(line_style, width_mm, mark_mm, phase_mm=length)
-            for i, x in enumerate(xs):
-                # +1 when the card lies to the right of / below this edge.
-                into_x = 1 if i % 2 == 0 else -1
-                for j, y in enumerate(ys):
-                    into_y = 1 if j % 2 == 0 else -1
+            # fpdf2 strokes the arc doesn't matter. The mark's length
+            # depends on its radius, so each radius is its own group.
+            for r, corners in corners_by_r.items():
+                arc_mm = math.pi / 2 * (r + half)
+                mark_mm = 2 * length + arc_mm
+                dash_for(line_style, width_mm, mark_mm, phase_mm=length)
+                for x, y, into_x, into_y in corners:
                     # The arc's centre is the card corner's own: R in from
                     # both (un-nudged) trim edges. Its radius is R + half,
                     # so the stroke's inner edge is the card's curve.
                     cx = x + into_x * (r + half)
                     cy = y + into_y * (r + half)
                     _corner_arc(pdf, cx, cy, r + half, into_x, into_y)
-            dash_for(line_style, width_mm, mark_mm)
-            for i, x in enumerate(xs):
-                into_x = 1 if i % 2 == 0 else -1
-                for j, y in enumerate(ys):
-                    into_y = 1 if j % 2 == 0 else -1
+                dash_for(line_style, width_mm, mark_mm)
+                for x, y, into_x, into_y in corners:
                     cx = x + into_x * (r + half)
                     cy = y + into_y * (r + half)
                     # Each tail runs along its edge from where the arc
@@ -1972,6 +2029,7 @@ def build_pdf(
             if registration is not None and draw_marks
             else ()
         )
+        corner_radii = cell_corner_radii(cells, page_layout)
         if is_back:
             _draw_cut_marks(
                 pdf,
@@ -1979,6 +2037,7 @@ def build_pdf(
                 card_guides=not guides.hide_card_guides_back,
                 page_guides=not guides.hide_page_guides_back,
                 keep_out=keep_out,
+                corner_radii=corner_radii,
             )
         else:
             _draw_cut_marks(
@@ -1987,6 +2046,7 @@ def build_pdf(
                 card_guides=not guides.hide_card_guides_front,
                 page_guides=not guides.hide_page_guides_front,
                 keep_out=keep_out,
+                corner_radii=corner_radii,
             )
         if registration is not None and draw_marks:
             _draw_registration_marks(

@@ -102,3 +102,14 @@ def test_cut_file_without_a_cutter_has_no_marks_and_uses_the_page_frame() -> Non
     wide_root = ET.fromstring(wide)
     assert (wide_root.get("width"), wide_root.get("height")) == ("297.000mm", "210.000mm")
     assert all(abs(c["width"] - CARD_WIDTH_MM) < 1e-3 for c in _rects(wide, "cut-lines"))
+
+
+def test_cut_file_rounds_each_cell_to_its_own_radius() -> None:
+    from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, AlphaCorners
+
+    radii = [CARD_CORNER_RADIUS_MM, ALPHA_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM]
+    cuts = _rects(build_cut_file_svg(_a4(), None, radii), "cut-lines")
+    assert [round(c["rx"], 3) for c in cuts] == [round(r, 3) for r in radii]
+    # No radii given: the layout's own base corner, Alpha's under All Cards.
+    every = _rects(build_cut_file_svg(_a4(alpha_corners=AlphaCorners.ALL_CARDS), None), "cut-lines")
+    assert all(abs(c["rx"] - ALPHA_CORNER_RADIUS_MM) < 1e-6 for c in every)
