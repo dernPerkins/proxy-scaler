@@ -16,6 +16,17 @@ export const CARD_H_MM = 88;
 const CORNER_RADIUS_MM = 2.7;
 export const TRIM_CORNER_RADIUS = `${(CORNER_RADIUS_MM / CARD_W_MM) * 100}% / ${(CORNER_RADIUS_MM / CARD_H_MM) * 100}%`;
 
+/** Limited Edition Alpha's set code: pdf_layout.ALPHA_SET_CODE. */
+export const ALPHA_SET_CODE = "lea";
+
+/** A Limited Edition Alpha printing: cut with a rounder die, which
+ *  Scryfall renders at ~4.4 mm, so a frame clipping a card image to the
+ *  modern corner leaves the image's own corner background showing. Frames
+ *  add `alpha-corners` (styles.css) for these. */
+export function isAlphaPrinting(setCode: string | null | undefined): boolean {
+  return (setCode ?? "").toLowerCase() === ALPHA_SET_CODE;
+}
+
 export interface PctRect {
   left: number;
   top: number;

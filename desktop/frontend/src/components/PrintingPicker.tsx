@@ -44,6 +44,7 @@ import TutorialButton from "../tutorial/TutorialButton";
 import { useTourWhenPresent } from "../tutorial/tutorialStore";
 import MultiSelectFilter, { type FilterOption } from "./MultiSelectFilter";
 import { alternateName } from "../cardNames";
+import { isAlphaPrinting } from "../cardTrim";
 import SetIcon from "./SetIcon";
 import SelectMenu from "./SelectMenu";
 import {
@@ -296,7 +297,10 @@ function PrintingTile(props: {
           v.set_name ?? v.set_code.toUpperCase()
         }${variantYear(v)}`}
       >
-        <span className="printing-tile-frame" ref={frameRef}>
+        <span
+          className={`printing-tile-frame${isAlphaPrinting(v.set_code) ? " alpha-corners" : ""}`}
+          ref={frameRef}
+        >
           {image}
         </span>
         <span className="printing-tile-label">
@@ -438,7 +442,7 @@ function PrintingPreview(props: {
       )}
 
       <div className="printing-preview-stage">
-        <div className="printing-preview-frame">
+        <div className={`printing-preview-frame${isAlphaPrinting(v.set_code) ? " alpha-corners" : ""}`}>
           {/* Bottom layer: the tile's thumbnail, or the placeholder when
               there is no image to show. The full image layers over it. */}
           {thumbShown ? (

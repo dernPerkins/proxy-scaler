@@ -1693,7 +1693,11 @@ function CardRowView(props: {
   // Show/Hide toggle doesn't vanish while a Regen is in flight.
   const hasImages = faces.some((f) => f.variants.some((v) => v.galleryItemId != null));
   const [compareTarget, setCompareTarget] = useState<CompareTarget | null>(null);
-  const [viewTarget, setViewTarget] = useState<{ title: string; src: string } | null>(null);
+  const [viewTarget, setViewTarget] = useState<{
+    title: string;
+    src: string;
+    setCode?: string | null;
+  } | null>(null);
   // Global single-flight lock (see download.ts::runDownload) -- disables
   // every Download button on the page the instant any one download
   // starts, not just once its file is ready. Without this, a slow fetch
@@ -1960,6 +1964,8 @@ function CardRowView(props: {
                         setViewTarget({
                           title: `${card.name}${face.faceLabel ? ` (${faceLabelText(face.faceLabel)})` : ""} — Original`,
                           src: generationApi.imageUrl(originalSource.galleryItemId, "original"),
+                          // The printing this face actually prints from.
+                          setCode: face.art?.scryfall?.set_code ?? card.set_code,
                         })
                       }
                     >
@@ -2111,6 +2117,7 @@ function CardRowView(props: {
         <FullImageDialog
           title={viewTarget.title}
           src={viewTarget.src}
+          setCode={viewTarget.setCode}
           onClose={() => setViewTarget(null)}
         />
       )}

@@ -9,15 +9,20 @@
 // controls. The frame clips to the card's die-cut corners, so a Scryfall
 // PNG's transparent corners don't show as notches.
 import { useEffect, useState } from "react";
+import { isAlphaPrinting } from "../cardTrim";
 import ModalOverlay from "./ModalOverlay";
 
 export default function FullImageDialog({
   title,
   src,
+  setCode,
   onClose,
 }: {
   title: string;
   src: string;
+  /** The printing's set, when it is a card's: Alpha's rounder corner
+   *  clips wider (cardTrim.ts::isAlphaPrinting). */
+  setCode?: string | null;
   onClose: () => void;
 }) {
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
@@ -49,7 +54,11 @@ export default function FullImageDialog({
         <div className="full-image-stage">
           {/* Card-sized while loading so the dialog doesn't jump; then it
               wraps the image exactly, whatever its proportions. */}
-          <div className={`full-image-frame${natural ? "" : " loading"}`}>
+          <div
+            className={`full-image-frame${natural ? "" : " loading"}${
+              isAlphaPrinting(setCode) ? " alpha-corners" : ""
+            }`}
+          >
             <img
               className={natural ? "loaded" : undefined}
               src={src}

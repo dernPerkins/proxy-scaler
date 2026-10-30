@@ -12,6 +12,7 @@
  * long-standing behaviour, left alone deliberately: the friendlier name
  * is the right one to show in a save dialog.
  */
+import { isAlphaPrinting } from "./cardTrim";
 
 /** Local calendar date as YYYY-MM-DD.
  *
@@ -50,9 +51,6 @@ export function cutFileFilename(
   return `${projectName || defaultPdfBasename(today)}-cut.${zip ? "zip" : "svg"}`;
 }
 
-/** Limited Edition Alpha's set code: pdf_layout.ALPHA_SET_CODE. */
-const ALPHA_SET_CODE = "lea";
-
 /** Whether the cut file comes as a ZIP of one SVG per sheet: the same test
  *  routers/pdf.py::cut_file makes, from the decklist alone, so the save
  *  dialog can offer the right name before the request is sent. */
@@ -60,8 +58,5 @@ export function cutFileIsPerSheet(
   alphaCorners: string | undefined,
   entries: readonly { set_code?: string | null }[],
 ): boolean {
-  return (
-    alphaCorners === "alpha_cards" &&
-    entries.some((e) => (e.set_code ?? "").toLowerCase() === ALPHA_SET_CODE)
-  );
+  return alphaCorners === "alpha_cards" && entries.some((e) => isAlphaPrinting(e.set_code));
 }

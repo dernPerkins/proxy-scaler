@@ -1731,6 +1731,15 @@ button:disabled {
   overflow: hidden;
   background: var(--surface-3);
 }
+/* A Limited Edition Alpha printing (cardTrim.ts::isAlphaPrinting): its
+   rounder die-cut corner, Scryfall's ~4.4 mm plus the same ~0.3 mm the
+   modern 4.75% / 3.5% clips past Scryfall's 2.7 mm, so the image's own
+   corner background never shows. Overrides every card frame below. */
+.printing-tile-frame.alpha-corners,
+.printing-preview-frame.alpha-corners,
+.full-image-frame.alpha-corners {
+  border-radius: 7.5% / 5.4%;
+}
 .printing-tile-frame img {
   display: block;
   width: 100%;
