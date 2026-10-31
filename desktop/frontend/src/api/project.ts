@@ -4,11 +4,11 @@
 // concept at all any more. See ARCHITECTURE.md.
 import { invokeCommand } from "../tauri";
 import type {
-  AlphaCorners,
   BackImage,
   BackImageUsage,
   BackMode,
   BackSyncResult,
+  CornerRadius,
   CustomImage,
   CustomSyncResult,
   Cutter,
@@ -144,7 +144,8 @@ export interface ProjectSettings {
   card_guide_line: GuideLine;
   page_guide_line: GuideLine;
   card_guide_corners: GuideCorners;
-  alpha_corners: AlphaCorners;
+  corner_radius: CornerRadius;
+  custom_corner_radius_mm: number;
 }
 
 export type CustomUpscaleMode = "off" | "target" | "native";

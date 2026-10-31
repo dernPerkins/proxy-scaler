@@ -1062,7 +1062,7 @@ def test_cut_file_without_a_cutter_is_trim_boxes_only(client: TestClient) -> Non
 
 def _write_alpha_bolt(tmp_path: Path, db_path: Path, project_tag: str) -> None:
     """A Limited Edition Alpha card in the gallery, next to whatever else
-    the test wrote: the set code is all Alpha Corners looks at."""
+    the test wrote: the set code is all Radius' Proper Alpha Cards looks at."""
     img_path = tmp_path / "bolt.png"
     Image.new("RGBA", (200, 280), (90, 20, 10, 255)).save(img_path, format="PNG")
     common = dict(
@@ -1112,7 +1112,7 @@ def _cut_rx(svg: bytes | str) -> list[float]:
     return [float(r.get("rx")) for r in root.iter("{http://www.w3.org/2000/svg}rect")]
 
 
-def test_cut_file_corner_follows_alpha_corners(client: TestClient, tmp_path: Path) -> None:
+def test_cut_file_corner_follows_corner_radius(client: TestClient, tmp_path: Path) -> None:
     from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM
 
     db_path = os.environ["PROXY_SCALER_DB_PATH"]
@@ -1125,15 +1125,28 @@ def test_cut_file_corner_follows_alpha_corners(client: TestClient, tmp_path: Pat
     assert set(_cut_rx(off.content)) == {CARD_CORNER_RADIUS_MM}
 
     every = client.post(
-        "/api/pdf/cut-file", json=_pdf_layout_body(entries=entries, alpha_corners="all_cards")
+        "/api/pdf/cut-file", json=_pdf_layout_body(entries=entries, corner_radius="all_cards")
     )
     assert every.headers["content-type"].startswith("image/svg+xml")
     assert set(_cut_rx(every.content)) == {ALPHA_CORNER_RADIUS_MM}
 
-    # Alpha Cards with no Alpha card in the deck: still the one SVG.
+    # Custom: every card at the radius given, one SVG.
+    own = client.post(
+        "/api/pdf/cut-file",
+        json=_pdf_layout_body(entries=entries, corner_radius="custom", custom_corner_radius_mm=3.2),
+    )
+    assert own.headers["content-type"].startswith("image/svg+xml")
+    assert set(_cut_rx(own.content)) == {3.2}
+    bad = client.post(
+        "/api/pdf/cut-file",
+        json=_pdf_layout_body(entries=entries, corner_radius="custom", custom_corner_radius_mm=-1),
+    )
+    assert bad.status_code == 422
+
+    # Proper Alpha Cards with no Alpha card in the deck: still the one SVG.
     no_alpha = client.post(
         "/api/pdf/cut-file",
-        json=_pdf_layout_body(entries=[_sol_ring_entry()], alpha_corners="alpha_cards"),
+        json=_pdf_layout_body(entries=[_sol_ring_entry()], corner_radius="alpha_cards"),
     )
     assert no_alpha.headers["content-type"].startswith("image/svg+xml")
     assert set(_cut_rx(no_alpha.content)) == {CARD_CORNER_RADIUS_MM}
@@ -1143,7 +1156,7 @@ def test_cut_file_corner_follows_alpha_corners(client: TestClient, tmp_path: Pat
 
     mixed = client.post(
         "/api/pdf/cut-file",
-        json=_pdf_layout_body(entries=entries, alpha_corners="alpha_cards", project_name="Deck"),
+        json=_pdf_layout_body(entries=entries, corner_radius="alpha_cards", project_name="Deck"),
     )
     assert mixed.status_code == 200
     assert mixed.headers["content-type"] == "application/zip"
@@ -1165,11 +1178,11 @@ def test_pdf_preview_page_reports_each_cells_corner_radius(
     _write_alpha_bolt(tmp_path, db_path, "tag-a")
     body = _pdf_layout_body(
         entries=[_sol_ring_entry(), _bolt_entry()],
-        alpha_corners="alpha_cards",
+        corner_radius="alpha_cards",
         card_guide_corners="rounded",
     )
     page = client.post("/api/pdf/preview/page", json=body).json()
-    assert page["alpha_corners"] == "alpha_cards"
+    assert page["corner_radius"] == "alpha_cards"
     assert page["corner_radius_mm"] == pytest.approx(CARD_CORNER_RADIUS_MM)
     radii = {s["card_name"]: s["corner_radius_mm"] for s in page["slots"]}
     assert radii["Lightning Bolt"] == pytest.approx(ALPHA_CORNER_RADIUS_MM)

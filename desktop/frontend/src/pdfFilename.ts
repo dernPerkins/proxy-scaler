@@ -41,7 +41,7 @@ export function pdfFilename(projectName: string | null | undefined, today?: Date
 }
 
 /** The cut file that goes with the sheet — same stem, `-cut.svg`, or
- *  `-cut.zip` when it is one SVG per sheet (Alpha Corners' Alpha Cards on
+ *  `-cut.zip` when it is one SVG per sheet (Radius' Proper Alpha Cards on
  *  a deck with an Alpha card), matching the server's Content-Disposition
  *  in routers/pdf.py::cut_file. */
 export function cutFileFilename(
@@ -55,8 +55,8 @@ export function cutFileFilename(
  *  routers/pdf.py::cut_file makes, from the decklist alone, so the save
  *  dialog can offer the right name before the request is sent. */
 export function cutFileIsPerSheet(
-  alphaCorners: string | undefined,
+  cornerRadius: string | undefined,
   entries: readonly { set_code?: string | null }[],
 ): boolean {
-  return alphaCorners === "alpha_cards" && entries.some((e) => isAlphaPrinting(e.set_code));
+  return cornerRadius === "alpha_cards" && entries.some((e) => isAlphaPrinting(e.set_code));
 }

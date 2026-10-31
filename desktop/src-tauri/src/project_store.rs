@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS projects (
     card_guide_line TEXT NOT NULL DEFAULT 'solid',
     page_guide_line TEXT NOT NULL DEFAULT 'solid',
     card_guide_corners TEXT NOT NULL DEFAULT 'square',
-    alpha_corners TEXT NOT NULL DEFAULT 'off',
+    corner_radius TEXT NOT NULL DEFAULT 'modern',
+    custom_corner_radius_mm REAL NOT NULL DEFAULT 2.5,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -277,7 +278,8 @@ const PROJECTS_ADDED_COLUMNS: &[(&str, &str)] = &[
     ("card_guide_line", "TEXT NOT NULL DEFAULT 'solid'"),
     ("page_guide_line", "TEXT NOT NULL DEFAULT 'solid'"),
     ("card_guide_corners", "TEXT NOT NULL DEFAULT 'square'"),
-    ("alpha_corners", "TEXT NOT NULL DEFAULT 'off'"),
+    ("corner_radius", "TEXT NOT NULL DEFAULT 'modern'"),
+    ("custom_corner_radius_mm", "REAL NOT NULL DEFAULT 2.5"),
 ];
 
 // Same pattern for `project_cards` — its first post-release additions.
@@ -684,8 +686,10 @@ pub struct ProjectSettings {
     pub page_guide_line: String,
     #[serde(default = "default_card_guide_corners")]
     pub card_guide_corners: String,
-    #[serde(default = "default_alpha_corners")]
-    pub alpha_corners: String,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: String,
+    #[serde(default = "default_custom_corner_radius_mm")]
+    pub custom_corner_radius_mm: f64,
 }
 
 fn default_card_guide_color() -> String {
@@ -704,8 +708,12 @@ fn default_card_guide_corners() -> String {
     "square".to_string()
 }
 
-fn default_alpha_corners() -> String {
-    "off".to_string()
+fn default_corner_radius() -> String {
+    "modern".to_string()
+}
+
+fn default_custom_corner_radius_mm() -> f64 {
+    2.5
 }
 
 fn default_import_art_source() -> String {
@@ -829,7 +837,8 @@ impl Default for ProjectSettings {
             card_guide_line: default_guide_line(),
             page_guide_line: default_guide_line(),
             card_guide_corners: default_card_guide_corners(),
-            alpha_corners: default_alpha_corners(),
+            corner_radius: default_corner_radius(),
+            custom_corner_radius_mm: default_custom_corner_radius_mm(),
         }
     }
 }
@@ -1111,7 +1120,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
         card_guide_line: String,
         page_guide_line: String,
         card_guide_corners: String,
-        alpha_corners: String,
+        corner_radius: String,
+        custom_corner_radius_mm: f64,
         created_at: String,
         updated_at: String,
     }
@@ -1135,7 +1145,7 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     custom_upscale, import_art_source,
                     page_guide_width_pt, card_guide_color, page_guide_color,
                     card_guide_line, page_guide_line, card_guide_corners,
-                    alpha_corners,
+                    corner_radius, custom_corner_radius_mm,
                     created_at, updated_at
              FROM projects WHERE id = ?1",
             params![project_id],
@@ -1197,7 +1207,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
                     card_guide_line: row.get("card_guide_line")?,
                     page_guide_line: row.get("page_guide_line")?,
                     card_guide_corners: row.get("card_guide_corners")?,
-                    alpha_corners: row.get("alpha_corners")?,
+                    corner_radius: row.get("corner_radius")?,
+                    custom_corner_radius_mm: row.get("custom_corner_radius_mm")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
                 })
@@ -1271,7 +1282,8 @@ fn load_project(conn: &Connection, project_id: i64) -> Result<LoadedProject, Str
             card_guide_line: loaded.card_guide_line,
             page_guide_line: loaded.page_guide_line,
             card_guide_corners: loaded.card_guide_corners,
-            alpha_corners: loaded.alpha_corners,
+            corner_radius: loaded.corner_radius,
+            custom_corner_radius_mm: loaded.custom_corner_radius_mm,
         },
         cards: cards_for_project(conn, project_id)?,
         created_at: loaded.created_at,
@@ -1524,7 +1536,7 @@ fn update_project_row(
          import_art_source = ?50,
          page_guide_width_pt = ?51, card_guide_color = ?52, page_guide_color = ?53,
          card_guide_line = ?54, page_guide_line = ?55, card_guide_corners = ?56,
-         alpha_corners = ?57,
+         corner_radius = ?57, custom_corner_radius_mm = ?58,
          updated_at = ?35
          WHERE id = ?36",
         params![
@@ -1584,7 +1596,8 @@ fn update_project_row(
             settings.card_guide_line,
             settings.page_guide_line,
             settings.card_guide_corners,
-            settings.alpha_corners,
+            settings.corner_radius,
+            settings.custom_corner_radius_mm,
         ],
     )
     .map_err(|e| {
@@ -4104,7 +4117,8 @@ mod tests {
         assert_eq!(loaded.card_guide_line, "solid");
         assert_eq!(loaded.page_guide_line, "solid");
         assert_eq!(loaded.card_guide_corners, "square");
-        assert_eq!(loaded.alpha_corners, "off");
+        assert_eq!(loaded.corner_radius, "modern");
+        assert_eq!(loaded.custom_corner_radius_mm, 2.5);
 
         let settings = ProjectSettings {
             page_guide_width_pt: Some(1.5),
@@ -4113,12 +4127,14 @@ mod tests {
             card_guide_line: "dashed".to_string(),
             page_guide_line: "dashed".to_string(),
             card_guide_corners: "rounded".to_string(),
-            alpha_corners: "alpha_cards".to_string(),
+            corner_radius: "custom".to_string(),
+            custom_corner_radius_mm: 3.2,
             ..ProjectSettings::default()
         };
         update_project_row(&conn, id, "", &settings).expect("update");
         let loaded = load_project(&conn, id).expect("load").settings;
-        assert_eq!(loaded.alpha_corners, "alpha_cards");
+        assert_eq!(loaded.corner_radius, "custom");
+        assert_eq!(loaded.custom_corner_radius_mm, 3.2);
         assert_eq!(loaded.page_guide_width_pt, Some(1.5));
         assert_eq!(loaded.card_guide_color, "#39FF14");
         assert_eq!(loaded.page_guide_color, "#FF00FF");
@@ -4154,7 +4170,8 @@ mod tests {
             "card_guide_line",
             "page_guide_line",
             "card_guide_corners",
-            "alpha_corners",
+            "corner_radius",
+            "custom_corner_radius_mm",
         ] {
             obj.remove(key);
         }
@@ -4163,7 +4180,8 @@ mod tests {
         assert_eq!(settings.card_guide_color, "#00AA50");
         assert_eq!(settings.page_guide_line, "solid");
         assert_eq!(settings.card_guide_corners, "square");
-        assert_eq!(settings.alpha_corners, "off");
+        assert_eq!(settings.corner_radius, "modern");
+        assert_eq!(settings.custom_corner_radius_mm, 2.5);
     }
 
     #[test]

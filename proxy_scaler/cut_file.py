@@ -3,7 +3,7 @@
 An SVG for import into the cutter's software: one rounded rectangle per
 card trim box on the "cut-lines" layer. Pure geometry — no images, no
 database — so it can be produced without a single card having been
-generated. The one exception is AlphaCorners.ALPHA_CARDS: which cells get
+generated. The one exception is CornerRadius.ALPHA_CARDS: which cells get
 Alpha's rounder corner depends on which cards sit where, so the caller
 passes each cell's radius (pdf_layout.cell_corner_radii) and a deck whose
 sheets differ gets one file per sheet.
@@ -79,7 +79,7 @@ def build_cut_file_svg(
     `marks` None (no cutter selected) means no rotation: the page frame as
     printed. `corner_radii` is each cell's corner radius, row-major; None
     is the layout's base radius everywhere (cell_corner_radii of an empty
-    page), which is the whole answer unless Alpha Cards is on."""
+    page), which is the whole answer unless Proper Alpha Cards is on."""
     if corner_radii is None:
         corner_radii = cell_corner_radii((), layout)
     if marks is None:

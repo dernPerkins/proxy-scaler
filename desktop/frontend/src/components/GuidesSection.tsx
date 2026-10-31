@@ -1,17 +1,20 @@
 // The PDF tab's Guides section: one matrix with a column per guide kind
 // (Card Guides at each card's trim corners, Page Guides from the page edge
 // in to the grid) and a row per setting, so the two kinds' settings read
-// side by side. Corners, Alpha Corners and Length are Card Guides only.
+// side by side. Corners and Length are Card Guides only. Radius (and its
+// Custom Radius) spans both: it is the card's corner, whichever kind of
+// guide follows it, on fronts and backs alike.
 //
 // The visibility rows show the stored HIDE flags (see
 // pdf_layout.GuideVisibility for why they are stored that way round) as
 // Shown / Hidden, which reads as a state rather than as a double negative.
 import type { ReactNode } from "react";
 import type { ProjectSettings } from "../api/project";
-import type { AlphaCorners, GuideCorners, GuideLine } from "../api/types";
+import type { CornerRadius, GuideCorners, GuideLine } from "../api/types";
 import { GUIDE_STYLES_MIN_SERVER_VERSION } from "../config";
 import ColorInput from "./ColorInput";
 import NumberInput from "./NumberInput";
+import SelectMenu from "./SelectMenu";
 
 type GuideSettings = Pick<
   ProjectSettings,
@@ -23,7 +26,8 @@ type GuideSettings = Pick<
   | "card_guide_line"
   | "page_guide_line"
   | "card_guide_corners"
-  | "alpha_corners"
+  | "corner_radius"
+  | "custom_corner_radius_mm"
   | "hide_card_guides_front"
   | "hide_page_guides_front"
   | "hide_card_guides_back"
@@ -34,11 +38,12 @@ const BACKS_OFF_TITLE = "Turn on Back Printing to print back pages";
 const STYLES_UNSUPPORTED_TITLE = `Needs a v${GUIDE_STYLES_MIN_SERVER_VERSION} or newer generation server`;
 export const ALPHA_CUT_FILE_NOTE =
   "Sheets With Alpha Cards Get Their Own Cut File — Downloads as a ZIP, One SVG per Sheet";
-const ALPHA_CORNERS_TITLE =
-  "The corner your cutter makes. Off: every card at the modern 2.5 mm corner. " +
-  "Alpha Cards: Limited Edition Alpha printings get Alpha's rounder 4 mm corner. " +
-  "All Cards: every card at 4 mm. Applies to rounded Card Guides and the cut file. " +
-  `With Alpha Cards: ${ALPHA_CUT_FILE_NOTE}.`;
+const RADIUS_TITLE =
+  "Match the corner your cutter makes. Modern: every card at 2.5 mm. " +
+  "Proper Alpha Cards: Alpha printings at Alpha's rounder 4 mm, the rest modern. " +
+  "All Alpha Cards: every card at 4 mm. Custom: every card at the radius you set. " +
+  "Applies to rounded Card Guides and the cut file; with Proper Alpha Cards, each " +
+  "sheet holding Alpha cards gets its own cut file, in a ZIP.";
 
 // A two-way choice small enough for a matrix cell: icons, with the words
 // in the tooltip and accessible name.
@@ -72,41 +77,6 @@ function IconToggle<T extends string>({
           onClick={() => onChange(option.value)}
         >
           {option.icon}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// A choice of more than two, in words: the same segmented look, sized
-// to a matrix cell.
-function TextToggle<T extends string>({
-  value,
-  options,
-  onChange,
-  disabled,
-  title,
-  ariaLabel,
-}: {
-  value: T;
-  options: readonly { value: T; label: string }[];
-  onChange: (value: T) => void;
-  disabled?: boolean;
-  title?: string;
-  ariaLabel: string;
-}) {
-  return (
-    <div className="segmented text-segmented" role="group" aria-label={ariaLabel} title={title}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          aria-pressed={value === option.value}
-          className={value === option.value ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
         </button>
       ))}
     </div>
@@ -166,11 +136,13 @@ const CORNER_OPTIONS = [
   { value: "rounded", label: "Rounded", icon: cornerIcon(true) },
 ] as const satisfies readonly { value: GuideCorners; label: string; icon: ReactNode }[];
 
-const ALPHA_CORNER_OPTIONS = [
-  { value: "off", label: "Off" },
-  { value: "alpha_cards", label: "Alpha Cards" },
-  { value: "all_cards", label: "All Cards" },
-] as const satisfies readonly { value: AlphaCorners; label: string }[];
+// Short in the cell, spelled out in the open list.
+const RADIUS_OPTIONS: { value: CornerRadius; label: string }[] = [
+  { value: "modern", label: "Modern" },
+  { value: "alpha_cards", label: "Proper Alpha Cards" },
+  { value: "all_cards", label: "All Alpha Cards" },
+  { value: "custom", label: "Custom" },
+];
 
 export default function GuidesSection({
   values,
@@ -250,18 +222,39 @@ export default function GuidesSection({
         />
         {notApplicable}
 
-        <span className="guides-row-label" title={ALPHA_CORNERS_TITLE}>
-          Alpha Corners
+        <span className="guides-row-label">
+          Radius{" "}
+          <span className="hint" title={RADIUS_TITLE}>
+            (?)
+          </span>
         </span>
-        <TextToggle
-          ariaLabel="Alpha Corners"
-          value={values.alpha_corners}
-          options={ALPHA_CORNER_OPTIONS}
-          onChange={(v) => onChange("alpha_corners", v)}
-          disabled={!stylesSupported}
-          title={styleTitle ?? ALPHA_CORNERS_TITLE}
-        />
-        {notApplicable}
+        <div className="guides-span">
+          <SelectMenu
+            ariaLabel="Radius"
+            value={values.corner_radius}
+            options={RADIUS_OPTIONS}
+            onChange={(v) => onChange("corner_radius", v as CornerRadius)}
+            disabled={!stylesSupported}
+            title={styleTitle}
+          />
+        </div>
+
+        {values.corner_radius === "custom" && (
+          <>
+            <span className="guides-row-label" title="Every card's corner radius, in millimetres">
+              Custom Radius (mm)
+            </span>
+            <div className="guides-span" title={styleTitle}>
+              <NumberInput
+                step={0.1}
+                min={0}
+                value={values.custom_corner_radius_mm}
+                onChange={(v) => onChange("custom_corner_radius_mm", v)}
+                disabled={!stylesSupported}
+              />
+            </div>
+          </>
+        )}
 
         <span className="guides-row-label" title="Stroke width, in points">
           Width (pt)

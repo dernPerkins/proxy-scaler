@@ -409,13 +409,6 @@ input[type="range"] {
   justify-content: center;
   padding: 5px 4px;
 }
-/* .segmented holding short words in a matrix cell (GuidesSection's Alpha
-   Corners): tight enough for three labels without wrapping. */
-.text-segmented button {
-  padding: 5px 3px;
-  font-size: 11.5px;
-  white-space: nowrap;
-}
 
 /* The PDF tab's Guides section (GuidesSection.tsx): a row label column,
    then one column per guide kind. minmax(0, …) lets the cells shrink to
@@ -426,8 +419,14 @@ input[type="range"] {
   gap: 10px 8px;
   align-items: center;
 }
-.guides-matrix input[type="number"] {
+.guides-matrix input[type="number"],
+.guides-matrix .select-menu {
   width: 100%;
+}
+/* A setting that is one value for both guide kinds (Radius): the Card and
+   Page columns together. */
+.guides-span {
+  grid-column: 2 / -1;
 }
 .guides-matrix input[type="number"]:disabled {
   opacity: 0.45;

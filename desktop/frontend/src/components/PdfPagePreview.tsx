@@ -20,7 +20,7 @@ const MM_PER_IN = 25.4;
 const DEFAULT_PAGE_GUIDE_COLOR = "#000000";
 const DEFAULT_CARD_GUIDE_COLOR = "#00AA50";
 // pdf_layout.py's CARD_CORNER_RADIUS_MM — the curve a rounded Card Guide
-// follows, for a server too old to send each cell's own (Alpha Corners).
+// follows, for a server too old to send each cell's own (Radius).
 const CARD_CORNER_RADIUS_MM = 2.5;
 
 // SVG stroke-dasharray for one dashed guide piece `lengthMm` long, in px.

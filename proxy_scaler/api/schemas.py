@@ -436,10 +436,11 @@ class GuideCornersIn(str, Enum):
     ROUNDED = "rounded"
 
 
-class AlphaCornersIn(str, Enum):
-    OFF = "off"
+class CornerRadiusIn(str, Enum):
+    MODERN = "modern"
     ALPHA_CARDS = "alpha_cards"
     ALL_CARDS = "all_cards"
+    CUSTOM = "custom"
 
 
 # "#RRGGBB" — what an <input type="color"> produces.
@@ -520,9 +521,12 @@ class PdfLayoutIn(BaseModel):
     card_guide_line: GuideLineIn = GuideLineIn.SOLID
     page_guide_line: GuideLineIn = GuideLineIn.SOLID
     card_guide_corners: GuideCornersIn = GuideCornersIn.SQUARE
-    # Which cards' rounded Card Guides and cut-file trim boxes follow
-    # Alpha's rounder corner (pdf_layout.AlphaCorners).
-    alpha_corners: AlphaCornersIn = AlphaCornersIn.OFF
+    # The corner the rounded Card Guides and cut-file trim boxes follow
+    # (pdf_layout.CornerRadius).
+    corner_radius: CornerRadiusIn = CornerRadiusIn.MODERN
+    # Every card's corner under "custom". Capped at half the card's width,
+    # past which there is no corner left to round.
+    custom_corner_radius_mm: float = Field(default=2.5, ge=0, le=31.5)
 
     # --- Electronic cutter -----------------------------------------------
     #
@@ -692,7 +696,8 @@ class PdfPagePreviewOut(BaseModel):
     card_guide_line: GuideLineIn = GuideLineIn.SOLID
     page_guide_line: GuideLineIn = GuideLineIn.SOLID
     card_guide_corners: GuideCornersIn = GuideCornersIn.SQUARE
-    alpha_corners: AlphaCornersIn = AlphaCornersIn.OFF
+    corner_radius: CornerRadiusIn = CornerRadiusIn.MODERN
+    custom_corner_radius_mm: float = 2.5
     # The rounded Card Guides' radius for a cell with no slot below (an
     # empty position); a slot's own corner_radius_mm overrides it. Decided
     # here so the client never needs set codes or the Alpha radius. None

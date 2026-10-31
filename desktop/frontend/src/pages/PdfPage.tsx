@@ -257,7 +257,8 @@ export default function PdfPage() {
       card_guide_line: settings.card_guide_line,
       page_guide_line: settings.page_guide_line,
       card_guide_corners: settings.card_guide_corners,
-      alpha_corners: settings.alpha_corners,
+      corner_radius: settings.corner_radius,
+      custom_corner_radius_mm: settings.custom_corner_radius_mm,
     }),
     back_printing: settings.back_printing,
     back_faces_as_reverse: settings.back_faces_as_reverse,
@@ -282,10 +283,10 @@ export default function PdfPage() {
   // Sorted before mapping: the server prints/paginates in entries order,
   // so this is where the shared sort dropdown reaches the actual PDF.
   const entries = sortCards(cards, settings.sort_primary).map(cardToEntry);
-  // Alpha Corners' Alpha Cards with an Alpha card in the deck: the cut
+  // Radius' Proper Alpha Cards with an Alpha card in the deck: the cut
   // file is one SVG per sheet, in a ZIP. Only once the setting is sent.
   const cutFilePerSheet = cutFileIsPerSheet(
-    guideStylesSupported ? settings.alpha_corners : undefined,
+    guideStylesSupported ? settings.corner_radius : undefined,
     entries,
   );
 
@@ -496,7 +497,7 @@ export default function PdfPage() {
   }
 
   /** The cut file. No render phase server-side — pure geometry, plus a
-   *  gallery read when it is one SVG per sheet (Alpha Corners) — so unlike
+   *  gallery read when it is one SVG per sheet (Radius) — so unlike
    *  the PDF there is nothing to poll or to sync first; Rust POSTs the
    *  layout body and streams the SVG (or ZIP) to disk, like the ZIP
    *  export. Not gated on a cutter: with none selected the file is the

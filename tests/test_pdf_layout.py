@@ -476,15 +476,15 @@ def test_rounded_card_guides_hug_each_cards_corner() -> None:
                 assert not (overlap_x > eps and overlap_y > eps)
 
 
-def test_cell_corner_radii_follow_alpha_corners() -> None:
-    """Off is the modern corner everywhere; All Cards is Alpha's
-    everywhere, empty cells included; Alpha Cards picks out Limited
-    Edition Alpha printings only — not a Custom Image (no set code), not
-    an empty position."""
+def test_cell_corner_radii_follow_corner_radius() -> None:
+    """Modern is the modern corner everywhere; All Alpha Cards is Alpha's
+    everywhere, empty cells included, and Custom the custom one; Proper
+    Alpha Cards picks out Limited Edition Alpha printings only — not a
+    Custom Image (no set code), not an empty position."""
     from proxy_scaler.pdf_layout import (
         ALPHA_CORNER_RADIUS_MM,
         CARD_CORNER_RADIUS_MM,
-        AlphaCorners,
+        CornerRadius,
         cell_corner_radii,
     )
 
@@ -494,18 +494,20 @@ def test_cell_corner_radii_follow_alpha_corners() -> None:
     cells = [alpha, modern, None, custom]
     A, M = ALPHA_CORNER_RADIUS_MM, CARD_CORNER_RADIUS_MM
 
-    off = _a4_portrait_layout()
-    assert cell_corner_radii(cells, off) == [M] * 9
-    every = _a4_portrait_layout(alpha_corners=AlphaCorners.ALL_CARDS)
+    plain = _a4_portrait_layout()
+    assert cell_corner_radii(cells, plain) == [M] * 9
+    every = _a4_portrait_layout(corner_radius=CornerRadius.ALL_CARDS)
     assert cell_corner_radii(cells, every) == [A] * 9
-    only = _a4_portrait_layout(alpha_corners=AlphaCorners.ALPHA_CARDS)
+    only = _a4_portrait_layout(corner_radius=CornerRadius.ALPHA_CARDS)
     assert cell_corner_radii(cells, only) == [A] + [M] * 8
+    own = _a4_portrait_layout(corner_radius=CornerRadius.CUSTOM, custom_corner_radius_mm=3.2)
+    assert cell_corner_radii(cells, own) == [3.2] * 9
 
 
 def test_alpha_corner_follows_its_card_to_the_mirrored_back_cell() -> None:
-    from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, AlphaCorners, cell_corner_radii
+    from proxy_scaler.pdf_layout import ALPHA_CORNER_RADIUS_MM, CornerRadius, cell_corner_radii
 
-    layout = _a4_portrait_layout(alpha_corners=AlphaCorners.ALPHA_CARDS)
+    layout = _a4_portrait_layout(corner_radius=CornerRadius.ALPHA_CARDS)
     alpha = _slot(_face("bolt", None, "Lightning Bolt", "Lightning Bolt", "lea", "161", 800))
     modern = _slot(_face("sol", None, "Sol Ring", "Sol Ring", "c21", "263", 800))
     back = back_page_cells([alpha, modern, modern], layout=layout, flip_edge=FlipEdge.LONG)

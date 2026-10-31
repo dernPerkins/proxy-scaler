@@ -16,7 +16,7 @@ from proxy_scaler import db
 from proxy_scaler.api.deps import get_db_path
 from proxy_scaler.api.entries import to_deck_entry
 from proxy_scaler.api.schemas import (
-    AlphaCornersIn,
+    CornerRadiusIn,
     BackImageIn,
     CutterIn,
     GuideCornersIn,
@@ -36,7 +36,7 @@ from proxy_scaler import backs
 from proxy_scaler.cut_file import build_cut_file_svg
 from proxy_scaler.pdf_layout import (
     ALPHA_SET_CODE,
-    AlphaCorners,
+    CornerRadius,
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
     MM_PER_IN,
@@ -247,7 +247,8 @@ def _layout_from_body(body: PdfLayoutIn, offset_x: float, offset_y: float) -> Pa
         card_guide_line=GuideLine(body.card_guide_line.value),
         page_guide_line=GuideLine(body.page_guide_line.value),
         card_guide_corners=GuideCorners(body.card_guide_corners.value),
-        alpha_corners=AlphaCorners(body.alpha_corners.value),
+        corner_radius=CornerRadius(body.corner_radius.value),
+        custom_corner_radius_mm=body.custom_corner_radius_mm,
     )
 
 
@@ -655,7 +656,8 @@ def preview_page(body: PdfLayoutIn) -> PdfPagePreviewOut:
         card_guide_line=GuideLineIn(layout.card_guide_line.value),
         page_guide_line=GuideLineIn(layout.page_guide_line.value),
         card_guide_corners=GuideCornersIn(layout.card_guide_corners.value),
-        alpha_corners=AlphaCornersIn(layout.alpha_corners.value),
+        corner_radius=CornerRadiusIn(layout.corner_radius.value),
+        custom_corner_radius_mm=layout.custom_corner_radius_mm,
         corner_radius_mm=cell_corner_radii((), layout)[0],
         # Identical for the front and back layouts — they differ only in
         # their position offsets — so one value serves whichever side is
@@ -706,8 +708,8 @@ def cut_file(body: PdfLayoutIn) -> Response:
     which cannot scan third-party marks.
 
     Pure geometry — the body's entries are accepted (it is the same
-    PdfLayoutIn the preview sends) but not read — except under Alpha
-    Corners' Alpha Cards, where a cell's corner depends on the card in it.
+    PdfLayoutIn the preview sends) but not read — except under Radius'
+    Proper Alpha Cards, where a cell's corner depends on the card in it.
     Then, if the decklist has an Alpha printing in it, the deck is laid out
     as the PDF would be and the download is a ZIP of one SVG per page
     (`<deck>-cut-page-NN.svg`), since the sheets no longer share one cut.
@@ -718,7 +720,7 @@ def cut_file(body: PdfLayoutIn) -> Response:
     layout = _layout_from_body(body, body.offset_x_mm, body.offset_y_mm)
     registration = _registration(body)
     deck = _slugify(body.project_name or _default_pdf_basename())
-    alpha_deck = layout.alpha_corners is AlphaCorners.ALPHA_CARDS and any(
+    alpha_deck = layout.corner_radius is CornerRadius.ALPHA_CARDS and any(
         (e.set_code or "").lower() == ALPHA_SET_CODE for e in body.entries
     )
     if not alpha_deck:

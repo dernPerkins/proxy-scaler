@@ -521,7 +521,8 @@ export interface PdfLayoutRequest {
   card_guide_line?: GuideLine;
   page_guide_line?: GuideLine;
   card_guide_corners?: GuideCorners;
-  alpha_corners?: AlphaCorners;
+  corner_radius?: CornerRadius;
+  custom_corner_radius_mm?: number;
 
   // Electronic cutter — registration marks for a cutting machine. All
   // optional: the server defaults them. Only send a cutter other than
@@ -573,9 +574,10 @@ export type GuideLine = "solid" | "dashed";
 /** Card Guides only: a "+" at each trim corner, or a quarter arc that
  *  follows the card's rounded corner. Mirrors pdf_layout.GuideCorners. */
 export type GuideCorners = "square" | "rounded";
-/** Which cards' rounded Card Guides and cut-file trim boxes follow Limited
- *  Edition Alpha's rounder corner. Mirrors pdf_layout.AlphaCorners. */
-export type AlphaCorners = "off" | "alpha_cards" | "all_cards";
+/** The corner rounded Card Guides and cut-file trim boxes follow: modern,
+ *  Limited Edition Alpha's on Alpha printings or on every card, or a
+ *  custom radius on every card. Mirrors pdf_layout.CornerRadius. */
+export type CornerRadius = "modern" | "alpha_cards" | "all_cards" | "custom";
 
 /** "duplex" (front, back, front, back…) is what a duplex printer driver
  *  expects; "fronts_then_backs" is for hand-feeding a stack through a
@@ -674,7 +676,7 @@ export interface PdfPageSlot {
   /** This position shows the Back Image rather than a card. Labelled
    *  differently — "Card back" is not a card name. */
   is_back_image?: boolean;
-  /** This position's rounded Card Guide radius, mm (Alpha Corners). */
+  /** This position's rounded Card Guide radius, mm (Radius). */
   corner_radius_mm?: number | null;
 }
 
@@ -701,10 +703,11 @@ export interface PdfPagePreview {
   card_guide_line?: GuideLine;
   page_guide_line?: GuideLine;
   card_guide_corners?: GuideCorners;
-  alpha_corners?: AlphaCorners;
+  corner_radius?: CornerRadius;
+  custom_corner_radius_mm?: number;
   /** The rounded Card Guides' radius for a cell with no slot; a slot's
    *  own corner_radius_mm overrides it. Absent from servers older than
-   *  Alpha Corners — the preview uses its own constant. */
+   *  Radius — the preview uses its own constant. */
   corner_radius_mm?: number | null;
   /** Total size of the card grid. The server reports it rather than
    *  refusing an oversized grid — a custom offset may push past an edge

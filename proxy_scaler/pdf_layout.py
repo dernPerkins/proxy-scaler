@@ -421,16 +421,18 @@ class GuideCorners(str, Enum):
     ROUNDED = "rounded"
 
 
-class AlphaCorners(str, Enum):
-    """Which cards get Alpha's rounder corner (ALPHA_CORNER_RADIUS_MM) on
-    their rounded Card Guides and cut-file trim box, for someone who owns
-    an Alpha die. "off": every card gets the modern corner, what an
-    ordinary die or corner punch cuts. "alpha_cards": Limited Edition
-    Alpha printings only. "all_cards": every card."""
+class CornerRadius(str, Enum):
+    """The corner the rounded Card Guides and cut-file trim boxes follow —
+    the one the user's die or punch cuts. "modern": every card at
+    CARD_CORNER_RADIUS_MM, what an ordinary die cuts. "alpha_cards":
+    Limited Edition Alpha printings at ALPHA_CORNER_RADIUS_MM, the rest
+    modern, for someone who owns an Alpha die. "all_cards": every card at
+    Alpha's. "custom": every card at PageLayout.custom_corner_radius_mm."""
 
-    OFF = "off"
+    MODERN = "modern"
     ALPHA_CARDS = "alpha_cards"
     ALL_CARDS = "all_cards"
+    CUSTOM = "custom"
 
 
 def hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -473,7 +475,8 @@ class PageLayout:
     card_guide_line: GuideLine = GuideLine.SOLID
     page_guide_line: GuideLine = GuideLine.SOLID
     card_guide_corners: GuideCorners = GuideCorners.SQUARE
-    alpha_corners: AlphaCorners = AlphaCorners.OFF
+    corner_radius: CornerRadius = CornerRadius.MODERN
+    custom_corner_radius_mm: float = CARD_CORNER_RADIUS_MM
 
 
 def resolve_page_layout(
@@ -495,7 +498,8 @@ def resolve_page_layout(
     card_guide_line: GuideLine = GuideLine.SOLID,
     page_guide_line: GuideLine = GuideLine.SOLID,
     card_guide_corners: GuideCorners = GuideCorners.SQUARE,
-    alpha_corners: AlphaCorners = AlphaCorners.OFF,
+    corner_radius: CornerRadius = CornerRadius.MODERN,
+    custom_corner_radius_mm: float = CARD_CORNER_RADIUS_MM,
 ) -> PageLayout:
     """Resolve a full print-grid geometry from freely user-configurable
     dimensions. Does NOT raise if the grid doesn't fit the page — unlike
@@ -549,7 +553,8 @@ def resolve_page_layout(
         card_guide_line=card_guide_line,
         page_guide_line=page_guide_line,
         card_guide_corners=card_guide_corners,
-        alpha_corners=alpha_corners,
+        corner_radius=corner_radius,
+        custom_corner_radius_mm=custom_corner_radius_mm,
     )
 
 
@@ -611,14 +616,16 @@ def cell_corner_radii(
 ) -> list[float]:
     """The corner radius of each grid cell, row-major, `cards_per_page`
     long: what that cell's rounded Card Guides and cut-file trim box
-    follow, per layout.alpha_corners. An empty cell (a partial page, or
+    follow, per layout.corner_radius. An empty cell (a partial page, or
     cells shorter than the grid) takes the page's base radius. A Back
     Page cell carries the same PrintSlot as its front, so the card's
     Alpha-ness follows it to the mirrored position."""
-    if layout.alpha_corners is AlphaCorners.ALL_CARDS:
+    if layout.corner_radius is CornerRadius.ALL_CARDS:
         return [ALPHA_CORNER_RADIUS_MM] * layout.cards_per_page
+    if layout.corner_radius is CornerRadius.CUSTOM:
+        return [layout.custom_corner_radius_mm] * layout.cards_per_page
     radii = [CARD_CORNER_RADIUS_MM] * layout.cards_per_page
-    if layout.alpha_corners is AlphaCorners.ALPHA_CARDS:
+    if layout.corner_radius is CornerRadius.ALPHA_CARDS:
         for i, slot in enumerate(cells[: layout.cards_per_page]):
             if slot is not None and is_alpha_face(slot.front):
                 radii[i] = ALPHA_CORNER_RADIUS_MM
