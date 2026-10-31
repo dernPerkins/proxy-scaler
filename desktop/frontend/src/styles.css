@@ -443,6 +443,9 @@ input[type="range"] {
   color: var(--text-muted);
   white-space: nowrap;
 }
+.guides-label-sizer {
+  visibility: hidden;
+}
 .guides-row-label.is-inert {
   opacity: 0.5;
 }
@@ -766,7 +769,13 @@ button:disabled {
    align-items: start keeps each column its own height rather than
    stretching both to match the taller one. */
 .sidebar.sidebar-split {
-  width: 560px;
+  width: 100%;
+}
+/* The column holding it takes 60% of the tab and the preview the rest:
+   the two sidebar columns need the room more than the preview does
+   (the Guides matrix squeezed its inputs at a fixed 560px). */
+.sidebar-column-split {
+  flex: 0 0 60%;
 }
 .sidebar-cols {
   display: grid;
@@ -778,6 +787,9 @@ button:disabled {
    so fall back to the single tall column — scrolling a narrow window is
    better than a preview squeezed to nothing. */
 @media (max-width: 1180px) {
+  .sidebar-column-split {
+    flex: 0 0 auto;
+  }
   .sidebar.sidebar-split {
     width: 268px;
   }

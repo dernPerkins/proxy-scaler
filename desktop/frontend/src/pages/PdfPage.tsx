@@ -537,7 +537,7 @@ export default function PdfPage() {
 
   return (
     <div className="layout">
-      <SidebarColumn>
+      <SidebarColumn className="sidebar-column-split">
         <aside className="sidebar sidebar-split panel">
           {/* Two columns rather than one tall stack: four sections stacked
               pushed the Generate button below the fold on a laptop screen.

@@ -8,7 +8,14 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
  *  scrolls. The stylesheet's max-height only fits once it's stuck: at the
  *  top of the page the column starts lower, under the project bar, and its
  *  bottom would hang past the window with no way to scroll to it. */
-export default function SidebarColumn({ children }: { children: ReactNode }) {
+export default function SidebarColumn({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  /** Extra classes on the column, e.g. a wider layout for one tab. */
+  className?: string;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -31,7 +38,7 @@ export default function SidebarColumn({ children }: { children: ReactNode }) {
     };
   }, []);
   return (
-    <div ref={ref} className="sidebar-column">
+    <div ref={ref} className={className ? `sidebar-column ${className}` : "sidebar-column"}>
       {children}
     </div>
   );

@@ -176,7 +176,12 @@ export default function GuidesSection({
       </h3>
 
       <div className="guides-matrix" data-tour="pdf-guides">
-        <span />
+        {/* The corner cell holds the longest label, invisibly, so the
+            label column is that wide whether or not the Custom Radius row
+            is showing: choosing Custom doesn't shift the columns. */}
+        <span className="guides-row-label guides-label-sizer" aria-hidden="true">
+          Custom Radius (mm)
+        </span>
         <span className="guides-col-head">Card</span>
         <span className="guides-col-head">Page</span>
 
