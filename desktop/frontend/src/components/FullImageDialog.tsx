@@ -1,21 +1,23 @@
 // A plain full-size view of one image: the Decklist's "View" on a card's
 // Original. Unlike components/ImageViewer there is no trim/crop overlay or
-// settings sidebar — a gallery image's bleed isn't something the user
-// declared, and there is nothing to change while looking at it. The image
-// is a server URL the <img> loads directly, so no query either.
+// settings sidebar — there is nothing to change while looking at it. Art
+// declared to carry bleed (custom and MPC Fill) shows as cut instead, the
+// bleed cropped off as the MPC Fill picker's preview does. The image is a
+// server URL the <img> loads directly, so no query either.
 //
 // Styled as the change-printing picker's preview pane: the card on a
 // blurred wash of its own art, dark in both themes, frosted-glass
 // controls. The frame clips to the card's die-cut corners, so a Scryfall
 // PNG's transparent corners don't show as notches.
 import { useEffect, useState } from "react";
-import { isAlphaPrinting } from "../cardTrim";
+import { fillFrameWith, isAlphaPrinting, trimGeometry } from "../cardTrim";
 import ModalOverlay from "./ModalOverlay";
 
 export default function FullImageDialog({
   title,
   src,
   setCode,
+  bleedMm = 0,
   onClose,
 }: {
   title: string;
@@ -23,10 +25,20 @@ export default function FullImageDialog({
   /** The printing's set, when it is a card's: Alpha's rounder corner
    *  clips wider (cardTrim.ts::isAlphaPrinting). */
   setCode?: string | null;
+  /** The bleed the image carries per side, cropped off for display. */
+  bleedMm?: number;
   onClose: () => void;
 }) {
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [failed, setFailed] = useState(false);
+  // A trimmed frame is card-shaped and sized here rather than by the
+  // image: no taller than the trim box's own pixels, nor than the stage.
+  const trim = natural && bleedMm > 0 ? trimGeometry(natural, bleedMm).trim : null;
+  const trimmedFrame = trim
+    ? {
+        height: `min(94vh - 110px, 1040px, ${(natural!.h * trim.height) / 100}px, (96vw - 56px) * 88 / 63)`,
+      }
+    : undefined;
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -55,12 +67,14 @@ export default function FullImageDialog({
           {/* Card-sized while loading so the dialog doesn't jump; then it
               wraps the image exactly, whatever its proportions. */}
           <div
-            className={`full-image-frame${natural ? "" : " loading"}${
+            className={`full-image-frame${natural ? "" : " loading"}${trim ? " trimmed" : ""}${
               isAlphaPrinting(setCode) ? " alpha-corners" : ""
             }`}
+            style={trimmedFrame}
           >
             <img
               className={natural ? "loaded" : undefined}
+              style={trim ? fillFrameWith(trim) : undefined}
               src={src}
               alt={title}
               draggable={false}

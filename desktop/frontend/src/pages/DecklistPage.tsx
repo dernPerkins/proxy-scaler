@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
 import type { CardFaceArt, CardRow, CustomUpscaleMode } from "../api/project";
-import type { GalleryItem, Task } from "../api/types";
+import type { CustomImage, GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import MpcCatalogPanel from "../components/MpcCatalogPanel";
 import SelectMenu from "../components/SelectMenu";
@@ -53,6 +53,7 @@ import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../u
 import SortSelect from "../components/SortSelect";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { alternateName } from "../cardNames";
+import { fillFrameWith, trimGeometry } from "../cardTrim";
 import { importMpcOrder } from "../mpcFill";
 import {
   autoPickMpcArt,
@@ -677,8 +678,22 @@ export default function DecklistPage() {
   // same buttons that fetch a Scryfall import's images: Download images
   // queues it, Generate waits for it (it may be upscaled). Each face shows
   // its progress on its row.
+  // A pick adds its art to the library: put the image in the cached list
+  // as it lands, rather than re-reading the whole library, so the row's
+  // thumbnails already know the bleed to crop off.
+  const setPickedFaceArt = async (
+    cardId: number,
+    face: number,
+    totalFaces: number,
+    image: CustomImage,
+  ) => {
+    await setCardFaceArt(cardId, face, totalFaces, image);
+    queryClient.setQueryData<CustomImage[]>(["custom-images"], (list) =>
+      list && !list.some((i) => i.id === image.id) ? [...list, image] : list,
+    );
+  };
   const pendingArtOpts = {
-    setFaceArt: setCardFaceArt,
+    setFaceArt: setPickedFaceArt,
     projectTag,
     serverVersion,
     refreshStatus: refetchStatus,
@@ -769,6 +784,12 @@ export default function DecklistPage() {
   // among custom cards (face art says so itself).
   const mpcImageIds = useMemo(
     () => new Set((libraryQuery.data ?? []).flatMap((image) => (image.mpc ? [image.id] : []))),
+    [libraryQuery.data],
+  );
+  // Every library image by id: a row's thumbnails need the bleed its
+  // custom or MPC Fill art was declared with.
+  const libraryById = useMemo(
+    () => new Map((libraryQuery.data ?? []).map((image) => [image.id, image] as const)),
     [libraryQuery.data],
   );
 
@@ -1092,7 +1113,7 @@ export default function DecklistPage() {
         face,
         totalFaces,
         art,
-        setFaceArt: setCardFaceArt,
+        setFaceArt: setPickedFaceArt,
         projectTag,
         serverVersion,
         refreshStatus: refetchStatus,
@@ -1560,6 +1581,7 @@ export default function DecklistPage() {
               rarity={card.rarity ?? undefined}
               onOpenPicker={(request) => setWalk({ cardId: card.id, request })}
               onClearFaceArt={(face) => clearFaceArt(card, face)}
+              library={libraryById}
               disabled={serverUnavailable}
             />
           );
@@ -1600,6 +1622,18 @@ export default function DecklistPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** A row thumbnail. Art carrying bleed shows as cut: a card-shaped frame
+ *  with the image scaled so its trim box fills it. The server already
+ *  cropped the file to the bled box, so its aspect needs no checking. */
+function ThumbImage({ src, alt, bleedMm }: { src: string; alt: string; bleedMm: number }) {
+  if (bleedMm <= 0) return <img src={src} alt={alt} loading="lazy" />;
+  return (
+    <div className="thumb-frame">
+      <img src={src} alt={alt} loading="lazy" style={fillFrameWith(trimGeometry(null, bleedMm).trim)} />
     </div>
   );
 }
@@ -1658,6 +1692,8 @@ function CardRowView(props: {
   onOpenPicker: (request: PickerOpenRequest) => void;
   /** Print this face from the printing's own art again. */
   onClearFaceArt: (face: number) => Promise<void>;
+  /** The Custom Image library by id, for the bleed a face's art carries. */
+  library: ReadonlyMap<number, CustomImage>;
   /** True when the generation server is unreachable — disables
    *  Generate/Regen/printing changes (Remove/Show stay enabled since
    *  those are purely local). */
@@ -1678,6 +1714,7 @@ function CardRowView(props: {
     rarity,
     onOpenPicker,
     onClearFaceArt,
+    library,
     disabled,
   } = props;
   const quantity = card.quantity ?? 1;
@@ -1697,6 +1734,7 @@ function CardRowView(props: {
     title: string;
     src: string;
     setCode?: string | null;
+    bleedMm?: number;
   } | null>(null);
   // Global single-flight lock (see download.ts::runDownload) -- disables
   // every Download button on the page the instant any one download
@@ -1935,15 +1973,23 @@ function CardRowView(props: {
             if (!against) return;
             setCompareTarget({ cardName: card.name, mine, against, options });
           };
+          // Custom and MPC Fill art carries the bleed it was declared
+          // with, and so does everything made from it (the server crops
+          // and upscales to the bled box): shown as cut, like the Customs
+          // tab and the MPC Fill picker show it.
+          const artImage = library.get(
+            (face.art ? face.art.custom_image_id : card.custom_image_id) ?? -1,
+          );
+          const bleedMm = artImage?.includes_bleed ? artImage.bleed_mm : 0;
           return (
             <div key={i} className="thumbs">
               {originalSource && (
                 <div className="thumb">
                   <div className="thumb-label">Original</div>
-                  <img
+                  <ThumbImage
                     src={generationApi.imageUrl(originalSource.galleryItemId, "original")}
                     alt={card.name}
-                    loading="lazy"
+                    bleedMm={bleedMm}
                   />
                   <div className="thumb-buttons">
                     <button
@@ -1966,6 +2012,7 @@ function CardRowView(props: {
                           src: generationApi.imageUrl(originalSource.galleryItemId, "original"),
                           // The printing this face actually prints from.
                           setCode: face.art?.scryfall?.set_code ?? card.set_code,
+                          bleedMm,
                         })
                       }
                     >
@@ -2045,10 +2092,10 @@ function CardRowView(props: {
                       </span>
                     )}
                   </div>
-                  <img
+                  <ThumbImage
                     src={generationApi.imageUrl(v.galleryItemId, "thumb")}
                     alt={card.name}
-                    loading="lazy"
+                    bleedMm={bleedMm}
                   />
                   <div className="thumb-buttons">
                     <button
@@ -2118,6 +2165,7 @@ function CardRowView(props: {
           title={viewTarget.title}
           src={viewTarget.src}
           setCode={viewTarget.setCode}
+          bleedMm={viewTarget.bleedMm}
           onClose={() => setViewTarget(null)}
         />
       )}

@@ -2516,6 +2516,23 @@ textarea.add-cards-list {
   border: 1px solid var(--border);
   background: var(--surface-2);
 }
+/* Art carrying bleed (DecklistPage.tsx::ThumbImage): the frame is the
+   card as cut, the image scaled so its trim box fills it (set inline). */
+.thumb-frame {
+  position: relative;
+  aspect-ratio: 63 / 88;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.thumb .thumb-frame img {
+  position: absolute;
+  max-width: none;
+  object-fit: fill;
+  border: 0;
+  border-radius: 0;
+}
 .thumb-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -3578,6 +3595,16 @@ html.modal-open {
 }
 .full-image-frame.loading img {
   position: absolute;
+}
+/* Bled art shown as cut (FullImageDialog's bleedMm): a card-shaped frame
+   sized inline, the image scaled so its trim box fills it. */
+.full-image-frame.trimmed {
+  aspect-ratio: 63 / 88;
+}
+.full-image-frame.trimmed img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
 }
 
 /* ---------- tutorials ---------- */
