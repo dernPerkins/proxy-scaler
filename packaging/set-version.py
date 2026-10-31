@@ -55,7 +55,7 @@ PATCH_NOTES = "desktop/frontend/src/patchNotes.ts"
 
 
 def read_version(path: Path, pattern: str) -> str:
-    match = re.search(pattern, path.read_text(), flags=re.MULTILINE)
+    match = re.search(pattern, path.read_text(encoding="utf-8"), flags=re.MULTILINE)
     if not match:
         sys.exit(f"error: no version line matching {pattern!r} in {path}")
     return match.group(2)
@@ -70,7 +70,7 @@ def check() -> None:
         print("fix with: make set-version VERSION=x.y.z", file=sys.stderr)
         sys.exit(1)
     version = next(iter(versions.values()))
-    if f'version: "{version}"' not in (ROOT / PATCH_NOTES).read_text():
+    if f'version: "{version}"' not in (ROOT / PATCH_NOTES).read_text(encoding="utf-8"):
         print(
             f"error: {PATCH_NOTES} has no entry for {version} —\n"
             f"write this release's Patch Notes before releasing it",
@@ -86,8 +86,8 @@ def set_version(new: str) -> None:
     for rel, pat in FILES:
         path = ROOT / rel
         old = read_version(path, pat)
-        text = re.sub(pat, lambda m: m.group(1) + new + m.group(3), path.read_text(), count=1, flags=re.MULTILINE)
-        path.write_text(text)
+        text = re.sub(pat, lambda m: m.group(1) + new + m.group(3), path.read_text(encoding="utf-8"), count=1, flags=re.MULTILINE)
+        path.write_text(text, encoding="utf-8")
         marker = "" if old != new else " (unchanged)"
         print(f"  {old} -> {new}  {rel}{marker}")
     print(
