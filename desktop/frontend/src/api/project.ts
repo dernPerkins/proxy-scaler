@@ -150,6 +150,9 @@ export interface ProjectSettings {
 
 export type CustomUpscaleMode = "off" | "target" | "native";
 export type ImportArtSource = "scryfall" | "mpc";
+/** The Decklist tab's card list: one row per card, or thumbnails three
+ *  to a row (see components/DeckGrid.tsx). */
+export type DeckViewMode = "row" | "grid";
 
 export interface CardRow {
   id: number;
@@ -429,6 +432,12 @@ export const projectApi = {
   // the next launch opens the way the user last chose.
   getAddCardsMode: () => invokeCommand<"search" | "paste">("get_add_cards_mode"),
   setAddCardsMode: (mode: "search" | "paste") => invokeCommand<void>("set_add_cards_mode", { mode }),
+
+  // The Decklist's card view, Row or Grid: an app preference like the Add
+  // Cards mode above — how a deck is looked at, not what gets printed.
+  getDeckViewMode: () => invokeCommand<DeckViewMode>("get_deck_view_mode"),
+  setDeckViewMode: (mode: DeckViewMode) =>
+    invokeCommand<void>("set_deck_view_mode", { mode }),
 
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>

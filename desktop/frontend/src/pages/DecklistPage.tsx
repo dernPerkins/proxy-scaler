@@ -51,6 +51,9 @@ import { errorText, toast } from "../toasts";
 import { useMpcCatalogReady } from "../mpcCatalog";
 import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
+import DeckGrid from "../components/DeckGrid";
+import SplitPill from "../components/SplitPill";
+import { useDeckViewMode } from "../deckViewMode";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { alternateName } from "../cardNames";
 import { fillFrameWith, trimGeometry } from "../cardTrim";
@@ -187,6 +190,9 @@ export default function DecklistPage() {
   } = useProject();
   // Per-card backs: how many rows have chosen one, for the bulk reset.
   const ownBackCount = cards.filter((c) => c.back_mode !== "inherit").length;
+  // Rows or thumbnails: remembered across launches, like the Add Cards
+  // mode (deckViewMode.ts).
+  const { mode: viewMode, setMode: setViewMode } = useDeckViewMode();
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -1446,6 +1452,20 @@ export default function DecklistPage() {
             Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
           </h2>
           <div className="decklist-actions" data-tour="deck-actions">
+            {/* Row or Grid: the same list drawn two ways. An app
+                preference (deckViewMode.ts), like Sort is — neither
+                changes what prints, only how the deck is read. */}
+            <span className="deck-view-mode" data-tour="deck-view-mode">
+              <SplitPill
+                ariaLabel="Card view"
+                value={viewMode}
+                onChange={setViewMode}
+                options={[
+                  { value: "row", label: "Row", title: "One row per card, with its controls" },
+                  { value: "grid", label: "Grid", title: "Card art, three to a row" },
+                ]}
+              />
+            </span>
             <SortSelect />
             {ownBackCount > 0 && (
               <button
@@ -1497,95 +1517,99 @@ export default function DecklistPage() {
           </p>
         )}
 
-        {sortedCards.map((card) => {
-          const identity = localCardIdentity(card);
-          let cardGallery = galleryByCard.get(identity) ?? [];
-          let cardTasks = tasksByCard.get(identity) ?? [];
-          if (card.custom_image_id == null && (!card.set_code || !card.collector_number)) {
-            // Name-only local card (never a custom, which matches by
-            // hash alone): the generation server always
-            // resolves it to one concrete printing (a real set +
-            // collector_number), so it can never land in the
-            // identity bucket above — match by name instead. See
-            // mergeCardStatus.ts::groupByCardName.
-            const nameKey = card.name.toLowerCase();
-            cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
-            cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
-          }
-          const faceGroups = buildRows(cardGallery, cardTasks);
-          const scryfallFaces = faceGroups
-            .map(({ items, tasks: faceTasks }) => {
-              const source = items[0] ?? faceTasks[0];
-              return {
-                faceIndex: source?.face_index ?? null,
-                face: {
-                  faceLabel: source?.face_label ?? null,
-                  // Canceled tasks are just queue history, not worth
-                  // surfacing here — the Tasks tab is where cancellation
-                  // state actually matters.
-                  variants: statusForPairs(items, faceTasks).filter(
-                    (v) => v.status !== "canceled",
-                  ),
-                } as DisplayFace,
-              };
-            })
-            .filter(({ face }) => face.variants.length > 0);
-          // A double-faced card lists both faces once anything says it has
-          // two (a face's own row, or face art), so a face with nothing yet
-          // shows as such rather than missing — say, a Scryfall front
-          // beside a back printing MPC Fill art, or a back that never
-          // downloaded beside its front.
-          const doubleFaced =
-            (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
-            faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
-            (card.face_art ?? []).some((fa) => fa.total_faces > 1);
-          if (doubleFaced) {
-            for (const position of [0, 1]) {
-              if (scryfallFaces.some((f) => (f.faceIndex ?? 0) === position)) continue;
-              scryfallFaces.push({
-                faceIndex: position,
-                face: { faceLabel: position === 0 ? "front" : "back", variants: [] },
-              });
+        {/* The two views of the same sorted list. Grid is thumbnails
+            only; every control stays on the Row view. */}
+        {viewMode === "grid" && <DeckGrid cards={sortedCards} library={libraryById} />}
+        {viewMode === "row" &&
+          sortedCards.map((card) => {
+            const identity = localCardIdentity(card);
+            let cardGallery = galleryByCard.get(identity) ?? [];
+            let cardTasks = tasksByCard.get(identity) ?? [];
+            if (card.custom_image_id == null && (!card.set_code || !card.collector_number)) {
+              // Name-only local card (never a custom, which matches by
+              // hash alone): the generation server always
+              // resolves it to one concrete printing (a real set +
+              // collector_number), so it can never land in the
+              // identity bucket above — match by name instead. See
+              // mergeCardStatus.ts::groupByCardName.
+              const nameKey = card.name.toLowerCase();
+              cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
+              cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
             }
-            scryfallFaces.sort((a, b) => (a.faceIndex ?? 0) - (b.faceIndex ?? 0));
-          }
-          // A face printing MPC Fill art shows that image's variants in
-          // its place (they live under the image's own identity).
-          const faces: DisplayFace[] = withPendingPicks(
-            applyFaceArt(scryfallFaces, card.face_art ?? [], galleryByCard, tasksByCard),
-            card.id,
-            pendingArt,
-          );
-          // Known only once the card's faces have been generated or
-          // downloaded: a double-faced card's "back" face is what prints
-          // on its Reverse while the PDF tab pairs faces, so the per-card
-          // back control shows locked for it (CardBackPicker).
-          const transformOnBack =
-            settings.back_printing &&
-            settings.back_faces_as_reverse &&
-            faces.some((f) => f.faceLabel === "back");
-          return (
-            <CardRowView
-              key={card.id}
-              card={card}
-              faces={faces}
-              transformOnBack={transformOnBack}
-              expandedFaces={expandedFaces}
-              onToggleExpand={toggleExpanded}
-              onRemove={() => removeCard(card.id)}
-              onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
-              onGenerate={() => generateCardMutation.mutate(card)}
-              onDownload={() => downloadCard(card)}
-              onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
-              onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
-              rarity={card.rarity ?? undefined}
-              onOpenPicker={(request) => setWalk({ cardId: card.id, request })}
-              onClearFaceArt={(face) => clearFaceArt(card, face)}
-              library={libraryById}
-              disabled={serverUnavailable}
-            />
-          );
-        })}
+            const faceGroups = buildRows(cardGallery, cardTasks);
+            const scryfallFaces = faceGroups
+              .map(({ items, tasks: faceTasks }) => {
+                const source = items[0] ?? faceTasks[0];
+                return {
+                  faceIndex: source?.face_index ?? null,
+                  face: {
+                    faceLabel: source?.face_label ?? null,
+                    // Canceled tasks are just queue history, not worth
+                    // surfacing here — the Tasks tab is where cancellation
+                    // state actually matters.
+                    variants: statusForPairs(items, faceTasks).filter(
+                      (v) => v.status !== "canceled",
+                    ),
+                  } as DisplayFace,
+                };
+              })
+              .filter(({ face }) => face.variants.length > 0);
+            // A double-faced card lists both faces once anything says it has
+            // two (a face's own row, or face art), so a face with nothing yet
+            // shows as such rather than missing — say, a Scryfall front
+            // beside a back printing MPC Fill art, or a back that never
+            // downloaded beside its front.
+            const doubleFaced =
+              (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
+              faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
+              (card.face_art ?? []).some((fa) => fa.total_faces > 1);
+            if (doubleFaced) {
+              for (const position of [0, 1]) {
+                if (scryfallFaces.some((f) => (f.faceIndex ?? 0) === position)) continue;
+                scryfallFaces.push({
+                  faceIndex: position,
+                  face: { faceLabel: position === 0 ? "front" : "back", variants: [] },
+                });
+              }
+              scryfallFaces.sort((a, b) => (a.faceIndex ?? 0) - (b.faceIndex ?? 0));
+            }
+            // A face printing MPC Fill art shows that image's variants in
+            // its place (they live under the image's own identity).
+            const faces: DisplayFace[] = withPendingPicks(
+              applyFaceArt(scryfallFaces, card.face_art ?? [], galleryByCard, tasksByCard),
+              card.id,
+              pendingArt,
+            );
+            // Known only once the card's faces have been generated or
+            // downloaded: a double-faced card's "back" face is what prints
+            // on its Reverse while the PDF tab pairs faces, so the per-card
+            // back control shows locked for it (CardBackPicker).
+            const transformOnBack =
+              settings.back_printing &&
+              settings.back_faces_as_reverse &&
+              faces.some((f) => f.faceLabel === "back");
+            return (
+              <CardRowView
+                key={card.id}
+                card={card}
+                faces={faces}
+                transformOnBack={transformOnBack}
+                expandedFaces={expandedFaces}
+                onToggleExpand={toggleExpanded}
+                onRemove={() => removeCard(card.id)}
+                onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
+                onGenerate={() => generateCardMutation.mutate(card)}
+                onDownload={() => downloadCard(card)}
+                onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+                onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
+                rarity={card.rarity ?? undefined}
+                onOpenPicker={(request) => setWalk({ cardId: card.id, request })}
+                onClearFaceArt={(face) => clearFaceArt(card, face)}
+                library={libraryById}
+                disabled={serverUnavailable}
+              />
+            );
+          })}
       </main>
       {confirmResetBacks && (
         <ConfirmDialog

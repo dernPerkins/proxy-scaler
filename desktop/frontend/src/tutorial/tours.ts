@@ -160,6 +160,12 @@ export const TOURS: Record<TourId, Tour> = {
         placement: "bottom",
       },
       {
+        target: "deck-view-mode",
+        title: "Or see them as pictures",
+        body: "Switch to Grid to see every card's art as a thumbnail, three to a row — the way a sheet prints, which is handy for spotting what you've got at a glance. The controls stay on Row.",
+        placement: "bottom",
+      },
+      {
         target: "printing-picker",
         title: "Pick the printing",
         body: "Click the set to open the printing picker: every printing of this card as images, to choose a different art or version.",

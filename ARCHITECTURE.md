@@ -318,6 +318,7 @@ generation-server state.
 | `get_update_check_enabled` / `set_update_check_enabled` | App Settings' "Check For Updates At Launch" (`app_settings`, default on) — the boot check is an unauthenticated request to the release host, so it gets an off switch |
 | `get_image_cache_enabled` / `set_image_cache_enabled` | App Settings' "Use Proxy Scaler Image Cache" (`app_settings`, default on) — the client's **image origin**, sent on every Generate-family request and thumbnail URL (`imageOrigin.ts`) |
 | `get_settings_presets` / `set_settings_presets` | The PDF and ZIP tabs' named settings presets and each tab's default for new projects (`app_settings` keys `pdf_presets` / `zip_presets`, one opaque JSON blob per tab owned by `settingsPresets.ts`). `kind` is `"pdf"` or `"zip"`; the two never mix |
+| `get_deck_view_mode` / `set_deck_view_mode` | The Decklist tab's card view, `"row"` or `"grid"` (`app_settings`, default rows) — how the deck is *read*, not what prints, so it is a user habit rather than a project setting (`deckViewMode.ts`, `components/DeckGrid.tsx`) |
 
 The update mechanism itself lives in `desktop/src-tauri/src/update.rs`
 (`check_for_update` / `download_update` / `launch_installer`, driven by

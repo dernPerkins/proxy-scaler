@@ -1109,6 +1109,102 @@ button:disabled {
   align-items: center;
 }
 
+/* The Decklist's Grid view (DeckGrid.tsx): three tiles to a row, the
+   sheet the PDF tab prints to by default (3 columns across an A4 page),
+   so a deck reads as the pages it becomes rather than as a table.
+   Fixed at 3, not auto-fill: the point of this view is that a row of it
+   IS a row of a sheet. */
+.deck-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 12px;
+  padding: 12px 0 4px;
+}
+.deck-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+/* The same fixed card aspect as the printing picker's tiles (Scryfall's
+   normal size is 488x680): tiles hold their height before the thumbnails
+   arrive, so a loaded row doesn't shove the rows below it down. */
+.deck-tile-frame {
+  display: block;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 488 / 680;
+  border: 1px solid var(--border);
+  border-radius: 4.75% / 3.5%;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.deck-tile-frame.alpha-corners {
+  /* A Limited Edition Alpha printing, wider die-cut (cardTrim.ts). */
+  border-radius: 7.5% / 5.4%;
+}
+.deck-tile-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.deck-tile-placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+  padding: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: inherit;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.deck-tile-placeholder-note {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.deck-tile-placeholder-name {
+  font-size: 14px;
+  font-weight: 560;
+}
+.deck-tile-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.deck-tile-name {
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Copies of the card, at the end of its name row where the row view
+   carries its stepper. */
+.deck-tile-qty {
+  flex-shrink: 0;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.deck-tile-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
 .card-row {
   border-top: 1px solid var(--border);
   padding: 11px 2px;

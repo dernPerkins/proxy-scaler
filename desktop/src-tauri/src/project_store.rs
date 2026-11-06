@@ -2662,6 +2662,43 @@ pub fn set_add_cards_mode(app: AppHandle, mode: String) -> Result<(), String> {
     write_add_cards_mode(&conn, &mode)
 }
 
+// --- The Decklist tab's card view ----------------------------------------
+//
+// Rows or a thumbnail grid: how the user last chose to look at their deck,
+// kept across restarts for the same reason as the Add Cards mode above —
+// a big deck is scanned the same way every time. App preference, not a
+// project setting: nothing about what gets printed changes. Absent (or
+// anything unexpected) means rows.
+
+const DECK_VIEW_MODE_KEY: &str = "deck_view_mode";
+
+fn read_deck_view_mode(conn: &Connection) -> Result<String, String> {
+    let mode = match read_app_setting(conn, DECK_VIEW_MODE_KEY)?.as_deref() {
+        Some("grid") => "grid",
+        _ => "row",
+    };
+    Ok(mode.to_string())
+}
+
+fn write_deck_view_mode(conn: &Connection, mode: &str) -> Result<(), String> {
+    if mode != "row" && mode != "grid" {
+        return Err(format!("Unknown deck view mode {mode:?}"));
+    }
+    write_app_setting(conn, DECK_VIEW_MODE_KEY, mode)
+}
+
+#[tauri::command]
+pub fn get_deck_view_mode(app: AppHandle) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    read_deck_view_mode(&conn)
+}
+
+#[tauri::command]
+pub fn set_deck_view_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_deck_view_mode(&conn, &mode)
+}
+
 // The MPC Fill browser's language filter, remembered app-wide: whatever
 // was last chosen in its dropdown is where the next one starts. "any"
 // (the default: MPC Fill is nearly all English), "card" (the card's own
@@ -3976,6 +4013,18 @@ mod tests {
         assert_eq!(read_add_cards_mode(&conn).expect("read"), "search");
         assert!(write_add_cards_mode(&conn, "list").is_err());
         assert_eq!(read_add_cards_mode(&conn).expect("unchanged"), "search");
+    }
+
+    #[test]
+    fn deck_view_mode_roundtrips_and_defaults_to_row() {
+        let conn = test_conn();
+        assert_eq!(read_deck_view_mode(&conn).expect("default"), "row");
+        write_deck_view_mode(&conn, "grid").expect("set grid");
+        assert_eq!(read_deck_view_mode(&conn).expect("read"), "grid");
+        write_deck_view_mode(&conn, "row").expect("set row");
+        assert_eq!(read_deck_view_mode(&conn).expect("row again"), "row");
+        assert!(write_deck_view_mode(&conn, "cards").is_err());
+        assert_eq!(read_deck_view_mode(&conn).expect("unchanged"), "row");
     }
 
     #[test]

@@ -60,6 +60,14 @@ with no third party in between, turn off "Use Proxy Scaler Image Cache"
 in App Settings (the gear in the tab bar). Thumbnails are cached on the
 generation server either way, so a printing you've looked at once loads
 instantly and works offline.
+
+The deck list itself draws in two ways, switched beside **Sort**: **Row**
+puts one row per card, carrying its printing button, back, quantity and
+per-card Download/Upscale; **Grid** puts every card's art as a thumbnail,
+three to a row — the way a sheet prints, which is the quick way to see
+what a deck looks like. It is the same list in the same order, and the
+choice is remembered between launches; the controls stay on Row.
+
 The same card can be in a deck once per printing *and language* — an
 Italian and an English Sol Ring of the same set import, generate, and
 print as two separate cards.
