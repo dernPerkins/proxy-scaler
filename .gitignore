@@ -52,7 +52,8 @@ desktop/server-app/resources/
 # someone else's agent setup. CONTEXT.md is here because it's a
 # domain-vocabulary file in the agent tooling's own format, not prose
 # written for contributors. README.md, ARCHITECTURE.md and docs/adr/ stay
-# tracked — those are genuinely for humans.
+# tracked — those are genuinely for humans. skills-lock.json is the skills
+# CLI's install manifest for .agents/ — same personal-tooling category.
 .claude/
 .agents/
 .scratch/
@@ -60,6 +61,7 @@ AGENTS.md
 CLAUDE.md
 CONTEXT.md
 docs/agents/
+skills-lock.json
 .cursor/
 .cursorrules
 .aider*
