@@ -6,7 +6,9 @@
 //
 // Deliberately simplified, because it previews a layout rather than prints:
 //   · fronts only — no back pages, no duplex mirroring, no face pairing;
-//   · no Card/Page Guides and no registration marks, just the page frame;
+//   · no Card/Page Guides and no registration marks; the page is not drawn as
+//     paper, only as the grid the PDF settings describe (cols × rows at the
+//     real page ratio), one page per row so its slots are tile-sized;
 //   · a slot paints the bled box (what actually prints) with a dashed hairline
 //     where the trim falls; its image is the one this deck would print — the
 //     front face at the selected model and the highest goal DPI, falling back
@@ -255,31 +257,35 @@ export default function DeckPagesPrototype({
         {pages.map((page, pageIndex) => (
           <div
             key={pageIndex}
-            className="pages-page"
-            style={{ aspectRatio: `${layout.pageW} / ${layout.pageH}` }}
+            className="pages-sheet"
+            style={{ "--page-ar": `${layout.pageW} / ${layout.pageH}` } as CSSProperties}
           >
-            {page.map((slot, i) => (
-              <PagesSlot
-                key={`${slot.card.id}:${slot.copy}`}
-                card={slot.card}
-                pickerKey={`${slot.card.id}:${slot.copy}`}
-                index={i}
-                c={coverage.get(slot.card.id)!}
-                a={makeActions(kit, slot.card, addLog)}
-                painted={paintedUrls.get(slot.card.id) ?? null}
-                trimInset={trimInset}
-                style={slotStyles[i]}
-                kit={kit}
-                origin={origin}
-                serverThumbs={serverThumbs}
-                queue={queue}
-                onMenu={(x, y) =>
-                  setMenu({ card: slot.card, pickerKey: `${slot.card.id}:${slot.copy}`, x, y })
-                }
-                onBackTrigger={registerBack}
-              />
-            ))}
-            <span className="pages-page-num mono">{pageIndex + 1}</span>
+            <div className="pages-page-head">
+              Page {pageIndex + 1} · {page.length} of {layout.capacity} slots
+            </div>
+            <div className="pages-page">
+              {page.map((slot, i) => (
+                <PagesSlot
+                  key={`${slot.card.id}:${slot.copy}`}
+                  card={slot.card}
+                  pickerKey={`${slot.card.id}:${slot.copy}`}
+                  index={i}
+                  c={coverage.get(slot.card.id)!}
+                  a={makeActions(kit, slot.card, addLog)}
+                  painted={paintedUrls.get(slot.card.id) ?? null}
+                  trimInset={trimInset}
+                  style={slotStyles[i]}
+                  kit={kit}
+                  origin={origin}
+                  serverThumbs={serverThumbs}
+                  queue={queue}
+                  onMenu={(x, y) =>
+                    setMenu({ card: slot.card, pickerKey: `${slot.card.id}:${slot.copy}`, x, y })
+                  }
+                  onBackTrigger={registerBack}
+                />
+              ))}
+            </div>
           </div>
         ))}
       </div>
@@ -315,10 +321,11 @@ export default function DeckPagesPrototype({
 
 /** One printed card, sitting in the grid position the print pipeline gives it.
  *  The box is the bled card; the dashed hairline inside it is where the trim
- *  falls when bleed is on — what you see is what leaves the printer. A slot is
- *  60-70px, which cannot carry its name or its status in place, so hovering
- *  floats the name above it and the badges below it, at a size you can read and
- *  click. Nothing grows or moves: the page's geometry is the thing being read. */
+ *  falls when bleed is on — what you see is what leaves the printer. Its name
+ *  and status are not painted in place: a slot's size is the page's business,
+ *  and a 9-column sheet's slot cannot carry them. Hovering floats the name above
+ *  the slot and the badges below it, at a size you can read and click. Nothing
+ *  grows or moves: the page's geometry is the thing being read. */
 function PagesSlot(props: {
   card: CardRow;
   index: number;
