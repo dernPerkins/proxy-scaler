@@ -13,16 +13,15 @@
 //     where the trim falls; its image is the one this deck would print — the
 //     front face at the selected model and the highest goal DPI, falling back
 //     to the source art, through the same thumbnail queue the Grid view uses.
-// The two controls it borrows from the Grid prototypes are the ones under test:
-// the right-click menu, and the painted per-DPI badges. A page has no stepper
-// of its own, so quantity stays in the menu. Delete with the other prototypes.
+// The controls it borrows from variant D are the ones under test: the
+// right-click menu, and the painted per-DPI badges. A page has no stepper of
+// its own, so quantity stays in the menu. Delete with the other prototypes.
 // Dev builds only.
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties } from "react";
 import { generationApi } from "../api/generation";
 import type { CardRow, ProjectSettings } from "../api/project";
 import type { ImageOrigin } from "../api/types";
-import { CARD_H_MM, CARD_W_MM } from "../cardTrim";
 import { modelDisplayName } from "../constants";
 import {
   getProbedDevice,
@@ -46,69 +45,13 @@ import {
 } from "./decklist-grid.prototype";
 import "./decklist-pages.prototype.css";
 
-/** The page geometry, in mm, as the print pipeline computes it
- *  (proxy_scaler/pdf_layout.py::resolve_page_layout): the grid is measured in
- *  bled boxes plus gaps, centered on the page, then nudged by the offsets.
- *  Same arithmetic so the preview and the PDF agree. */
-export interface PagesLayout {
-  pageW: number;
-  pageH: number;
-  cols: number;
-  rows: number;
-  bleed: number;
-  /** One printed card, bleed included — what actually leaves the printer. */
-  bledW: number;
-  bledH: number;
-  /** A bled card plus the gap after it. */
-  cellW: number;
-  cellH: number;
-  marginX: number;
-  marginY: number;
-  capacity: number;
-}
-
-export function resolvePageLayout(s: ProjectSettings): PagesLayout {
-  const bleed = s.bleed_mm;
-  const bledW = CARD_W_MM + 2 * bleed;
-  const bledH = CARD_H_MM + 2 * bleed;
-  const cellW = bledW + s.spacing_x_mm;
-  const cellH = bledH + s.spacing_y_mm;
-  // The last column has no gap after it, so the grid is one gap narrower
-  // than cols × cellW.
-  const gridW = s.cols * cellW - s.spacing_x_mm;
-  const gridH = s.rows * cellH - s.spacing_y_mm;
-  return {
-    pageW: s.page_width_mm,
-    pageH: s.page_height_mm,
-    cols: s.cols,
-    rows: s.rows,
-    bleed,
-    bledW,
-    bledH,
-    cellW,
-    cellH,
-    marginX: (s.page_width_mm - gridW) / 2 + s.offset_x_mm,
-    marginY: (s.page_height_mm - gridH) / 2 + s.offset_y_mm,
-    capacity: s.cols * s.rows,
-  };
-}
-
-/** One entry per printed card: a 4-of takes four slots, and those four sit
- *  side by side like any other cards, which means they can straddle a page
- *  break. The print pipeline flattens quantities the same way. */
-export function paginateDeck(
-  cards: readonly CardRow[],
-  capacity: number,
-): { card: CardRow; copy: number }[][] {
-  const slots: { card: CardRow; copy: number }[] = [];
-  for (const card of cards) {
-    const n = Math.max(1, Math.round(card.quantity ?? 1));
-    for (let copy = 0; copy < n; copy++) slots.push({ card, copy });
-  }
-  const pages: { card: CardRow; copy: number }[][] = [];
-  for (let i = 0; i < slots.length; i += capacity) pages.push(slots.slice(i, i + capacity));
-  return pages;
-}
+import {
+  paginateDeck,
+  pageArStyle,
+  resolvePageLayout,
+  slotStyleFor,
+  trimInsetFor,
+} from "./deck-page-layout.prototype";
 
 export default function DeckPagesPrototype({
   cards,
@@ -172,24 +115,12 @@ export default function DeckPagesPrototype({
 
   // One style per grid position: the same mm box, expressed as a percentage of
   // the page so the page can be any size on screen.
-  const slotStyles = useMemo(() => {
-    const pct = (v: number, total: number) => `${((v / total) * 100).toFixed(4)}%`;
-    const styles: CSSProperties[] = [];
-    for (let i = 0; i < layout.capacity; i++) {
-      styles.push({
-        left: pct(layout.marginX + (i % layout.cols) * layout.cellW, layout.pageW),
-        top: pct(layout.marginY + Math.floor(i / layout.cols) * layout.cellH, layout.pageH),
-        width: pct(layout.bledW, layout.pageW),
-        height: pct(layout.bledH, layout.pageH),
-      });
-    }
-    return styles;
-  }, [layout]);
+  const slotStyles = useMemo(
+    () => Array.from({ length: layout.capacity }, (_, i) => slotStyleFor(layout, i)),
+    [layout],
+  );
   // The trim edge, as an inset of its own slot: the bleed, on each side.
-  const trimInset =
-    layout.bleed > 0
-      ? `${((layout.bleed / layout.bledH) * 100).toFixed(3)}% ${((layout.bleed / layout.bledW) * 100).toFixed(3)}%`
-      : null;
+  const trimInset = trimInsetFor(layout);
 
   const registerBack = useCallback((key: string, button: HTMLElement | null) => {
     if (button) backBtns.current.set(key, button);
@@ -258,7 +189,7 @@ export default function DeckPagesPrototype({
           <div
             key={pageIndex}
             className="pages-sheet"
-            style={{ "--page-ar": `${layout.pageW} / ${layout.pageH}` } as CSSProperties}
+            style={pageArStyle(layout)}
           >
             <div className="pages-page-head">
               Page {pageIndex + 1} · {page.length} of {layout.capacity} slots

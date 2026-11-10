@@ -17,7 +17,7 @@ import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import CardBackPicker from "../components/CardBackPicker";
 // PROTOTYPE (throwaway): the Grid view's variants, switchable with
-// ?variant=A|B|C in a dev build. See decklist-grid.prototype.tsx.
+// ?variant=D|E in a dev build. See decklist-grid.prototype.tsx.
 import DeckGridPrototype, { DECK_GRID_VARIANTS, DECK_GRID_VARIANT_KEYS } from "../pages/decklist-grid.prototype";
 import type { DeckGridKit } from "../pages/decklist-grid.prototype";
 import PrototypeSwitcher, { usePrototypeVariant } from "../components/PrototypeSwitcher";
@@ -204,7 +204,7 @@ export default function DecklistPage() {
   // a shipped build, rather than as a card list with no view.
   const shownViewMode: DeckViewMode =
     import.meta.env.DEV || viewMode !== "pages" ? viewMode : "grid";
-  // PROTOTYPE: ?variant=A|B|C swaps in a Grid-view variant (dev builds only).
+  // PROTOTYPE: ?variant=D|E swaps in a Grid-view variant (dev builds only).
   const deckVariant = usePrototypeVariant(DECK_GRID_VARIANT_KEYS);
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
   const readiness = useServerReadiness();
@@ -1621,12 +1621,12 @@ export default function DecklistPage() {
           </p>
         )}
 
-        {/* PROTOTYPE (throwaway): with ?variant=A|B|C, the Grid view is one of
-            three variants that carry the Row view's controls; no variant keeps
+        {/* PROTOTYPE (throwaway): with ?variant=D|E, the Grid view is one of
+            two variants that carry the Row view's controls; no variant keeps
             the view-only grid below. */}
         {shownViewMode === "grid" &&
           (deckVariant ? (
-            <DeckGridPrototype variant={deckVariant} kit={gridKit} />
+            <DeckGridPrototype variant={deckVariant} kit={gridKit} settings={settings} />
           ) : (
             <DeckGrid cards={sortedCards} library={libraryById} />
           ))}

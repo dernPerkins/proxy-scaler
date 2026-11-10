@@ -92,6 +92,13 @@
   pointer-events: none;
 }
 
+/* The row's CardBackPicker, mounted in the slot so the right-click menu's
+   "Card back…" can run its own button: only the button is hidden, so the
+   picker's modal still renders. */
+.proto-hidden-back .card-back-cell > button {
+  display: none;
+}
+
 /* Painted status, borrowed from variant D, floated under the slot on hover. The
    grey badges ARE buttons (download / upscale that DPI), so they take the click
    even though the strip they sit in does not. */

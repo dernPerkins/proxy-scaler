@@ -10,44 +10,7 @@
   min-width: 0;
 }
 
-/* --- Variant A · right-click menu ------------------------------------- */
-
-.proto-pips {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.proto-pip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 26px;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--off-soft);
-  color: var(--off);
-  font-size: 11px;
-  font-weight: 600;
-}
-.proto-pip.is-done {
-  background: var(--ok-soft);
-  color: var(--ok);
-}
-.proto-pip.is-active {
-  background: var(--run-soft);
-  color: var(--run);
-}
-.proto-pip.is-failed {
-  background: var(--err-soft);
-  color: var(--err);
-}
-
-/* The row's CardBackPicker stays mounted so the menu can open it, but a tile
-   has no room for a swatch. Hiding the modal with it would hide the picker. */
-.proto-hidden-back .card-back-cell > button {
-  display: none;
-}
+/* --- The right-click menu (D's tile and the Pages view's slot) ---------- */
 
 .proto-ctx-backdrop {
   position: fixed;
@@ -97,7 +60,7 @@
   background: var(--border);
 }
 
-/* --- Variants B and C · controls under / over a tile ------------------ */
+/* --- D's control row, under the tile --------------------------------- */
 
 .proto-controls {
   display: flex;
@@ -108,13 +71,6 @@
 .proto-controls .btn-sm {
   font-size: 11.5px;
   padding: 3px 8px;
-}
-.proto-face-badges {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
 }
 
 .proto-qty {
@@ -130,14 +86,8 @@
   color: var(--text-muted);
 }
 
-/* Variant C: the state painted ON the art. The frame is 488/680 and the cell
-   is a flex column, so the overlay is positioned off the tile's own frame. */
-.proto-C .proto-cell {
-  position: relative;
-}
-.proto-C .deck-tile {
-  min-height: 0;
-}
+/* The badges painted ON the art: the shared base every merged view sits its
+   own offsets on (D bottom-right of the tile, the Pages view under its slot). */
 .proto-painted {
   position: absolute;
   top: 6px;
@@ -170,38 +120,20 @@
   color: rgba(255, 255, 255, 0.75);
 }
 
-/* The rest of C's controls only appear on hover or keyboard focus: the tile
-   keeps its exact grid shape until you reach it. */
+/* A control that only appears on hover or keyboard focus: the tile keeps its
+   exact grid shape until you reach it. */
 .proto-reveal {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
 }
-.proto-C .proto-cell:hover .proto-reveal,
-.proto-C .proto-cell:focus-within .proto-reveal,
 .proto-reveal:hover,
 .proto-reveal:focus-within {
   opacity: 1;
   pointer-events: auto;
 }
 
-/* --- Show/Hide images in the grid ------------------------------------- */
-
-.proto-versions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-}
-.proto-versions-face {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 6px;
-}
+/* The label above each face's images in D's modal. */
 .proto-versions-label {
   font-size: 11px;
   font-weight: 600;
@@ -209,34 +141,15 @@
   letter-spacing: 0.04em;
   color: var(--text-muted);
 }
-.proto-version {
-  margin: 0;
-  width: 64px;
-  text-align: center;
-}
-.proto-version img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 488 / 680;
-  object-fit: cover;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  background: var(--surface-3);
-}
-.proto-version figcaption {
-  margin-top: 3px;
-  font-size: 10.5px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-/* --- Variant D · the merge of A, B and C ------------------------------ */
+/* --- Variant D · the merge of the three cuts it grew out of ----------- */
 
-/* The tile's own meta row (set · number · language) IS the printing button's
-   label now, so it leaves the tile and joins the control row under it. */
-.proto-D .deck-tile-meta {
+/* The rules below are the card every merged variant draws: D on its plain grid,
+   E on a printed page. They name both, because only the box the card sits in and
+   the place the control row goes differ — and those are the two rules variant E
+   writes for itself, further down. */
+.proto-D .deck-tile-meta,
+.proto-E .deck-tile-meta {
   display: none;
 }
 
@@ -261,9 +174,10 @@
 }
 
 /* Painted status, bottom-RIGHT of the art — the least interesting corner of
-   a card, usually just trademark text. A grey badge is a button here, so
-   unlike C this overlay takes clicks. */
-.proto-D .proto-painted {
+   a card, usually just trademark text. A grey badge is a button here, so this
+   overlay takes clicks. */
+.proto-D .proto-painted,
+.proto-E .proto-painted {
   top: auto;
   left: auto;
   right: 10px;
@@ -328,13 +242,16 @@
   background: var(--err);
 }
 .proto-D .proto-cell:hover .proto-reveal,
-.proto-D .proto-cell:focus-within .proto-reveal {
+.proto-D .proto-cell:focus-within .proto-reveal,
+.proto-E .proto-cell:hover .proto-reveal,
+.proto-E .proto-cell:focus-within .proto-reveal {
   opacity: 1;
   pointer-events: auto;
 }
 
 /* D's control row: the row's own printing picker, shrunk to tile size. */
-.proto-D .printing-cell > button {
+.proto-D .printing-cell > button,
+.proto-E .printing-cell > button {
   padding: 3px 8px;
   font-size: 11.5px;
 }
@@ -377,6 +294,128 @@
 .proto-card-images .thumb {
   width: auto;
   min-width: 0;
+}
+
+/* --- Variant E · variant D laid out on the pages the PDF settings print --- */
+
+/* One page per row, each at its own aspect ratio and capped by the window's
+   height the way the Pages view caps its sheet, so a page reads at a time. The
+   box is not drawn as paper: it is the grid the PDF settings describe, margins
+   and gaps at the millimetres they picked. */
+.proto-E-flow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 40px;
+}
+.proto-E-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* The first line is the fallback for a webview without svh. */
+  width: min(100%, calc((100vh - 210px) * var(--page-ar, 0.707)));
+  width: min(100%, calc((100svh - 210px) * var(--page-ar, 0.707)));
+}
+.proto-E-head {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.proto-E-page {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--page-ar, 0.707);
+}
+
+/* A cell IS one printed card: placed at the percentage of the page the print's
+   own arithmetic gives it. Its tile is D's, relaxed to fill the printed box —
+   the fixed 488/680 frame takes the box's ratio instead, which is the card plus
+   whatever bleed is selected — and the overlay the badges and the two pills are
+   anchored to follows the same box. The dashed hairline inside is where the cut
+   lands; outside it is the part that gets thrown away. */
+.proto-E .proto-cell {
+  position: absolute;
+  z-index: 1;
+}
+.proto-E .proto-cell:hover,
+.proto-E .proto-cell:focus-within {
+  z-index: 6;
+}
+.proto-E .proto-tile-wrap {
+  position: absolute;
+  inset: 0;
+}
+.proto-E .deck-tile {
+  height: 100%;
+}
+.proto-E .deck-tile-frame {
+  height: 100%;
+  aspect-ratio: auto;
+}
+.proto-E .proto-tile-ov {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  aspect-ratio: auto;
+  pointer-events: none;
+}
+.proto-E-trim {
+  position: absolute;
+  border: 1px dashed rgba(240, 70, 70, 0.8);
+  pointer-events: none;
+}
+
+/* A printed card has no room of its own for the name row or the control row, and
+   a page has no slack to put them in — with the default 0 gap the strip below a
+   card lands on the next row's top edge. So both float, on hover only, drawn as
+   chips over the page rather than painted on the card: the card itself, and
+   everything D paints on it, stays exactly as it is. A chip is as wide as the
+   card it belongs to and wraps within it (D's row would otherwise hang 40px out
+   on each side of a card and its own border would not enclose what it holds);
+   wrapping is what makes it hang below the card, into the next row, while you are
+   hovering — the hovered cell is lifted above its neighbours for that. */
+.proto-E .deck-tile-label {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+}
+.proto-E-controls {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  justify-content: center;
+  gap: 3px;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.proto-E .proto-cell:hover .deck-tile-label,
+.proto-E .proto-cell:hover .proto-E-controls,
+.proto-E .proto-cell:focus-within .deck-tile-label,
+.proto-E .proto-cell:focus-within .proto-E-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The state panel's own warning: a grid too large for its page. */
+.proto-E-warn {
+  border-top: 1px solid var(--border);
+  padding-top: 3px;
+  margin-top: 3px;
+  color: var(--err);
 }
 
 /* --- The state panel (prototype rule: surface the state) -------------- */

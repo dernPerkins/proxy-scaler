@@ -1,22 +1,18 @@
-// PROTOTYPE — throwaway. Three ways to give the Decklist tab's Grid view the
+// PROTOTYPE — throwaway. Two ways to give the Decklist tab's Grid view the
 // Row view's functionality — the printing picker, per-card backs, the quantity
 // stepper, Show/Hide images, Download, Upscale and Remove — plus visible state
 // for "this card's original is downloaded" and "it's upscaled at the selected
-// model and goal DPI". Switched with ?variant=A|B|C and the floating bar
+// model and goal DPI". Switched with ?variant=D|E and the floating bar
 // ([ and ] cycle; "Current UI" is the view-only grid, kept in the cycle for
 // comparison). Dev builds only. Actions are REAL: they call the page's own
 // handlers, so try it in a scratch project. Delete once a variant is picked.
 //
-//   A · Right-Click Menu — tiles stay exactly as they are (art, name, count)
-//                         with a state pip under them; right-click any card for
-//                         everything, the way the other tools do.
-//   B · Button Strip     — as many controls as fit, always visible under each
-//                         tile: printing / back / qty, the row's four icon
-//                         buttons, and its status badges.
-//   C · Painted Status   — state ON the art (the original, plus every goal DPI
-//                         at the selected model), qty and back on the tile, the
-//                         rest revealed on hover or keyboard focus.
-//   D · Merged           — Dean's cut of A+B+C: the row's printing button IS
+//   A, B and C (the right-click menu, the button strip, the painted status)
+//   were tried and dropped: D is what their feedback produced, and it keeps
+//   one piece of each — C's painted badges, A's right-click menu, B's control
+//   row under the tile.
+//
+//   D · Merged           — Dean's cut of those three: the row's printing button IS
 //                         the art selector, the back swatch and qty stepper
 //                         under the tile, status painted bottom-right of the
 //                         art (one badge per DPI, lowest first — the original's
@@ -29,14 +25,28 @@
 //                         print — the front face at the selected model and
 //                         the highest goal DPI — when one exists, else the
 //                         source art it shows today.
+//   E · Merged on the page — D's cards and D's controls, arranged on the pages
+//                         the PDF tab's settings describe (deck-page-layout
+//                         .prototype.ts): one page per row, each drawn at its
+//                         real aspect ratio under a "Page n" head, one printed
+//                         card per slot (bleed included, dashed trim edge) and a
+//                         4-of taking four adjacent slots. Nothing about a card
+//                         changes — name, painted badges, printing picker, back
+//                         swatch, stepper, eye, trash — except WHERE they can
+//                         sit: a printed card has no room under itself for D's
+//                         control row, so the row and the name float as chips
+//                         above and below the slot on hover.
 //
 // The Pages-view prototype (decklist-pages.prototype.tsx) borrows this file's
 // pieces rather than repeating them: the coverage math (coverageFor), the
-// painted DPI badges, the right-click menu and its modal of images.
+// painted DPI badges, the right-click menu and its modal of images. Variant E
+// and that view share their page geometry (deck-page-layout.prototype.ts), so
+// the same settings lay out the same way in either.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { CSSProperties } from "react";
 import { generationApi } from "../api/generation";
 import { faceArtKind } from "../api/project";
-import type { CardFaceArt, CardRow } from "../api/project";
+import type { CardFaceArt, CardRow, ProjectSettings } from "../api/project";
 import type { CustomImage, ImageOrigin } from "../api/types";
 import CompareDialog from "../components/CompareDialog";
 import CompareMenu, { type CompareSide } from "../components/CompareMenu";
@@ -58,17 +68,21 @@ import CardBackPicker from "../components/CardBackPicker";
 import { DeckTile } from "../components/DeckGrid";
 import ModalOverlay from "../components/ModalOverlay";
 import PrintingPicker from "../components/PrintingPicker";
-import StatusBadge from "../components/StatusBadge";
-import { DownloadIcon, EyeIcon, EyeOffIcon, SparklesIcon, TrashIcon } from "../components/RowIcons";
+import { EyeIcon, TrashIcon } from "../components/RowIcons";
 import type { PickerOpenRequest } from "../components/PrintingPicker";
 import { useThumbnailQueue, type ThumbnailQueue } from "../components/imageGrid";
+import {
+  paginateDeck,
+  pageArStyle,
+  resolvePageLayout,
+  slotStyleFor,
+  trimInsetFor,
+} from "./deck-page-layout.prototype";
 import "./decklist-grid.prototype.css";
 
 export const DECK_GRID_VARIANTS = [
-  { key: "A", name: "Right-click menu" },
-  { key: "B", name: "Button strip" },
-  { key: "C", name: "Painted status" },
   { key: "D", name: "Merged" },
+  { key: "E", name: "Merged on the page" },
 ] as const;
 
 export const DECK_GRID_VARIANT_KEYS: readonly string[] = DECK_GRID_VARIANTS.map((v) => v.key);
@@ -117,8 +131,6 @@ function coverOf(v: VariantStatus | undefined): Cover {
   if (v.status === "failed") return "failed";
   return "none";
 }
-
-const COVER_GLYPH: Record<Cover, string> = { done: "✓", active: "…", failed: "✗", none: "—" };
 
 export interface Coverage {
   faces: ProtoFace[];
@@ -197,118 +209,8 @@ export function coverageFor(
   };
 }
 
-function modelLabel(model: string, art?: CardFaceArt): string {
-  if (art && model === CUSTOM_SOURCE_MODEL) return art.mpc_drive_id ? "MPC" : "Custom";
-  return modelDisplayName(model);
-}
-
 function faceLabel(label: string) {
   return label.charAt(0).toUpperCase() + label.slice(1);
-}
-
-/** The state, as three dots: the original, then one per goal DPI at the
- *  selected model. Variant A's only always-on state. */
-function StatusPips({ c, model }: { c: Coverage; model: string }) {
-  const name = modelDisplayName(model);
-  return (
-    <span className="proto-pips mono" aria-label="Card state">
-      <span className={`proto-pip is-${c.original}`} title={`Original: ${c.original}`}>
-        {COVER_GLYPH[c.original]}
-      </span>
-      {c.targets.map((t) => (
-        <span
-          key={t.dpi}
-          className={`proto-pip is-${t.cover}`}
-          title={`${t.dpi} DPI · ${name}: ${t.cover}`}
-        >
-          {t.dpi}
-        </span>
-      ))}
-      {c.downloading && <span className="proto-pip is-active" title="Art downloading">↓</span>}
-    </span>
-  );
-}
-
-/** The Row view's per-variant badges, unchanged. */
-function FaceBadges({ faces }: { faces: ProtoFace[] }) {
-  if (faces.length === 0) return <span className="variant-note">Not Generated Yet</span>;
-  return (
-    <>
-      {faces.map((face, i) => (
-        <span key={i} className="proto-face-badges">
-          {face.faceLabel && <span className="variant-face">{faceLabel(face.faceLabel)}</span>}
-          {face.pick && (
-            <StatusBadge
-              status={
-                face.pick.status === "failed"
-                  ? "failed"
-                  : face.pick.status === "downloading"
-                    ? "running"
-                    : "pending"
-              }
-              title={face.pick.error ?? face.pick.name}
-            >
-              {face.pick.status === "failed"
-                ? "Download failed"
-                : face.pick.status === "downloading"
-                  ? "Downloading"
-                  : "Queued"}{" "}
-              · {face.pick.source === "scryfall" ? "Original" : "MPC"}
-            </StatusBadge>
-          )}
-          {!face.pick && face.variants.length === 0 && (
-            <span className="variant-note">
-              {face.art && !face.art.scryfall ? "Not Downloaded Yet" : "Not Generated Yet"}
-            </span>
-          )}
-          {face.variants.map((v) => (
-            <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
-              {v.dpi} · {modelLabel(v.model, face.art)}
-            </StatusBadge>
-          ))}
-        </span>
-      ))}
-    </>
-  );
-}
-
-/** Show/Hide in the grid: the face's versions, in a strip under the tile. */
-function VersionsStrip({ faces }: { faces: ProtoFace[] }) {
-  return (
-    <div className="proto-versions">
-      {faces.map((face, i) => {
-        const done = face.variants.filter((v) => v.galleryItemId != null);
-        const source = done.find((v) => SOURCE_MODELS.includes(v.model)) ?? done[0];
-        const ups = done.filter((v) => !SOURCE_MODELS.includes(v.model));
-        return (
-          <div key={i} className="proto-versions-face">
-            {face.faceLabel && (
-              <span className="proto-versions-label">{faceLabel(face.faceLabel)}</span>
-            )}
-            {source && (
-              <figure className="proto-version" title="Original">
-                <img src={generationApi.imageUrl(source.galleryItemId!, "original")} alt="" />
-                <figcaption className="mono">Original</figcaption>
-              </figure>
-            )}
-            {ups.map((v) => (
-              <figure
-                key={`${v.dpi}-${v.model}`}
-                className="proto-version"
-                title={`${v.dpi} DPI · ${modelDisplayName(v.model)}`}
-              >
-                <img src={generationApi.imageUrl(v.galleryItemId!, "thumb")} alt="" />
-                <figcaption className="mono">
-                  {v.dpi} · {modelDisplayName(v.model)}
-                </figcaption>
-              </figure>
-            ))}
-            {!source && <span className="variant-note">Nothing generated yet</span>}
-          </div>
-        );
-      })}
-    </div>
-  );
 }
 
 function QtyStepper({ quantity, onSet }: { quantity: number; onSet: (q: number) => void }) {
@@ -328,9 +230,6 @@ function QtyStepper({ quantity, onSet }: { quantity: number; onSet: (q: number) 
 // One card's actions, already logged by the grid.
 export interface TileActions {
   quantity: number;
-  expanded: boolean;
-  hasImages: boolean;
-  custom: boolean;
   download: () => void;
   upscale: () => void;
   upscaleAt: (dpi: number) => void;
@@ -341,57 +240,6 @@ export interface TileActions {
    *  request it builds (it knows the pinned printing and MPC state). */
   openPrintingWith: (request: PickerOpenRequest) => void;
   openArt: () => void;
-  /** B and C only: the inline strip that D replaces with a modal. */
-  toggleImages: () => void;
-}
-
-/** The Row view's four icon buttons. */
-function ActionButtons({ a, disabled }: { a: TileActions; disabled: boolean }) {
-  return (
-    <span className="proto-actions">
-      <button
-        className="btn-sm icon-button"
-        onClick={a.toggleImages}
-        disabled={!a.hasImages}
-        title={
-          a.hasImages
-            ? a.expanded
-              ? "Hide images"
-              : "Show images"
-            : "Nothing to show yet — download or generate this card first"
-        }
-        aria-label={a.expanded && a.hasImages ? "Hide images" : "Show images"}
-      >
-        {a.expanded && a.hasImages ? <EyeOffIcon /> : <EyeIcon />}
-      </button>
-      <button
-        className="btn-sm icon-button"
-        onClick={a.download}
-        disabled={disabled}
-        title="Download — the full-size image, without upscaling"
-        aria-label="Download"
-      >
-        <DownloadIcon />
-      </button>
-      <button
-        className="btn-sm icon-button"
-        onClick={a.upscale}
-        disabled={disabled}
-        title="Upscale — this card's art to the selected DPIs"
-        aria-label="Upscale"
-      >
-        <SparklesIcon />
-      </button>
-      <button
-        className="btn-sm btn-danger icon-button"
-        onClick={a.remove}
-        title="Remove from the deck"
-        aria-label="Remove"
-      >
-        <TrashIcon />
-      </button>
-    </span>
-  );
 }
 
 interface MenuAction {
@@ -410,9 +258,9 @@ export interface MenuItem {
 
 const SEP: MenuItem = { sep: true };
 
-/** Variant A's answer to "where do the controls live": a menu on the card,
- *  like the other tools use. Opened by right-click, closed by Escape, an
- *  outside click or picking something. */
+/** The right-click menu D paints on the tile, and the Pages view borrows: a
+ *  menu on the card, like the other tools use. Opened by right-click, closed
+ *  by Escape, an outside click or picking something. */
 export function ContextMenu({
   x,
   y,
@@ -513,8 +361,9 @@ export function menuFor(
       action: { run: openBackPicker, label: "Card back…", title: "Choose what this card's Reverse prints" },
     },
     SEP,
-    // Variant A has no stepper of its own, so quantity stays in its menu; D
-    // drops it (its stepper sits on the tile) — Dean's note on the merged cut.
+    // D and E keep quantity in the stepper under the tile, so it is not in
+    // their menus; the Pages view has no stepper of its own, so it stays in
+    // that menu — Dean's note on the merged cut.
     ...(withQuantity
       ? ([
           {
@@ -567,9 +416,6 @@ export function makeActions(kit: DeckGridKit, card: CardRow, log: (s: string) =>
   const quantity = card.quantity ?? 1;
   return {
     quantity,
-    expanded: false,
-    hasImages: false,
-    custom: card.custom_image_id != null,
     download: () => {
       kit.download(card);
       log(`Download · ${card.name}`);
@@ -604,17 +450,12 @@ export function makeActions(kit: DeckGridKit, card: CardRow, log: (s: string) =>
       kit.openPicker(card, request);
       log(`Open printing picker · ${card.name} · ${request.source}`);
     },
-    toggleImages: () => log(`Show images · ${card.name}`),
   };
 }
 
-// The row's four icon buttons never sit disabled in the prototype: the grid
-// has no row-level "has anything generated" check, so the strip always shows
-// them and the state panel says what actually happened.
-const ALWAYS_ON = { hasImages: true };
-
-/** Variant D's painted status, bottom-right of the art (that corner is the
- *  least interesting of a card — often just trademark text). A badge that is
+/** D's painted status, bottom-right of the art (that corner is the
+ *  least interesting of a card — often just trademark text). E and the Pages
+ *  view reuse this component unchanged. A badge that is
  *  grey — nothing exists for that DPI at the selected model — IS its button:
  *  the original's badge downloads, a DPI badge upscales just that DPI. Done
  *  badges are marks.
@@ -986,8 +827,12 @@ function GridCell(props: {
   origin: ImageOrigin | null;
   serverThumbs: boolean;
   queue: ThumbnailQueue;
-  expanded: boolean;
-  onToggle: () => void;
+  /** Variant E: where this printed card sits on its page. Variant D
+   *  is a cell in a plain flex grid and has no position of its own. */
+  style?: CSSProperties;
+  /** Variant E: the trim edge inside the printed box, as an inset. Null when
+   *  there is no bleed, because then the printed box IS the trim box. */
+  trimInset?: string | null;
   onShowImages: () => void;
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
@@ -1001,16 +846,19 @@ function GridCell(props: {
     origin,
     serverThumbs,
     queue,
-    expanded,
-    onToggle,
+    style,
+    trimInset,
     onShowImages,
     onMenu,
     onBackTrigger,
   } = props;
+  // D and E are the same card: D arranges it in a flex grid, E arranges it on a
+  // printed page. Everything in this cell is D's presentation, and E keeps it
+  // unchanged; `variant` only picks the parts E draws differently.
   const custom = card.custom_image_id != null;
   const backPicker = <CardBackPicker card={card} transformOnBack={false} />;
   const hasImages = c.faces.some((f) => f.variants.some((v) => v.galleryItemId != null));
-  // Variant D paints the image it would actually print: the FRONT face's
+  // Variants D and E paint the image it would actually print: the FRONT face's
   // variant at the selected model and the highest selected DPI, through the
   // gallery thumb endpoint (640px WebP) like every other upscale thumb. When
   // that badge is grey — nothing generated at that pair yet — the tile keeps
@@ -1018,15 +866,11 @@ function GridCell(props: {
   // image, so a deck still loads thumbnails as it scrolls.
   const goalDpi = kit.dpis.length > 0 ? Math.max(...kit.dpis) : null;
   const painted =
-    variant === "D" && goalDpi != null
+    goalDpi != null
       ? c.faces[0]?.variants.find(
           (v) => v.dpi === goalDpi && v.model === kit.model && v.status === "done" && v.galleryItemId != null,
         )
       : undefined;
-  const toggleImages = () => {
-    onToggle();
-    a.toggleImages();
-  };
   const paintedUrl =
     painted?.galleryItemId != null ? generationApi.imageUrl(painted.galleryItemId, "thumb") : null;
   const tile = (
@@ -1036,8 +880,8 @@ function GridCell(props: {
       origin={origin}
       serverThumbs={serverThumbs}
       queue={queue}
-      // Every variant paints the card's identity onto the tile itself (name,
-      // count, and in D the printing and the state), so the hover tooltip that
+      // Both variants paint the card's identity onto the tile itself (name,
+      // count, and the printing and the state), so the hover tooltip that
       // repeats it is noise.
       hideTileTitle
       variantSrc={paintedUrl}
@@ -1046,161 +890,80 @@ function GridCell(props: {
   return (
     <div
       className="proto-cell"
-      onContextMenu={
-        variant === "A" || variant === "D"
-          ? (e) => {
-              e.preventDefault();
-              onMenu(e.clientX + 2, e.clientY + 2);
-            }
-          : undefined
-      }
+      style={style}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(e.clientX + 2, e.clientY + 2);
+      }}
     >
-      {variant === "D" ? (
-        <span className="proto-tile-wrap">
-          {tile}
-          {/* Everything painted ON the art lives in a box that mirrors the art
-              frame's own box — same width, same 488/680 aspect — so the offsets
-              below are margins off the card, not off the name row under it. */}
-          <span className="proto-tile-ov">
-            {/* The status IS the button here: a grey badge runs its job when
-                clicked (the original's downloads, a goal DPI's upscales that
-                DPI). Bottom-right: the least interesting corner of a card. */}
-            <PaintedBadges c={c} kit={kit} onDownload={a.download} onUpscaleAt={a.upscaleAt} />
-            {/* The images live in a modal, so the grid never reflows; the
-                right-click menu opens it too, this icon is the shortcut. */}
-            <button
-              type="button"
-              className="proto-pill proto-pill-images proto-reveal"
-              onClick={onShowImages}
-              disabled={!hasImages}
-              title={
-                hasImages
-                  ? "Show images — every version of this card, in a modal"
-                  : "Nothing to show yet — download or generate this card first"
-              }
-              aria-label="Show images"
-            >
-              <EyeIcon />
-            </button>
-            <button
-              type="button"
-              className="proto-pill proto-pill-remove proto-reveal"
-              onClick={a.remove}
-              title="Remove this card from the deck"
-              aria-label="Remove"
-            >
-              <TrashIcon />
-            </button>
-          </span>
-        </span>
-      ) : (
-        tile
-      )}
-
-      {variant === "A" && (
-        <>
-          <StatusPips c={c} model={kit.model} />
-          {/* The back control is the row's own component; variant A keeps it
-              mounted but trigger-less and opens it from the menu. */}
-          <span
-            className="proto-hidden-back"
-            ref={(el) => {
-              const button = el?.querySelector("button") ?? null;
-              if (button) onBackTrigger(card.id, button);
-              else onBackTrigger(card.id, null);
-            }}
+      <span className="proto-tile-wrap">
+        {tile}
+        {/* Variant E only: the trim edge inside the printed box. Outside this
+            hairline is the part that gets cut off. A hairline, not a Card
+            Guide — like the Pages view, this variant draws no guides. */}
+        {trimInset != null && <span className="proto-E-trim" style={{ inset: trimInset }} />}
+        {/* Everything painted ON the art lives in a box that mirrors the art
+            frame's own box — same width, same 488/680 aspect — so the offsets
+            below are margins off the card, not off the name row under it. */}
+        <span className="proto-tile-ov">
+          {/* The status IS the button here: a grey badge runs its job when
+              clicked (the original's downloads, a goal DPI's upscales that
+              DPI). Bottom-right: the least interesting corner of a card. */}
+          <PaintedBadges c={c} kit={kit} onDownload={a.download} onUpscaleAt={a.upscaleAt} />
+          {/* The images live in a modal, so the grid never reflows; the
+              right-click menu opens it too, this icon is the shortcut. */}
+          <button
+            type="button"
+            className="proto-pill proto-pill-images proto-reveal"
+            onClick={onShowImages}
+            disabled={!hasImages}
+            title={
+              hasImages
+                ? "Show images — every version of this card, in a modal"
+                : "Nothing to show yet — download or generate this card first"
+            }
+            aria-label="Show images"
           >
-            {backPicker}
-          </span>
-        </>
-      )}
+            <EyeIcon />
+          </button>
+          <button
+            type="button"
+            className="proto-pill proto-pill-remove proto-reveal"
+            onClick={a.remove}
+            title="Remove this card from the deck"
+            aria-label="Remove"
+          >
+            <TrashIcon />
+          </button>
+        </span>
+      </span>
 
-      {variant === "B" && (
-        <>
-          <span className="proto-controls">
-            <button
-              className="btn-sm mono"
-              disabled={custom || kit.serverUnavailable}
-              onClick={a.openPrinting}
-              title={custom ? "A Custom Image has no printing to change" : "Change printing"}
-            >
-              {card.set_code ? card.set_code.toUpperCase() : "Printing"}
-            </button>
-            <button className="btn-sm" onClick={a.openArt} title="Print from MPC Fill art">
-              Art
-            </button>
-            {backPicker}
-            <QtyStepper quantity={a.quantity} onSet={a.setQuantity} />
-            <ActionButtons
-              a={{ ...a, ...ALWAYS_ON, toggleImages }}
-              disabled={kit.serverUnavailable}
-            />
+      <span className={variant === "E" ? "proto-controls proto-E-controls" : "proto-controls"}>
+        {/* The printing button, same one the row uses: its label is the
+            card's set · number · language. */}
+        {custom ? (
+          <span className="chip" title="Your own uploaded art — manage it on the Customs tab">
+            Custom
           </span>
-          <FaceBadges faces={c.faces} />
-          {expanded && <VersionsStrip faces={c.faces} />}
-        </>
-      )}
-
-      {variant === "C" && (
-        <>
-          <span className="proto-painted mono">
-            <span className={`proto-badge is-${c.original}`} title="Original — the full-size download">
-              orig
-            </span>
-            {c.targets.map((t) => (
-              <span
-                key={t.dpi}
-                className={`proto-badge is-${t.cover}`}
-                title={`${t.dpi} DPI · ${modelDisplayName(kit.model)}`}
-              >
-                {t.dpi}
-              </span>
-            ))}
-          </span>
-          <span className="proto-controls proto-reveal">
-            <QtyStepper quantity={a.quantity} onSet={a.setQuantity} />
-            <ActionButtons a={{ ...a, ...ALWAYS_ON, toggleImages }} disabled={kit.serverUnavailable} />
-            <button className="btn-sm" onClick={a.openPrinting} disabled={custom}>
-              Printing
-            </button>
-            <button className="btn-sm" onClick={a.openArt}>
-              Art
-            </button>
-          </span>
-          {expanded && <VersionsStrip faces={c.faces} />}
-        </>
-      )}
-
-      {variant === "D" && (
-        <>
-          <span className="proto-controls">
-            {/* The printing button, same one the row uses: its label is the
-                card's set · number · language. */}
-            {custom ? (
-              <span className="chip" title="Your own uploaded art — manage it on the Customs tab">
-                Custom
-              </span>
-            ) : (
-              <PrintingPicker
-                card={card}
-                rarity={card.rarity ?? undefined}
-                disabled={kit.serverUnavailable}
-                onOpen={a.openPrintingWith}
-              />
-            )}
-            {/* Mounted visibly, and registered so the right-click menu's
-                "Card back…" can open this same control. */}
-            <span
-              ref={(el) =>
-                onBackTrigger(card.id, el?.querySelector("button") ?? null)
-              }
-            >
-              {backPicker}
-            </span>
-            <QtyStepper quantity={a.quantity} onSet={a.setQuantity} />
-          </span>
-        </>
-      )}
+        ) : (
+          <PrintingPicker
+            card={card}
+            rarity={card.rarity ?? undefined}
+            disabled={kit.serverUnavailable}
+            onOpen={a.openPrintingWith}
+          />
+        )}
+        {/* Mounted visibly, and registered so the right-click menu's
+            "Card back…" can open this same control. */}
+        <span
+          ref={(el) =>
+            onBackTrigger(card.id, el?.querySelector("button") ?? null)
+          }
+        >
+          {backPicker}
+        </span>
+        <QtyStepper quantity={a.quantity} onSet={a.setQuantity} />
+      </span>
     </div>
   );
 }
@@ -1208,9 +971,12 @@ function GridCell(props: {
 export default function DeckGridPrototype({
   variant,
   kit,
+  settings,
 }: {
   variant: string;
   kit: DeckGridKit;
+  /** Variant E lays the deck out on the pages these PDF settings print. */
+  settings: ProjectSettings;
 }) {
   const serverVersion = useServerVersion();
   const serverThumbs = serverSupportsPrintingImages(serverVersion);
@@ -1222,7 +988,6 @@ export default function DeckGridPrototype({
   // root stays null (the viewport).
   const scrollRef = useRef<HTMLElement | null>(null);
   const queue = useThumbnailQueue(scrollRef);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [images, setImages] = useState<CardRow | null>(null);
   const [menu, setMenu] = useState<{ card: CardRow; x: number; y: number } | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -1242,17 +1007,18 @@ export default function DeckGridPrototype({
     [kit],
   );
 
-  const toggleExpand = useCallback((id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  // Variant E: the pages the PDF tab's settings print as they stand, and this
+  // deck spread across them — one slot per printed copy, in the deck's Sort
+  // order, so a 4-of takes four adjacent slots and can straddle a page break.
+  const layout = useMemo(() => resolvePageLayout(settings), [settings]);
+  const pages = useMemo(() => paginateDeck(kit.cards, layout.capacity), [kit.cards, layout]);
+  const trimInset = trimInsetFor(layout);
+  // A grid larger than its page shows up as negative margins, which is also
+  // what the server clips. Say so instead of drawing it quietly.
+  const overflows = layout.marginX < 0 || layout.marginY < 0;
 
-  // Variant A's "Card back…" opens the row's own picker through the trigger
-  // each tile registers from its (hidden) mount of that control.
+  // The menu's "Card back…" opens the row's own picker through the trigger each
+  // tile registers from the mount in its control row.
   const openBackPicker = (card: CardRow) => {
     addLog(`Open card back picker · ${card.name}`);
     backBtns.current.get(card.id)?.click();
@@ -1264,7 +1030,7 @@ export default function DeckGridPrototype({
     if (button) backBtns.current.set(cardId, button);
     else backBtns.current.delete(cardId);
   }, []);
-  // Variant D's images: a modal over the grid, never an inline strip, so no
+  // D and E show a card's images in a modal over the grid, never inline, so no
   // tile ever changes size while you read one card's versions.
   const showImages = useCallback(
     (card: CardRow) => {
@@ -1276,29 +1042,53 @@ export default function DeckGridPrototype({
 
   const countDone = (pred: (c: Coverage) => boolean) => [...coverage.values()].filter(pred).length;
   const imagesCard = images ? (kit.cards.find((c) => c.id === images.id) ?? images) : null;
+  const mm = (v: number) => `${v.toFixed(1)}`;
+
+  // One card, drawn identically by both variants: only its placement differs. D
+  // hands it to the flex grid and has no position or trim edge of its own; E
+  // places it in a page slot and shows where the cut lands.
+  const cellFor = (slot: { card: CardRow; copy: number }, style?: CSSProperties) => (
+    <GridCell
+      key={`${slot.card.id}:${slot.copy}`}
+      card={slot.card}
+      c={coverage.get(slot.card.id)!}
+      a={makeActions(kit, slot.card, addLog)}
+      variant={variant}
+      kit={kit}
+      origin={origin}
+      serverThumbs={serverThumbs}
+      queue={queue}
+      style={style}
+      trimInset={variant === "E" ? trimInset : undefined}
+      onShowImages={() => showImages(slot.card)}
+      onMenu={(x, y) => setMenu({ card: slot.card, x, y })}
+      onBackTrigger={registerBack}
+    />
+  );
 
   return (
     <div className="proto-grid-wrap">
-      <div className={`deck-grid proto-${variant}`}>
-        {kit.cards.map((card) => (
-          <GridCell
-            key={card.id}
-            card={card}
-            c={coverage.get(card.id)!}
-            a={makeActions(kit, card, addLog)}
-            variant={variant}
-            kit={kit}
-            origin={origin}
-            serverThumbs={serverThumbs}
-            queue={queue}
-            expanded={expanded.has(card.id)}
-            onToggle={() => toggleExpand(card.id)}
-            onShowImages={() => showImages(card)}
-            onMenu={(x, y) => setMenu({ card, x, y })}
-            onBackTrigger={registerBack}
-          />
-        ))}
-      </div>
+      {variant === "E" ? (
+        // `proto-E` is what every rule for this variant's card is scoped to: the
+        // cards themselves are shared with D, the page around them is not.
+        <div className="proto-E proto-E-flow">
+          {pages.map((page, pageIndex) => (
+            <div key={pageIndex} className="proto-E-sheet" style={pageArStyle(layout)}>
+              <div className="proto-E-head">
+                Page {pageIndex + 1} · {page.length} of {layout.capacity} slots ·{" "}
+                {mm(layout.bledW)}×{mm(layout.bledH)} mm cards
+              </div>
+              <div className="proto-E-page">
+                {page.map((slot, i) => cellFor(slot, slotStyleFor(layout, i)))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className={`deck-grid proto-${variant}`}>
+          {kit.cards.map((card) => cellFor({ card, copy: 0 }))}
+        </div>
+      )}
 
       {menu && menuActions && (
         <ContextMenu
@@ -1311,7 +1101,9 @@ export default function DeckGridPrototype({
             kit.serverUnavailable,
             () => openBackPicker(menu.card),
             () => showImages(menu.card),
-            variant === "A",
+            // Both variants carry quantity in the stepper under the tile, so
+            // their menus have no Quantity items.
+            false,
           )}
           onClose={() => setMenu(null)}
         />
@@ -1349,11 +1141,33 @@ export default function DeckGridPrototype({
             failed{" "}
             {countDone((c) => c.original === "failed" || c.targets.some((t) => t.cover === "failed"))}
           </span>
-          <span>inline images {expanded.size}</span>
-          {(variant === "A" || variant === "D") && (
-            <span>images modal {imagesCard ? "open" : "closed"}</span>
-          )}
+          <span>images modal {imagesCard ? "open" : "closed"}</span>
         </div>
+        {variant === "E" && (
+          <div className="proto-state-row">
+            <span title="The page this view draws, from the PDF tab">
+              page {mm(layout.pageW)}×{mm(layout.pageH)} mm
+            </span>
+            <span title="One printed card: the trim box plus the selected bleed">
+              card {mm(layout.bledW)}×{mm(layout.bledH)} mm
+            </span>
+            <span title="Gap between printed cards">
+              gap {mm(settings.spacing_x_mm)} / {mm(settings.spacing_y_mm)} mm
+            </span>
+            <span title="Where the first card lands, from the page's left and top edge">
+              margin {mm(layout.marginX)} / {mm(layout.marginY)} mm
+            </span>
+            <span title="Printed cards per page, and how many pages this deck needs">
+              {layout.cols}×{layout.rows} · {pages.length} {(pages.length === 1 ? "page" : "pages")}
+            </span>
+          </div>
+        )}
+        {variant === "E" && overflows && (
+          <div className="proto-E-warn">
+            This grid is larger than its page (the margins are negative) — reduce cols, rows or
+            spacing, or pick a larger page.
+          </div>
+        )}
         {log.map((line, i) => (
           <div key={`${i}-${line}`}>{line}</div>
         ))}
