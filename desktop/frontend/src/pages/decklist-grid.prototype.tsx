@@ -29,6 +29,10 @@
 //                         print — the front face at the selected model and
 //                         the highest goal DPI — when one exists, else the
 //                         source art it shows today.
+//
+// The Pages-view prototype (decklist-pages.prototype.tsx) borrows this file's
+// pieces rather than repeating them: the coverage math (coverageFor), the
+// painted DPI badges, the right-click menu and its modal of images.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { generationApi } from "../api/generation";
 import { faceArtKind } from "../api/project";
@@ -116,7 +120,7 @@ function coverOf(v: VariantStatus | undefined): Cover {
 
 const COVER_GLYPH: Record<Cover, string> = { done: "✓", active: "…", failed: "✗", none: "—" };
 
-interface Coverage {
+export interface Coverage {
   faces: ProtoFace[];
   original: Cover;
   /** What each face's original image IS, in DPI — the badge says the number
@@ -150,7 +154,7 @@ function faceOriginalDpi(
   return null;
 }
 
-function coverageFor(
+export function coverageFor(
   card: CardRow,
   faces: ProtoFace[],
   model: string,
@@ -322,7 +326,7 @@ function QtyStepper({ quantity, onSet }: { quantity: number; onSet: (q: number) 
 }
 
 // One card's actions, already logged by the grid.
-interface TileActions {
+export interface TileActions {
   quantity: number;
   expanded: boolean;
   hasImages: boolean;
@@ -398,7 +402,7 @@ interface MenuAction {
   danger?: boolean;
 }
 
-interface MenuItem {
+export interface MenuItem {
   sep?: true;
   label?: string;
   action?: MenuAction;
@@ -409,7 +413,7 @@ const SEP: MenuItem = { sep: true };
 /** Variant A's answer to "where do the controls live": a menu on the card,
  *  like the other tools use. Opened by right-click, closed by Escape, an
  *  outside click or picking something. */
-function ContextMenu({
+export function ContextMenu({
   x,
   y,
   items,
@@ -480,7 +484,7 @@ function ContextMenu({
   );
 }
 
-function menuFor(
+export function menuFor(
   c: Coverage,
   a: TileActions,
   custom: boolean,
@@ -559,7 +563,7 @@ function menuFor(
  *  did. Every one of these calls the page's own handler — real work, not a
  *  stub. Plain function (not a hook) so the context menu can build the same
  *  actions for whichever card it is open on. */
-function makeActions(kit: DeckGridKit, card: CardRow, log: (s: string) => void): TileActions {
+export function makeActions(kit: DeckGridKit, card: CardRow, log: (s: string) => void): TileActions {
   const quantity = card.quantity ?? 1;
   return {
     quantity,
@@ -620,7 +624,7 @@ const ALWAYS_ON = { hasImages: true };
  *  own Scryfall original at 300 DPI and an MPC Fill / Custom Image original at
  *  that file's measured DPI. Sorted low to high, the row reads as the chain it
  *  describes — the source, then the upscales. */
-function PaintedBadges({
+export function PaintedBadges({
   c,
   kit,
   onDownload,
@@ -702,7 +706,7 @@ function protoSlug(name: string): string {
  *  One deliberate addition: the row has no View on an upscale, its thumb is
  *  already on screen at arm's length. In a modal of them, opening one
  *  full-size is the reason to be here. */
-function CardImagesModal({
+export function CardImagesModal({
   card,
   faces,
   kit,

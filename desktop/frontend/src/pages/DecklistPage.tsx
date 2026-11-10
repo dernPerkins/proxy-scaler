@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
-import type { CardFaceArt, CardRow, CustomUpscaleMode } from "../api/project";
+import type { CardFaceArt, CardRow, CustomUpscaleMode, DeckViewMode } from "../api/project";
 import type { CustomImage, GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import MpcCatalogPanel from "../components/MpcCatalogPanel";
@@ -57,6 +57,7 @@ import { useMpcCatalogReady } from "../mpcCatalog";
 import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
 import DeckGrid from "../components/DeckGrid";
+import DeckPagesPrototype from "../pages/decklist-pages.prototype";
 import SplitPill from "../components/SplitPill";
 import { useDeckViewMode } from "../deckViewMode";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
@@ -198,6 +199,11 @@ export default function DecklistPage() {
   // Rows or thumbnails: remembered across launches, like the Add Cards
   // mode (deckViewMode.ts).
   const { mode: viewMode, setMode: setViewMode } = useDeckViewMode();
+  // "pages" is a dev-only prototype (decklist-pages.prototype.tsx), but the mode
+  // is a real persisted setting: one saved from a dev build reads as the grid in
+  // a shipped build, rather than as a card list with no view.
+  const shownViewMode: DeckViewMode =
+    import.meta.env.DEV || viewMode !== "pages" ? viewMode : "grid";
   // PROTOTYPE: ?variant=A|B|C swaps in a Grid-view variant (dev builds only).
   const deckVariant = usePrototypeVariant(DECK_GRID_VARIANT_KEYS);
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
@@ -1541,17 +1547,26 @@ export default function DecklistPage() {
             Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
           </h2>
           <div className="decklist-actions" data-tour="deck-actions">
-            {/* Row or Grid: the same list drawn two ways. An app
-                preference (deckViewMode.ts), like Sort is — neither
-                changes what prints, only how the deck is read. */}
+            {/* Row, Grid, or (dev builds only) Pages: the same list drawn
+                three ways. An app preference (deckViewMode.ts), like Sort is —
+                none of them changes what prints, only how the deck is read. */}
             <span className="deck-view-mode" data-tour="deck-view-mode">
               <SplitPill
                 ariaLabel="Card view"
-                value={viewMode}
+                value={shownViewMode}
                 onChange={setViewMode}
                 options={[
                   { value: "row", label: "Row", title: "One row per card, with its controls" },
                   { value: "grid", label: "Grid", title: "Card art, three to a row" },
+                  ...(import.meta.env.DEV
+                    ? [
+                        {
+                          value: "pages" as const,
+                          label: "Pages",
+                          title: "The deck on the pages your PDF settings print",
+                        },
+                      ]
+                    : []),
                 ]}
               />
             </span>
@@ -1609,13 +1624,18 @@ export default function DecklistPage() {
         {/* PROTOTYPE (throwaway): with ?variant=A|B|C, the Grid view is one of
             three variants that carry the Row view's controls; no variant keeps
             the view-only grid below. */}
-        {viewMode === "grid" &&
+        {shownViewMode === "grid" &&
           (deckVariant ? (
             <DeckGridPrototype variant={deckVariant} kit={gridKit} />
           ) : (
             <DeckGrid cards={sortedCards} library={libraryById} />
           ))}
-        {viewMode === "row" &&
+        {/* PROTOTYPE (throwaway): the same deck on the pages the current PDF
+            settings print — a third pill option in dev builds only. */}
+        {shownViewMode === "pages" && (
+          <DeckPagesPrototype cards={sortedCards} settings={settings} kit={gridKit} />
+        )}
+        {shownViewMode === "row" &&
           sortedCards.map((card) => {
             const faces = facesForCard(card);
             // Known only once the card's faces have been generated or

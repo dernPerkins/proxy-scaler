@@ -2664,24 +2664,29 @@ pub fn set_add_cards_mode(app: AppHandle, mode: String) -> Result<(), String> {
 
 // --- The Decklist tab's card view ----------------------------------------
 //
-// Rows or a thumbnail grid: how the user last chose to look at their deck,
-// kept across restarts for the same reason as the Add Cards mode above —
-// a big deck is scanned the same way every time. App preference, not a
-// project setting: nothing about what gets printed changes. Absent (or
-// anything unexpected) means rows.
+// Rows, a thumbnail grid, or the deck laid out on printed pages: how the
+// user last chose to look at their deck, kept across restarts for the same
+// reason as the Add Cards mode above — a big deck is scanned the same way
+// every time. App preference, not a project setting: nothing about what gets
+// printed changes. Absent (or anything unexpected) means rows.
+//
+// The Pages view READS the project's PDF layout settings without changing
+// them, which is why it stays an app preference too: switching to it must not
+// touch what a project prints.
 
 const DECK_VIEW_MODE_KEY: &str = "deck_view_mode";
 
 fn read_deck_view_mode(conn: &Connection) -> Result<String, String> {
     let mode = match read_app_setting(conn, DECK_VIEW_MODE_KEY)?.as_deref() {
         Some("grid") => "grid",
+        Some("pages") => "pages",
         _ => "row",
     };
     Ok(mode.to_string())
 }
 
 fn write_deck_view_mode(conn: &Connection, mode: &str) -> Result<(), String> {
-    if mode != "row" && mode != "grid" {
+    if !matches!(mode, "row" | "grid" | "pages") {
         return Err(format!("Unknown deck view mode {mode:?}"));
     }
     write_app_setting(conn, DECK_VIEW_MODE_KEY, mode)
@@ -4021,6 +4026,8 @@ mod tests {
         assert_eq!(read_deck_view_mode(&conn).expect("default"), "row");
         write_deck_view_mode(&conn, "grid").expect("set grid");
         assert_eq!(read_deck_view_mode(&conn).expect("read"), "grid");
+        write_deck_view_mode(&conn, "pages").expect("set pages");
+        assert_eq!(read_deck_view_mode(&conn).expect("pages"), "pages");
         write_deck_view_mode(&conn, "row").expect("set row");
         assert_eq!(read_deck_view_mode(&conn).expect("row again"), "row");
         assert!(write_deck_view_mode(&conn, "cards").is_err());

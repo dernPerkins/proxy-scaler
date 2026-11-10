@@ -1,0 +1,141 @@
+/* PROTOTYPE — throwaway: styles for the Pages view
+   (decklist-pages.prototype.tsx). Delete with it. */
+
+.pages-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* The sheets. White paper against the app's dark surface, each one holding the
+   real page's aspect ratio; how many sit in a row is the window's business. */
+.pages-flow {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 22px;
+  align-items: start;
+}
+.pages-page {
+  position: relative;
+  width: 100%;
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.pages-page-num {
+  position: absolute;
+  left: 2px;
+  bottom: -19px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* A slot IS a printed card: the bled box, placed as a percentage of the page.
+   DeckTile draws inside it, with the label rows it normally puts under the art
+   removed — a page carries no names — and its fixed 488/680 frame relaxed to
+   the slot, which is the card plus whatever bleed is selected. */
+.pages-slot {
+  position: absolute;
+  z-index: 1;
+}
+.pages-slot .deck-tile {
+  height: 100%;
+}
+.pages-slot .deck-tile-frame {
+  height: 100%;
+  aspect-ratio: auto;
+  border: none;
+  border-radius: 0;
+}
+.pages-slot .deck-tile-label,
+.pages-slot .deck-tile-meta {
+  display: none;
+}
+/* A slot with nothing to draw still says why, in its own scale. */
+.pages-slot .deck-tile-placeholder {
+  gap: 2px;
+  padding: 3px;
+}
+.pages-slot .deck-tile-placeholder-name {
+  font-size: 9px;
+}
+.pages-slot .deck-tile-placeholder-note {
+  font-size: 8px;
+}
+
+/* Hovering grows nothing and moves nothing: the page's geometry is the thing
+   being read, and scaling the slot would also drag its fixed-position modals
+   (the card back picker) into the scaled box. What it does instead is float the
+   card's name above the slot and its status below it, at a size you can read
+   and click — a slot is 60-70px, which cannot carry either in place. */
+.pages-slot:hover,
+.pages-slot:focus-within {
+  z-index: 6;
+}
+.pages-slot:hover .deck-tile-frame,
+.pages-slot:focus-within .deck-tile-frame {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* The trim edge, and only when bleed is on: outside this hairline is the part
+   that gets cut off. A hairline, not a Card Guide — this view draws no guides. */
+.pages-trim {
+  position: absolute;
+  border: 1px dashed rgba(240, 70, 70, 0.8);
+  pointer-events: none;
+}
+
+/* Painted status, borrowed from variant D, floated under the slot on hover. The
+   grey badges ARE buttons (download / upscale that DPI), so they take the click
+   even though the strip they sit in does not. */
+.pages-slot .proto-painted {
+  top: 100%;
+  left: 0;
+  right: 0;
+  gap: 3px;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+}
+.pages-slot:hover .proto-painted,
+.pages-slot:focus-within .proto-painted {
+  opacity: 1;
+}
+.pages-slot .proto-badge {
+  padding: 2px 7px;
+  font-size: 10px;
+}
+.pages-slot .proto-badge.is-act {
+  pointer-events: auto;
+}
+
+/* The card's name, floated above the slot on the same hover: the Pages view is
+   the one view where you cannot otherwise tell what a card is. */
+.pages-slot-name {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  padding: 1px 4px;
+  background: rgba(16, 16, 24, 0.72);
+  color: #fff;
+  font-size: 10px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+}
+.pages-slot:hover .pages-slot-name,
+.pages-slot:focus-within .pages-slot-name {
+  opacity: 1;
+}
+
+/* The state panel's own warning: a grid too large for its page. */
+.pages-warn {
+  border-top: 1px solid var(--border);
+  padding-top: 3px;
+  margin-top: 3px;
+  color: var(--err);
+}

@@ -1,12 +1,14 @@
-// A two-way choice drawn as one pill split down the middle, with a thumb
-// that slides to the chosen half. For a setting with exactly two values
-// where both read as equals (Scryfall vs MPC Fill art) — .segmented is the
-// app's control for modes with more options, or toolbar-sized ones.
+// A choice drawn as one pill, split into equal panels, with a thumb that
+// slides to the chosen one. Built for a small number of values that read as
+// equals (Row / Grid / Pages, Scryfall vs MPC Fill art); the thumb's width
+// comes from `--split-pill-n`, so the slide works for any panel count.
+// `.segmented` is the app's control for modes with more options, or
+// toolbar-sized ones.
 //
 // A radiogroup: arrow keys move the choice, like a native radio pair. The
 // thumb's slide is a CSS transform transition, dropped under
 // prefers-reduced-motion (styles.css).
-import type { KeyboardEvent } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 
 export interface SplitPillOption<T extends string> {
   value: T;
@@ -23,7 +25,7 @@ export default function SplitPill<T extends string>({
   ariaLabel,
   disabled,
 }: {
-  options: readonly [SplitPillOption<T>, SplitPillOption<T>];
+  options: readonly SplitPillOption<T>[];
   value: T;
   onChange: (value: T) => void;
   ariaLabel: string;
@@ -52,7 +54,13 @@ export default function SplitPill<T extends string>({
       <span
         className="split-pill-thumb"
         aria-hidden="true"
-        style={{ transform: `translateX(${index * 100}%)` }}
+        // The thumb is one panel wide; translateX moves it by its own width.
+        style={
+          {
+            "--split-pill-n": options.length,
+            transform: `translateX(${index * 100}%)`,
+          } as CSSProperties
+        }
       />
       {options.map((option, i) => (
         <button
@@ -60,7 +68,7 @@ export default function SplitPill<T extends string>({
           type="button"
           role="radio"
           aria-checked={i === index}
-          // Roving: only the chosen half is in the tab order.
+          // Roving: only the chosen panel is in the tab order.
           tabIndex={i === index ? 0 : -1}
           className={`split-pill-option${i === index ? " is-active" : ""}`}
           title={option.title}
