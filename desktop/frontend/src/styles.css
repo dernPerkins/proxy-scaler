@@ -548,9 +548,7 @@ input[type="range"] {
   top: 3px;
   bottom: 3px;
   left: 3px;
-  /* One panel of the pill: the inner width divided by the panel count, which
-     SplitPill passes as --split-pill-n (2 keeps the old calc). */
-  width: calc((100% - 6px) / var(--split-pill-n, 2));
+  width: calc(50% - 3px);
   border-radius: 999px;
   background: var(--accent);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
@@ -1197,14 +1195,259 @@ button:disabled {
   font-size: 11.5px;
   font-weight: 600;
 }
-.deck-tile-meta {
+/* One card in the grid: its tile, with the badges and pills painted over the
+   art, and the control row under it (the row view's own printing picker,
+   back swatch and quantity stepper). */
+.deck-cell {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  font-size: 12px;
+  min-width: 0;
+}
+.deck-tile-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+/* Everything painted ON the art is anchored to a box that reproduces the art
+   frame's own box — same width, same 488/680 aspect — rather than measured up
+   from the bottom of the tile, where the gap and the name row would make every
+   bottom offset a guess. Offsets here are margins off the card itself. */
+.deck-tile-ov {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 488 / 680;
+  pointer-events: none;
+}
+
+/* Status, bottom-RIGHT of the art — the least interesting corner of a card,
+   usually just trademark text. One badge per DPI; a grey one is a button. */
+.deck-badges {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  pointer-events: auto;
+}
+.deck-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(16, 16, 24, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.deck-badge.is-done {
+  background: var(--ok);
+}
+.deck-badge.is-active {
+  background: var(--run);
+}
+.deck-badge.is-failed {
+  background: var(--err);
+}
+.deck-badge.is-none {
+  background: rgba(16, 16, 24, 0.45);
+  color: rgba(255, 255, 255, 0.75);
+}
+.deck-badge.is-act {
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  font: inherit;
+  cursor: pointer;
+}
+.deck-badge.is-act:hover,
+.deck-badge.is-act:focus-visible {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+/* The other two corners, on hover only, drawn as pills so they read as the
+   same language as the badges: the eye bottom-left (the images modal) and
+   the trash top-right. */
+.deck-pill {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(16, 16, 24, 0.72);
+  color: rgba(255, 255, 255, 0.86);
+  cursor: pointer;
+}
+.deck-pill svg {
+  width: 14px;
+  height: 14px;
+}
+.deck-pill:hover:not(:disabled),
+.deck-pill:focus-visible {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+.deck-pill:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.deck-pill-images {
+  left: 10px;
+  bottom: 10px;
+}
+.deck-pill-remove {
+  right: 10px;
+  top: 10px;
+  background: rgba(120, 24, 24, 0.72);
+}
+.deck-pill-remove:hover:not(:disabled),
+.deck-pill-remove:focus-visible {
+  background: var(--err);
+}
+/* Shown on hover or keyboard focus only: the tile keeps its exact shape
+   until you reach it. */
+.deck-tile-ov .deck-reveal {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.deck-cell:hover .deck-reveal,
+.deck-cell:focus-within .deck-reveal {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Still hover-only when disabled (nothing to show yet), just dimmer. */
+.deck-cell:hover .deck-reveal:disabled,
+.deck-cell:focus-within .deck-reveal:disabled {
+  opacity: 0.55;
+}
+
+/* The control row under the tile: the row's own controls, shrunk to tile size. */
+.deck-cell-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.deck-cell-controls .btn-sm,
+.deck-cell-controls .printing-cell > button {
+  font-size: 11.5px;
+  padding: 3px 8px;
+}
+.deck-qty {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.deck-qty-n {
+  min-width: 26px;
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 600;
   color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
+}
+
+/* The right-click menu on a tile. */
+.deck-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+}
+.deck-menu {
+  position: fixed;
+  z-index: 9001;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 220px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.deck-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 9px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.deck-menu-item:hover:not(:disabled),
+.deck-menu-item:focus-visible {
+  background: var(--accent-soft);
+}
+.deck-menu-item:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+.deck-menu-item.is-danger {
+  color: var(--err);
+}
+.deck-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+/* Every version of one card (CardImagesModal.tsx), as large as it can
+   reasonably be — the reason to open it is to look at an image and run the
+   row's own controls on it. */
+.card-images {
+  width: min(94vw, 1240px);
+  max-height: 92vh;
+}
+.card-images-note {
+  margin-left: 10px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.card-images-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-right: 6px;
+}
+.card-images-face {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.card-images-face:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.card-images-face-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+/* The row's own thumb markup, filling this modal's width instead of the
+   168px column it has beside a row of text. */
+.card-images .thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+.card-images .thumb {
+  width: auto;
+  min-width: 0;
 }
 
 .card-row {

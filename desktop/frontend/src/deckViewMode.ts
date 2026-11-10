@@ -1,5 +1,4 @@
-// The Decklist tab's card view: rows, thumbnails three to a row, or the deck
-// laid out on page-shaped sheets at the project's PDF settings.
+// The Decklist tab's card view: rows, or thumbnails three to a row.
 // Remembered app-wide rather than per project, like the Add Cards mode
 // (AddCards.tsx's `useAddMode`) — how a deck is *looked at* is the user's
 // habit, not something about what gets printed, so a project keeps its

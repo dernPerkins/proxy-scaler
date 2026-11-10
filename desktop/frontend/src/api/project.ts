@@ -150,10 +150,9 @@ export interface ProjectSettings {
 
 export type CustomUpscaleMode = "off" | "target" | "native";
 export type ImportArtSource = "scryfall" | "mpc";
-/** The Decklist tab's card list: one row per card, thumbnails three to a
- *  row (see components/DeckGrid.tsx), or the deck laid out on page-shaped
- *  sheets at the project's PDF settings (see pages/decklist-pages.prototype.tsx). */
-export type DeckViewMode = "row" | "grid" | "pages";
+/** The Decklist tab's card list: one row per card, or thumbnails three
+ *  to a row (see components/DeckGrid.tsx). */
+export type DeckViewMode = "row" | "grid";
 
 export interface CardRow {
   id: number;

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi } from "../api/project";
-import type { CardFaceArt, CardRow, CustomUpscaleMode, DeckViewMode } from "../api/project";
+import type { CardRow, CustomUpscaleMode } from "../api/project";
 import type { CustomImage, GalleryItem, Task } from "../api/types";
 import CardDbPanel from "../components/CardDbPanel";
 import MpcCatalogPanel from "../components/MpcCatalogPanel";
@@ -16,11 +16,6 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import CardBackPicker from "../components/CardBackPicker";
-// PROTOTYPE (throwaway): the Grid view's variants, switchable with
-// ?variant=D|E in a dev build. See decklist-grid.prototype.tsx.
-import DeckGridPrototype, { DECK_GRID_VARIANTS, DECK_GRID_VARIANT_KEYS } from "../pages/decklist-grid.prototype";
-import type { DeckGridKit } from "../pages/decklist-grid.prototype";
-import PrototypeSwitcher, { usePrototypeVariant } from "../components/PrototypeSwitcher";
 import {
   DownloadIcon,
   EyeIcon,
@@ -57,7 +52,7 @@ import { useMpcCatalogReady } from "../mpcCatalog";
 import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
 import DeckGrid from "../components/DeckGrid";
-import DeckPagesPrototype from "../pages/decklist-pages.prototype";
+import type { DisplayFace } from "../cardCoverage";
 import SplitPill from "../components/SplitPill";
 import { useDeckViewMode } from "../deckViewMode";
 import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
@@ -84,7 +79,7 @@ import {
   ACCEPTED_IMAGE_TYPES,
   addImagesSequentially,
 } from "../imageUpload";
-import { runDownload, useDownloadStatus } from "../download";
+import { runDownload, slugForFilename, useDownloadStatus } from "../download";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
 import {
   applyFaceArt,
@@ -93,7 +88,6 @@ import {
   groupByCardName,
   buildRows,
   statusForPairs,
-  type CardFaceStatus,
   type VariantStatus,
 } from "../mergeCardStatus";
 import type { Pick, PickerOpenRequest } from "../components/PrintingPicker";
@@ -126,12 +120,6 @@ function localCardIdentity(card: CardRow): string {
 function faceLabelText(label: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
-
-// One face of a row; `art` when it prints MPC Fill art (face_art).
-type DisplayFace = CardFaceStatus<CardFaceArt> & {
-  /** MPC Fill art picked for this face and still on its way. */
-  pick?: PendingFaceArt;
-};
 
 /** Faces with MPC art still downloading show that instead of what they
  *  print today. Positions: 0 for a single face or a front, 1 for a back. */
@@ -199,13 +187,6 @@ export default function DecklistPage() {
   // Rows or thumbnails: remembered across launches, like the Add Cards
   // mode (deckViewMode.ts).
   const { mode: viewMode, setMode: setViewMode } = useDeckViewMode();
-  // "pages" is a dev-only prototype (decklist-pages.prototype.tsx), but the mode
-  // is a real persisted setting: one saved from a dev build reads as the grid in
-  // a shipped build, rather than as a card list with no view.
-  const shownViewMode: DeckViewMode =
-    import.meta.env.DEV || viewMode !== "pages" ? viewMode : "grid";
-  // PROTOTYPE: ?variant=D|E swaps in a Grid-view variant (dev builds only).
-  const deckVariant = usePrototypeVariant(DECK_GRID_VARIANT_KEYS);
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -1110,9 +1091,9 @@ export default function DecklistPage() {
   // The deck walk goes through the cards with printings, in this order.
   const walkCards = sortedCards.filter((c) => c.custom_image_id == null);
 
-  /** PROTOTYPE SUPPORT: one card's faces, merged from the 3s status poll —
-   *  the Row view's per-card merge, lifted out of the row loop so the Grid
-   *  prototypes read the same state the rows show. */
+  /** One card's faces, merged from the 3s status poll: what a row lists, and
+   *  what the Grid view paints its badges and images modal from, so the two
+   *  views always read the same state. */
   function facesForCard(card: CardRow): DisplayFace[] {
     const identity = localCardIdentity(card);
     let cardGallery = galleryByCard.get(identity) ?? [];
@@ -1169,26 +1150,6 @@ export default function DecklistPage() {
       pendingArt,
     );
   }
-
-  /** PROTOTYPE (throwaway): everything a Grid-view variant needs — the deck,
-   *  the faces above, the sidebar's model + DPI selection, and the Row
-   *  view's own handlers. Actions are REAL: they mutate this project. */
-  const gridKit: DeckGridKit = {
-    cards: sortedCards,
-    library: libraryById,
-    facesFor: facesForCard,
-    model: settings.model,
-    dpis: settings.dpi_targets,
-    serverUnavailable,
-    openPicker: (card, request) => setWalk({ cardId: card.id, request }),
-    setQuantity: (card, quantity) => setCardQuantity(card.id, quantity),
-    download: (card) => downloadCard(card),
-    upscale: (card) => generateCardMutation.mutate({ card, dpis: settings.dpi_targets }),
-    upscaleAt: (card, dpi) => generateCardMutation.mutate({ card, dpis: [dpi] }),
-    remove: (card) => removeCard(card.id),
-    refetch: (galleryItemId) => refetchMutation.mutate(galleryItemId),
-    regen: (galleryItemId) => regenerateMutation.mutate(galleryItemId),
-  };
 
   async function clearFaceArt(card: CardRow, face: number) {
     await clearCardFaceArt(card.id, face);
@@ -1547,26 +1508,17 @@ export default function DecklistPage() {
             Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
           </h2>
           <div className="decklist-actions" data-tour="deck-actions">
-            {/* Row, Grid, or (dev builds only) Pages: the same list drawn
-                three ways. An app preference (deckViewMode.ts), like Sort is —
-                none of them changes what prints, only how the deck is read. */}
+            {/* Row or Grid: the same list drawn two ways. An app preference
+                (deckViewMode.ts), like Sort is — neither changes what prints,
+                only how the deck is read. */}
             <span className="deck-view-mode" data-tour="deck-view-mode">
               <SplitPill
                 ariaLabel="Card view"
-                value={shownViewMode}
+                value={viewMode}
                 onChange={setViewMode}
                 options={[
                   { value: "row", label: "Row", title: "One row per card, with its controls" },
                   { value: "grid", label: "Grid", title: "Card art, three to a row" },
-                  ...(import.meta.env.DEV
-                    ? [
-                        {
-                          value: "pages" as const,
-                          label: "Pages",
-                          title: "The deck on the pages your PDF settings print",
-                        },
-                      ]
-                    : []),
                 ]}
               />
             </span>
@@ -1621,21 +1573,25 @@ export default function DecklistPage() {
           </p>
         )}
 
-        {/* PROTOTYPE (throwaway): with ?variant=D|E, the Grid view is one of
-            two variants that carry the Row view's controls; no variant keeps
-            the view-only grid below. */}
-        {shownViewMode === "grid" &&
-          (deckVariant ? (
-            <DeckGridPrototype variant={deckVariant} kit={gridKit} settings={settings} />
-          ) : (
-            <DeckGrid cards={sortedCards} library={libraryById} />
-          ))}
-        {/* PROTOTYPE (throwaway): the same deck on the pages the current PDF
-            settings print — a third pill option in dev builds only. */}
-        {shownViewMode === "pages" && (
-          <DeckPagesPrototype cards={sortedCards} settings={settings} kit={gridKit} />
+        {viewMode === "grid" && (
+          <DeckGrid
+            cards={sortedCards}
+            library={libraryById}
+            facesFor={facesForCard}
+            model={settings.model}
+            dpis={settings.dpi_targets}
+            serverUnavailable={serverUnavailable}
+            openPicker={(card, request) => setWalk({ cardId: card.id, request })}
+            setQuantity={(card, quantity) => setCardQuantity(card.id, quantity)}
+            download={(card) => downloadCard(card)}
+            upscale={(card) => generateCardMutation.mutate({ card, dpis: settings.dpi_targets })}
+            upscaleAt={(card, dpi) => generateCardMutation.mutate({ card, dpis: [dpi] })}
+            remove={(card) => removeCard(card.id)}
+            refetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
+            regen={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
+          />
         )}
-        {shownViewMode === "row" &&
+        {viewMode === "row" &&
           sortedCards.map((card) => {
             const faces = facesForCard(card);
             // Known only once the card's faces have been generated or
@@ -1669,8 +1625,6 @@ export default function DecklistPage() {
             );
           })}
       </main>
-      {/* PROTOTYPE (throwaway): the floating ?variant= cycle bar. */}
-      {import.meta.env.DEV && <PrototypeSwitcher variants={DECK_GRID_VARIANTS} />}
       {confirmResetBacks && (
         <ConfirmDialog
           title="Reset per-card backs?"
@@ -1720,10 +1674,6 @@ function ThumbImage({ src, alt, bleedMm }: { src: string; alt: string; bleedMm: 
       <img src={src} alt={alt} loading="lazy" style={fillFrameWith(trimGeometry(null, bleedMm).trim)} />
     </div>
   );
-}
-
-function slugify(name: string): string {
-  return name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "card";
 }
 
 async function handleDownloadImage(url: string, filename: string): Promise<void> {
@@ -2082,7 +2032,7 @@ function CardRowView(props: {
                       onClick={() =>
                         download(
                           generationApi.imageUrl(originalSource.galleryItemId, "original"),
-                          `${slugify(card.name)}-original.png`,
+                          `${slugForFilename(card.name)}-original.png`,
                         )
                       }
                     >
@@ -2188,7 +2138,7 @@ function CardRowView(props: {
                       onClick={() =>
                         download(
                           generationApi.imageUrl(v.galleryItemId, "full"),
-                          `${slugify(card.name)}-${v.dpi}dpi-${v.model}.png`,
+                          `${slugForFilename(card.name)}-${v.dpi}dpi-${v.model}.png`,
                         )
                       }
                     >

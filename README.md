@@ -65,8 +65,13 @@ The deck list itself draws in two ways, switched beside **Sort**: **Row**
 puts one row per card, carrying its printing button, back, quantity and
 per-card Download/Upscale; **Grid** puts every card's art as a thumbnail,
 three to a row — the way a sheet prints, which is the quick way to see
-what a deck looks like. It is the same list in the same order, and the
-choice is remembered between launches; the controls stay on Row.
+what a deck looks like. Each tile keeps the card's printing button, back and
+quantity under it; badges on the art show the original's DPI and each goal
+DPI at the selected model (a grey badge is a button that downloads or
+upscales just that one), the eye opens every version of the card with the
+row's own per-image controls, and right-click opens a menu with the rest. It
+is the same list in the same order, and the choice is remembered between
+launches.
 
 The same card can be in a deck once per printing *and language* — an
 Italian and an English Sol Ring of the same set import, generate, and

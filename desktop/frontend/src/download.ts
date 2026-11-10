@@ -59,6 +59,13 @@ export function useDownloadStatus(): DownloadStatus | null {
   return useSyncExternalStore(subscribeDownloadStatus, getDownloadStatus);
 }
 
+/** A card's name as part of a downloaded file's name: every character a
+ *  filename cannot carry becomes "_", so "Bolas's Citadel" never tries to
+ *  write a quote. */
+export function slugForFilename(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "card";
+}
+
 /** Update the live download's phase. No-op once the download has ended,
  *  so a late poll/event can't resurrect a finished modal. */
 export function setDownloadPhase(phase: DownloadPhase): void {
