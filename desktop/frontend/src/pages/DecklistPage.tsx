@@ -16,6 +16,11 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import NumberInput from "../components/NumberInput";
 import PrintingPicker from "../components/PrintingPicker";
 import CardBackPicker from "../components/CardBackPicker";
+// PROTOTYPE (throwaway): the Grid view's variants, switchable with
+// ?variant=A|B|C in a dev build. See decklist-grid.prototype.tsx.
+import DeckGridPrototype, { DECK_GRID_VARIANTS, DECK_GRID_VARIANT_KEYS } from "../pages/decklist-grid.prototype";
+import type { DeckGridKit } from "../pages/decklist-grid.prototype";
+import PrototypeSwitcher, { usePrototypeVariant } from "../components/PrototypeSwitcher";
 import {
   DownloadIcon,
   EyeIcon,
@@ -193,6 +198,8 @@ export default function DecklistPage() {
   // Rows or thumbnails: remembered across launches, like the Add Cards
   // mode (deckViewMode.ts).
   const { mode: viewMode, setMode: setViewMode } = useDeckViewMode();
+  // PROTOTYPE: ?variant=A|B|C swaps in a Grid-view variant (dev builds only).
+  const deckVariant = usePrototypeVariant(DECK_GRID_VARIANT_KEYS);
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -884,15 +891,17 @@ export default function DecklistPage() {
     },
   });
 
+  // Upscale one card. `dpis` narrows the goal list (a grid badge asks for the
+  // one DPI it is standing for); omit it and the card gets the full selection.
   const generateCardMutation = useMutation({
-    mutationFn: async (picked: CardRow) => {
+    mutationFn: async ({ card: picked, dpis }: { card: CardRow; dpis?: number[] }) => {
       const [card = picked] = await withPendingArtFetched([picked]);
       await syncCustomImages([card], serverVersion);
       return generationApi.generate({
         project_tag: projectTag as string,
         entries: [cardToEntry(card)],
         model: settings.model,
-        dpi_targets: settings.dpi_targets,
+        dpi_targets: dpis?.length ? dpis : settings.dpi_targets,
         skip_existing: settings.skip_existing,
         tile_size: settings.tile_size,
         // A card's own button upscales everything on it, whatever kind.
@@ -1094,6 +1103,86 @@ export default function DecklistPage() {
   const faceCounts = faceCountsQuery.data?.face_counts ?? {};
   // The deck walk goes through the cards with printings, in this order.
   const walkCards = sortedCards.filter((c) => c.custom_image_id == null);
+
+  /** PROTOTYPE SUPPORT: one card's faces, merged from the 3s status poll —
+   *  the Row view's per-card merge, lifted out of the row loop so the Grid
+   *  prototypes read the same state the rows show. */
+  function facesForCard(card: CardRow): DisplayFace[] {
+    const identity = localCardIdentity(card);
+    let cardGallery = galleryByCard.get(identity) ?? [];
+    let cardTasks = tasksByCard.get(identity) ?? [];
+    if (card.custom_image_id == null && (!card.set_code || !card.collector_number)) {
+      // Name-only local card (never a custom, which matches by hash alone):
+      // the generation server always resolves it to one concrete printing (a
+      // real set + collector_number), so it can never land in the identity
+      // bucket above — match by name instead. See
+      // mergeCardStatus.ts::groupByCardName.
+      const nameKey = card.name.toLowerCase();
+      cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
+      cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
+    }
+    const faceGroups = buildRows(cardGallery, cardTasks);
+    const scryfallFaces = faceGroups
+      .map(({ items, tasks: faceTasks }) => {
+        const source = items[0] ?? faceTasks[0];
+        return {
+          faceIndex: source?.face_index ?? null,
+          face: {
+            faceLabel: source?.face_label ?? null,
+            // Canceled tasks are just queue history, not worth surfacing
+            // here — the Tasks tab is where cancellation state actually
+            // matters.
+            variants: statusForPairs(items, faceTasks).filter((v) => v.status !== "canceled"),
+          } as DisplayFace,
+        };
+      })
+      .filter(({ face }) => face.variants.length > 0);
+    // A double-faced card lists both faces once anything says it has two (a
+    // face's own row, or face art), so a face with nothing yet shows as such
+    // rather than missing — say, a Scryfall front beside a back printing MPC
+    // Fill art, or a back that never downloaded beside its front.
+    const doubleFaced =
+      (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
+      faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
+      (card.face_art ?? []).some((fa) => fa.total_faces > 1);
+    if (doubleFaced) {
+      for (const position of [0, 1]) {
+        if (scryfallFaces.some((f) => (f.faceIndex ?? 0) === position)) continue;
+        scryfallFaces.push({
+          faceIndex: position,
+          face: { faceLabel: position === 0 ? "front" : "back", variants: [] },
+        });
+      }
+      scryfallFaces.sort((a, b) => (a.faceIndex ?? 0) - (b.faceIndex ?? 0));
+    }
+    // A face printing MPC Fill art shows that image's variants in its place
+    // (they live under the image's own identity).
+    return withPendingPicks(
+      applyFaceArt(scryfallFaces, card.face_art ?? [], galleryByCard, tasksByCard),
+      card.id,
+      pendingArt,
+    );
+  }
+
+  /** PROTOTYPE (throwaway): everything a Grid-view variant needs — the deck,
+   *  the faces above, the sidebar's model + DPI selection, and the Row
+   *  view's own handlers. Actions are REAL: they mutate this project. */
+  const gridKit: DeckGridKit = {
+    cards: sortedCards,
+    library: libraryById,
+    facesFor: facesForCard,
+    model: settings.model,
+    dpis: settings.dpi_targets,
+    serverUnavailable,
+    openPicker: (card, request) => setWalk({ cardId: card.id, request }),
+    setQuantity: (card, quantity) => setCardQuantity(card.id, quantity),
+    download: (card) => downloadCard(card),
+    upscale: (card) => generateCardMutation.mutate({ card, dpis: settings.dpi_targets }),
+    upscaleAt: (card, dpi) => generateCardMutation.mutate({ card, dpis: [dpi] }),
+    remove: (card) => removeCard(card.id),
+    refetch: (galleryItemId) => refetchMutation.mutate(galleryItemId),
+    regen: (galleryItemId) => regenerateMutation.mutate(galleryItemId),
+  };
 
   async function clearFaceArt(card: CardRow, face: number) {
     await clearCardFaceArt(card.id, face);
@@ -1517,69 +1606,18 @@ export default function DecklistPage() {
           </p>
         )}
 
-        {/* The two views of the same sorted list. Grid is thumbnails
-            only; every control stays on the Row view. */}
-        {viewMode === "grid" && <DeckGrid cards={sortedCards} library={libraryById} />}
+        {/* PROTOTYPE (throwaway): with ?variant=A|B|C, the Grid view is one of
+            three variants that carry the Row view's controls; no variant keeps
+            the view-only grid below. */}
+        {viewMode === "grid" &&
+          (deckVariant ? (
+            <DeckGridPrototype variant={deckVariant} kit={gridKit} />
+          ) : (
+            <DeckGrid cards={sortedCards} library={libraryById} />
+          ))}
         {viewMode === "row" &&
           sortedCards.map((card) => {
-            const identity = localCardIdentity(card);
-            let cardGallery = galleryByCard.get(identity) ?? [];
-            let cardTasks = tasksByCard.get(identity) ?? [];
-            if (card.custom_image_id == null && (!card.set_code || !card.collector_number)) {
-              // Name-only local card (never a custom, which matches by
-              // hash alone): the generation server always
-              // resolves it to one concrete printing (a real set +
-              // collector_number), so it can never land in the
-              // identity bucket above — match by name instead. See
-              // mergeCardStatus.ts::groupByCardName.
-              const nameKey = card.name.toLowerCase();
-              cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
-              cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
-            }
-            const faceGroups = buildRows(cardGallery, cardTasks);
-            const scryfallFaces = faceGroups
-              .map(({ items, tasks: faceTasks }) => {
-                const source = items[0] ?? faceTasks[0];
-                return {
-                  faceIndex: source?.face_index ?? null,
-                  face: {
-                    faceLabel: source?.face_label ?? null,
-                    // Canceled tasks are just queue history, not worth
-                    // surfacing here — the Tasks tab is where cancellation
-                    // state actually matters.
-                    variants: statusForPairs(items, faceTasks).filter(
-                      (v) => v.status !== "canceled",
-                    ),
-                  } as DisplayFace,
-                };
-              })
-              .filter(({ face }) => face.variants.length > 0);
-            // A double-faced card lists both faces once anything says it has
-            // two (a face's own row, or face art), so a face with nothing yet
-            // shows as such rather than missing — say, a Scryfall front
-            // beside a back printing MPC Fill art, or a back that never
-            // downloaded beside its front.
-            const doubleFaced =
-              (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
-              faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
-              (card.face_art ?? []).some((fa) => fa.total_faces > 1);
-            if (doubleFaced) {
-              for (const position of [0, 1]) {
-                if (scryfallFaces.some((f) => (f.faceIndex ?? 0) === position)) continue;
-                scryfallFaces.push({
-                  faceIndex: position,
-                  face: { faceLabel: position === 0 ? "front" : "back", variants: [] },
-                });
-              }
-              scryfallFaces.sort((a, b) => (a.faceIndex ?? 0) - (b.faceIndex ?? 0));
-            }
-            // A face printing MPC Fill art shows that image's variants in
-            // its place (they live under the image's own identity).
-            const faces: DisplayFace[] = withPendingPicks(
-              applyFaceArt(scryfallFaces, card.face_art ?? [], galleryByCard, tasksByCard),
-              card.id,
-              pendingArt,
-            );
+            const faces = facesForCard(card);
             // Known only once the card's faces have been generated or
             // downloaded: a double-faced card's "back" face is what prints
             // on its Reverse while the PDF tab pairs faces, so the per-card
@@ -1598,7 +1636,7 @@ export default function DecklistPage() {
                 onToggleExpand={toggleExpanded}
                 onRemove={() => removeCard(card.id)}
                 onSetQuantity={(quantity) => setCardQuantity(card.id, quantity)}
-                onGenerate={() => generateCardMutation.mutate(card)}
+                onGenerate={() => generateCardMutation.mutate({ card, dpis: settings.dpi_targets })}
                 onDownload={() => downloadCard(card)}
                 onRegenerate={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
                 onRefetch={(galleryItemId) => refetchMutation.mutate(galleryItemId)}
@@ -1611,6 +1649,8 @@ export default function DecklistPage() {
             );
           })}
       </main>
+      {/* PROTOTYPE (throwaway): the floating ?variant= cycle bar. */}
+      {import.meta.env.DEV && <PrototypeSwitcher variants={DECK_GRID_VARIANTS} />}
       {confirmResetBacks && (
         <ConfirmDialog
           title="Reset per-card backs?"

@@ -297,18 +297,37 @@ export function useThumbnailQueue(scrollRef: React.RefObject<HTMLElement | null>
 /** A tile's turn in the queue: `load` turns true when its image may load,
  *  and the image calls `settle` once it has loaded or failed. `enabled`
  *  false (images off, or no origin yet) keeps the tile out of the queue:
- *  a turn given to an image that never renders would never come back. */
+ *  a turn given to an image that never renders would never come back.
+ *
+ *  A tile spends one turn per image, which is right until its image CHANGES:
+ *  pass `resetKey` (the tile's image identity — its url, or a stable stand-in
+ *  for one not fetched yet) and a changed key queues the tile again instead of
+ *  letting it fetch the new image on the old, already-spent turn. The deck
+ *  grid needs this: every tile of a deck is mounted, so after Generate hands
+ *  a deck its upscaled thumbnails, tiles that had already loaded would each
+ *  fetch a whole new image at once, near the view or not. */
 export function useQueuedThumb(
   queue: ThumbnailQueue,
   frameRef: React.RefObject<Element | null>,
   enabled: boolean,
   first: boolean,
+  resetKey?: unknown,
 ): { load: boolean; settle: () => void } {
   const [load, setLoad] = useState(false);
+  const [generation, setGeneration] = useState(0);
   const handle = useRef<QueuedLoad | null>(null);
   const firstRef = useRef(first);
   firstRef.current = first;
   const loaded = useRef(false);
+  const keyRef = useRef(resetKey);
+  useEffect(() => {
+    if (keyRef.current === resetKey) return;
+    keyRef.current = resetKey;
+    loaded.current = false;
+    setLoad(false);
+    // Bumps the enqueue effect's dependencies so the tile re-enters the queue.
+    setGeneration((g) => g + 1);
+  }, [resetKey]);
   // In an effect, not the ref callback: effects run after the whole tree
   // has committed, so the scroll container the queue is rooted on exists.
   useEffect(() => {
@@ -326,7 +345,7 @@ export function useQueuedThumb(
       h.cancel();
       handle.current = null;
     };
-  }, [queue, enabled, frameRef]);
+  }, [queue, enabled, frameRef, generation]);
   useEffect(() => handle.current?.setFirst(first), [first]);
   const settle = useCallback(() => handle.current?.settle(), []);
   return { load, settle };

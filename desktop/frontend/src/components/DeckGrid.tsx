@@ -19,6 +19,11 @@
 //     chosen but not downloaded yet, or a server too old to serve
 //     thumbnails — a card-shaped placeholder naming the card.
 //
+// Tiles load as they approach the viewport, five at a time (imageGrid.ts),
+// so a deck of hundreds scrolls rather than one-shots its thumbnails — and a
+// tile whose image changes (a prototype's variant thumb) queues again for a
+// fresh turn instead of fetching outside the queue.
+//
 // A tile shows its FRONT; a double-faced card's back stays on the Row
 // view's second face (and on its Reverse) until this view grows one.
 import { useEffect, useRef, useState } from "react";
@@ -100,7 +105,7 @@ export default function DeckGrid({ cards, library }: DeckGridProps) {
   );
 }
 
-function DeckTile(props: {
+export function DeckTile(props: {
   card: CardRow;
   library: ReadonlyMap<number, CustomImage>;
   /** null until App Settings' image origin has loaded: nothing is asked
@@ -108,35 +113,62 @@ function DeckTile(props: {
   origin: ImageOrigin | null;
   serverThumbs: boolean;
   queue: ThumbnailQueue;
+  /** PROTOTYPE SUPPORT: variants paint the card's identity onto the tile
+   *  themselves (name, count, printing, state), which makes the hover tooltip
+   *  that repeats it redundant. Production leaves it on. */
+  hideTileTitle?: boolean;
+  /** PROTOTYPE SUPPORT: paint a generated variant's own thumbnail (the gallery
+   *  thumb endpoint) instead of the art this card prints from, so the tile
+   *  shows the image that would actually print. It is a tile image like any
+   *  other here — it waits for its turn in the load queue and re-queues when
+   *  it changes — and it falls back to the source art when it is missing or
+   *  fails. Production never passes it. */
+  variantSrc?: string | null;
 }) {
-  const { card, library, origin, serverThumbs, queue } = props;
+  const { card, library, origin, serverThumbs, queue, hideTileTitle, variantSrc } = props;
   const art = tileArt(card);
   const quantity = card.quantity ?? 1;
-  const [failed, setFailed] = useState(false);
+  // The image identity that failed, not just "something failed": a variant
+  // thumbnail that 404s must not black out a tile that has its source art to
+  // fall back on.
+  const [failedKey, setFailedKey] = useState<string | null>(null);
   const frameRef = useRef<HTMLSpanElement>(null);
-  // Tiles take turns loading (imageGrid.ts). A deck is hundreds of
-  // thumbnails, each one a fetch to the sidecar on a machine where the
-  // webview opens six connections per host and queues them in the order
-  // the tiles were built: unthrottled, the tiles in view wait behind
-  // every tile above them.
+  // Which image this tile WOULD draw, worked out before its turn in the queue
+  // is asked for: a tile spends one turn per image, and a generated variant's
+  // thumbnail is a different image from the printing's (imageGrid.ts).
+  const artUrl =
+    art.kind === "server" && serverThumbs && origin != null
+      ? generationApi.cardThumbUrl(art.scryfallId, art.face, origin)
+      : null;
+  const variantUrl = variantSrc != null && serverThumbs ? variantSrc : null;
+  const customId = art.kind === "local" ? art.customImageId : null;
+  const localKey = customId != null ? `custom:${customId}` : null;
+  const imageKey = variantUrl ?? artUrl ?? localKey;
+  // Tiles take turns loading. A deck is hundreds of thumbnails, each one a
+  // fetch to the sidecar on a machine where the webview opens six connections
+  // per host and queues them in the order the tiles were built: unthrottled,
+  // the tiles in view wait behind every tile above them. A variant thumbnail
+  // needs the queue too, and needs no image origin to ask through: the file is
+  // the server's own.
   const canAsk =
-    art.kind === "local" || (art.kind === "server" && serverThumbs && origin != null);
-  const { load, settle } = useQueuedThumb(queue, frameRef, canAsk, false);
-  const localId = art.kind === "local" ? art.customImageId : null;
+    variantUrl != null ||
+    art.kind === "local" ||
+    (art.kind === "server" && serverThumbs && origin != null);
+  const { load, settle } = useQueuedThumb(queue, frameRef, canAsk, false, imageKey);
   const localQuery = useQuery({
     // The same key the Customs tab's tiles use, so a card and the library
     // copy of its art cost one round trip, not two.
-    queryKey: ["custom-thumb", localId],
-    queryFn: () => projectApi.customImageThumbnail(localId!),
-    enabled: localId != null && load,
+    queryKey: ["custom-thumb", customId],
+    queryFn: () => projectApi.customImageThumbnail(customId!),
+    enabled: customId != null && load,
     staleTime: Infinity,
   });
-  const localImage = localId != null ? library.get(localId) : undefined;
+  const localImage = customId != null ? library.get(customId) : undefined;
   // Fetched-but-nothing is a real answer: the library no longer holds the
   // art this card points at (it was deleted out from under the project).
   // Without treating it as a placeholder the tile would stay an empty
   // frame, and hold its turn in the load queue until that times out.
-  const localEmpty = localId != null && localQuery.isFetched && localQuery.data == null;
+  const localEmpty = customId != null && localQuery.isFetched && localQuery.data == null;
   // Art declared to carry bleed shows as cut, the bleed cropped off as the
   // Customs tiles and the row thumbnails crop it: the server keeps the
   // bled file, and every view trims it for display.
@@ -146,15 +178,21 @@ function DeckTile(props: {
           trimGeometry({ w: localImage.width, h: localImage.height }, localImage.bleed_mm).trim,
         )
       : null;
-  const serverUrl =
-    art.kind === "server" && serverThumbs && origin != null && load && !failed
-      ? generationApi.cardThumbUrl(art.scryfallId, art.face, origin)
-      : null;
-  const src = serverUrl ?? (localId != null && load && !failed ? localQuery.data ?? null : null);
+  // Each candidate carries the name it is marked failed under — a Custom
+  // Image's bytes arrive as a data URL, so it gets a short key rather than its
+  // own url. Tried in order, once each: a variant thumbnail that 404s (its file
+  // is not on the server yet) costs that image, not the tile.
+  const candidates: { key: string; url: string | null }[] = [
+    ...(variantUrl != null ? [{ key: variantUrl, url: variantUrl }] : []),
+    ...(artUrl != null ? [{ key: artUrl, url: artUrl }] : []),
+    ...(localKey != null ? [{ key: localKey, url: localQuery.data ?? null }] : []),
+  ];
+  const shown = candidates.find((c) => load && c.url != null && c.key !== failedKey) ?? null;
+  const src = shown?.url ?? null;
   // No src is either "nothing to draw" (placeholder) or "its turn hasn't
   // come / the bytes are on the way" (an empty card-shaped frame).
   const placeholderReason =
-    failed || localQuery.isError || localEmpty
+    (failedKey != null || localQuery.isError || localEmpty) && candidates.length > 0
       ? "Couldn't load this art"
       : art.kind === "pending"
         ? "MPC Fill art not downloaded yet"
@@ -166,9 +204,10 @@ function DeckTile(props: {
             ? "Art needs a newer generation server"
             : null;
   const alt = alternateName(card.name, card.printed_name, card.flavor_name);
-  // A turn handed to a tile that will never draw (its art is gone) goes
-  // straight back to the queue instead of being held to its 15 s timeout.
-  const settledOut = localEmpty || failed;
+  // A turn handed to a tile that will never draw (its art is gone, or every
+  // candidate has already failed) goes straight back to the queue instead of
+  // being held to its 15 s timeout.
+  const settledOut = localEmpty || (src == null && failedKey != null);
   useEffect(() => {
     if (settledOut) settle();
   }, [settledOut, settle]);
@@ -187,7 +226,7 @@ function DeckTile(props: {
     .join(" · ");
 
   return (
-    <div className="deck-tile" title={title}>
+    <div className="deck-tile" title={hideTileTitle ? undefined : title}>
       <span
         ref={frameRef}
         className={`deck-tile-frame${isAlphaPrinting(card.set_code) ? " alpha-corners" : ""}`}
@@ -212,7 +251,7 @@ function DeckTile(props: {
             onLoad={settle}
             onError={() => {
               settle();
-              setFailed(true);
+              setFailedKey(shown?.key ?? null);
             }}
           />
         ) : placeholderReason ? (

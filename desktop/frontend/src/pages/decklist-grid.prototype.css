@@ -1,0 +1,411 @@
+/* PROTOTYPE — throwaway. Styles for the Grid-view variants in
+   decklist-grid.prototype.tsx. They sit ON TOP of the real .deck-grid /
+   .deck-tile rules (a variant never restyles the tile itself, only what it
+   adds around or over it). Delete with the prototype. */
+
+.proto-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* --- Variant A · right-click menu ------------------------------------- */
+
+.proto-pips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.proto-pip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--off-soft);
+  color: var(--off);
+  font-size: 11px;
+  font-weight: 600;
+}
+.proto-pip.is-done {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.proto-pip.is-active {
+  background: var(--run-soft);
+  color: var(--run);
+}
+.proto-pip.is-failed {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+/* The row's CardBackPicker stays mounted so the menu can open it, but a tile
+   has no room for a swatch. Hiding the modal with it would hide the picker. */
+.proto-hidden-back .card-back-cell > button {
+  display: none;
+}
+
+.proto-ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+}
+.proto-ctx {
+  position: fixed;
+  z-index: 9001;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 220px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.proto-ctx-item {
+  display: block;
+  width: 100%;
+  padding: 6px 9px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.proto-ctx-item:hover:not(:disabled),
+.proto-ctx-item:focus-visible {
+  background: var(--accent-soft);
+}
+.proto-ctx-item:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+.proto-ctx-item.is-danger {
+  color: var(--err);
+}
+.proto-ctx-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+/* --- Variants B and C · controls under / over a tile ------------------ */
+
+.proto-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.proto-controls .btn-sm {
+  font-size: 11.5px;
+  padding: 3px 8px;
+}
+.proto-face-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.proto-qty {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.proto-qty-n {
+  min-width: 26px;
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* Variant C: the state painted ON the art. The frame is 488/680 and the cell
+   is a flex column, so the overlay is positioned off the tile's own frame. */
+.proto-C .proto-cell {
+  position: relative;
+}
+.proto-C .deck-tile {
+  min-height: 0;
+}
+.proto-painted {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  pointer-events: none;
+}
+.proto-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(16, 16, 24, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.proto-badge.is-done {
+  background: var(--ok);
+}
+.proto-badge.is-active {
+  background: var(--run);
+}
+.proto-badge.is-failed {
+  background: var(--err);
+}
+.proto-badge.is-none {
+  background: rgba(16, 16, 24, 0.45);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* The rest of C's controls only appear on hover or keyboard focus: the tile
+   keeps its exact grid shape until you reach it. */
+.proto-reveal {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.proto-C .proto-cell:hover .proto-reveal,
+.proto-C .proto-cell:focus-within .proto-reveal,
+.proto-reveal:hover,
+.proto-reveal:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* --- Show/Hide images in the grid ------------------------------------- */
+
+.proto-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.proto-versions-face {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+}
+.proto-versions-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.proto-version {
+  margin: 0;
+  width: 64px;
+  text-align: center;
+}
+.proto-version img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 488 / 680;
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-3);
+}
+.proto-version figcaption {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Variant D · the merge of A, B and C ------------------------------ */
+
+/* The tile's own meta row (set · number · language) IS the printing button's
+   label now, so it leaves the tile and joins the control row under it. */
+.proto-D .deck-tile-meta {
+  display: none;
+}
+
+.proto-D .proto-tile-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+/* Everything painted ON the art is anchored to a box that reproduces the art
+   frame's own box — same width, same 488/680 aspect — rather than measured up
+   from the bottom of the tile, where the 6px gap and the name row made every
+   bottom offset a guess. Offsets here are margins off the card itself, so a
+   badge's bottom margin can equal its right one. */
+.proto-D .proto-tile-ov {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 488 / 680;
+  pointer-events: none;
+}
+
+/* Painted status, bottom-RIGHT of the art — the least interesting corner of
+   a card, usually just trademark text. A grey badge is a button here, so
+   unlike C this overlay takes clicks. */
+.proto-D .proto-painted {
+  top: auto;
+  left: auto;
+  right: 10px;
+  bottom: 10px;
+  justify-content: flex-end;
+  pointer-events: auto;
+}
+.proto-badge.is-act {
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  font: inherit;
+  cursor: pointer;
+}
+.proto-badge.is-act:hover,
+.proto-badge.is-act:focus-visible {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+/* The other two corners, on hover only, and drawn as badges so all of them
+   read as one language painted on the art: the eye bottom-left (the modal
+   opener, the right-click menu does the same) and the trash top-right. */
+.proto-pill {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(16, 16, 24, 0.72);
+  color: rgba(255, 255, 255, 0.86);
+  cursor: pointer;
+}
+.proto-pill svg {
+  width: 14px;
+  height: 14px;
+}
+.proto-pill:hover:not(:disabled),
+.proto-pill:focus-visible {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+.proto-pill:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.proto-pill-images {
+  left: 10px;
+  bottom: 10px;
+}
+.proto-pill-remove {
+  right: 10px;
+  top: 10px;
+  background: rgba(120, 24, 24, 0.72);
+}
+.proto-pill-remove:hover:not(:disabled),
+.proto-pill-remove:focus-visible {
+  background: var(--err);
+}
+.proto-D .proto-cell:hover .proto-reveal,
+.proto-D .proto-cell:focus-within .proto-reveal {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* D's control row: the row's own printing picker, shrunk to tile size. */
+.proto-D .printing-cell > button {
+  padding: 3px 8px;
+  font-size: 11.5px;
+}
+
+/* Show images, in a modal: the grid never reflows to show a card's versions.
+   As large as it can reasonably be — the reason to leave the grid at all is to
+   look at an image full-size and run the row's own controls on it. */
+.proto-card-images {
+  width: min(94vw, 1240px);
+  max-height: 92vh;
+}
+.proto-card-images-note {
+  margin-left: 10px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.proto-card-images-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-right: 6px;
+}
+.proto-images-face {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.proto-images-face:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+/* The row's own thumb markup, but filling this modal's width instead of the
+   168px column it has beside a row of text. */
+.proto-card-images .thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+.proto-card-images .thumb {
+  width: auto;
+  min-width: 0;
+}
+
+/* --- The state panel (prototype rule: surface the state) -------------- */
+
+.proto-state {
+  position: sticky;
+  bottom: 64px;
+  margin-top: 18px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  opacity: 0.94;
+}
+.proto-state-head {
+  font-weight: 700;
+  color: var(--text);
+}
+.proto-state-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 6px 0;
+}
+.proto-state > div:not(.proto-state-head):not(.proto-state-row) {
+  border-top: 1px solid var(--border);
+  padding-top: 3px;
+  margin-top: 3px;
+}
