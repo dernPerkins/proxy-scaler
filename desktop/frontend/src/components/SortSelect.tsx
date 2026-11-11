@@ -21,6 +21,9 @@ export default function SortSelect({ label = "Sort" }: { label?: string | null }
         { value: "Name", label: "Name" },
         { value: "Set", label: "Set" },
         { value: "(none)", label: "(none)" },
+        // The order dragged into the Decklist's Grid view; a drag there
+        // switches to it. Name/Set/(none) leave it stored, not erased.
+        { value: "Custom", label: "Custom" },
       ]}
       value={settings.sort_primary}
       onChange={(value) => setSettings((s) => ({ ...s, sort_primary: value as SortPrimary }))}

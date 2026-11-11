@@ -480,6 +480,9 @@ export interface GalleryStatusResult {
 export interface PdfLayoutRequest {
   project_tag: string;
   entries: DeckEntryIn[];
+  /** The Custom sort's per-copy order: one `entries` index per printed
+   *  copy. Omitted for every other sort; an older server ignores it. */
+  copy_order?: number[];
   project_name?: string;
   page_width_mm: number;
   page_height_mm: number;
@@ -616,8 +619,9 @@ export interface RectMm {
 
 /** Card order for the Decklist display AND the PDF/ZIP export output —
  *  one shared, persisted control (see deckEntries.sortCards). "(none)"
- *  keeps decklist insert order. */
-export type SortPrimary = "Name" | "Set" | "(none)";
+ *  keeps decklist insert order; "Custom" is the per-copy order dragged
+ *  into the Grid view (docs/adr/0009). */
+export type SortPrimary = "Name" | "Set" | "(none)" | "Custom";
 
 // Mirrors PdfJobOut/PdfJobStatusOut. A render job exists because building
 // a sheet costs ~0.7s per unique card image, so the client needs something
@@ -756,6 +760,9 @@ export type ExportImageFormat = "png" | "jpg";
 export interface ExportZipRequest {
   project_tag: string;
   entries: DeckEntryIn[];
+  /** The Custom sort's per-copy order: one `entries` index per printed
+   *  copy. Omitted for every other sort; an older server ignores it. */
+  copy_order?: number[];
   project_name: string;
   preferred_dpi: number | null;
   preferred_model: string | null;

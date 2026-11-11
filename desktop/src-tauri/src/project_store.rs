@@ -106,6 +106,19 @@ CREATE TABLE IF NOT EXISTS project_cards (
     rarity TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_project_cards_project_id ON project_cards(project_id);
+-- Card Placements (card_placements.rs, docs/adr/0009): one row per printed
+-- copy of a card, saying where that copy sits in the project's custom order.
+-- No foreign keys on purpose: card_placements.rs sweeps orphans itself, and
+-- a REFERENCES here would make an old card delete path fail instead.
+-- project_cards.quantity still says how many copies there are; this only
+-- says in what order they print. Positions are dense 0..n-1.
+CREATE TABLE IF NOT EXISTS card_placements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    card_id INTEGER NOT NULL,
+    position INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_card_placements_project ON card_placements(project_id, position);
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -1356,7 +1369,7 @@ fn summary_for_id(conn: &Connection, project_id: i64) -> Result<ProjectSummary, 
 ///
 /// Named `_id` rather than sharing the command's name below, which returns
 /// the whole summary because the frontend needs the tag too.
-fn get_or_create_unnamed_project_id(conn: &Connection) -> Result<i64, String> {
+pub(crate) fn get_or_create_unnamed_project_id(conn: &Connection) -> Result<i64, String> {
     if let Some(id) = unnamed_project_id(conn)? {
         return Ok(id);
     }
@@ -1624,6 +1637,7 @@ pub fn update_project(
 fn delete_project_row(conn: &Connection, project_id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])
         .map_err(|e| e.to_string())?;
+    crate::card_placements::delete_for_project(conn, project_id)?;
     Ok(())
 }
 
@@ -1637,6 +1651,7 @@ pub fn delete_project(app: AppHandle, project_id: i64) -> Result<(), String> {
 pub fn clear_all_projects(app: AppHandle) -> Result<(), String> {
     let conn = open_db(&app)?;
     conn.execute("DELETE FROM projects", []).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM card_placements", []).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2252,6 +2267,7 @@ pub fn remove_card(app: AppHandle, card_id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
     conn.execute("DELETE FROM project_cards WHERE id = ?1", params![card_id])
         .map_err(|e| e.to_string())?;
+    crate::card_placements::delete_for_card(&conn, card_id)?;
     Ok(())
 }
 

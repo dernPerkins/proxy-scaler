@@ -1128,11 +1128,40 @@ button:disabled {
    so a deck reads as the pages it becomes rather than as a table.
    Fixed at 3, not auto-fill: the point of this view is that a row of it
    IS a row of a sheet. */
+/* The Grid view's pages: the PDF tab's cols × rows, one section per printed
+   sheet. A row of tiles is always one printed row, so when the columns can't
+   fit at a readable size the page scrolls sideways instead of wrapping (the
+   padding, taken back by the negative margin, keeps the tiles' lift and
+   shadow from being clipped by that scroll box). */
+.deck-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 8px 0 4px;
+}
+.deck-page {
+  overflow-x: auto;
+  margin: 0 -14px;
+  padding: 2px 14px 16px;
+}
+.deck-page-head {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
 .deck-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--deck-cols, 3), minmax(150px, 1fr));
   gap: 20px 16px;
-  padding: 12px 0 4px;
+}
+/* The rest of the last page: where the next copies would print. */
+.deck-slot-empty {
+  min-height: 120px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 20px;
+  opacity: 0.6;
 }
 .deck-tile {
   display: flex;
@@ -1204,20 +1233,9 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Copies of the card, at the end of its name row where the row view
-   carries its stepper. */
-.deck-tile-qty {
-  flex-shrink: 0;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--deck-card-fill);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  font-weight: 500;
-}
-/* One card in the grid: its tile, with the badges and pills painted over the
-   art, and the control row under it (the row view's own printing picker,
-   back swatch and quantity stepper).
+/* One printed copy in the grid: its tile, with the badges and pills painted
+   over the art, and the control row under it (the row view's own printing
+   picker and back swatch).
    The cell IS the card's container, so the art and the rows under it read as
    one thing: a single material with a large corner and a soft shadow instead
    of a border, the art floated in its padding, and the controls as borderless
@@ -1240,6 +1258,59 @@ button:disabled {
 .deck-cell:focus-within {
   transform: translateY(-3px);
   box-shadow: var(--deck-card-shadow-lifted);
+}
+/* A copy is something you pick up (click and hold): no text selection or
+   native image drag getting in the way of the hold. */
+.deck-cell {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.deck-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The other copies of the card under the pointer: what a printing or back
+   change on it will also touch. */
+.deck-cell.is-sibling {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent),
+    var(--deck-card-shadow);
+}
+/* The copy being dragged leaves its slot behind, faded: the place it will
+   land, which the other copies shift around. */
+.deck-cell.is-lifted {
+  opacity: 0.35;
+}
+/* What follows the pointer while dragging: just the card. */
+.deck-drag-ghost {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 12px;
+  aspect-ratio: 488 / 680;
+  border-radius: 4.75% / 3.5%;
+  overflow: hidden;
+  background: var(--surface-3);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.28),
+    0 24px 48px rgba(0, 0, 0, 0.22);
+  transform: rotate(-2deg) scale(1.03);
+  cursor: grabbing;
+}
+.deck-drag-ghost img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.deck-drag-ghost-name {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  text-align: center;
+  font-weight: 600;
 }
 @media (prefers-reduced-motion: reduce) {
   .deck-cell {
@@ -1414,37 +1485,6 @@ button:disabled {
   border-radius: 5px;
   background: var(--deck-card-fill);
 }
-/* The stepper as one capsule with round buttons inside it. */
-.deck-qty {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--deck-card-fill);
-}
-.deck-qty .btn-sm {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  box-shadow: none;
-  font-size: 14px;
-  line-height: 1;
-}
-.deck-qty .btn-sm:hover:not(:disabled) {
-  background: var(--deck-card-raised);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-}
-.deck-qty-n {
-  min-width: 28px;
-  text-align: center;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text);
-}
-
 /* The right-click menu on a tile. */
 .deck-menu-backdrop {
   position: fixed;

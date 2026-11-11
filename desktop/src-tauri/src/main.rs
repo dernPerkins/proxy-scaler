@@ -48,6 +48,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod back_images;
+mod card_placements;
 mod custom_images;
 mod face_art;
 mod mpc_art;
@@ -955,6 +956,9 @@ fn main() {
             custom_images::sync_custom_image,
             project_store::add_custom_cards,
             face_art::set_card_face_art,
+            card_placements::get_card_placements,
+            card_placements::set_placement_order,
+            card_placements::remove_card_copy,
             face_art::set_card_face_art_pending,
             face_art::set_card_face_printing,
             face_art::clear_card_face_art,

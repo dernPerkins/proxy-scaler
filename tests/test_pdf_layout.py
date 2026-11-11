@@ -29,6 +29,7 @@ from proxy_scaler.pdf_layout import (
     back_page_cells,
     back_pages_are_rotated,
     build_print_slots,
+    checked_copy_order,
     fit_cover,
     mirror_page_index,
     render_back_image,
@@ -2665,3 +2666,106 @@ def test_build_pdf_prints_each_distinct_back_once(tmp_path: Path) -> None:
         )
         == 2
     )
+
+
+# --- Per-copy print order (copy_order, docs/adr/0009) ----------------------
+
+_DFC_NAME = "Dion, Bahamut's Dominant // Bahamut, Warden of Light"
+
+
+def _copy_order_deck():
+    gallery = [
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+        _face("counter-id", None, "Counterspell", "Counterspell", "lea", "55", 800),
+        _face("dfc-id", 0, "Dion, Bahamut's Dominant", _DFC_NAME, "fin", "376", 800, face_label="front"),
+        _face("dfc-id", 1, "Bahamut, Warden of Light", _DFC_NAME, "fin", "376", 800, face_label="back"),
+    ]
+    entries = [
+        DeckEntry(quantity=2, name="Sol Ring", set_code="c21", collector_number="263"),
+        DeckEntry(quantity=1, name="Counterspell", set_code="lea", collector_number="55"),
+        DeckEntry(quantity=2, name=_DFC_NAME, set_code="fin", collector_number="376"),
+    ]
+    return gallery, entries
+
+
+def _fronts(slots: list[PrintSlot]) -> list[str]:
+    return [s.front.face_name for s in slots]
+
+
+def test_copy_order_interleaves_copies_of_one_card() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    order = checked_copy_order([0, 1, 0, 2, 2], entries)
+    slots = build_print_slots(units, pair_back_faces=True, copy_order=order)
+    assert _fronts(slots) == [
+        "Sol Ring",
+        "Counterspell",
+        "Sol Ring",
+        "Dion, Bahamut's Dominant",
+        "Dion, Bahamut's Dominant",
+    ]
+    # Paired: each DFC copy is ONE slot carrying its transform side.
+    assert slots[3].reverse is not None and slots[3].reverse.face_index == 1
+
+
+def test_copy_order_unpaired_back_face_follows_its_own_front_copy() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    order = checked_copy_order([2, 0, 2, 1, 0], entries)
+    slots = build_print_slots(units, pair_back_faces=False, copy_order=order)
+    assert _fronts(slots) == [
+        "Dion, Bahamut's Dominant",
+        "Bahamut, Warden of Light",
+        "Sol Ring",
+        "Dion, Bahamut's Dominant",
+        "Bahamut, Warden of Light",
+        "Counterspell",
+        "Sol Ring",
+    ]
+
+
+def test_copy_order_that_does_not_match_the_deck_prints_grouped() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    grouped = build_print_slots(units, pair_back_faces=True)
+    for bad in ([0, 1, 2, 2], [0, 0, 1, 2, 2, 2], [0, 1, 0, 2, 7], [], None):
+        order = checked_copy_order(bad, entries)
+        assert order is None
+        assert build_print_slots(units, pair_back_faces=True, copy_order=order) == grouped
+
+
+def test_copy_order_skips_an_entry_with_no_image() -> None:
+    gallery, entries = _copy_order_deck()
+    entries.insert(
+        1, DeckEntry(quantity=1, name="Black Lotus", set_code="lea", collector_number="232")
+    )
+    units, missing, _ = match_quantities(entries, gallery)
+    assert len(missing) == 1
+    order = checked_copy_order([1, 0, 2, 0, 3, 3], entries)
+    slots = build_print_slots(units, pair_back_faces=True, copy_order=order)
+    assert _fronts(slots) == [
+        "Sol Ring",
+        "Counterspell",
+        "Sol Ring",
+        "Dion, Bahamut's Dominant",
+        "Dion, Bahamut's Dominant",
+    ]
+
+
+def test_copy_order_keeps_merged_entries_apart() -> None:
+    """Two lines for the same printing merge into one unit, but each line's
+    copies still go where copy_order puts that line."""
+    gallery = [
+        _face("sol-id", None, "Sol Ring", "Sol Ring", "c21", "263", 800),
+        _face("counter-id", None, "Counterspell", "Counterspell", "lea", "55", 800),
+    ]
+    entries = [
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
+        DeckEntry(quantity=1, name="Counterspell", set_code="lea", collector_number="55"),
+        DeckEntry(quantity=1, name="Sol Ring", set_code="c21", collector_number="263"),
+    ]
+    units, _missing, _ = match_quantities(entries, gallery)
+    assert [u.quantity for u in units] == [2, 1]
+    order = checked_copy_order([0, 1, 2], entries)
+    slots = build_print_slots(units, pair_back_faces=False, copy_order=order)
+    assert _fronts(slots) == ["Sol Ring", "Counterspell", "Sol Ring"]

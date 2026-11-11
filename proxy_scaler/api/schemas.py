@@ -461,6 +461,11 @@ class PdfLayoutIn(BaseModel):
     project_tag: str
     entries: list[DeckEntryIn]
     project_name: str = ""
+    # The Decklist's Custom sort (docs/adr/0009): one index into `entries`
+    # per printed copy, in print order — [A x2, B x1] with [0, 1, 0] prints
+    # A, B, A. Ignored unless it names each entry exactly `quantity` times
+    # (pdf_layout.checked_copy_order); absent, copies print grouped.
+    copy_order: list[int] | None = None
     page_width_mm: float
     page_height_mm: float
     cols: int
@@ -757,6 +762,11 @@ class ExportZipIn(BaseModel):
     project_tag: str
     entries: list[DeckEntryIn]
     project_name: str = ""
+    # The Decklist's Custom sort (docs/adr/0009): one index into `entries`
+    # per printed copy, in print order — [A x2, B x1] with [0, 1, 0] prints
+    # A, B, A. Ignored unless it names each entry exactly `quantity` times
+    # (pdf_layout.checked_copy_order); absent, copies print grouped.
+    copy_order: list[int] | None = None
     # Same selector semantics as PdfLayoutIn: preferred_dpi is a hard
     # filter (a face without that DPI is excluded and reported, never
     # substituted); preferred_model wins among the eligible variants.

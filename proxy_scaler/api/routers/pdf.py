@@ -61,6 +61,7 @@ from proxy_scaler.pdf_layout import (
     build_pdf,
     hex_to_rgb,
     build_print_slots,
+    checked_copy_order,
     match_quantities,
     paginate,
     cell_corner_radii,
@@ -330,7 +331,9 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     # a Back Face has no Reverse to live on and stays its own card, which
     # is exactly the historical behaviour.
     slots = build_print_slots(
-        units, pair_back_faces=body.back_printing and body.back_faces_as_reverse
+        units,
+        pair_back_faces=body.back_printing and body.back_faces_as_reverse,
+        copy_order=checked_copy_order(body.copy_order, entries),
     )
     pages = paginate(slots, layout.cards_per_page)
 

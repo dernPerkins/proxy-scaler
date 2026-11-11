@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
-import { projectApi } from "../api/project";
+import { projectApi, type CardPlacement } from "../api/project";
 import { getConnectionMode, getProbedDevice, subscribeProbedDevice } from "../config";
 import { setProjectSnapshot } from "../syncCustoms";
 import { defaultPresetOverlay, pickPresetFields, presetQueryOptions } from "../settingsPresets";
@@ -217,6 +217,16 @@ interface ProjectContextValue {
    *  outside any of the card mutations here. */
   reloadCards: () => Promise<void>;
   removeCard: (cardId: number) => void;
+  /** Every printed copy's place in the custom order (the "Custom" sort),
+   *  kept in step with the cards' quantities — see card_placements.rs. */
+  placements: CardPlacement[];
+  /** Rewrite the custom order: every current placement id, once each, in
+   *  the new order. Applied locally at once; a refused (stale) list
+   *  refetches. */
+  setPlacementOrder: (placementIds: number[]) => void;
+  /** Remove one printed copy — that one, wherever it sits — and the card
+   *  with it when it was the last. */
+  removeCardCopy: (placementId: number) => void;
   /** Sets a card's copy count. Values below 1 are clamped to 1 — removal
    *  is removeCard's job. */
   setCardQuantity: (cardId: number, quantity: number) => void;
@@ -376,6 +386,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<ProjectSettings>(getDefaultSettings);
   const [decklistText, setDecklistTextState] = useState("");
   const [cards, setCards] = useState<CardRow[]>([]);
+  const [placements, setPlacements] = useState<CardPlacement[]>([]);
 
   // Mirror the cards + tag into syncCustoms' module-level snapshot for
   // connection.tsx::switchTo, which mounts above this provider and so
@@ -771,6 +782,32 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     onError: (err: Error) => setError(err.message),
   });
+
+  // Placements follow the cards: whenever a card is added or removed or its
+  // quantity moves — from any page, by any path — reread them, and Rust
+  // reconciles on the way (new copies after their siblings, removed ones
+  // from the end). One effect here instead of a refetch in every mutation.
+  const placementSignature = cards.map((c) => `${c.id}:${c.quantity ?? 1}`).join(",");
+  const placementsFetch = useRef(0);
+  const refreshPlacements = (id: number | null) => {
+    const ticket = ++placementsFetch.current;
+    if (id == null) {
+      setPlacements([]);
+      return;
+    }
+    projectApi
+      .cardPlacements(id)
+      .then((next) => {
+        if (ticket === placementsFetch.current) setPlacements(next);
+      })
+      .catch(() => {
+        // A failed read leaves the last order showing; the next change retries.
+      });
+  };
+  useEffect(() => {
+    refreshPlacements(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, placementSignature]);
 
   const removeCardMutation = useMutation({
     mutationFn: (cardId: number) => projectApi.removeCard(cardId),
@@ -1297,6 +1334,41 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setCards(project.cards);
     },
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
+    placements,
+    setPlacementOrder: (placementIds: number[]) => {
+      const id = projectIdRef.current;
+      if (id == null) return;
+      const byId = new Map(placements.map((p) => [p.id, p]));
+      placementsFetch.current++;
+      setPlacements(
+        placementIds.flatMap((pid, position) => {
+          const p = byId.get(pid);
+          return p ? [{ ...p, position }] : [];
+        }),
+      );
+      projectApi.setPlacementOrder(id, placementIds).catch((err: Error) => {
+        setError(err.message);
+        refreshPlacements(id);
+      });
+    },
+    removeCardCopy: (placementId: number) => {
+      const copy = placements.find((p) => p.id === placementId);
+      if (!copy) return;
+      projectApi
+        .removeCardCopy(placementId)
+        .then((next) => {
+          placementsFetch.current++;
+          setPlacements(next);
+          setCards((prev) =>
+            prev.flatMap((c) => {
+              if (c.id !== copy.card_id) return [c];
+              const q = c.quantity ?? 1;
+              return q > 1 ? [{ ...c, quantity: q - 1 }] : [];
+            }),
+          );
+        })
+        .catch((err: Error) => setError(err.message));
+    },
     setCardQuantity: (cardId: number, quantity: number) =>
       setCardQuantityMutation.mutate({ cardId, quantity }),
     setCardPrinting: async (cardId, printing) => {

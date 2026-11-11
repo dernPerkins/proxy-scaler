@@ -19,7 +19,7 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView } from "../tutorial/tutorialStore";
-import { cardToEntry, sortCards } from "../deckEntries";
+import { printOrder } from "../deckEntries";
 import { backImageRef, referencedBackIds, summarizeCardBacks, useBackImagesSync, useBackLibrary } from "../cardBacks";
 import CardBackSummaryNote from "../components/CardBackSummaryNote";
 import NumberInput from "../components/NumberInput";
@@ -46,7 +46,7 @@ const POLL_INTERVAL_MS = 400;
 const MPC_BLEED_MM = 3;
 
 export default function ExportPage() {
-  const { projectId, projectTag, projectName, cards, settings, setSettings } = useProject();
+  const { projectId, projectTag, projectName, cards, placements, settings, setSettings } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
   // Same unreachability check as PdfPage — without it the buttons just
@@ -95,7 +95,8 @@ export default function ExportPage() {
 
   // Sorted before mapping: ZIP filenames are numbered in entries order,
   // so this is where the shared sort dropdown reaches the exported files.
-  const entries = sortCards(cards, settings.sort_primary).map(cardToEntry);
+  // A Custom sort numbers them in its per-copy order (copy_order).
+  const { entries, copyOrder } = printOrder(cards, settings.sort_primary, placements);
 
   // Same selectors, same persisted fields as the PDF tab (settings.
   // preferred_model / preferred_dpi) — deliberately shared, not
@@ -110,6 +111,7 @@ export default function ExportPage() {
     return {
       project_tag: projectTag as string,
       entries,
+      ...(copyOrder ? { copy_order: copyOrder } : {}),
       project_name: projectName ?? "",
       preferred_dpi: settings.preferred_dpi,
       preferred_model: settings.preferred_model,
@@ -137,6 +139,7 @@ export default function ExportPage() {
       "export-zip-preview",
       projectTag,
       entries,
+      copyOrder,
       settings.preferred_dpi,
       settings.preferred_model,
       useOriginals,

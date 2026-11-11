@@ -963,6 +963,11 @@ class PrintUnit:
     # different physical cards even though their fronts are the same file.
     back_mode: str = "inherit"
     back_hash: str | None = None
+    # (entry index, copies that entry contributed) for every decklist entry
+    # merged into this unit — what lets build_print_slots lay copies out in
+    # a client-chosen per-copy order (copy_order) instead of all of a
+    # unit's copies side by side. Empty for units built by hand.
+    entry_qty: tuple[tuple[int, int], ...] = ()
 
 
 BackKey = tuple[str, str | None]
@@ -1264,6 +1269,8 @@ def match_quantities(
         # Copies per (Reverse choice, face override), and the first entry
         # index asking for each — one unit per key below.
         qty_by_key: dict[tuple[BackKey, SubstKey], int] = {}
+        # The same copies again, split by the entry they came from.
+        entry_qty_by_key: dict[tuple[BackKey, SubstKey], dict[int, int]] = {}
         first_index_by_key: dict[tuple[BackKey, SubstKey], int] = {}
         subst_by_key: dict[SubstKey, tuple[DeckEntry, FaceOverride]] = {}
         matched_indices: set[int] = set()
@@ -1278,6 +1285,8 @@ def match_quantities(
                 subst_by_key.setdefault(subst, (entry, override))
             key = (_back_key(entry), subst)
             qty_by_key[key] = qty_by_key.get(key, 0) + entry.quantity
+            per_entry = entry_qty_by_key.setdefault(key, {})
+            per_entry[i] = per_entry.get(i, 0) + entry.quantity
             first_index_by_key.setdefault(key, i)
             matched_indices.add(i)
             faces_taken[i] = faces_taken.get(i, 0) + 1
@@ -1400,6 +1409,9 @@ def match_quantities(
                     dpi_fallback=unavailable,
                     back_mode=back_mode,
                     back_hash=back_hash,
+                    entry_qty=tuple(
+                        sorted(entry_qty_by_key[((back_mode, back_hash), subst)].items())
+                    ),
                 )
             )
             unit_order_keys.append(
@@ -1474,7 +1486,37 @@ def _pairable_faces(units: list[PrintUnit]) -> dict[str, tuple[list[PrintUnit], 
     return pairs
 
 
-def build_print_slots(units: list[PrintUnit], *, pair_back_faces: bool) -> list[PrintSlot]:
+def checked_copy_order(
+    copy_order: Sequence[int] | None, entries: Sequence[DeckEntry]
+) -> list[int] | None:
+    """The client's per-copy print order, if it describes this deck exactly.
+
+    `copy_order` names one entry index per printed copy, in the order the
+    copies should print: entries [A x2, B x1] with [0, 1, 0] print A, B, A
+    (the Decklist's Custom sort, see docs/adr/0009). It is only honoured
+    when every index is in range and each entry appears exactly
+    `quantity` times; anything else — a stale order racing a quantity
+    change, an older client — returns None, and the run prints grouped,
+    exactly as it always has.
+    """
+    if not copy_order:
+        return None
+    counts = [0] * len(entries)
+    for i in copy_order:
+        if not 0 <= i < len(entries):
+            return None
+        counts[i] += 1
+    if any(counts[i] != max(1, entry.quantity) for i, entry in enumerate(entries)):
+        return None
+    return list(copy_order)
+
+
+def build_print_slots(
+    units: list[PrintUnit],
+    *,
+    pair_back_faces: bool,
+    copy_order: Sequence[int] | None = None,
+) -> list[PrintSlot]:
     """Flatten matched units into one PrintSlot per physical printed card.
 
     With `pair_back_faces` off this is the historical behaviour: every face
@@ -1498,6 +1540,13 @@ def build_print_slots(units: list[PrintUnit], *, pair_back_faces: bool) -> list[
     that would otherwise take the universal one, and a transform face is
     not that. Unpaired (pairing off, or a half-generated card), every face
     keeps its choice and prints it.
+
+    `copy_order` (already validated by checked_copy_order) lays the slots
+    out one decklist copy at a time instead of one unit at a time: for each
+    item, that entry's next copy is emitted from every unit it feeds, in
+    face order — so a paired DFC is still one slot, an unpaired DFC's back
+    face lands right after its own front copy, and an entry with no image
+    simply emits nothing and the copies after it move up.
     """
     pairs = _pairable_faces(units) if pair_back_faces else {}
     consumed_backs = {id(back) for _fronts, backs in pairs.values() for back in backs}
@@ -1505,24 +1554,46 @@ def build_print_slots(units: list[PrintUnit], *, pair_back_faces: bool) -> list[
     # come from one face group), so any of them names the Back Face.
     back_face_by_id = {sid: backs[0].best for sid, (_fronts, backs) in pairs.items()}
 
-    slots: list[PrintSlot] = []
-    for unit in units:
-        if id(unit) in consumed_backs:
-            continue
+    def slot_for(unit: PrintUnit) -> PrintSlot:
         # Only a face-0 unit survives for a paired id (its face-1 units
         # were all consumed above), so this is None for everything else.
         reverse = back_face_by_id.get(unit.best.scryfall_id) if unit.best.scryfall_id else None
-        slots.extend(
-            [
-                PrintSlot(
-                    front=unit.best,
-                    reverse=reverse,
-                    back_mode=unit.back_mode,
-                    back_hash=unit.back_hash,
-                )
-            ]
-            * unit.quantity
+        return PrintSlot(
+            front=unit.best,
+            reverse=reverse,
+            back_mode=unit.back_mode,
+            back_hash=unit.back_hash,
         )
+
+    surviving = [unit for unit in units if id(unit) not in consumed_backs]
+    if copy_order is None:
+        slots: list[PrintSlot] = []
+        for unit in surviving:
+            slots.extend([slot_for(unit)] * unit.quantity)
+        return slots
+
+    copies_of = [0] * (max(copy_order) + 1)
+    for i in copy_order:
+        copies_of[i] += 1
+    # Per entry: the units it feeds, front face first, each with how many
+    # slots it contributes per copy of that entry (normally one; two for an
+    # entry printing one custom on both faces of a DFC).
+    feeds: dict[int, list[tuple[PrintSlot, int, int]]] = {}
+    for _order, unit in sorted(
+        enumerate(surviving), key=lambda pair: (pair[1].best.face_index or 0, pair[0])
+    ):
+        slot = slot_for(unit)
+        for i, qty in unit.entry_qty:
+            if i < len(copies_of) and copies_of[i] > 0:
+                per_copy, extra = divmod(qty, copies_of[i])
+                feeds.setdefault(i, []).append((slot, per_copy, extra))
+    seen = [0] * len(copies_of)
+    slots = []
+    for i in copy_order:
+        k = seen[i]
+        seen[i] += 1
+        for slot, per_copy, extra in feeds.get(i, ()):
+            slots.extend([slot] * (per_copy + (1 if k < extra else 0)))
     return slots
 
 

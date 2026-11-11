@@ -1,8 +1,19 @@
-// The Decklist tab's Grid view: every card as its own thumbnail, three to a
-// row — the sheet the PDF tab prints to by default (3 columns across an A4
-// page), so a deck reads as the pages it becomes instead of as a table — and
-// every one of those thumbnails carries the Row view's functionality for that
-// card.
+// The Decklist tab's Grid view: every PRINTED COPY as its own thumbnail, laid
+// out on the pages the PDF tab's settings describe — its column count across,
+// a new page every cols × rows copies, each page headed "Page n · x of y
+// Slots" — so a deck reads as the sheets it becomes (a rough PDF preview: no
+// mm-accurate margins or bleed, those are the PDF tab's). Every thumbnail
+// carries the Row view's functionality for its card.
+//
+// Copies, not cards (docs/adr/0009): a 4-of is four tiles, and each can be
+// picked up — click and hold, about a quarter second — and dropped anywhere;
+// the copies after the drop point shift along one slot, so the order never
+// has holes. The first drag switches the shared Sort to Custom, starting from
+// the order on screen, and the PDF and ZIP then print in that order. A copy is
+// independent in placement only: its printing, art and back are its card's,
+// so changing them on one tile changes every copy (hovering a tile outlines
+// its siblings). Quantity has no stepper here — the trash removes that copy,
+// the menu adds another — while the Row view keeps its stepper.
 //
 // It used to be thumbnails only ("viewing only, on purpose"). ADR 0008
 // reverses that: a card you can see here is a card you should be able to
@@ -21,12 +32,10 @@
 //     ever changes size while you read one card's versions;
 //   · under the tile, this card's own controls, the same components the rows
 //     use: the printing picker (its button IS the card's set · number ·
-//     language, so the tile's own meta row is gone), the card-back swatch and
-//     the quantity stepper;
+//     language, so the tile's own meta row is gone) and the card-back swatch;
 //   · right-click (or Control-click) anywhere on it for the menu: change
-//     printing, MPC Fill art, card back, show images, download, upscale,
-//     remove. Quantity is not in the menu — the stepper under the tile is
-//     already there for it.
+//     printing, MPC Fill art, card back, show images, download, upscale, add
+//     another copy, remove this copy, remove all copies.
 //
 // Tile art comes from the same places the rest of the app reads it:
 //
@@ -49,7 +58,34 @@
 //
 // A tile shows its FRONT; a double-faced card's back stays on the Row
 // view's second face (and on its Reverse) until this view grows one.
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi, type CardRow } from "../api/project";
@@ -62,6 +98,7 @@ import {
   useServerVersion,
 } from "../config";
 import { coverageFor, hasImages, type CardCoverage, type Cover, type DisplayFace } from "../cardCoverage";
+import type { DeckCopy } from "../deckEntries";
 import { fillFrameWith, isAlphaPrinting, trimGeometry } from "../cardTrim";
 import { useImageCacheSetting } from "../imageOrigin";
 import CardBackPicker from "./CardBackPicker";
@@ -72,9 +109,13 @@ import SetIcon from "./SetIcon";
 import { useQueuedThumb, useThumbnailQueue, type ThumbnailQueue } from "./imageGrid";
 
 export interface DeckGridProps {
-  /** The deck in the project's sort order — the same list the rows walk,
-   *  so switching views doesn't reshuffle the deck. */
-  cards: readonly CardRow[];
+  /** Every printed copy in print order (deckEntries.deckCopies): the
+   *  placements under a Custom sort, otherwise the rows' order with each
+   *  card's copies side by side. */
+  copies: readonly DeckCopy[];
+  /** The PDF tab's grid: columns across a page, rows down it. */
+  cols: number;
+  rows: number;
   /** The Custom Image library by id, for the bleed a tile's art carries. */
   library: ReadonlyMap<number, CustomImage>;
   /** One card's faces, merged from the 3s status poll: the same merge the
@@ -86,12 +127,18 @@ export interface DeckGridProps {
   dpis: number[];
   serverUnavailable: boolean;
   openPicker: (card: CardRow, request: PickerOpenRequest) => void;
-  setQuantity: (card: CardRow, quantity: number) => void;
+  /** A drop: every copy's placement id, in the new order. */
+  reorder: (placementIds: number[]) => void;
+  /** One more copy of the card; it lands after its siblings. */
+  addCopy: (card: CardRow) => void;
+  /** Just this copy — the card too when it was the last. */
+  removeCopy: (copy: DeckCopy) => void;
   /** Queue this card's full-size originals, no upscaling. */
   download: (card: CardRow) => void;
   upscale: (card: CardRow) => void;
   /** One painted badge upscales the one DPI it stands for. */
   upscaleAt: (card: CardRow, dpi: number) => void;
+  /** Every copy of the card. */
   remove: (card: CardRow) => void;
   /** The Row view's own per-image mutations, for the images modal. */
   refetch: (galleryItemId: number) => void;
@@ -113,18 +160,67 @@ export default function DeckGrid(props: DeckGridProps) {
   const scrollRef = useRef<HTMLElement | null>(null);
   const queue = useThumbnailQueue(scrollRef);
   const [images, setImages] = useState<CardRow | null>(null);
-  const [menu, setMenu] = useState<{ card: CardRow; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ copy: DeckCopy; x: number; y: number } | null>(null);
+  // The card under the pointer: its other copies get an outline, so it is
+  // plain what a printing or back change on this tile will also touch.
+  const [hover, setHover] = useState<{ card: number; key: string } | null>(null);
 
+  // One coverage per card, shared by all its copies.
+  const cards = useMemo(() => {
+    const seen = new Map<number, CardRow>();
+    for (const c of props.copies) if (!seen.has(c.card.id)) seen.set(c.card.id, c.card);
+    return [...seen.values()];
+  }, [props.copies]);
   const coverage = useMemo(
     () =>
       new Map(
-        props.cards.map((card) => [
+        cards.map((card) => [
           card.id,
           coverageFor(card, props.facesFor(card), props.model, props.dpis, props.library),
         ]),
       ),
-    [props],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cards, props.facesFor, props.model, props.dpis, props.library],
   );
+
+  // Click and hold to pick a copy up: the delay is what lets an ordinary
+  // click on the printing picker, a badge, the eye or the trash stay a
+  // click. The keyboard sensor picks up the focused tile with Space/Enter
+  // (only the tile itself — a key on a button inside it stays that button's).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const [dragging, setDragging] = useState<{ key: string; src: string | null; name: string } | null>(
+    null,
+  );
+  const onDragStart = (e: DragStartEvent) => {
+    const key = String(e.active.id);
+    const copy = props.copies.find((c) => c.key === key);
+    // The floating copy shows the art the tile already has on screen —
+    // read off the tile rather than queued and fetched a second time.
+    const el = document.querySelector<HTMLImageElement>(`[data-copy-key="${CSS_ESCAPE(key)}"] .deck-tile-frame img`);
+    setDragging({ key, src: el?.currentSrc || el?.src || null, name: copy?.card.name ?? "" });
+    setMenu(null);
+  };
+  const onDragEnd = (e: DragEndEvent) => {
+    setDragging(null);
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const from = props.copies.findIndex((c) => c.key === active.id);
+    const to = props.copies.findIndex((c) => c.key === over.id);
+    if (from < 0 || to < 0) return;
+    const next = arrayMove([...props.copies], from, to);
+    // A copy whose placement hasn't been read back yet (added a moment ago)
+    // has no id to send; the drop is dropped rather than half-applied.
+    if (next.some((c) => c.placementId == null)) return;
+    props.reorder(next.map((c) => c.placementId!));
+  };
+
+  const cols = Math.max(1, Math.round(props.cols));
+  const perPage = cols * Math.max(1, Math.round(props.rows));
+  const pages: DeckCopy[][] = [];
+  for (let i = 0; i < props.copies.length; i += perPage) pages.push(props.copies.slice(i, i + perPage));
 
   // The menu's "Card back…" opens the same CardBackPicker the control row
   // shows, through the button each cell registers — one picker per card, not
@@ -138,40 +234,86 @@ export default function DeckGrid(props: DeckGridProps) {
 
   // A card's images are always read from the current list: a card removed
   // while its modal is open must not keep showing stale rows.
-  const imagesCard = images ? (props.cards.find((c) => c.id === images.id) ?? null) : null;
-  const menuActions = menu ? makeActions(props, menu.card) : null;
+  const imagesCard = images ? (cards.find((c) => c.id === images.id) ?? null) : null;
+  const menuActions = menu ? makeActions(props, menu.copy) : null;
+  // The card-back picker is mounted once per card (its first copy), so the
+  // menu's "Card Back…" has exactly one control to open.
+  const firstCopyKey = new Map<number, string>();
+  for (const c of props.copies) if (!firstCopyKey.has(c.card.id)) firstCopyKey.set(c.card.id, c.key);
 
   return (
     <>
-      <div className="deck-grid" data-tour="deck-grid">
-        {props.cards.map((card) => (
-          <GridCell
-            key={card.id}
-            card={card}
-            c={coverage.get(card.id)!}
-            a={makeActions(props, card)}
-            p={props}
-            origin={origin}
-            serverThumbs={serverThumbs}
-            queue={queue}
-            onShowImages={() => setImages(card)}
-            onMenu={(x, y) => setMenu({ card, x, y })}
-            onBackTrigger={registerBack}
-          />
-        ))}
-      </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        onDragCancel={() => setDragging(null)}
+      >
+        <SortableContext items={props.copies.map((c) => c.key)} strategy={rectSortingStrategy}>
+          <div className="deck-pages" data-tour="deck-grid">
+            {pages.map((page, pi) => (
+              <section key={pi} className="deck-page">
+                <header className="deck-page-head mono">
+                  Page {pi + 1} · {page.length} of {perPage} Slots
+                </header>
+                <div className="deck-grid" style={{ "--deck-cols": cols } as CSSProperties}>
+                  {page.map((copy) => (
+                    <SortableCell
+                      key={copy.key}
+                      copy={copy}
+                      sibling={hover?.card === copy.card.id && hover.key !== copy.key}
+                      lifted={dragging?.key === copy.key}
+                      c={coverage.get(copy.card.id)!}
+                      a={makeActions(props, copy)}
+                      p={props}
+                      origin={origin}
+                      serverThumbs={serverThumbs}
+                      queue={queue}
+                      ownsBackPicker={firstCopyKey.get(copy.card.id) === copy.key}
+                      onHover={(on) =>
+                        setHover((h) =>
+                          on ? { card: copy.card.id, key: copy.key } : h?.key === copy.key ? null : h,
+                        )
+                      }
+                      onShowImages={() => setImages(copy.card)}
+                      onMenu={(x, y) => setMenu({ copy, x, y })}
+                      onBackTrigger={registerBack}
+                    />
+                  ))}
+                  {pi === pages.length - 1 &&
+                    Array.from({ length: perPage - page.length }, (_, i) => (
+                      <span key={`empty-${i}`} className="deck-slot-empty" aria-hidden="true" />
+                    ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        </SortableContext>
+        <DragOverlay>
+          {dragging ? (
+            <span className="deck-drag-ghost">
+              {dragging.src ? (
+                <img src={dragging.src} alt={dragging.name} draggable={false} />
+              ) : (
+                <span className="deck-drag-ghost-name">{dragging.name}</span>
+              )}
+            </span>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
 
       {menu && menuActions && (
         <TileMenu
           x={menu.x}
           y={menu.y}
           items={menuFor(
-            coverage.get(menu.card.id)!,
+            coverage.get(menu.copy.card.id)!,
             menuActions,
-            menu.card.custom_image_id != null,
+            menu.copy.card.custom_image_id != null,
             props.serverUnavailable,
-            () => openBackPicker(menu.card),
-            () => setImages(menu.card),
+            () => openBackPicker(menu.copy.card),
+            () => setImages(menu.copy.card),
           )}
           onClose={() => setMenu(null)}
         />
@@ -193,22 +335,43 @@ export default function DeckGrid(props: DeckGridProps) {
   );
 }
 
-/** One card in the grid: its tile, and the control row under it. The tile and
- *  everything painted on it are DeckTile's; this is the part that gives the
- *  tile the Row view's controls. */
-function GridCell(props: {
-  card: CardRow;
+/** `CSS.escape` where the webview has it; keys are `p123` / `c12-0`, so the
+ *  fallback never has anything to escape anyway. */
+const CSS_ESCAPE = (s: string) => (typeof window !== "undefined" && window.CSS?.escape ? window.CSS.escape(s) : s);
+
+/** One printed copy in the grid: its tile, and the control row under it. The
+ *  tile and everything painted on it are DeckTile's; this is the part that
+ *  gives the tile the Row view's controls, and makes it something you can
+ *  pick up. */
+function SortableCell(props: {
+  copy: DeckCopy;
+  /** Another copy of the card under the pointer. */
+  sibling: boolean;
+  /** This copy is the one being dragged: its slot stays, faded, as the
+   *  drop target the others shift around. */
+  lifted: boolean;
   c: CardCoverage;
   a: TileActions;
   p: DeckGridProps;
   origin: ImageOrigin | null;
   serverThumbs: boolean;
   queue: ThumbnailQueue;
+  ownsBackPicker: boolean;
+  onHover: (on: boolean) => void;
   onShowImages: () => void;
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
 }) {
-  const { card, c, a, p, origin, serverThumbs, queue, onShowImages, onMenu, onBackTrigger } = props;
+  const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
+  const { onHover, onShowImages, onMenu, onBackTrigger } = props;
+  const card = copy.card;
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({
+    id: copy.key,
+  });
+  const style: CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+  };
   const custom = card.custom_image_id != null;
   const hasSomeImages = hasImages(c);
   // The tile paints the image it would actually print: the FRONT face's variant
@@ -230,7 +393,18 @@ function GridCell(props: {
 
   return (
     <div
-      className="deck-cell"
+      ref={(el) => {
+        setNodeRef(el);
+        setActivatorNodeRef(el);
+      }}
+      style={style}
+      className={`deck-cell${sibling ? " is-sibling" : ""}${lifted ? " is-lifted" : ""}`}
+      data-copy-key={copy.key}
+      {...attributes}
+      {...listeners}
+      aria-roledescription="card copy — hold to move"
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu(e.clientX + 2, e.clientY + 2);
@@ -272,9 +446,13 @@ function GridCell(props: {
           <button
             type="button"
             className="deck-pill deck-pill-remove deck-reveal"
-            onClick={a.remove}
-            title="Remove this card from the deck"
-            aria-label="Remove"
+            onClick={a.removeCopy}
+            title={
+              a.quantity > 1
+                ? `Remove this copy (${a.quantity - 1} left)`
+                : "Remove this card from the deck"
+            }
+            aria-label="Remove this copy"
           >
             <TrashIcon />
           </button>
@@ -297,22 +475,26 @@ function GridCell(props: {
             onOpen={a.openPrintingWith}
           />
         )}
-        {/* Mounted visibly, and registered so the right-click menu's
-            "Card back…" can open this same control. */}
+        {/* Mounted visibly on every copy (they share the card's back), and
+            the first copy's is registered so the right-click menu's
+            "Card Back…" opens this same control. */}
         <span
-          ref={(el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)}
+          ref={
+            ownsBackPicker
+              ? (el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)
+              : undefined
+          }
         >
           <CardBackPicker card={card} transformOnBack={false} />
         </span>
-        <QtyStepper quantity={a.quantity} onSet={a.setQuantity} />
       </span>
     </div>
   );
 }
 
-/** One card's art, and nothing else: the tile the cell above paints its
- *  badges, pills and control row around. Its identity — name and copies — is
- *  the label under the art; its printing is the control row's button. */
+/** One copy's art, and nothing else: the tile the cell above paints its
+ *  badges, pills and control row around. Its identity — the name — is the
+ *  label under the art; its printing is the control row's button. */
 function DeckTile(props: {
   card: CardRow;
   library: ReadonlyMap<number, CustomImage>;
@@ -330,7 +512,6 @@ function DeckTile(props: {
 }) {
   const { card, library, origin, serverThumbs, queue, variantSrc } = props;
   const art = tileArt(card);
-  const quantity = card.quantity ?? 1;
   // The image identity that failed, not just "something failed": a variant
   // thumbnail that 404s must not black out a tile that has its source art to
   // fall back on.
@@ -417,7 +598,7 @@ function DeckTile(props: {
     card.set_code && card.collector_number
       ? `${card.set_code.toUpperCase()} #${card.collector_number}`
       : null;
-  // No hover tooltip: the name and copies are the label under the art, and
+  // No hover tooltip: the name is the label under the art, and
   // the printing is the control row's button, so one would only repeat them.
   return (
     <div className="deck-tile">
@@ -449,17 +630,11 @@ function DeckTile(props: {
             }}
           />
         ) : placeholderReason ? (
-          <TilePlaceholder
-            card={card}
-            quantity={quantity}
-            setLabel={setLabel}
-            reason={placeholderReason}
-          />
+          <TilePlaceholder card={card} setLabel={setLabel} reason={placeholderReason} />
         ) : null}
       </span>
       <span className="deck-tile-label">
         <span className="deck-tile-name">{card.name}</span>
-        {quantity > 1 && <span className="deck-tile-qty">×{quantity}</span>}
       </span>
     </div>
   );
@@ -501,12 +676,10 @@ function tileArt(card: CardRow): TileArt {
  *  keeps its shape, and carrying enough to tell the cards apart. */
 function TilePlaceholder({
   card,
-  quantity,
   setLabel,
   reason,
 }: {
   card: CardRow;
-  quantity: number;
   setLabel: string | null;
   reason: string;
 }) {
@@ -519,39 +692,22 @@ function TilePlaceholder({
           {setLabel}
         </span>
       )}
-      <span className="deck-tile-placeholder-name">
-        {card.name}
-        {quantity > 1 ? ` ×${quantity}` : ""}
-      </span>
+      <span className="deck-tile-placeholder-name">{card.name}</span>
     </span>
   );
 }
 
-/** The quantity stepper under the tile — the row's stepper in tile size. */
-function QtyStepper({ quantity, onSet }: { quantity: number; onSet: (q: number) => void }) {
-  return (
-    <span className="deck-qty">
-      <button className="btn-sm" aria-label="Decrease quantity" disabled={quantity <= 1} onClick={() => onSet(quantity - 1)}>
-        −
-      </button>
-      <span className="deck-qty-n mono">×{quantity}</span>
-      <button className="btn-sm" aria-label="Increase quantity" onClick={() => onSet(quantity + 1)}>
-        +
-      </button>
-    </span>
-  );
-}
-
-/** One card's actions, each one the page's own handler. Plain function (not a
- *  hook) so the right-click menu can build the same actions for whichever card
- *  it is open on. */
+/** One copy's actions, each one the page's own handler. Plain function (not a
+ *  hook) so the right-click menu can build the same actions for whichever copy
+ *  it is open on. Everything but the copy actions is its card's. */
 interface TileActions {
   quantity: number;
   download: () => void;
   upscale: () => void;
   upscaleAt: (dpi: number) => void;
   remove: () => void;
-  setQuantity: (q: number) => void;
+  removeCopy: () => void;
+  addCopy: () => void;
   openPrinting: () => void;
   /** The row's own PrintingPicker opens the walk with whatever request it
    *  builds (it knows the pinned printing and MPC state). */
@@ -559,14 +715,16 @@ interface TileActions {
   openArt: () => void;
 }
 
-function makeActions(p: DeckGridProps, card: CardRow): TileActions {
+function makeActions(p: DeckGridProps, copy: DeckCopy): TileActions {
+  const card = copy.card;
   return {
     quantity: card.quantity ?? 1,
     download: () => p.download(card),
     upscale: () => p.upscale(card),
     upscaleAt: (dpi) => p.upscaleAt(card, dpi),
     remove: () => p.remove(card),
-    setQuantity: (q: number) => p.setQuantity(card, Math.max(1, Math.round(q))),
+    removeCopy: () => p.removeCopy(copy),
+    addCopy: () => p.addCopy(card),
     openPrinting: () => p.openPicker(card, { source: "scryfall", face: 0 }),
     openArt: () => p.openPicker(card, { source: "mpc", face: 0 }),
     openPrintingWith: (request) => p.openPicker(card, request),
@@ -660,8 +818,8 @@ interface MenuItem {
 
 const SEP: MenuItem = { sep: true };
 
-/** The menu a right-click (or Control-click) on a card opens. No Quantity
- *  items: the stepper under the tile already is one. */
+/** The menu a right-click (or Control-click) on a copy opens. Its copy items
+ *  stand in for the Row view's quantity stepper. */
 function menuFor(
   c: CardCoverage,
   a: TileActions,
@@ -673,28 +831,28 @@ function menuFor(
   const has = hasImages(c);
   return [
     {
-      label: "Change printing…",
+      label: "Change Printing…",
       action: {
         run: a.openPrinting,
-        label: "Change printing…",
+        label: "Change Printing…",
         disabled: custom || disabled,
         title: custom ? "A Custom Image has no printing to change" : "Pick which printing this card uses",
       },
     },
     {
-      label: "MPC Fill art…",
-      action: { run: a.openArt, label: "MPC Fill art…", title: "Print this card from MPC Fill art" },
+      label: "MPC Fill Art…",
+      action: { run: a.openArt, label: "MPC Fill Art…", title: "Print this card from MPC Fill art" },
     },
     {
-      label: "Card back…",
-      action: { run: openBackPicker, label: "Card back…", title: "Choose what this card's Reverse prints" },
+      label: "Card Back…",
+      action: { run: openBackPicker, label: "Card Back…", title: "Choose what this card's Reverse prints" },
     },
     SEP,
     {
-      label: "Show images…",
+      label: "Show Images…",
       action: {
         run: openImages,
-        label: "Show images…",
+        label: "Show Images…",
         disabled: !has,
         title: has
           ? "This card's original and every upscale, in a modal (the grid never reflows)"
@@ -702,10 +860,10 @@ function menuFor(
       },
     },
     {
-      label: "Download original",
+      label: "Download Original",
       action: {
         run: a.download,
-        label: "Download original",
+        label: "Download Original",
         disabled,
         title: "The full-size image, without upscaling",
       },
@@ -720,7 +878,26 @@ function menuFor(
       },
     },
     SEP,
-    { label: "Remove from deck", action: { run: a.remove, label: "Remove from deck", danger: true } },
+    {
+      label: "Add Another Copy",
+      action: {
+        run: a.addCopy,
+        label: "Add Another Copy",
+        title: "One more copy of this card, placed after its others",
+      },
+    },
+    ...(a.quantity > 1
+      ? [
+          {
+            label: "Remove This Copy",
+            action: { run: a.removeCopy, label: "Remove This Copy", title: "Just this copy" },
+          },
+          {
+            label: `Remove All ${a.quantity} Copies`,
+            action: { run: a.remove, label: `Remove All ${a.quantity} Copies`, danger: true },
+          },
+        ]
+      : [{ label: "Remove From Deck", action: { run: a.remove, label: "Remove From Deck", danger: true } }]),
   ];
 }
 

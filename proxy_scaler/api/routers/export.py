@@ -90,6 +90,7 @@ from proxy_scaler.pdf_layout import (
     _bled_card,
     _describe_face,
     build_print_slots,
+    checked_copy_order,
     fit_bled_image,
     flatten_corner_alpha,
     match_quantities,
@@ -143,9 +144,10 @@ def _prepare_slots(
         use_originals=body.use_originals,
     )
 
+    copy_order = checked_copy_order(body.copy_order, entries)
     seen: set[str] = set()
     default_slots: list[PrintSlot] = []
-    unpaired_slots = build_print_slots(units, pair_back_faces=False)
+    unpaired_slots = build_print_slots(units, pair_back_faces=False, copy_order=copy_order)
     for slot in unpaired_slots:
         key = str(slot.front.out_path)
         if key in seen:
@@ -153,7 +155,9 @@ def _prepare_slots(
         seen.add(key)
         default_slots.append(slot)
 
-    paired_slots = build_print_slots(units, pair_back_faces=body.back_faces_as_reverse)
+    paired_slots = build_print_slots(
+        units, pair_back_faces=body.back_faces_as_reverse, copy_order=copy_order
+    )
     return default_slots, paired_slots, missing, missing_at_dpi, unpaired_slots
 
 

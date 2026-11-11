@@ -3157,3 +3157,24 @@ def test_per_card_image_needs_no_selected_back(client: TestClient, tmp_path: Pat
         back = client.post("/api/pdf/preview/page", json={**body, "preview_back_page": True}).json()
         assert back["slots"][2]["is_back_image"] is True
         assert client.post("/api/pdf", json=body).status_code == 200
+
+
+def test_pdf_preview_page_accepts_copy_order(client: TestClient, tmp_path: Path) -> None:
+    """The Decklist's Custom sort sends copy_order (docs/adr/0009). A valid
+    one lays out every copy; one that doesn't match the deck is ignored and
+    the copies print grouped — never dropped."""
+    db_path = os.environ["PROXY_SCALER_DB_PATH"]
+    _write_gallery_item_with_transparent_corner(tmp_path, db_path, "tag-a")
+    entries = [_sol_ring_entry(quantity=2)]
+
+    ok = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(entries=entries, copy_order=[0, 0])
+    )
+    assert ok.status_code == 200
+    assert len(ok.json()["slots"]) == 2
+
+    stale = client.post(
+        "/api/pdf/preview/page", json=_pdf_layout_body(entries=entries, copy_order=[0])
+    )
+    assert stale.status_code == 200
+    assert len(stale.json()["slots"]) == 2

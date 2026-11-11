@@ -46,7 +46,7 @@ import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri
 import { resolveImageOrigin } from "../imageOrigin";
 import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
-import { cardToEntry, sortCards } from "../deckEntries";
+import { cardToEntry, deckCopies, sortCards, type DeckCopy } from "../deckEntries";
 import { errorText, toast } from "../toasts";
 import { useMpcCatalogReady } from "../mpcCatalog";
 import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
@@ -172,6 +172,9 @@ export default function DecklistPage() {
     addCustomCards,
     addCustomCardsWithBacks,
     removeCard,
+    placements,
+    setPlacementOrder,
+    removeCardCopy,
     setCardQuantity,
     setCardPrinting,
     setCardFaceArt,
@@ -1066,7 +1069,17 @@ export default function DecklistPage() {
   const { galleryByCard, tasksByCard } = groupByCard(gallery, tasks);
   const { galleryByName, tasksByName } = groupByCardName(gallery, tasks);
 
-  const sortedCards = sortCards(cards, settings.sort_primary);
+  const sortedCards = sortCards(cards, settings.sort_primary, placements);
+  // The Grid's tiles: every printed copy, in print order.
+  const copies = useMemo(
+    () => deckCopies(cards, settings.sort_primary, placements),
+    [cards, settings.sort_primary, placements],
+  );
+  const removeCopy = (copy: DeckCopy) => {
+    if (copy.placementId != null) removeCardCopy(copy.placementId);
+    else if ((copy.card.quantity ?? 1) > 1) setCardQuantity(copy.card.id, (copy.card.quantity ?? 1) - 1);
+    else removeCard(copy.card.id);
+  };
   // Which of the deck's printings are double-faced, from the card
   // database: their rows list a Front and a Back before either has an
   // image. Without a corpus (or from an older server), rows learn their
@@ -1575,14 +1588,25 @@ export default function DecklistPage() {
 
         {viewMode === "grid" && (
           <DeckGrid
-            cards={sortedCards}
+            copies={copies}
+            cols={settings.cols}
+            rows={settings.rows}
             library={libraryById}
             facesFor={facesForCard}
             model={settings.model}
             dpis={settings.dpi_targets}
             serverUnavailable={serverUnavailable}
             openPicker={(card, request) => setWalk({ cardId: card.id, request })}
-            setQuantity={(card, quantity) => setCardQuantity(card.id, quantity)}
+            reorder={(placementIds) => {
+              setPlacementOrder(placementIds);
+              // A drag on any other sort starts the Custom order from what
+              // was on screen; Name/Set/(none) are still there to go back to.
+              if (settings.sort_primary !== "Custom") {
+                setSettings((s) => ({ ...s, sort_primary: "Custom" }));
+              }
+            }}
+            addCopy={(card) => setCardQuantity(card.id, (card.quantity ?? 1) + 1)}
+            removeCopy={removeCopy}
             download={(card) => downloadCard(card)}
             upscale={(card) => generateCardMutation.mutate({ card, dpis: settings.dpi_targets })}
             upscaleAt={(card, dpi) => generateCardMutation.mutate({ card, dpis: [dpi] })}

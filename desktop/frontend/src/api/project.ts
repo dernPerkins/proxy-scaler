@@ -154,6 +154,15 @@ export type ImportArtSource = "scryfall" | "mpc";
  *  to a row (see components/DeckGrid.tsx). */
 export type DeckViewMode = "row" | "grid";
 
+/** Where one printed copy of a card sits in the project's custom order
+ *  (the "Custom" sort). A card at quantity 4 owns four of these; positions
+ *  are dense, 0..n-1 across the project. See docs/adr/0009. */
+export interface CardPlacement {
+  id: number;
+  card_id: number;
+  position: number;
+}
+
 export interface CardRow {
   id: number;
   sort_order: number;
@@ -344,6 +353,18 @@ export const projectApi = {
   importResolvedCards: (projectId: number, text: string, cards: ResolvedImportCard[]) =>
     invokeCommand<CardRow[]>("import_resolved_cards", { projectId, text, cards }),
   removeCard: (cardId: number) => invokeCommand<void>("remove_card", { cardId }),
+  // Card Placements (card_placements.rs, docs/adr/0009): the project's custom
+  // order, one row per printed copy. Read reconciles them with the cards'
+  // quantities first, so it is always the whole deck.
+  cardPlacements: (projectId: number) =>
+    invokeCommand<CardPlacement[]>("get_card_placements", { projectId }),
+  // Must name exactly the current placements; a stale list is refused.
+  setPlacementOrder: (projectId: number, placementIds: number[]) =>
+    invokeCommand<void>("set_placement_order", { projectId, placementIds }),
+  // Removes that one copy (the card too, when it was the last). Returns the
+  // placements afterwards.
+  removeCardCopy: (placementId: number) =>
+    invokeCommand<CardPlacement[]>("remove_card_copy", { placementId }),
   // Clamped to a minimum of 1 on the Rust side; removal stays removeCard's job.
   setCardQuantity: (cardId: number, quantity: number) =>
     invokeCommand<void>("set_card_quantity", { cardId, quantity }),

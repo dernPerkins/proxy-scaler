@@ -21,7 +21,7 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
-import { cardToEntry, sortCards } from "../deckEntries";
+import { printOrder } from "../deckEntries";
 import { backImageRef, referencedBackIds, summarizeCardBacks, useBackImagesSync, useBackLibrary } from "../cardBacks";
 import CardBackSummaryNote from "../components/CardBackSummaryNote";
 import SortSelect from "../components/SortSelect";
@@ -144,7 +144,7 @@ function insetFromDisplay(value: number, unit: InsetUnit): number {
 }
 
 export default function PdfPage() {
-  const { projectId, projectTag, projectName, cards, settings, setSettings } = useProject();
+  const { projectId, projectTag, projectName, cards, placements, settings, setSettings } = useProject();
   const readiness = useServerReadiness();
   const connection = useConnection();
   // See DecklistPage's identical check — generation-server unreachability
@@ -230,7 +230,13 @@ export default function PdfPage() {
   // the same project-bar Save button as the Decklist tab's generation
   // settings) rather than local component state — these used to live in a
   // useState here and silently reset to defaults on every reload.
+  // Sorted before mapping: the server prints/paginates in entries order,
+  // so this is where the shared sort dropdown reaches the actual PDF. A
+  // Custom sort adds copy_order (in `layout`, so every request and every
+  // preview query key carries it).
+  const { entries, copyOrder } = printOrder(cards, settings.sort_primary, placements);
   const layout: LayoutSettings = {
+    ...(copyOrder ? { copy_order: copyOrder } : {}),
     page_width_mm: settings.page_width_mm,
     page_height_mm: settings.page_height_mm,
     cols: settings.cols,
@@ -280,9 +286,6 @@ export default function PdfPage() {
   };
   const [downloading, setDownloading] = useState(false);
 
-  // Sorted before mapping: the server prints/paginates in entries order,
-  // so this is where the shared sort dropdown reaches the actual PDF.
-  const entries = sortCards(cards, settings.sort_primary).map(cardToEntry);
   // Radius' Proper Alpha Cards with an Alpha card in the deck: the cut
   // file is one SVG per sheet, in a ZIP. Only once the setting is sent.
   const cutFilePerSheet = cutFileIsPerSheet(
