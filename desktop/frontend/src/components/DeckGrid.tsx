@@ -102,7 +102,9 @@ import { coverageFor, hasImages, type CardCoverage, type Cover, type DisplayFace
 import type { DeckCopy } from "../deckEntries";
 import { fillFrameWith, isAlphaPrinting, trimGeometry } from "../cardTrim";
 import { useImageCacheSetting } from "../imageOrigin";
-import CardBackPicker from "./CardBackPicker";
+import CardBackPicker, { resolve as resolveBack, useBackThumb } from "./CardBackPicker";
+import { useBackLibrary } from "../cardBacks";
+import { useProject } from "../context/ProjectContext";
 import CardImagesModal from "./CardImagesModal";
 import { EyeIcon, TrashIcon } from "./RowIcons";
 import PrintingPicker, { pickerRequestFor, type PickerOpenRequest } from "./PrintingPicker";
@@ -214,7 +216,10 @@ export default function DeckGrid(props: DeckGridProps) {
     const copy = props.copies.find((c) => c.key === key);
     // The floating copy shows the art the tile already has on screen —
     // read off the tile rather than queued and fetched a second time.
-    const el = document.querySelector<HTMLImageElement>(`[data-copy-key="${CSS_ESCAPE(key)}"] .deck-tile-frame img`);
+    const cell = `[data-copy-key="${CSS_ESCAPE(key)}"]`;
+    const el =
+      document.querySelector<HTMLImageElement>(`${cell} .proto-flip-side.is-shown .deck-tile-frame img`) ??
+      document.querySelector<HTMLImageElement>(`${cell} .deck-tile-frame img`);
     setDragging({ key, src: el?.currentSrc || el?.src || null, name: copy?.card.name ?? "" });
     setMenu(null);
   };
@@ -394,6 +399,24 @@ function SortableCell(props: {
   };
   const custom = card.custom_image_id != null;
   const hasSomeImages = hasImages(c);
+  // PROTOTYPE (footer B): this copy turned over. Per copy, not per card — if
+  // the flipped face ever becomes the one that prints (as on Proxxied), it is
+  // a placement's property. The back side mounts on the first flip only, so
+  // an unflipped deck queues no extra thumbnails.
+  const { settings } = useProject();
+  const [flipped, setFlipped] = useState(false);
+  const [backMounted, setBackMounted] = useState(false);
+  const [noBackFace, setNoBackFace] = useState(false);
+  const backFace = c.faces.find((f) => f.faceLabel === "back");
+  const dfcKnown =
+    c.faces.some((f) => f.faceLabel === "back" || f.faceLabel === "front") ||
+    (card.face_art ?? []).some((fa) => fa.total_faces > 1);
+  const singleKnown = custom || (!dfcKnown && c.faces.some((f) => f.variants.length > 0));
+  const hasFace1Art = (card.face_art ?? []).some((fa) => fa.face === 1);
+  // A double-faced card shows its other face, whatever the PDF pairs; one
+  // not known either way tries face 1 and falls back to its card back.
+  const showBackFace = !singleKnown && !noBackFace && (hasFace1Art || card.scryfall_id != null);
+  const transformOnBack = !!settings.back_printing && !!settings.back_faces_as_reverse && backFace != null;
   // The tile paints the image it would actually print: the FRONT face's variant
   // at the selected model and the highest selected DPI, through the gallery thumb
   // endpoint like every other upscale thumb. When that badge is grey — nothing
@@ -410,6 +433,25 @@ function SortableCell(props: {
       : undefined;
   const paintedUrl =
     painted?.galleryItemId != null ? generationApi.imageUrl(painted.galleryItemId, "thumb") : null;
+  const paintedBack =
+    goalDpi != null
+      ? backFace?.variants.find(
+          (v) => v.dpi === goalDpi && v.model === p.model && v.status === "done" && v.galleryItemId != null,
+        )
+      : undefined;
+  const paintedBackUrl =
+    paintedBack?.galleryItemId != null ? generationApi.imageUrl(paintedBack.galleryItemId, "thumb") : null;
+  const frontTile = (
+    <DeckTile
+      card={card}
+      library={p.library}
+      origin={origin}
+      serverThumbs={serverThumbs}
+      queue={queue}
+      variantSrc={paintedUrl}
+      showName={footer === "A"}
+    />
+  );
 
   return (
     <div
@@ -442,15 +484,37 @@ function SortableCell(props: {
           a.openPrintingWith(pickerRequestFor(card));
         }}
       >
-        <DeckTile
-          card={card}
-          library={p.library}
-          origin={origin}
-          serverThumbs={serverThumbs}
-          queue={queue}
-          variantSrc={paintedUrl}
-          showName={footer === "A"}
-        />
+        {footer === "B" ? (
+          <span className={`proto-flip${flipped ? " is-flipped" : ""}`}>
+            <span className="proto-flip-inner">
+              <span className={`proto-flip-side is-front${flipped ? "" : " is-shown"}`}>{frontTile}</span>
+              {backMounted && (
+                <span
+                  className={`proto-flip-side is-back${flipped ? " is-shown" : ""}`}
+                  aria-hidden={!flipped}
+                >
+                  {showBackFace ? (
+                    <DeckTile
+                      card={card}
+                      library={p.library}
+                      origin={origin}
+                      serverThumbs={serverThumbs}
+                      queue={queue}
+                      variantSrc={paintedBackUrl}
+                      showName={false}
+                      face={1}
+                      onFaceMissing={dfcKnown ? undefined : () => setNoBackFace(true)}
+                    />
+                  ) : (
+                    <BackSide card={card} />
+                  )}
+                </span>
+              )}
+            </span>
+          </span>
+        ) : (
+          frontTile
+        )}
         {/* Everything painted ON the art lives in a box that mirrors the art
             frame's own box — same width, same 488/680 aspect — so the offsets
             in styles.css are margins off the card, not off the name row under
@@ -499,6 +563,32 @@ function SortableCell(props: {
 
       {footer === "B" ? (
         <span className="proto-tile-footer">
+          <span className="proto-tile-footer-left">
+            <button
+              type="button"
+              className="btn-sm icon-button proto-flip-btn"
+              onClick={() => {
+                setBackMounted(true);
+                setFlipped((f) => !f);
+              }}
+              aria-pressed={flipped}
+              title={flipped ? "Flip to the front" : "Flip — see this copy's back"}
+              aria-label="Flip"
+            >
+              <FlipIcon />
+            </button>
+            {/* The first copy's swatch is the one the right-click menu's
+                "Card Back…" opens. */}
+            <span
+              ref={
+                ownsBackPicker
+                  ? (el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)
+                  : undefined
+              }
+            >
+              <CardBackPicker card={card} transformOnBack={transformOnBack} />
+            </span>
+          </span>
           <PaintedBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} look="row" />
           <button
             type="button"
@@ -514,16 +604,6 @@ function SortableCell(props: {
           >
             <EyeIcon />
           </button>
-          {/* Not shown, but still mounted for the first copy so the
-              right-click menu's "Card Back…" has a control to open. */}
-          {ownsBackPicker && (
-            <span
-              className="proto-tile-back"
-              ref={(el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)}
-            >
-              <CardBackPicker card={card} transformOnBack={false} />
-            </span>
-          )}
         </span>
       ) : (
       <span className="deck-cell-controls">
@@ -579,9 +659,14 @@ function DeckTile(props: {
   variantSrc?: string | null;
   /** PROTOTYPE: footer B has no name row. */
   showName?: boolean;
+  /** PROTOTYPE: which face to draw — 1 is a double-faced card's back. */
+  face?: number;
+  /** PROTOTYPE: every image for this face failed (a card that turned out
+   *  not to have a face 1). */
+  onFaceMissing?: () => void;
 }) {
-  const { card, library, origin, serverThumbs, queue, variantSrc, showName = true } = props;
-  const art = tileArt(card);
+  const { card, library, origin, serverThumbs, queue, variantSrc, showName = true, face = 0, onFaceMissing } = props;
+  const art = tileArt(card, face);
   // The image identity that failed, not just "something failed": a variant
   // thumbnail that 404s must not black out a tile that has its source art to
   // fall back on.
@@ -664,6 +749,10 @@ function DeckTile(props: {
   useEffect(() => {
     if (settledOut) settle();
   }, [settledOut, settle]);
+  const allFailed = src == null && failedKey != null && !candidates.some((c) => c.key !== failedKey);
+  useEffect(() => {
+    if (allFailed) onFaceMissing?.();
+  }, [allFailed, onFaceMissing]);
   const setLabel =
     card.set_code && card.collector_number
       ? `${card.set_code.toUpperCase()} #${card.collector_number}`
@@ -721,8 +810,8 @@ type TileArt =
   | { kind: "pending" }
   | { kind: "none" };
 
-function tileArt(card: CardRow): TileArt {
-  const faceArt = (card.face_art ?? []).find((fa) => fa.face === 0);
+function tileArt(card: CardRow, face = 0): TileArt {
+  const faceArt = (card.face_art ?? []).find((fa) => fa.face === face);
   if (faceArt) {
     if (faceArt.scryfall) {
       return {
@@ -737,11 +826,77 @@ function tileArt(card: CardRow): TileArt {
       ? { kind: "local", customImageId: faceArt.custom_image_id }
       : { kind: "pending" };
   }
-  if (card.custom_image_id != null) return { kind: "local", customImageId: card.custom_image_id };
+  if (card.custom_image_id != null)
+    return face === 0 ? { kind: "local", customImageId: card.custom_image_id } : { kind: "none" };
   // A card imported before the resolve flow, or one whose resolve never
   // landed, has a name and maybe a set but no printing id to ask for.
-  if (card.scryfall_id) return { kind: "server", scryfallId: card.scryfall_id, face: 0 };
+  if (card.scryfall_id) return { kind: "server", scryfallId: card.scryfall_id, face };
   return { kind: "none" };
+}
+
+/** PROTOTYPE: a flipped single-faced copy — the card back it prints with,
+ *  resolved exactly as the Back swatch resolves it (this card's own back,
+ *  the universal back, or blank). Never the transform side: a double-faced
+ *  card flips to its other face instead. */
+function BackSide({ card }: { card: CardRow }) {
+  const { settings } = useProject();
+  const library = useBackLibrary();
+  const r = resolveBack(card, library.data, settings.back_image_id ?? null, false);
+  const back = r.kind === "image" ? r.back : r.kind === "universal" ? r.back : undefined;
+  const thumb = useBackThumb(back?.id);
+  const trimmed =
+    back?.includes_bleed && back.bleed_mm > 0
+      ? fillFrameWith(trimGeometry({ w: back.width, h: back.height }, back.bleed_mm).trim)
+      : null;
+  return (
+    <div className="deck-tile">
+      <span className="deck-tile-frame">
+        {r.kind === "blank" ? (
+          <span className="deck-tile-placeholder proto-back-blank">
+            <span className="deck-tile-placeholder-name">Blank Back</span>
+          </span>
+        ) : thumb.data ? (
+          <img
+            src={thumb.data}
+            alt={back?.label ?? "Card back"}
+            draggable={false}
+            style={
+              trimmed
+                ? { display: "block", position: "absolute", maxWidth: "none", objectFit: "fill", ...trimmed }
+                : undefined
+            }
+          />
+        ) : back == null && !library.isLoading ? (
+          <span className="deck-tile-placeholder">
+            <span className="deck-tile-placeholder-note">Pick one on the Backs tab, or with the Back swatch</span>
+            <span className="deck-tile-placeholder-name">No Back Selected</span>
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+/** PROTOTYPE: two arrows turning about a vertical axis — "turn it over". */
+function FlipIcon() {
+  return (
+    <svg
+      width={16}
+      height={16}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
 }
 
 /** The stand-in for a tile with no art to draw: card-shaped, so the grid

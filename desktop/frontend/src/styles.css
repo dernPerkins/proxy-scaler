@@ -1254,8 +1254,12 @@ button:disabled {
     transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
     box-shadow 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+/* Raised for keyboard focus only: a mouse click on a control inside leaves
+   focus there, and focus-within would keep the card raised after the
+   pointer has gone. */
 .deck-cell:hover,
-.deck-cell:focus-within {
+.deck-cell:focus-visible,
+.deck-cell:has(:focus-visible) {
   transform: translateY(-3px);
   box-shadow: var(--deck-card-shadow-lifted);
 }
@@ -1317,7 +1321,8 @@ button:disabled {
     transition: none;
   }
   .deck-cell:hover,
-  .deck-cell:focus-within {
+  .deck-cell:focus-visible,
+  .deck-cell:has(:focus-visible) {
     transform: none;
   }
 }
@@ -1448,13 +1453,15 @@ button:disabled {
   transition: opacity 0.12s ease;
 }
 .deck-cell:hover .deck-reveal,
-.deck-cell:focus-within .deck-reveal {
+.deck-cell:focus-visible .deck-reveal,
+.deck-cell:has(:focus-visible) .deck-reveal {
   opacity: 1;
   pointer-events: auto;
 }
 /* Still hover-only when disabled (nothing to show yet), just dimmer. */
 .deck-cell:hover .deck-reveal:disabled,
-.deck-cell:focus-within .deck-reveal:disabled {
+.deck-cell:focus-visible .deck-reveal:disabled,
+.deck-cell:has(:focus-visible) .deck-reveal:disabled {
   opacity: 0.55;
 }
 
@@ -4256,16 +4263,62 @@ html.modal-open {
   right: 10px;
   top: 10px;
 }
-/* Mounted for the menu's "Card Back…", never seen. */
-.proto-tile-back {
+.proto-tile-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+/* The swatch's wrapper is a flex box too, so no line box (and its
+   descender gap) sits under the swatch and pushes it off centre. */
+.proto-tile-footer-left > span {
+  display: flex;
+}
+/* Flipped: the button stays lit in the accent, so a copy showing its back
+   (a transform side especially) can't pass for its front. */
+.proto-flip-btn[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.proto-flip-btn[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-hover);
+}
+/* The art turns over in place: the front sits in the flow and sizes the
+   tile, the back is laid over it facing away. */
+.proto-flip {
+  display: block;
+  perspective: 1400px;
+}
+.proto-flip-inner {
+  display: block;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.proto-flip.is-flipped .proto-flip-inner {
+  transform: rotateY(180deg);
+}
+.proto-flip-side {
+  display: block;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.proto-flip-side.is-back {
   position: absolute;
-  left: 50%;
-  bottom: 0;
-  width: 0;
-  height: 0;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
+  inset: 0;
+  transform: rotateY(180deg);
+}
+.proto-back-blank {
+  border-style: solid;
+  background: #fff;
+  color: #6c6c78;
+}
+@media (prefers-reduced-motion: reduce) {
+  .proto-flip-inner {
+    transition: none;
+  }
 }
 
 .proto-switcher {

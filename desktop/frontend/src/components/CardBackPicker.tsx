@@ -60,7 +60,7 @@ function QuestionIcon() {
   );
 }
 
-function useBackThumb(id: number | null | undefined) {
+export function useBackThumb(id: number | null | undefined) {
   return useQuery({
     queryKey: ["back-thumb", id],
     queryFn: () => projectApi.backImageThumbnail(id as number),
@@ -71,13 +71,13 @@ function useBackThumb(id: number | null | undefined) {
 
 /** What the row swatch has to say, derived once so the swatch, its
  *  tooltip and the picker's header all agree. */
-type Resolved =
+export type Resolved =
   | { kind: "locked" }
   | { kind: "blank" }
   | { kind: "image"; back: BackImage }
   | { kind: "universal"; back: BackImage | undefined };
 
-function resolve(
+export function resolve(
   card: CardRow,
   library: BackImage[] | undefined,
   universalId: number | null,
