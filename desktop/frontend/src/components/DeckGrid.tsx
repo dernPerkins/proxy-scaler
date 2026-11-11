@@ -6,9 +6,10 @@
 // carries the Row view's functionality for its card.
 //
 // Copies, not cards (docs/adr/0009): a 4-of is four tiles, and each can be
-// picked up — click and hold, about a quarter second — and dropped anywhere;
+// picked up — press and move the pointer a few pixels — and dropped anywhere;
 // the copies after the drop point shift along one slot, so the order never
-// has holes. The first drag switches the shared Sort to Custom, starting from
+// has holes. Let go before it moves and it was a click: on the art, that opens
+// the card's printing picker, the same one its set · number button opens. The first drag switches the shared Sort to Custom, starting from
 // the order on screen, and the PDF and ZIP then print in that order. A copy is
 // independent in placement only: its printing, art and back are its card's,
 // so changing them on one tile changes every copy (hovering a tile outlines
@@ -104,7 +105,7 @@ import { useImageCacheSetting } from "../imageOrigin";
 import CardBackPicker from "./CardBackPicker";
 import CardImagesModal from "./CardImagesModal";
 import { EyeIcon, TrashIcon } from "./RowIcons";
-import PrintingPicker, { type PickerOpenRequest } from "./PrintingPicker";
+import PrintingPicker, { pickerRequestFor, type PickerOpenRequest } from "./PrintingPicker";
 import SetIcon from "./SetIcon";
 import { useQueuedThumb, useThumbnailQueue, type ThumbnailQueue } from "./imageGrid";
 
@@ -183,12 +184,15 @@ export default function DeckGrid(props: DeckGridProps) {
     [cards, props.facesFor, props.model, props.dpis, props.library],
   );
 
-  // Click and hold to pick a copy up: the delay is what lets an ordinary
-  // click on the printing picker, a badge, the eye or the trash stay a
-  // click. The keyboard sensor picks up the focused tile with Space/Enter
-  // (only the tile itself — a key on a button inside it stays that button's).
+  // Press and move to pick a copy up: nothing lifts until the pointer has
+  // travelled 8px, so a press released in place stays a click — on the art
+  // that opens the printing picker, and the printing button, badges, eye and
+  // trash keep theirs. Once a drag has started, dnd-kit swallows the click
+  // its release would fire. The keyboard sensor picks up the focused tile with
+  // Space/Enter (only the tile itself — a key on a button inside it stays
+  // that button's).
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const [dragging, setDragging] = useState<{ key: string; src: string | null; name: string } | null>(
@@ -410,7 +414,18 @@ function SortableCell(props: {
         onMenu(e.clientX + 2, e.clientY + 2);
       }}
     >
-      <span className="deck-tile-wrap">
+      {/* A click on the art (released before the pointer moved far enough to
+          drag) opens the same picker as the printing button under it; a
+          Custom Image has none, so nothing. A click on a badge or pill stays
+          that button's. */}
+      <span
+        className={`deck-tile-wrap${custom || p.serverUnavailable ? "" : " is-pickable"}`}
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest("button")) return;
+          if (custom || p.serverUnavailable) return;
+          a.openPrintingWith(pickerRequestFor(card));
+        }}
+      >
         <DeckTile
           card={card}
           library={p.library}

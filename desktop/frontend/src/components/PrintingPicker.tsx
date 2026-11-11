@@ -1204,6 +1204,15 @@ export function PrintingGridModal(props: {
   );
 }
 
+/** Where the printing button opens the deck walk for a card: a card printing
+ *  MPC Fill art opens on that art, at its first face printing some;
+ *  everything else on its printings. Shared with the Grid tile's
+ *  double-click, so the two always open the same picker. */
+export function pickerRequestFor(card: CardRow): PickerOpenRequest {
+  const art = card.face_art?.find(isImageFaceArt);
+  return art ? { source: "mpc", face: art.face } : { source: "scryfall", face: 0 };
+}
+
 export default function PrintingPicker(props: {
   card: CardRow;
   /** True when the generation server is unreachable — the button still
@@ -1233,12 +1242,7 @@ export default function PrintingPicker(props: {
         className="card-meta mono printing-toggle"
         title={disabled ? "Generation server is unreachable" : "Change printing"}
         disabled={disabled}
-        // A card printing MPC Fill art opens on that art, at its first
-        // face printing some; everything else on its printings.
-        onClick={() => {
-          const art = card.face_art?.find(isImageFaceArt);
-          onOpen(art ? { source: "mpc", face: art.face } : { source: "scryfall", face: 0 });
-        }}
+        onClick={() => onOpen(pickerRequestFor(card))}
       >
         <SetIcon setCode={card.set_code} rarity={rarity} />
         {label} ▾

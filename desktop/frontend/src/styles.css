@@ -1326,6 +1326,10 @@ button:disabled {
   display: block;
   min-width: 0;
 }
+/* A click on the art opens the printing picker; a press that moves drags. */
+.deck-tile-wrap.is-pickable {
+  cursor: pointer;
+}
 /* Everything painted ON the art is anchored to a box that reproduces the art
    frame's own box — same width, same 488/680 aspect — rather than measured up
    from the bottom of the tile, where the gap and the name row would make every
