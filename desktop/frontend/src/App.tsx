@@ -25,7 +25,7 @@ import ExportPage from "./pages/ExportPage";
 import PdfPage from "./pages/PdfPage";
 import TasksPage from "./pages/TasksPage";
 import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "./shortcuts";
-import { isTauri } from "./tauri";
+import { getTrueFullScreen, isTauri, listenTrueFullScreen, type TrueFullScreen } from "./tauri";
 import TutorialButton from "./tutorial/TutorialButton";
 import { ROUTE_TOURS } from "./tutorial/tours";
 import {
@@ -172,8 +172,38 @@ function useTabsHeight(nav: RefObject<HTMLElement | null>) {
   }, [nav]);
 }
 
+// View → Enter True Full Screen (macOS): the window runs to the top edge,
+// so on a notched screen the tab bar grows to the camera housing's height
+// and the notch reads as part of the bar. html.notch-full-screen and
+// --notch-inset drive that in styles.css; useTabsHeight above picks up the
+// taller bar on its own.
+function useTrueFullScreen() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const apply = (state: TrueFullScreen | null) => {
+      const notched = state != null && state.active && state.notchInset > 0;
+      root.classList.toggle("notch-full-screen", notched);
+      if (notched) root.style.setProperty("--notch-inset", `${state.notchInset}px`);
+      else root.style.removeProperty("--notch-inset");
+    };
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void getTrueFullScreen().then((s) => !cancelled && apply(s));
+    void listenTrueFullScreen(apply).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      apply(null);
+    };
+  }, []);
+}
+
 export default function App() {
   useTabShortcuts();
+  useTrueFullScreen();
   const tabsRef = useRef<HTMLElement>(null);
   useTabsHeight(tabsRef);
   const [settingsOpen, setSettingsOpen] = useState(false);

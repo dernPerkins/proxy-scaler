@@ -49,3 +49,9 @@ sha2 = "0.10"
 # payload and the hash it must match. Verify-only and dependency-free —
 # the same crate Tauri's own updater plugin verifies with.
 minisign-verify = "0.2"
+
+# fullscreen_menu.rs reads NSScreen.safeAreaInsets (the notch height) off the
+# main window. Already in the tree via tao at this version and these
+# features, so this adds no new code to the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSResponder", "NSScreen", "NSWindow"] }

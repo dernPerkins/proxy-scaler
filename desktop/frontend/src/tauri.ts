@@ -195,3 +195,31 @@ export async function listenDownloadProgress(
     (e) => handler(e.payload),
   );
 }
+
+/** View → Enter True Full Screen (macOS only; see fullscreen_menu.rs). */
+export interface TrueFullScreen {
+  active: boolean;
+  /** Camera housing height in CSS px; 0 on a screen without a notch. */
+  notchInset: number;
+}
+
+/** Current state, for a webview that loads while it's already on. Null
+    outside Tauri and on Windows, where the command doesn't exist. */
+export async function getTrueFullScreen(): Promise<TrueFullScreen | null> {
+  if (!window.__TAURI__) return null;
+  try {
+    return await window.__TAURI__.core.invoke<TrueFullScreen>("get_true_full_screen");
+  } catch {
+    return null;
+  }
+}
+
+/** Fires on every enter and exit. Resolves to an unlisten fn. */
+export async function listenTrueFullScreen(
+  handler: (e: TrueFullScreen) => void,
+): Promise<() => void> {
+  if (!window.__TAURI__) return () => {};
+  return window.__TAURI__.event.listen<TrueFullScreen>("true-full-screen", (e) =>
+    handler(e.payload),
+  );
+}

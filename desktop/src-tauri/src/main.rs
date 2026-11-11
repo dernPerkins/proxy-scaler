@@ -51,6 +51,8 @@ mod back_images;
 mod card_placements;
 mod custom_images;
 mod face_art;
+#[cfg(target_os = "macos")]
+mod fullscreen_menu;
 mod mpc_art;
 mod project_store;
 mod save_dialog;
@@ -963,9 +965,15 @@ fn main() {
             face_art::set_card_face_printing,
             face_art::clear_card_face_art,
             face_art::count_face_art_using_custom_image,
-            project_store::add_custom_cards_with_backs
+            project_store::add_custom_cards_with_backs,
+            #[cfg(target_os = "macos")]
+            fullscreen_menu::get_true_full_screen
         ])
         .setup(|app| {
+            // Only macOS gets an app menu: on Windows a menu would render
+            // as a bar inside the window, which the app has never had.
+            #[cfg(target_os = "macos")]
+            fullscreen_menu::install(app.handle())?;
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
@@ -975,6 +983,10 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if let WindowEvent::Resized(_) = event {
+                fullscreen_menu::refresh(window.app_handle());
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Synchronously, and first: the runtime reads this decision
                 // the moment the closure returns, so a prevent_close() sent
