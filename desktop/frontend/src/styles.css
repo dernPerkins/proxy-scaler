@@ -4214,3 +4214,93 @@ html.modal-open {
   justify-content: space-between;
   gap: 12px;
 }
+
+/* PROTOTYPE — throwaway. Tile footer variant B (`?tileFooter=B`): the View
+   button and the DPI badges under the art, nothing else. Delete with
+   PrototypeSwitcher.tsx once a variant wins. */
+.proto-tile-footer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+.proto-tile-footer .deck-badges {
+  position: static;
+  min-width: 0;
+}
+/* A grey Row-style badge that runs its job: a button, so it says so on hover. */
+.badge.proto-badge-act {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.badge-canceled.proto-badge-act {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--off) 55%, transparent);
+}
+.badge.proto-badge-act:hover:not(:disabled),
+.badge.proto-badge-act:focus-visible {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* The Row view's trash button, on the art's top-right corner on hover. */
+.proto-tile-trash {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+}
+/* Mounted for the menu's "Card Back…", never seen. */
+.proto-tile-back {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.proto-switcher {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 9500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #111;
+  color: #fff;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  transform: translateX(-50%);
+  font-size: 12.5px;
+}
+.proto-switcher button {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+}
+.proto-switcher button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.proto-switcher-label {
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.proto-switcher-what {
+  opacity: 0.6;
+}

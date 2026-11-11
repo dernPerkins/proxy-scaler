@@ -107,7 +107,18 @@ import CardImagesModal from "./CardImagesModal";
 import { EyeIcon, TrashIcon } from "./RowIcons";
 import PrintingPicker, { pickerRequestFor, type PickerOpenRequest } from "./PrintingPicker";
 import SetIcon from "./SetIcon";
+import PrototypeSwitcher, { usePrototypeVariant } from "./PrototypeSwitcher";
 import { useQueuedThumb, useThumbnailQueue, type ThumbnailQueue } from "./imageGrid";
+
+// PROTOTYPE — throwaway. What sits under a tile's art, switchable with
+// `?tileFooter=` (the floating bar, or ← / →): A is the footer as it ships,
+// B drops the name and the printing / back controls for just the View button
+// and the DPI badges (which leave the art). Delete once one wins.
+const TILE_FOOTERS = [
+  { key: "A", name: "Current: Name + Printing + Back" },
+  { key: "B", name: "View + DPI Badges" },
+] as const;
+type TileFooter = (typeof TILE_FOOTERS)[number]["key"];
 
 export interface DeckGridProps {
   /** Every printed copy in print order (deckEntries.deckCopies): the
@@ -242,6 +253,7 @@ export default function DeckGrid(props: DeckGridProps) {
   const menuActions = menu ? makeActions(props, menu.copy) : null;
   // The card-back picker is mounted once per card (its first copy), so the
   // menu's "Card Back…" has exactly one control to open.
+  const tileFooter = usePrototypeVariant(TILE_FOOTERS, "tileFooter") as TileFooter;
   const firstCopyKey = new Map<number, string>();
   for (const c of props.copies) if (!firstCopyKey.has(c.card.id)) firstCopyKey.set(c.card.id, c.key);
 
@@ -283,6 +295,7 @@ export default function DeckGrid(props: DeckGridProps) {
                       onShowImages={() => setImages(copy.card)}
                       onMenu={(x, y) => setMenu({ copy, x, y })}
                       onBackTrigger={registerBack}
+                      footer={tileFooter}
                     />
                   ))}
                   {pi === pages.length - 1 &&
@@ -306,6 +319,7 @@ export default function DeckGrid(props: DeckGridProps) {
           ) : null}
         </DragOverlay>
       </DndContext>
+      <PrototypeSwitcher variants={TILE_FOOTERS} param="tileFooter" label="Tile Footer" />
 
       {menu && menuActions && (
         <TileMenu
@@ -365,8 +379,10 @@ function SortableCell(props: {
   onShowImages: () => void;
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
+  /** PROTOTYPE: which footer to draw under the art. */
+  footer: TileFooter;
 }) {
-  const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
+  const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker, footer } = props;
   const { onHover, onShowImages, onMenu, onBackTrigger } = props;
   const card = copy.card;
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({
@@ -433,6 +449,7 @@ function SortableCell(props: {
           serverThumbs={serverThumbs}
           queue={queue}
           variantSrc={paintedUrl}
+          showName={footer === "A"}
         />
         {/* Everything painted ON the art lives in a box that mirrors the art
             frame's own box — same width, same 488/680 aspect — so the offsets
@@ -441,10 +458,12 @@ function SortableCell(props: {
         <span className="deck-tile-ov">
           {/* The status IS the button here: a grey badge runs its job when
               clicked. Bottom-right: the least interesting corner of a card. */}
-          <PaintedBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} />
+          {footer === "A" && (
+            <PaintedBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} />
+          )}
           {/* The images live in a modal, so the grid never reflows; the
               right-click menu opens it too, this icon is the shortcut. */}
-          <button
+          {footer === "A" && <button
             type="button"
             className="deck-pill deck-pill-images deck-reveal"
             onClick={onShowImages}
@@ -457,10 +476,14 @@ function SortableCell(props: {
             aria-label="Show images"
           >
             <EyeIcon />
-          </button>
+          </button>}
           <button
             type="button"
-            className="deck-pill deck-pill-remove deck-reveal"
+            className={
+              footer === "B"
+                ? "btn-sm btn-danger icon-button proto-tile-trash deck-reveal"
+                : "deck-pill deck-pill-remove deck-reveal"
+            }
             onClick={a.removeCopy}
             title={
               a.quantity > 1
@@ -474,6 +497,35 @@ function SortableCell(props: {
         </span>
       </span>
 
+      {footer === "B" ? (
+        <span className="proto-tile-footer">
+          <PaintedBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} look="row" />
+          <button
+            type="button"
+            className="btn-sm icon-button"
+            aria-label="Show images"
+            onClick={onShowImages}
+            disabled={!hasSomeImages}
+            title={
+              hasSomeImages
+                ? "Every version of this card, in a modal"
+                : "Nothing to show yet — download or generate this card first"
+            }
+          >
+            <EyeIcon />
+          </button>
+          {/* Not shown, but still mounted for the first copy so the
+              right-click menu's "Card Back…" has a control to open. */}
+          {ownsBackPicker && (
+            <span
+              className="proto-tile-back"
+              ref={(el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)}
+            >
+              <CardBackPicker card={card} transformOnBack={false} />
+            </span>
+          )}
+        </span>
+      ) : (
       <span className="deck-cell-controls">
         {/* The printing button, the same one the row uses: its label is the
             card's set · number · language, which is why the tile no longer
@@ -503,6 +555,7 @@ function SortableCell(props: {
           <CardBackPicker card={card} transformOnBack={false} />
         </span>
       </span>
+      )}
     </div>
   );
 }
@@ -524,8 +577,10 @@ function DeckTile(props: {
    *  waits for its turn in the load queue and re-queues when it changes — and
    *  it falls back to the source art when it is missing or fails. */
   variantSrc?: string | null;
+  /** PROTOTYPE: footer B has no name row. */
+  showName?: boolean;
 }) {
-  const { card, library, origin, serverThumbs, queue, variantSrc } = props;
+  const { card, library, origin, serverThumbs, queue, variantSrc, showName = true } = props;
   const art = tileArt(card);
   // The image identity that failed, not just "something failed": a variant
   // thumbnail that 404s must not black out a tile that has its source art to
@@ -648,9 +703,11 @@ function DeckTile(props: {
           <TilePlaceholder card={card} setLabel={setLabel} reason={placeholderReason} />
         ) : null}
       </span>
-      <span className="deck-tile-label">
-        <span className="deck-tile-name">{card.name}</span>
-      </span>
+      {showName && (
+        <span className="deck-tile-label">
+          <span className="deck-tile-name">{card.name}</span>
+        </span>
+      )}
     </div>
   );
 }
@@ -762,12 +819,16 @@ function PaintedBadges({
   serverUnavailable,
   onDownload,
   onUpscaleAt,
+  look = "painted",
 }: {
   c: CardCoverage;
   model: string;
   serverUnavailable: boolean;
   onDownload: () => void;
   onUpscaleAt: (dpi: number) => void;
+  /** PROTOTYPE: "row" draws the Row view's StatusBadge pills (dot + label)
+   *  instead of the solid pills painted on the art. */
+  look?: "painted" | "row";
 }) {
   const name = modelDisplayName(model);
   // One card can print different sources per face (a Scryfall front, an MPC
@@ -779,6 +840,27 @@ function PaintedBadges({
   const ogDpi = faceDpis[0] ?? null;
   const badge = (cover: Cover, key: string, label: string, title: string, act?: () => void) => {
     const actionable = act != null && (cover === "none" || cover === "failed") && !serverUnavailable;
+    if (look === "row") {
+      // The Row view's badge colours: done green, in flight blue, failed red,
+      // nothing yet the neutral "off" grey.
+      const status = { done: "done", active: "running", failed: "failed", none: "canceled" }[cover];
+      const rowCls = `badge badge-${status}${actionable ? " proto-badge-act" : ""}`;
+      const body = (
+        <>
+          <span className="dot" />
+          {label}
+        </>
+      );
+      return actionable ? (
+        <button key={key} type="button" className={rowCls} title={`${title} — click to run it`} onClick={act}>
+          {body}
+        </button>
+      ) : (
+        <span key={key} className={rowCls} title={title}>
+          {body}
+        </span>
+      );
+    }
     const cls = `deck-badge is-${cover}${actionable ? " is-act" : ""}`;
     return actionable ? (
       <button key={key} type="button" className={cls} title={`${title} — click to run it`} onClick={act}>
@@ -814,7 +896,9 @@ function PaintedBadges({
       ),
     },
   ].sort((a, b) => a.dpi - b.dpi);
-  return <span className="deck-badges mono">{badges.map((b) => b.el)}</span>;
+  return (
+    <span className={`deck-badges${look === "row" ? "" : " mono"}`}>{badges.map((b) => b.el)}</span>
+  );
 }
 
 interface MenuAction {
