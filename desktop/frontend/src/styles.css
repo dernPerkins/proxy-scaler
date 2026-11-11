@@ -46,6 +46,16 @@
   --ring: 0 0 0 3px rgba(79, 70, 229, 0.25);
   --shadow-sm: 0 1px 2px rgba(16, 16, 24, 0.06);
   --shadow: 0 2px 6px rgba(16, 16, 24, 0.08), 0 12px 32px rgba(16, 16, 24, 0.1);
+  /* A Decklist Grid card (DeckGrid.tsx): one raised material, no border. */
+  --deck-card-bg: var(--surface);
+  --deck-card-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.07);
+  --deck-card-shadow-lifted:
+    0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 4px 8px rgba(0, 0, 0, 0.06), 0 18px 40px rgba(0, 0, 0, 0.12);
+  --deck-card-raised: var(--surface);
+  /* The translucent grey its controls sit in: reads over either theme. */
+  --deck-card-fill: rgba(120, 120, 128, 0.14);
+  --deck-card-fill-hover: rgba(120, 120, 128, 0.24);
   /* The up/down chevron every dropdown toggle (.select-button) draws, in
      --text-muted. A data URI can't read a variable, hence one per theme. */
   --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 12'%3E%3Cpath d='M1 4.5 4 1.5 7 4.5M1 7.5 4 10.5 7 7.5' fill='none' stroke='%236c6c78' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -98,6 +108,10 @@
 
     --ring: 0 0 0 3px rgba(125, 117, 240, 0.35);
     --shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.4);
+    --deck-card-bg: var(--surface-2);
+    --deck-card-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --deck-card-shadow-lifted: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 18px 40px rgba(0, 0, 0, 0.5);
+    --deck-card-raised: var(--surface-3);
     --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 12'%3E%3Cpath d='M1 4.5 4 1.5 7 4.5M1 7.5 4 10.5 7 7.5' fill='none' stroke='%23a2a2af' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 
     --rarity-uncommon: var(--rarity-uncommon-on-dark);
@@ -1117,13 +1131,13 @@ button:disabled {
 .deck-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px 12px;
+  gap: 20px 16px;
   padding: 12px 0 4px;
 }
 .deck-tile {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   min-width: 0;
 }
 /* The same fixed card aspect as the printing picker's tiles (Scryfall's
@@ -1134,10 +1148,14 @@ button:disabled {
   position: relative;
   width: 100%;
   aspect-ratio: 488 / 680;
-  border: 1px solid var(--border);
   border-radius: 4.75% / 3.5%;
   background: var(--surface-3);
   overflow: hidden;
+  /* Floated in the card's padding with a shadow of its own, like a cover
+     on a shelf, rather than outlined. */
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.12),
+    0 8px 20px rgba(0, 0, 0, 0.16);
 }
 .deck-tile-frame.alpha-corners {
   /* A Limited Edition Alpha printing, wider die-cut (cardTrim.ts). */
@@ -1179,7 +1197,9 @@ button:disabled {
   min-width: 0;
 }
 .deck-tile-name {
-  font-weight: 570;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1190,19 +1210,45 @@ button:disabled {
   flex-shrink: 0;
   padding: 0 7px;
   border-radius: 999px;
-  background: var(--surface-2);
+  background: var(--deck-card-fill);
   color: var(--text-muted);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
 }
 /* One card in the grid: its tile, with the badges and pills painted over the
    art, and the control row under it (the row view's own printing picker,
-   back swatch and quantity stepper). */
+   back swatch and quantity stepper).
+   The cell IS the card's container, so the art and the rows under it read as
+   one thing: a single material with a large corner and a soft shadow instead
+   of a border, the art floated in its padding, and the controls as borderless
+   capsules. Reaching a card lifts it a little. (The badges and pills stay
+   anchored to the art: they live in .deck-tile-wrap, which is never padded.) */
 .deck-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   min-width: 0;
+  padding: 12px 12px 14px;
+  border-radius: 20px;
+  background: var(--deck-card-bg);
+  box-shadow: var(--deck-card-shadow);
+  transition:
+    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.deck-cell:hover,
+.deck-cell:focus-within {
+  transform: translateY(-3px);
+  box-shadow: var(--deck-card-shadow-lifted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck-cell {
+    transition: none;
+  }
+  .deck-cell:hover,
+  .deck-cell:focus-within {
+    transform: none;
+  }
 }
 .deck-tile-wrap {
   position: relative;
@@ -1231,16 +1277,21 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 4px;
   pointer-events: auto;
 }
+/* A mark and a button badge are the same size: same type, same line height,
+   and a border on both (transparent on a mark), so a row mixing them lines up. */
 .deck-badge {
   padding: 2px 8px;
+  border: 1px solid transparent;
   border-radius: 999px;
   background: rgba(16, 16, 24, 0.72);
   color: #fff;
   font-size: 11px;
   font-weight: 600;
+  line-height: 16px;
 }
 .deck-badge.is-done {
   background: var(--ok);
@@ -1256,8 +1307,11 @@ button:disabled {
   color: rgba(255, 255, 255, 0.75);
 }
 .deck-badge.is-act {
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  font: inherit;
+  border-color: rgba(255, 255, 255, 0.4);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
   cursor: pointer;
 }
 .deck-badge.is-act:hover,
@@ -1330,28 +1384,65 @@ button:disabled {
 }
 
 /* The control row under the tile: the row's own controls, shrunk to tile size. */
+/* The name and the control row both sit centred under the art. */
+.deck-cell .deck-tile-label {
+  justify-content: center;
+}
 .deck-cell-controls {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
-.deck-cell-controls .btn-sm,
-.deck-cell-controls .printing-cell > button {
-  font-size: 11.5px;
-  padding: 3px 8px;
+.deck-cell-controls .printing-cell > button,
+.deck-cell-controls .chip {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--deck-card-fill);
+  box-shadow: none;
+  font-size: 12px;
 }
+.deck-cell-controls .printing-cell > button:hover {
+  background: var(--deck-card-fill-hover);
+}
+.deck-cell .card-back-swatch {
+  width: 22px;
+  height: 30px;
+  border: none;
+  border-radius: 5px;
+  background: var(--deck-card-fill);
+}
+/* The stepper as one capsule with round buttons inside it. */
 .deck-qty {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--deck-card-fill);
+}
+.deck-qty .btn-sm {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 14px;
+  line-height: 1;
+}
+.deck-qty .btn-sm:hover:not(:disabled) {
+  background: var(--deck-card-raised);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 .deck-qty-n {
-  min-width: 26px;
+  min-width: 28px;
   text-align: center;
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text);
 }
 
 /* The right-click menu on a tile. */
