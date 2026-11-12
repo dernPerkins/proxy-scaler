@@ -481,6 +481,19 @@ function SortableCell(props: {
       {...attributes}
       {...listeners}
       aria-roledescription="card copy — hold to move"
+      // dnd-kit makes the cell focusable (tabIndex 0) so the keyboard can pick
+      // it up, which also lets a mouse press focus it. Focus left behind by a
+      // click turns :focus-visible the moment any key is pressed (Escape out of
+      // the printing picker, say) — the accent ring appears on a card nobody
+      // tabbed to, and Space would lift it. A press on the cell itself (not a
+      // control or field inside it) takes no focus; it only lets go of focus
+      // held elsewhere, as a click on plain page would.
+      onMouseDown={(e) => {
+        if ((e.target as HTMLElement).closest("button, input, select, textarea, a, [contenteditable]")) return;
+        e.preventDefault();
+        const held = document.activeElement;
+        if (held instanceof HTMLElement && !e.currentTarget.contains(held)) held.blur();
+      }}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
       onContextMenu={(e) => {
