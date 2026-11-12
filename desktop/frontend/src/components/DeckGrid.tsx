@@ -76,6 +76,7 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type SyntheticEvent,
 } from "react";
 import {
   DndContext,
@@ -407,6 +408,24 @@ function SortableCell(props: {
     id: copy.key,
     animateLayoutChanges: () => false,
   });
+  // The back picker's modal is portaled to <body> but is still this cell's
+  // React child, so its events bubble up to the cell's handlers here. A press
+  // and an 8px move in the modal would lift the card behind it (dnd-kit's
+  // pointer activator doesn't check the target), and a right-click there
+  // would open this card's menu. The cell answers only for what is inside it.
+  const ownListeners = useMemo(
+    () =>
+      listeners &&
+      Object.fromEntries(
+        Object.entries(listeners).map(([name, handler]) => [
+          name,
+          (e: SyntheticEvent<HTMLElement>) => {
+            if (inCell(e)) handler(e);
+          },
+        ]),
+      ),
+    [listeners],
+  );
   const style: CSSProperties = {
     transform: CSS.Translate.toString(transform),
     transition,
@@ -479,24 +498,33 @@ function SortableCell(props: {
       className={`deck-cell${sibling ? " is-sibling" : ""}${lifted ? " is-lifted" : ""}`}
       data-copy-key={copy.key}
       {...attributes}
-      {...listeners}
+      {...ownListeners}
       aria-roledescription="card copy — hold to move"
       // dnd-kit makes the cell focusable (tabIndex 0) so the keyboard can pick
-      // it up, which also lets a mouse press focus it. Focus left behind by a
-      // click turns :focus-visible the moment any key is pressed (Escape out of
-      // the printing picker, say) — the accent ring appears on a card nobody
-      // tabbed to, and Space would lift it. A press on the cell itself (not a
-      // control or field inside it) takes no focus; it only lets go of focus
-      // held elsewhere, as a click on plain page would.
+      // it up, which also lets a mouse press focus it — including a press on
+      // a button inside it (Flip, the trash, a badge): WebKit never focuses a
+      // clicked button, it focuses the nearest focusable ancestor instead,
+      // which is the cell. Focus left behind by a click turns :focus-visible
+      // the moment any key is pressed (Escape out of the printing picker,
+      // ⌘⇧R) — the accent ring appears on a card nobody tabbed to, and Space
+      // would lift it. So a mouse press anywhere in the cell moves no focus
+      // here; it only lets go of what was focused, as a click on plain page
+      // would. A field (the back picker's) still takes focus as normal, and
+      // a field of this cell's keeps it while you click around beside it.
+      // Presses in the back picker's modal reach here too — React bubbles
+      // through its portal — and are left alone: it isn't in the cell.
       onMouseDown={(e) => {
-        if ((e.target as HTMLElement).closest("button, input, select, textarea, a, [contenteditable]")) return;
+        if (!inCell(e)) return;
+        const field = "input, select, textarea, [contenteditable]";
+        if ((e.target as HTMLElement).closest(field)) return;
         e.preventDefault();
         const held = document.activeElement;
-        if (held instanceof HTMLElement && !e.currentTarget.contains(held)) held.blur();
+        if (held instanceof HTMLElement && !(e.currentTarget.contains(held) && held.matches(field))) held.blur();
       }}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
       onContextMenu={(e) => {
+        if (!inCell(e)) return;
         e.preventDefault();
         onMenu(e.clientX + 2, e.clientY + 2);
       }}
@@ -614,6 +642,13 @@ function SortableCell(props: {
 
 /** One face of one copy's art, and nothing else: the tile the cell above
  *  turns over and puts its trash and foot around. */
+/** Whether an event bubbling to a handler started inside that handler's
+ *  element in the DOM — not in a modal portaled out of it, whose events
+ *  React still bubbles through its React parents. */
+function inCell(e: SyntheticEvent<HTMLElement>): boolean {
+  return e.currentTarget.contains(e.target as Node);
+}
+
 /** Every tile image that has finished loading this session, by its image
  *  key. A copy dragged onto another page — or shifted across a page break
  *  by someone else's drop — is a new React element under that page's grid,
