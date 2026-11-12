@@ -56,6 +56,7 @@ import DeckGrid from "../components/DeckGrid";
 import type { DisplayFace } from "../cardCoverage";
 import SplitPill from "../components/SplitPill";
 import { useDeckViewMode } from "../deckViewMode";
+import { useDecklistPanels } from "../decklistPanels";
 import { registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { alternateName } from "../cardNames";
 import { fillFrameWith, trimGeometry } from "../cardTrim";
@@ -80,7 +81,7 @@ import {
   addImagesSequentially,
 } from "../imageUpload";
 import { runDownload, slugForFilename, useDownloadStatus } from "../download";
-import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
+import { useTourOnFirstView, useTourWhenPresent, useTutorialState } from "../tutorial/tutorialStore";
 import {
   applyFaceArt,
   cardIdentity,
@@ -93,6 +94,7 @@ import {
 import type { Pick, PickerOpenRequest } from "../components/PrintingPicker";
 import DeckArtWalk, { type WalkApply } from "../components/DeckArtWalk";
 import SidebarColumn from "../components/SidebarColumn";
+import CollapseY from "../components/CollapseY";
 import BackToTopButton from "../components/BackToTopButton";
 import LibraryAddPanel from "../components/LibraryAddPanel";
 import AddCards from "../components/AddCards";
@@ -182,6 +184,13 @@ export default function DecklistPage() {
   // Rows or thumbnails: remembered across launches, like the Add Cards
   // mode (deckViewMode.ts).
   const { mode: viewMode, setMode: setViewMode } = useDeckViewMode();
+  // Cmd/Ctrl+B and +I hide the sidebar and the Add Cards box. A running
+  // tour shows them anyway (without touching the saved choice): the
+  // Decklist tour points at things inside both.
+  const panels = useDecklistPanels();
+  const touring = useTutorialState().active != null;
+  const sidebarHidden = panels.sidebarHidden && !touring;
+  const addCardsHidden = panels.addCardsHidden && !touring;
   // The Grid's card size: 100% is the card's real size (gridZoom.ts).
   const cardSize = useGridCardSize(viewMode === "grid");
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
@@ -817,7 +826,8 @@ export default function DecklistPage() {
   });
 
   // This tab's own shortcuts: Cmd/Ctrl+Enter imports the pasted decklist,
-  // +G generates all, +D downloads all. Registered by this page, so unlike
+  // +G generates all, +D downloads all, +B hides or shows the sidebar and
+  // +I the Add Cards box. Registered by this page, so unlike
   // the tab switcher and New (App.tsx, ProjectBar.tsx) they exist only
   // while the Decklist tab is showing — and each fires only when its
   // button could be clicked. The latest-closure ref keeps one listener
@@ -838,6 +848,8 @@ export default function DecklistPage() {
           deckImages.download.mutate(cards);
         }
       },
+      KeyB: panels.toggleSidebar,
+      KeyI: panels.toggleAddCards,
     };
   });
   useEffect(() => {
@@ -845,8 +857,9 @@ export default function DecklistPage() {
       if (!hasShortcutModifier(e) || e.shiftKey) return;
       const action = shortcutActions.current[e.code === "NumpadEnter" ? "Enter" : e.code];
       if (!action) return;
-      // Claimed even when ignored: the webview's own Cmd+G (find next) and
-      // Cmd/Ctrl+D (bookmark) must never fire on this tab.
+      // Claimed even when ignored: the webview's own Cmd+G (find next),
+      // Cmd/Ctrl+D (bookmark) and +B/+I (bold/italic in an editable
+      // field) must never fire on this tab.
       e.preventDefault();
       if (isDialogOpen()) return;
       action();
@@ -1199,7 +1212,7 @@ export default function DecklistPage() {
   );
   return (
     <div className="layout">
-      <SidebarColumn>
+      <SidebarColumn hidden={sidebarHidden} animate={panels.animate}>
         {/* Adding from files at the top of the sidebar, as the Customs tab
             does. Not disabled when the server is unreachable, unlike
             importing a list: an uploaded image has nothing to resolve, so
@@ -1382,48 +1395,52 @@ export default function DecklistPage() {
           </p>
         )}
 
-        <AddCards
-          draft={decklistDraft}
-          setDraft={setDecklistDraft}
-          onImport={() => void handleImport()}
-          canImport={!!decklistDraft.trim() && !importing && !serverUnavailable}
-          importing={importing}
-          importTitle={
-            serverUnavailable ? "Generation server is required to import" : shortcutLabel("Enter")
-          }
-          notes={importNotes}
-          onChooseFiles={() => customFileInput.current?.click()}
-          onChooseOrder={() => orderFileInput.current?.click()}
-          orderDisabled={importOrderMutation.isPending || serverUnavailable || !mpcSupported}
-          settings={{
-            // The full Scryfall list, served by the server whichever corpus
-            // is imported.
-            languages: languages.includes(settings.preferred_lang)
-              ? languages
-              : [settings.preferred_lang, ...languages],
-            lang: settings.preferred_lang,
-            setLang: (value) => setSettings((s) => ({ ...s, preferred_lang: value })),
-            langAny: settings.lang_any,
-            setLangAny: (value) => setSettings((s) => ({ ...s, lang_any: value })),
-            artSource: settings.import_art_source,
-            setArtSource: (value) => setSettings((s) => ({ ...s, import_art_source: value })),
-            mpcArtUnavailable: !mpcSupported
-              ? "Needs a newer generation server"
-              : !mpcCatalog.ready
-                ? "Download the MPC Fill Catalog first (sidebar)"
-                : null,
-          }}
-          afterAdd={(added) => {
-            if (added.length > 0 && settings.import_art_source === "mpc" && mpcSupported && mpcCatalog.ready) {
-              void pickMpcArtFor(added);
+        <CollapseY hidden={addCardsHidden} animate={panels.animate}>
+          <AddCards
+            draft={decklistDraft}
+            setDraft={setDecklistDraft}
+            onImport={() => void handleImport()}
+            canImport={!!decklistDraft.trim() && !importing && !serverUnavailable}
+            importing={importing}
+            importTitle={
+              serverUnavailable ? "Generation server is required to import" : shortcutLabel("Enter")
             }
-          }}
-        />
+            notes={importNotes}
+            onChooseFiles={() => customFileInput.current?.click()}
+            onChooseOrder={() => orderFileInput.current?.click()}
+            orderDisabled={importOrderMutation.isPending || serverUnavailable || !mpcSupported}
+            settings={{
+              // The full Scryfall list, served by the server whichever corpus
+              // is imported.
+              languages: languages.includes(settings.preferred_lang)
+                ? languages
+                : [settings.preferred_lang, ...languages],
+              lang: settings.preferred_lang,
+              setLang: (value) => setSettings((s) => ({ ...s, preferred_lang: value })),
+              langAny: settings.lang_any,
+              setLangAny: (value) => setSettings((s) => ({ ...s, lang_any: value })),
+              artSource: settings.import_art_source,
+              setArtSource: (value) => setSettings((s) => ({ ...s, import_art_source: value })),
+              mpcArtUnavailable: !mpcSupported
+                ? "Needs a newer generation server"
+                : !mpcCatalog.ready
+                  ? "Download the MPC Fill Catalog first (sidebar)"
+                  : null,
+            }}
+            afterAdd={(added) => {
+              if (added.length > 0 && settings.import_art_source === "mpc" && mpcSupported && mpcCatalog.ready) {
+                void pickMpcArtFor(added);
+              }
+            }}
+          />
+        </CollapseY>
         {fileInputs}
 
         <div className="decklist-head">
           <h2>
-            Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
+            {/* Every printed card — what the Grid draws as tiles: each copy,
+                and each transform side while it prints as a card of its own. */}
+            Cards <span style={{ color: "var(--text-faint)" }}>({copies.length})</span>
           </h2>
           {/* Row or Grid: the same list drawn two ways. An app preference
               (deckViewMode.ts), like Sort is — neither changes what prints,
@@ -1487,7 +1504,9 @@ export default function DecklistPage() {
 
         {cards.length === 0 && (
           <p className="empty-note">
-            No cards yet — search for a card above, or switch to List to paste a decklist.
+            {addCardsHidden
+              ? `No cards yet — press ${shortcutLabel("I")} to show Add Cards.`
+              : "No cards yet — search for a card above, or switch to List to paste a decklist."}
           </p>
         )}
 

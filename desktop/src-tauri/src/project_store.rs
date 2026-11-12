@@ -2724,6 +2724,56 @@ pub fn set_deck_view_mode(app: AppHandle, mode: String) -> Result<(), String> {
     write_deck_view_mode(&conn, &mode)
 }
 
+// --- The Decklist's hideable panels ---------------------------------------
+//
+// Cmd/Ctrl+B hides the Decklist's sidebar column and Cmd/Ctrl+I its Add
+// Cards box, to give the deck the room. Remembered across restarts like the
+// view mode above: an app preference about how the tab is laid out, not a
+// project setting. Absent (or anything but "1") means shown.
+
+const DECKLIST_SIDEBAR_HIDDEN_KEY: &str = "decklist_sidebar_hidden";
+const DECKLIST_ADD_CARDS_HIDDEN_KEY: &str = "decklist_add_cards_hidden";
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct DecklistPanels {
+    sidebar_hidden: bool,
+    add_cards_hidden: bool,
+}
+
+fn decklist_panel_key(panel: &str) -> Result<&'static str, String> {
+    match panel {
+        "sidebar" => Ok(DECKLIST_SIDEBAR_HIDDEN_KEY),
+        "add_cards" => Ok(DECKLIST_ADD_CARDS_HIDDEN_KEY),
+        _ => Err(format!("Unknown Decklist panel {panel:?}")),
+    }
+}
+
+fn read_decklist_panels(conn: &Connection) -> Result<DecklistPanels, String> {
+    let hidden = |key| -> Result<bool, String> {
+        Ok(read_app_setting(conn, key)?.as_deref() == Some("1"))
+    };
+    Ok(DecklistPanels {
+        sidebar_hidden: hidden(DECKLIST_SIDEBAR_HIDDEN_KEY)?,
+        add_cards_hidden: hidden(DECKLIST_ADD_CARDS_HIDDEN_KEY)?,
+    })
+}
+
+fn write_decklist_panel_hidden(conn: &Connection, panel: &str, hidden: bool) -> Result<(), String> {
+    write_app_setting(conn, decklist_panel_key(panel)?, if hidden { "1" } else { "0" })
+}
+
+#[tauri::command]
+pub fn get_decklist_panels(app: AppHandle) -> Result<DecklistPanels, String> {
+    let conn = open_db(&app)?;
+    read_decklist_panels(&conn)
+}
+
+#[tauri::command]
+pub fn set_decklist_panel_hidden(app: AppHandle, panel: String, hidden: bool) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_decklist_panel_hidden(&conn, &panel, hidden)
+}
+
 // --- The Grid view's card size -------------------------------------------
 //
 // The zoom on the Decklist's Grid view (ADR 0010): 1.0 draws a card at its
@@ -4172,6 +4222,25 @@ mod tests {
         assert_eq!(read_deck_view_mode(&conn).expect("row again"), "row");
         assert!(write_deck_view_mode(&conn, "cards").is_err());
         assert_eq!(read_deck_view_mode(&conn).expect("unchanged"), "row");
+    }
+
+    #[test]
+    fn decklist_panels_roundtrip_and_default_to_shown() {
+        let conn = test_conn();
+        let shown = DecklistPanels { sidebar_hidden: false, add_cards_hidden: false };
+        assert_eq!(read_decklist_panels(&conn).expect("default"), shown);
+        write_decklist_panel_hidden(&conn, "sidebar", true).expect("hide sidebar");
+        assert_eq!(
+            read_decklist_panels(&conn).expect("sidebar hidden"),
+            DecklistPanels { sidebar_hidden: true, add_cards_hidden: false }
+        );
+        write_decklist_panel_hidden(&conn, "add_cards", true).expect("hide add cards");
+        write_decklist_panel_hidden(&conn, "sidebar", false).expect("show sidebar");
+        assert_eq!(
+            read_decklist_panels(&conn).expect("add cards hidden"),
+            DecklistPanels { sidebar_hidden: false, add_cards_hidden: true }
+        );
+        assert!(write_decklist_panel_hidden(&conn, "tabs", true).is_err());
     }
 
     #[test]

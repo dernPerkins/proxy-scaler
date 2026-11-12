@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 
 /** The column a tab's sidebar sits in: sticky under the pinned tab bar,
  *  and scrolled on its own so the whole sidebar slides past the window's
@@ -21,12 +21,40 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 export default function SidebarColumn({
   children,
   className,
+  hidden = false,
+  animate = false,
 }: {
   children: ReactNode;
   /** Extra classes on the column, e.g. a wider layout for one tab. */
   className?: string;
+  /** Slid away to the left, the content taking its room (the Decklist's
+   *  Cmd/Ctrl+B). Stays mounted, so nothing in it loses its state. */
+  hidden?: boolean;
+  /** Slide rather than jump: off until the user toggles, so a hidden state
+   *  loaded at launch lands in place. */
+  animate?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // The hidden column's margin pulls it back by exactly its own width, so
+  // the width is kept in a variable for the stylesheet. Only while it can
+  // be hidden: no other tab needs the observer.
+  const hideable = hidden || animate;
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !hideable) return;
+    const measure = () => el.style.setProperty("--sidebar-column-width", `${el.offsetWidth}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hideable]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // React 18 doesn't know the inert attribute; set the property instead.
+    el.inert = hidden;
+    if (hidden && el.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+  }, [hidden]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -53,7 +81,18 @@ export default function SidebarColumn({
     };
   }, []);
   return (
-    <div ref={ref} className={className ? `sidebar-column ${className}` : "sidebar-column"}>
+    <div
+      ref={ref}
+      className={[
+        "sidebar-column",
+        className,
+        hidden && "sidebar-column-hidden",
+        animate && "sidebar-column-animate",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      aria-hidden={hidden || undefined}
+    >
       {children}
     </div>
   );

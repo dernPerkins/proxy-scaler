@@ -772,6 +772,73 @@ button:disabled {
   flex: 1;
   min-width: 0;
 }
+/* The Decklist's Cmd/Ctrl+B: the column slides off to the left and the
+   content, flex: 1, widens into its room as it goes. The margin takes back
+   the column's whole footprint — its width (measured by SidebarColumn.tsx),
+   less the 6px its own negative right margin already gives back, plus the
+   .layout gap after it. Visibility waits out the slide, so the panel stays
+   drawn while it leaves and is out of the tab order once gone. Transitions
+   only once the user has toggled (.sidebar-column-animate), so a hidden
+   state loaded at launch lands in place. */
+.sidebar-column-animate {
+  transition:
+    margin-left 240ms ease,
+    opacity 200ms ease,
+    visibility 0s linear 0s;
+}
+.sidebar-column-hidden {
+  margin-left: calc(-1 * var(--sidebar-column-width, 280px) - 16px);
+  opacity: 0;
+  visibility: hidden;
+}
+.sidebar-column-animate.sidebar-column-hidden {
+  transition:
+    margin-left 240ms ease,
+    opacity 200ms ease,
+    visibility 0s linear 240ms;
+}
+
+/* The Decklist's Cmd/Ctrl+I: the Add Cards box slides up shut and down
+   open (CollapseY.tsx). A grid row going 1fr <-> 0fr animates to the
+   content's real height; the inside is clipped while it moves and while
+   shut, and unclipped once fully open so the search results can hang
+   below the box. */
+.collapse-y {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.collapse-y-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.collapse-y-open > .collapse-y-inner {
+  overflow: visible;
+}
+.collapse-y-hidden {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+}
+.collapse-y-animate {
+  transition:
+    grid-template-rows 240ms ease,
+    opacity 200ms ease,
+    visibility 0s linear 0s;
+}
+.collapse-y-animate.collapse-y-hidden {
+  transition:
+    grid-template-rows 240ms ease,
+    opacity 200ms ease,
+    visibility 0s linear 240ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-column-animate,
+  .sidebar-column-animate.sidebar-column-hidden,
+  .collapse-y-animate,
+  .collapse-y-animate.collapse-y-hidden {
+    transition: none;
+  }
+}
 
 /* The PDF tab's sidebar carries four sections (source images, layout,
    guides, back printing) and ran off the bottom of a laptop window, which

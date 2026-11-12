@@ -73,6 +73,7 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use project_store::{
     add_recent_host, clear_all_projects, create_project, delete_project, get_add_cards_mode,
     get_deck_view_mode, get_import_defaults, set_add_cards_mode, set_deck_view_mode,
+    get_decklist_panels, set_decklist_panel_hidden,
     set_import_defaults,
     discard_unnamed_project, get_card_db_prompt_dismissed, get_completed_tutorials, get_cutter_inset_unit,
     get_last_project_id, get_library_upscale_settings, get_registration_conflict_ignored,
@@ -886,6 +887,8 @@ fn main() {
             set_add_cards_mode,
             get_deck_view_mode,
             set_deck_view_mode,
+            get_decklist_panels,
+            set_decklist_panel_hidden,
             get_import_defaults,
             set_import_defaults,
             project_store::get_mpc_fill_language,

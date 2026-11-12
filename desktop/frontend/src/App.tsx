@@ -99,16 +99,23 @@ function AppVersion({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 // The tab bar, in order. One list feeds both the NavLinks and the
 // Ctrl/Cmd+1..N shortcuts, so the number a tooltip promises is always the
-// number that gets there.
-const TABS = [
+// number that gets there. A `letter` is a second, mnemonic shortcut for
+// the tabs reached most often from elsewhere: P for the PDF, E for Export.
+const TABS: { to: string; label: string; letter?: string }[] = [
   { to: "/decklist", label: "Decklist" },
   { to: "/customs", label: "Customs" },
   { to: "/mpc", label: "MPC Fill" },
   { to: "/backs", label: "Backs" },
-  { to: "/pdf", label: "PDF" },
-  { to: "/export", label: "ZIP" },
+  { to: "/pdf", label: "PDF", letter: "P" },
+  { to: "/export", label: "ZIP", letter: "E" },
   { to: "/tasks", label: "Tasks" },
 ];
+
+function tabTitle(index: number): string {
+  const letter = TABS[index].letter;
+  const digit = shortcutLabel(String(index + 1));
+  return letter ? `${digit} · ${shortcutLabel(letter)}` : digit;
+}
 
 // Ctrl/Cmd+1..7 jumps to that tab, the same way browsers number theirs.
 // Matched on the physical key (e.code) rather than e.key so the top row
@@ -116,14 +123,19 @@ const TABS = [
 // (AZERTY's & é " …), which is also what browsers do for their own tab
 // shortcuts. Digits past the last tab do nothing; Shift is left to the
 // browser/webview, whose Ctrl+Shift+digit chords are its own.
+//
+// Ctrl/Cmd+P and +E go to the PDF and Export tabs (the `letter`s above).
+// Matched on e.code too, like the digits. Ctrl+P is WebView2's Print on
+// Windows; claiming it below is what stops that dialog.
 function useTabShortcuts() {
   const navigate = useNavigate();
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (!hasShortcutModifier(e) || e.shiftKey) return;
       const digit = /^Digit([1-9])$/.exec(e.code);
-      if (!digit) return;
-      const tab = TABS[Number(digit[1]) - 1];
+      const tab = digit
+        ? TABS[Number(digit[1]) - 1]
+        : TABS.find((t) => t.letter && e.code === `Key${t.letter}`);
       if (!tab) return;
       // Claimed even while a dialog is up: the webview would otherwise
       // act on the chord itself (a browser dev tab switches its own tabs).
@@ -252,7 +264,7 @@ export default function App() {
             location matching needed. */}
         <nav className="tabs" data-tour="tabs" ref={tabsRef}>
           {TABS.map((tab, i) => (
-            <NavLink key={tab.to} to={tab.to} title={shortcutLabel(String(i + 1))}>
+            <NavLink key={tab.to} to={tab.to} title={tabTitle(i)}>
               {tab.label}
             </NavLink>
           ))}

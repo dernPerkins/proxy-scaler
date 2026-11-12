@@ -154,6 +154,12 @@ export type ImportArtSource = "scryfall" | "mpc";
  *  to a row (see components/DeckGrid.tsx). */
 export type DeckViewMode = "row" | "grid";
 
+export type DecklistPanel = "sidebar" | "add_cards";
+export interface DecklistPanels {
+  sidebar_hidden: boolean;
+  add_cards_hidden: boolean;
+}
+
 /** One display, as display_size.rs reports it. */
 export interface DisplaySize {
   /** Stable across restarts (EDID vendor-model-serial): a calibration's key. */
@@ -481,6 +487,12 @@ export const projectApi = {
   getDeckViewMode: () => invokeCommand<DeckViewMode>("get_deck_view_mode"),
   setDeckViewMode: (mode: DeckViewMode) =>
     invokeCommand<void>("set_deck_view_mode", { mode }),
+
+  // Which of the Decklist's panels Cmd/Ctrl+B (sidebar) and +I (Add Cards)
+  // have hidden — an app preference like the view mode. Both shown until set.
+  getDecklistPanels: () => invokeCommand<DecklistPanels>("get_decklist_panels"),
+  setDecklistPanelHidden: (panel: DecklistPanel, hidden: boolean) =>
+    invokeCommand<void>("set_decklist_panel_hidden", { panel, hidden }),
 
   // The Grid view's card size (ADR 0010): 1 is the card's real size on the
   // screen the window is on. An app preference, like the view mode.
