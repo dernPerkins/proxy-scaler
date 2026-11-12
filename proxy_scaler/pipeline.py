@@ -743,6 +743,7 @@ def _regenerate_face_from_card(
     force: bool = True,
     on_cpu_fallback: object | None = None,
     image_origin: str = DEFAULT_IMAGE_ORIGIN,
+    on_original: Callable[[Path], None] | None = None,
 ) -> list[FaceResult] | Callable[[], list[FaceResult]]:
     """Shared core of regenerate_face_multi()/process_task(): given an
     already-resolved CardFaceImage (no Scryfall call needed here — the
@@ -762,7 +763,15 @@ def _regenerate_face_from_card(
     GPU work with a zero-arg closure that performs the remaining disk
     writes — upscale-cache PNGs + sidecars, then the final DPI variants —
     and returns the results. Call it exactly once, from any one thread;
-    after the handoff only that thread may touch the in-memory images."""
+    after the handoff only that thread may touch the in-memory images.
+
+    `on_original`, when given, is called with the cached original's path
+    the moment it is on disk (downloaded or already cached), before any
+    upscaling — for a Scryfall face only; an uploaded image's source is
+    registered at enqueue time. The worker records it as the face's
+    download-only original right away, so a client sees the original
+    arrive while the upscale is still running, as it would for a
+    Download."""
     if not dpi_targets:
         return (lambda: []) if defer_finish else []
 
@@ -824,6 +833,8 @@ def _regenerate_face_from_card(
         back_hash=face.back_hash,
     )
     ensure_original_thumbnail(original_path)  # best-effort; fails soft internally
+    if on_original is not None and not face.is_upload:
+        on_original(original_path)
 
     targets = sorted(set(dpi_targets))
     scale_for = {d: native_scale_for_dpi(d, model_id) for d in targets}
@@ -980,6 +991,15 @@ def process_download_task(
         # must invalidate every model/scale variant for this face, or a
         # later generation would upscale the OLD art.
         invalidate_upscale_cache(Path(task.cache_dir), task.scryfall_id, task.face_index)
+    return original_face_result(task, original_path)
+
+
+def original_face_result(task: TaskRow, original_path: Path) -> FaceResult:
+    """The download-only original's FaceResult for a Scryfall task's face:
+    out_path and original_path are both the cached original, at
+    (ORIGINAL_DPI, ORIGINAL_MODEL). What a download task produces, and what
+    the worker registers when an upscale task puts the same file on disk
+    (process_task's on_original)."""
     return FaceResult(
         out_path=original_path,
         original_path=original_path,
@@ -1254,6 +1274,7 @@ def process_task(
     timings: object | None = None,
     defer_finish: bool = False,
     on_cpu_fallback: object | None = None,
+    on_original: Callable[[Path], None] | None = None,
 ) -> FaceResult | PendingTask:
     """Process one generation_tasks row (see db.py) into a FaceResult —
     the unit of work the background worker (worker.py) performs. Shares
@@ -1315,6 +1336,7 @@ def process_task(
         # model pass. The Regenerate button enqueues force=True.
         force=getattr(task, "force", True),
         image_origin=task.image_origin,
+        on_original=on_original,
     )
     if defer_finish:
         return PendingTask(lambda: tail()[0])

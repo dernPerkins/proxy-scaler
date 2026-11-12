@@ -754,3 +754,26 @@ def test_cli_image_origin_defaults_to_worker_and_direct_scryfall_skips_it(
     monkeypatch.setattr(cli, "process_entries", fake_process_entries)
     assert cli.main([str(decklist), *flags]) == 0
     assert seen["image_origin"] == expected_origin
+
+
+def test_process_task_reports_original_before_upscaling(tmp_path, monkeypatch) -> None:
+    """on_original fires with the cached original once it is on disk and
+    before the model runs — what lets the worker register the face's
+    original while the upscale is still in flight."""
+    seen: list[tuple[Path, int]] = []
+    _CountingUpscaler.calls = 0
+    monkeypatch.setattr(
+        "proxy_scaler.pipeline.download_png", lambda url, session=None, **_: _fake_png_bytes()
+    )
+    monkeypatch.setattr("proxy_scaler.pipeline.Upscaler", _CountingUpscaler)
+
+    result = process_task(
+        _task(tmp_path),
+        on_original=lambda p: seen.append((p, _CountingUpscaler.calls)),
+    )
+
+    assert len(seen) == 1
+    path, upscales_so_far = seen[0]
+    assert path == result.original_path
+    assert path.is_file()
+    assert upscales_so_far == 0

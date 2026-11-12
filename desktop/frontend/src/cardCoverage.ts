@@ -39,8 +39,8 @@ function coverOf(v: VariantStatus | undefined): Cover {
 export interface CardCoverage {
   faces: DisplayFace[];
   original: Cover;
-  /** What each face's original image IS, in DPI — a badge says the number
-   *  instead of "OG". A source-tier variant carries it: the server registers a
+  /** What each face's original image IS, in DPI — the number the original's
+   *  badge says. A source-tier variant carries it: the server registers a
    *  printing's own Scryfall art at ORIGINAL_DPI (300) and MPC Fill / Custom
    *  Image art at that file's measured DPI (proxy_scaler/db.py). Null when
    *  there is no file to measure yet — an MPC pick that has never downloaded
@@ -82,10 +82,15 @@ export function coverageFor(
   // produced one yet lives in face.pick — the row shows it as "Downloading ·
   // Original". Fold that in here too, or an original's badge would stay grey
   // (and clickable, offering a second download) while one is already in flight.
+  // An upscale downloads the face's original itself, as its first step, and
+  // the server registers it the moment it is on disk — so until then a face
+  // with an upscale queued or running has its original on the way too, just
+  // as if Download had been clicked.
   const faceOriginal = (f: DisplayFace): Cover => {
     const v = f.variants.find((v) => SOURCE_MODELS.includes(v.model));
     if (v) return coverOf(v);
     if (f.pick) return f.pick.status === "failed" ? "failed" : "active";
+    if (f.variants.some((v) => coverOf(v) === "active")) return "active";
     return "none";
   };
   const originals = faces.map(faceOriginal);

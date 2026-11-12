@@ -113,6 +113,24 @@ def _start_one(
             db_path=db_path,
         )
 
+    def on_original(original_path: Path) -> None:
+        # An upscale downloads its face's ~300 DPI original before the GPU
+        # pass. Registered now, not only at completion
+        # (upsert_gallery_item_for_task, which still does it too), the
+        # client's Original badge goes done when the download does, as it
+        # would for a Download, instead of when the upscale finishes.
+        # Best-effort: the completion path registers it regardless.
+        if not task.project_tag:
+            return
+        try:
+            db.upsert_gallery_item(
+                task.project_tag,
+                pipeline.original_face_result(task, original_path),
+                db_path=db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fails the upscale
+            print(f"Task {task.id}: registering original failed: {exc}", file=sys.stderr)
+
     try:
         pending = pipeline.process_task(
             task,
@@ -120,6 +138,7 @@ def _start_one(
             timings=timings,
             defer_finish=True,
             on_cpu_fallback=on_cpu_fallback,
+            on_original=on_original,
         )
     except Exception as exc:  # noqa: BLE001 — one bad task must not kill the worker
         db.mark_task_failed(task.id, str(exc), db_path=db_path)

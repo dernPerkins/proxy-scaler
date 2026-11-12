@@ -100,7 +100,7 @@ import { useQuery } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
 import { projectApi, type CardRow } from "../api/project";
 import type { CustomImage, ImageOrigin } from "../api/types";
-import { modelDisplayName } from "../constants";
+import { modelDisplayName, ORIGINAL_DPI } from "../constants";
 import {
   getProbedDevice,
   serverSupportsPrintingImages,
@@ -962,11 +962,12 @@ function makeActions(p: DeckGridProps, copy: DeckCopy): TileActions {
  *  that DPI at the selected model — IS its button: the original's downloads,
  *  a DPI's upscales just that DPI. Done badges are marks.
  *
- *  The original is labelled with the DPI its file actually is rather than "OG",
- *  because it IS one of these badges: the server records a printing's own
- *  Scryfall original at 300 DPI and an MPC Fill / Custom Image original at that
- *  file's measured DPI. Sorted low to high, the row reads as the chain it
- *  describes — the source, then the upscales. */
+ *  The original is labelled with the DPI its file actually is, because it IS
+ *  one of these badges: the server records a printing's own Scryfall original
+ *  at 300 DPI and an MPC Fill / Custom Image original at that file's measured
+ *  DPI. Before anything is downloaded there is no file to measure, and it
+ *  reads 300 — what a Scryfall original will be. Sorted low to high, the row
+ *  reads as the chain it describes — the source, then the upscales. */
 function CoverageBadges({
   c,
   model,
@@ -1022,11 +1023,11 @@ function CoverageBadges({
       ),
     })),
     {
-      dpi: ogDpi ?? 0,
+      dpi: ogDpi ?? ORIGINAL_DPI,
       el: badge(
         c.original,
         "og",
-        ogDpi != null ? `${ogDpi}` : "OG",
+        `${ogDpi ?? ORIGINAL_DPI}`,
         ogDpi != null
           ? `Original ${faceDpis.join(" · ")} DPI: ${c.original}`
           : `Original (its DPI is known once the file is downloaded): ${c.original}`,

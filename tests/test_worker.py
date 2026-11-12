@@ -219,16 +219,20 @@ def test_start_one_leaves_task_running_until_finish_marks_done(
 
     finish = _start_one(task, db_path=db_path)
 
-    # Inference done, but nothing finalized yet.
+    # Inference done, but nothing finalized yet: the only row is the
+    # cached original, registered the moment it was on disk (its file
+    # exists — a row's file is never missing); the upscaled variant waits.
     assert get_task(tid, db_path=db_path).status == "running"
-    assert db_module.list_gallery_items("tag-defer", db_path=db_path) == []
+    early = db_module.list_gallery_items("tag-defer", db_path=db_path)
+    assert [i["model"] for i in early] == ["original"]
+    assert Path(early[0]["out_path"]).is_file()
 
     finish()
 
     done = get_task(tid, db_path=db_path)
     assert done.status == "done"
-    # Two rows land at finish: the upscaled variant, and the cached
-    # original registered alongside it (see upsert_gallery_item_for_task).
+    # The upscaled variant lands at finish, beside the original (which
+    # upsert_gallery_item_for_task registers again, in place).
     items = db_module.list_gallery_items("tag-defer", db_path=db_path)
     models = sorted(i["model"] for i in items)
     assert models == ["original", task.model]
@@ -375,7 +379,7 @@ def test_start_one_wires_cpu_fallback_flag(tmp_path, monkeypatch) -> None:
             raise AssertionError("not needed")
 
     def fake_process_task(t, *, on_progress=None, timings=None, defer_finish=False,
-                          on_cpu_fallback=None):
+                          on_cpu_fallback=None, on_original=None):
         assert on_cpu_fallback is not None
         on_cpu_fallback()  # simulate the OOM fallback firing mid-inference
         return _DonePending()
@@ -460,3 +464,39 @@ def test_prefetch_downloads_through_the_tasks_image_origin(
 
     assert prefetch_original(get_task(tid, db_path=db_path)) is not None
     assert recorder.origins == [origin]
+
+
+def test_start_one_registers_original_before_finish(tmp_path, monkeypatch) -> None:
+    """When an upscale task puts its face's original on disk, the worker
+    registers it as the face's download-only original right then — not
+    only when the upscale finishes — so the client's Original badge goes
+    done with the download."""
+    from proxy_scaler import pipeline
+    from proxy_scaler.db import list_gallery_items
+    from proxy_scaler.dpi import ORIGINAL_DPI, ORIGINAL_MODEL
+    from proxy_scaler.worker import _start_one
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    _enqueue(db_path, project_tag="deck")
+    task = claim_next_task(db_path=db_path)
+    original = tmp_path / "cache" / "sol.png"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(_png_bytes())
+
+    class _NotFinished:
+        def finish(self):
+            raise AssertionError("not needed")
+
+    def fake_process_task(t, *, on_original=None, **_):
+        on_original(original)
+        return _NotFinished()
+
+    monkeypatch.setattr(pipeline, "process_task", fake_process_task)
+
+    _start_one(task, db_path=db_path)  # the finish step is never run
+
+    rows = list_gallery_items("deck", db_path=db_path)
+    assert [(r["model"], r["dpi"], r["out_path"]) for r in rows] == [
+        (ORIGINAL_MODEL, ORIGINAL_DPI, str(original))
+    ]
