@@ -271,6 +271,7 @@ export default function DeckGrid(props: DeckGridProps) {
   // menu's "Card Back…" has exactly one control to open.
   const firstCopyKey = new Map<number, string>();
   for (const c of props.copies) if (!firstCopyKey.has(c.card.id)) firstCopyKey.set(c.card.id, c.key);
+  const splitCards = new Set(props.copies.flatMap((c) => (c.face === 1 ? [c.card.id] : [])));
 
   return (
     <>
@@ -300,6 +301,7 @@ export default function DeckGrid(props: DeckGridProps) {
                       key={copy.key}
                       copy={copy}
                       sibling={hover?.card === copy.card.id && hover.key !== copy.key}
+                      split={splitCards.has(copy.card.id)}
                       lifted={dragging?.key === copy.key}
                       c={coverage.get(copy.card.id)!}
                       a={makeActions(props, copy)}
@@ -388,6 +390,8 @@ function SortableCell(props: {
   copy: DeckCopy;
   /** Another copy of the card under the pointer. */
   sibling: boolean;
+  /** This card's transform side has tiles of its own (DeckCopy.face 1). */
+  split: boolean;
   /** This copy is the one being dragged: its slot stays, faded, as the
    *  drop target the others shift around. */
   lifted: boolean;
@@ -403,7 +407,7 @@ function SortableCell(props: {
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
 }) {
-  const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
+  const { copy, sibling, split, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
   const { onHover, onShowImages, onMenu, onBackTrigger } = props;
   const card = copy.card;
   // No layout animation on the drop: dnd-kit's default slides the dropped
@@ -464,7 +468,9 @@ function SortableCell(props: {
   // front flip to the card back each prints with — that is what's on their
   // other side now.
   const isTransform = copy.face === 1;
-  const splitDfc = isTransform || (backFace != null && !transformOnBack);
+  // Read off the tiles drawn, not this card's faces: a printing being
+  // downloaded shows as one placeholder face until it lands.
+  const splitDfc = isTransform || split;
   // The tile paints the image it would actually print: the FRONT face's variant
   // at the selected model and the highest selected DPI, through the gallery thumb
   // endpoint like every other upscale thumb. When that badge is grey — nothing

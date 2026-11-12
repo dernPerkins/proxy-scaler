@@ -1104,10 +1104,9 @@ export default function DecklistPage() {
   // The deck walk goes through the cards with printings, in this order.
   const walkCards = sortedCards.filter((c) => c.custom_image_id == null);
 
-  /** One card's faces, merged from the 3s status poll: what a row lists, and
-   *  what the Grid view paints its badges and images modal from, so the two
-   *  views always read the same state. */
-  function facesForCard(card: CardRow): DisplayFace[] {
+  /** One card's gallery items and tasks from the 3s status poll, grouped by
+   *  face. */
+  function faceGroupsFor(card: CardRow) {
     const identity = localCardIdentity(card);
     let cardGallery = galleryByCard.get(identity) ?? [];
     let cardTasks = tasksByCard.get(identity) ?? [];
@@ -1121,7 +1120,27 @@ export default function DecklistPage() {
       cardGallery = [...cardGallery, ...(galleryByName.get(nameKey) ?? [])];
       cardTasks = [...cardTasks, ...(tasksByName.get(nameKey) ?? [])];
     }
-    const faceGroups = buildRows(cardGallery, cardTasks);
+    return buildRows(cardGallery, cardTasks);
+  }
+
+  /** Whether anything says this card has two faces: the card database, a
+   *  face's own row, or face art. Read from the server's state alone, never
+   *  from a pick still on its way — a printing being downloaded shows as one
+   *  placeholder face until it lands, and a double-faced card must not turn
+   *  single-faced (and lose its transform tile) meanwhile. */
+  function isDoubleFaced(card: CardRow, faceGroups = faceGroupsFor(card)): boolean {
+    return (
+      (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
+      faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
+      (card.face_art ?? []).some((fa) => fa.total_faces > 1)
+    );
+  }
+
+  /** One card's faces, merged from the 3s status poll: what a row lists, and
+   *  what the Grid view paints its badges and images modal from, so the two
+   *  views always read the same state. */
+  function facesForCard(card: CardRow): DisplayFace[] {
+    const faceGroups = faceGroupsFor(card);
     const scryfallFaces = faceGroups
       .map(({ items, tasks: faceTasks }) => {
         const source = items[0] ?? faceTasks[0];
@@ -1141,11 +1160,7 @@ export default function DecklistPage() {
     // face's own row, or face art), so a face with nothing yet shows as such
     // rather than missing — say, a Scryfall front beside a back printing MPC
     // Fill art, or a back that never downloaded beside its front.
-    const doubleFaced =
-      (card.scryfall_id != null && (faceCounts[card.scryfall_id] ?? 1) > 1) ||
-      faceGroups.some(({ items, tasks: t }) => (items[0] ?? t[0])?.face_index != null) ||
-      (card.face_art ?? []).some((fa) => fa.total_faces > 1);
-    if (doubleFaced) {
+    if (isDoubleFaced(card, faceGroups)) {
       for (const position of [0, 1]) {
         if (scryfallFaces.some((f) => (f.faceIndex ?? 0) === position)) continue;
         scryfallFaces.push({
@@ -1164,12 +1179,12 @@ export default function DecklistPage() {
     );
   }
 
-  // The double-faced cards, as their rows work it out (a Back face listed).
-  // Rust gives each one transform placements; while the PDF tab prints a
-  // transform side as a card of its own — pairing off, or no back printing
-  // at all — the Grid draws it as a tile of its own too (docs/adr/0009).
+  // The double-faced cards (isDoubleFaced). Rust gives each one transform
+  // placements; while the PDF tab prints a transform side as a card of its
+  // own — pairing off, or no back printing at all — the Grid draws it as a
+  // tile of its own too (docs/adr/0009).
   const doubleFacedKey = cards
-    .filter((c) => c.custom_image_id == null && facesForCard(c).some((f) => f.faceLabel === "back"))
+    .filter((c) => c.custom_image_id == null && isDoubleFaced(c))
     .map((c) => c.id)
     .join(",");
   useEffect(() => {
