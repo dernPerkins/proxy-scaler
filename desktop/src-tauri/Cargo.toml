@@ -51,10 +51,11 @@ sha2 = "0.10"
 minisign-verify = "0.2"
 
 # fullscreen_menu.rs reads NSScreen.safeAreaInsets (the notch height) off the
-# main window, and re-registers the web view's mouse tracking after tao swaps
-# the window's title bar. The crates are already in the tree via tao at these
-# versions; of the features only NSTrackingArea is new (bindings only).
+# main window, hides the menu bar and Dock outright in true full screen, and
+# re-registers the web view's mouse tracking after tao swaps the window's
+# title bar. The crates are already in the tree via tao at these versions; of
+# the features only NSApplication and NSTrackingArea are new (bindings only).
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSResponder", "NSScreen", "NSTrackingArea", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSResponder", "NSScreen", "NSTrackingArea", "NSView", "NSWindow"] }

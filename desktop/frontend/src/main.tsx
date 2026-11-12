@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import PatchNotesPrompt from "./components/PatchNotesPrompt";
+import TrueFullScreenPrompt from "./components/TrueFullScreenPrompt";
 import UpdatePrompt from "./components/UpdatePrompt";
 import ConnectGate from "./ConnectGate";
 import { ConnectionProvider } from "./connection";
@@ -39,6 +40,12 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         {/* The one overlay every first-view tutorial draws in — up here
             so the connect screen's tour and the tabs' tours share it. */}
         <TutorialOverlay />
+        {/* The one-time warning before View → Toggle True Full Screen
+            (macOS). Up here for the same reason as UpdatePrompt: the mode
+            can be entered from the very first screen, before Local/Remote
+            is picked, and the warning touches only Tauri commands.
+            Renders nothing until Rust asks for it. */}
+        <TrueFullScreenPrompt />
         <ConnectGate>
           <BrowserRouter>
             <App />

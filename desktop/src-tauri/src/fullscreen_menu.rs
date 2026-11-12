@@ -27,14 +27,20 @@ use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, NSObjectProtocol};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSView, NSWindow};
+use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions, NSView, NSWindow};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuEvent, MenuItem, MenuItemKind};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, Wry};
 
+use crate::project_store;
+
 const TOGGLE_ID: &str = "view.true_full_screen";
 const MAIN_WINDOW: &str = "main";
 const EVENT: &str = "true-full-screen";
+/// Asks the frontend for the first-use warning (TrueFullScreenPrompt.tsx).
+const CONFIRM_EVENT: &str = "true-full-screen-confirm";
+/// app_settings key: "1" once that warning has been confirmed.
+const WARNED_KEY: &str = "true_full_screen_warned";
 /// How long the web view's tracking areas stay off (see rearm_webview).
 const REARM_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -114,15 +120,56 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
+/// The menu item. The first time it's used to enter, the frontend is asked
+/// to warn that the menu bar and Dock disappear completely
+/// (TrueFullScreenPrompt.tsx), and entering waits on its confirm.
 fn toggle(app: &AppHandle) {
     let Some(state) = app.try_state::<TrueFullScreenMenu>() else { return };
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else { return };
     let enter = !state.active.load(Ordering::SeqCst);
+    if enter && !warned(app) {
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+            let _ = window.emit(CONFIRM_EVENT, ());
+        }
+        return;
+    }
+    set_active(app, enter);
+}
+
+/// The warning's "Enter True Full Screen": remember it was seen, then enter.
+#[tauri::command]
+pub fn confirm_true_full_screen(app: AppHandle) {
+    // A flag that didn't save only means the warning shows again next time.
+    if let Ok(conn) = project_store::open_db(&app) {
+        let _ = project_store::write_app_setting_pub(&conn, WARNED_KEY, "1");
+    }
+    // AppKit wants the main thread for all of this.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || set_active(&handle, true));
+}
+
+/// Whether the first-use warning has been confirmed (app_settings, absent =
+/// not yet). A database that can't be read counts as warned rather than
+/// leaving the item unable to enter.
+fn warned(app: &AppHandle) -> bool {
+    project_store::open_db(app)
+        .and_then(|conn| project_store::read_app_setting_pub(&conn, WARNED_KEY))
+        .map_or(true, |value| value.as_deref() == Some("1"))
+}
+
+fn set_active(app: &AppHandle, enter: bool) {
+    let Some(state) = app.try_state::<TrueFullScreenMenu>() else { return };
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else { return };
+    if state.active.load(Ordering::SeqCst) == enter {
+        return;
+    }
     if enter && window.is_fullscreen().unwrap_or(false) {
         return;
     }
     if window.set_simple_fullscreen(enter).is_err() {
         return;
+    }
+    if enter {
+        hide_menu_bar_and_dock();
     }
     state.active.store(enter, Ordering::SeqCst);
     let inset = if enter { notch_inset(&window) } else { 0.0 };
@@ -132,6 +179,20 @@ fn toggle(app: &AppHandle) {
     let for_rearm = window.clone();
     DispatchQueue::main().exec_async(move || rearm_webview(&for_rearm));
     let _ = window.emit(EVENT, snapshot(&state));
+}
+
+/// tao enters simple full screen with the menu bar and Dock set to
+/// auto-hide, but an auto-hidden menu bar still owns the strip beside the
+/// notch: it slides down over whatever is there as soon as the pointer
+/// reaches it and takes the click, so the tab bar pinned up there couldn't
+/// be used. Hidden outright, neither comes back on hover, and the strip is
+/// the window's. tao saved the options it found on entry and puts those
+/// back on leaving, so there's nothing to undo here.
+fn hide_menu_bar_and_dock() {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    NSApplication::sharedApplication(mtm).setPresentationOptions(
+        NSApplicationPresentationOptions::HideDock | NSApplicationPresentationOptions::HideMenuBar,
+    );
 }
 
 /// tao enters and leaves simple full screen by removing and restoring the

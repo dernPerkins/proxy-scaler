@@ -223,3 +223,17 @@ export async function listenTrueFullScreen(
     handler(e.payload),
   );
 }
+
+/** The first time True Full Screen is entered, Rust asks for a warning
+    first (TrueFullScreenPrompt.tsx) and waits for its confirm. Resolves to
+    an unlisten fn. */
+export async function listenTrueFullScreenConfirm(handler: () => void): Promise<() => void> {
+  if (!window.__TAURI__) return () => {};
+  return window.__TAURI__.event.listen("true-full-screen-confirm", () => handler());
+}
+
+/** The warning's confirm: remembers it was seen and enters. */
+export async function confirmTrueFullScreen(): Promise<void> {
+  if (!window.__TAURI__) return;
+  await window.__TAURI__.core.invoke("confirm_true_full_screen");
+}

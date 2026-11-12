@@ -973,7 +973,9 @@ fn main() {
             project_store::get_display_calibrations,
             project_store::set_display_calibration,
             #[cfg(target_os = "macos")]
-            fullscreen_menu::get_true_full_screen
+            fullscreen_menu::get_true_full_screen,
+            #[cfg(target_os = "macos")]
+            fullscreen_menu::confirm_true_full_screen
         ])
         .setup(|app| {
             // Only macOS gets an app menu: on Windows a menu would render
