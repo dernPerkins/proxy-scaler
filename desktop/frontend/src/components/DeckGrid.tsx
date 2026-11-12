@@ -737,6 +737,18 @@ function DeckTile(props: {
     card.set_code && card.collector_number
       ? `${card.set_code.toUpperCase()} #${card.collector_number}`
       : null;
+  // The last image this tile finished drawing. When the tile's image changes
+  // under it — an upscale at the goal DPI finishing swaps the source art for
+  // the variant's thumbnail, a new printing swaps the art — the new image
+  // waits for a queue turn and then loads, and dropping the old one first
+  // blanked the frame for all of that: the tile visibly "refreshed". The old
+  // image stays up until the new one is decoded, and the swap is one frame.
+  // Not when the tile has nothing left to draw (a placeholder): that shows.
+  const [drawnSrc, setDrawnSrc] = useState<string | null>(null);
+  const held = drawnSrc != null && drawnSrc !== src && (src != null || placeholderReason == null) ? drawnSrc : null;
+  const imgStyle: CSSProperties | undefined = trimmed
+    ? { display: "block", position: "absolute", maxWidth: "none", objectFit: "fill", ...trimmed }
+    : undefined;
   // No hover tooltip: the name is the label under the art, and
   // the printing is the control row's button, so one would only repeat them.
   return (
@@ -745,35 +757,41 @@ function DeckTile(props: {
         ref={frameRef}
         className={`deck-tile-frame${isAlphaPrinting(card.set_code) ? " alpha-corners" : ""}`}
       >
-        {src ? (
-          <img
-            src={src}
-            alt={card.name}
-            decoding={warm ? "sync" : "async"}
-            draggable={false}
-            style={
-              trimmed
-                ? {
-                    display: "block",
-                    position: "absolute",
-                    maxWidth: "none",
-                    objectFit: "fill",
-                    ...trimmed,
-                  }
-                : undefined
-            }
-            onLoad={() => {
-              // Only the tile's own first-choice image counts as warm: a
-              // fallback (after a variant thumbnail 404'd) is not what a
-              // remounted tile would ask for first.
-              if (imageKey != null && shown?.key === imageKey) loadedTileImages.add(imageKey);
-              settle();
-            }}
-            onError={() => {
-              settle();
-              setFailedKey(shown?.key ?? null);
-            }}
-          />
+        {src || held ? (
+          <>
+            {held && <img key={held} src={held} alt="" aria-hidden draggable={false} style={imgStyle} />}
+            {/* Keyed by url, so once it is drawn and the held image goes, this
+                same element just stops being hidden. */}
+            {src && (
+              <img
+                key={src}
+                src={src}
+                alt={card.name}
+                className={held ? "deck-tile-incoming" : undefined}
+                decoding={warm ? "sync" : "async"}
+                draggable={false}
+                style={imgStyle}
+                onLoad={(e) => {
+                  // Only the tile's own first-choice image counts as warm: a
+                  // fallback (after a variant thumbnail 404'd) is not what a
+                  // remounted tile would ask for first.
+                  if (imageKey != null && shown?.key === imageKey) loadedTileImages.add(imageKey);
+                  settle();
+                  // Decoded before it replaces the held image, or the swap
+                  // can paint a frame of nothing.
+                  const url = src;
+                  e.currentTarget
+                    .decode()
+                    .catch(() => {})
+                    .finally(() => setDrawnSrc(url));
+                }}
+                onError={() => {
+                  settle();
+                  setFailedKey(shown?.key ?? null);
+                }}
+              />
+            )}
+          </>
         ) : placeholderReason ? (
           <TilePlaceholder card={card} setLabel={setLabel} reason={placeholderReason} />
         ) : null}

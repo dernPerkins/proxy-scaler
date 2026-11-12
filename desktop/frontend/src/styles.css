@@ -1269,6 +1269,14 @@ html.notch-full-screen .tabs a {
   height: 100%;
   object-fit: cover;
 }
+/* A tile's next image, loading over the one still drawn (DeckTile): laid on
+   top and invisible until it is ready. A trimmed image is already absolute
+   with its own box, which its inline style keeps. */
+.deck-tile-frame img.deck-tile-incoming {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
 .deck-tile-placeholder {
   display: flex;
   flex-direction: column;
