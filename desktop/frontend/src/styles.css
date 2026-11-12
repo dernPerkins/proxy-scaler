@@ -1231,28 +1231,15 @@ html.notch-full-screen .tabs a {
   font-size: 14px;
   font-weight: 560;
 }
-.deck-tile-label {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-.deck-tile-name {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* One printed copy in the grid: its tile, with the badges and pills painted
-   over the art, and the control row under it (the row view's own printing
-   picker and back swatch).
-   The cell IS the card's container, so the art and the rows under it read as
+/* One printed copy in the grid: its art, with the trash painted over it on
+   hover, and the foot under it (Flip and the back swatch left; the coverage
+   badges and the images eye right), all in the Row view's own buttons and
+   badges.
+   The cell IS the card's container, so the art and the foot under it read as
    one thing: a single material with a large corner and a soft shadow instead
-   of a border, the art floated in its padding, and the controls as borderless
-   capsules. Reaching a card lifts it a little. (The badges and pills stay
-   anchored to the art: they live in .deck-tile-wrap, which is never padded.) */
+   of a border, the art floated in its padding. Reaching a card lifts it a
+   little. (The trash stays anchored to the art: it lives in .deck-tile-wrap,
+   which is never padded.) */
 .deck-cell {
   display: flex;
   flex-direction: column;
@@ -1347,6 +1334,42 @@ html.notch-full-screen .tabs a {
 .deck-tile-wrap.is-pickable {
   cursor: pointer;
 }
+/* Flip turns the art over in place: the front sits in the flow and sizes
+   the tile, the back is laid over it facing away. */
+.deck-flip {
+  display: block;
+  perspective: 1400px;
+}
+.deck-flip-inner {
+  display: block;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.deck-flip.is-flipped .deck-flip-inner {
+  transform: rotateY(180deg);
+}
+.deck-flip-side {
+  display: block;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.deck-flip-side.is-back {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck-flip-inner {
+    transition: none;
+  }
+}
+/* A flipped copy whose back prints blank. */
+.deck-back-blank {
+  border-style: solid;
+  background: #fff;
+  color: #6c6c78;
+}
 /* Everything painted ON the art is anchored to a box that reproduces the art
    frame's own box — same width, same 488/680 aspect — rather than measured up
    from the bottom of the tile, where the gap and the name row would make every
@@ -1360,102 +1383,11 @@ html.notch-full-screen .tabs a {
   pointer-events: none;
 }
 
-/* Status, bottom-RIGHT of the art — the least interesting corner of a card,
-   usually just trademark text. One badge per DPI; a grey one is a button. */
-.deck-badges {
+/* The Row view's trash button, top-right of the art. */
+.deck-tile-trash {
   position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 4px;
-  pointer-events: auto;
-}
-/* A mark and a button badge are the same size: same type, same line height,
-   and a border on both (transparent on a mark), so a row mixing them lines up. */
-.deck-badge {
-  padding: 2px 8px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: rgba(16, 16, 24, 0.72);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-}
-.deck-badge.is-done {
-  background: var(--ok);
-}
-.deck-badge.is-active {
-  background: var(--run);
-}
-.deck-badge.is-failed {
-  background: var(--err);
-}
-.deck-badge.is-none {
-  background: rgba(16, 16, 24, 0.45);
-  color: rgba(255, 255, 255, 0.75);
-}
-.deck-badge.is-act {
-  border-color: rgba(255, 255, 255, 0.4);
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-  cursor: pointer;
-}
-.deck-badge.is-act:hover,
-.deck-badge.is-act:focus-visible {
-  border-color: transparent;
-  background: var(--accent);
-  color: #fff;
-}
-
-/* The other two corners, on hover only, drawn as pills so they read as the
-   same language as the badges: the eye bottom-left (the images modal) and
-   the trash top-right. */
-.deck-pill {
-  position: absolute;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 25px;
-  height: 25px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  border-radius: 999px;
-  background: rgba(16, 16, 24, 0.72);
-  color: rgba(255, 255, 255, 0.86);
-  cursor: pointer;
-}
-.deck-pill svg {
-  width: 14px;
-  height: 14px;
-}
-.deck-pill:hover:not(:disabled),
-.deck-pill:focus-visible {
-  border-color: transparent;
-  background: var(--accent);
-  color: #fff;
-}
-.deck-pill:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-.deck-pill-images {
-  left: 10px;
-  bottom: 10px;
-}
-.deck-pill-remove {
   right: 10px;
   top: 10px;
-  background: rgba(120, 24, 24, 0.72);
-}
-.deck-pill-remove:hover:not(:disabled),
-.deck-pill-remove:focus-visible {
-  background: var(--err);
 }
 /* Shown on hover or keyboard focus only: the tile keeps its exact shape
    until you reach it. */
@@ -1477,29 +1409,65 @@ html.notch-full-screen .tabs a {
   opacity: 0.55;
 }
 
-/* The control row under the tile: the row's own controls, shrunk to tile size. */
-/* The name and the control row both sit centred under the art. */
-.deck-cell .deck-tile-label {
-  justify-content: center;
-}
-.deck-cell-controls {
+/* The foot under the art: Flip and the back swatch on the left, the badges
+   and the images eye pushed to the bottom-right corner. */
+.deck-cell-foot {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+.deck-cell-foot-left {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-right: auto;
 }
-.deck-cell-controls .printing-cell > button,
-.deck-cell-controls .chip {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 999px;
-  background: var(--deck-card-fill);
-  box-shadow: none;
+/* The swatch's wrapper is a flex box too, so no line box (and its
+   descender gap) sits under the swatch and pushes it off centre. */
+.deck-cell-foot-left > span {
+  display: flex;
+}
+/* Flipped: the button stays lit in the accent, so a copy showing its back
+   (a transform side especially) can't pass for its front. */
+.deck-flip-btn[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.deck-flip-btn[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-hover);
+}
+/* One Row-view badge per DPI, lowest first. */
+.deck-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+/* A grey badge that runs its job: a button, so it says so on hover. */
+.badge.deck-badge-act {
+  font: inherit;
   font-size: 12px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
 }
-.deck-cell-controls .printing-cell > button:hover {
-  background: var(--deck-card-fill-hover);
+.badge-canceled.deck-badge-act {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--off) 55%, transparent);
+}
+.badge.deck-badge-act:hover:not(:disabled),
+.badge.deck-badge-act:focus-visible {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .deck-cell .card-back-swatch {
   width: 22px;
@@ -4232,140 +4200,4 @@ html.modal-open {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-/* PROTOTYPE — throwaway. Tile footer variant B (`?tileFooter=B`): the View
-   button and the DPI badges under the art, nothing else. Delete with
-   PrototypeSwitcher.tsx once a variant wins. */
-.proto-tile-footer {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  min-width: 0;
-}
-.proto-tile-footer .deck-badges {
-  position: static;
-  min-width: 0;
-}
-/* A grey Row-style badge that runs its job: a button, so it says so on hover. */
-.badge.proto-badge-act {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 3px 9px;
-  border-radius: 999px;
-  cursor: pointer;
-}
-.badge-canceled.proto-badge-act {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--off) 55%, transparent);
-}
-.badge.proto-badge-act:hover:not(:disabled),
-.badge.proto-badge-act:focus-visible {
-  border-style: solid;
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-/* The Row view's trash button, on the art's top-right corner on hover. */
-.proto-tile-trash {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-}
-.proto-tile-footer-left {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: auto;
-}
-/* The swatch's wrapper is a flex box too, so no line box (and its
-   descender gap) sits under the swatch and pushes it off centre. */
-.proto-tile-footer-left > span {
-  display: flex;
-}
-/* Flipped: the button stays lit in the accent, so a copy showing its back
-   (a transform side especially) can't pass for its front. */
-.proto-flip-btn[aria-pressed="true"] {
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
-.proto-flip-btn[aria-pressed="true"]:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: var(--accent-hover);
-}
-/* The art turns over in place: the front sits in the flow and sizes the
-   tile, the back is laid over it facing away. */
-.proto-flip {
-  display: block;
-  perspective: 1400px;
-}
-.proto-flip-inner {
-  display: block;
-  position: relative;
-  transform-style: preserve-3d;
-  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-.proto-flip.is-flipped .proto-flip-inner {
-  transform: rotateY(180deg);
-}
-.proto-flip-side {
-  display: block;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-.proto-flip-side.is-back {
-  position: absolute;
-  inset: 0;
-  transform: rotateY(180deg);
-}
-.proto-back-blank {
-  border-style: solid;
-  background: #fff;
-  color: #6c6c78;
-}
-@media (prefers-reduced-motion: reduce) {
-  .proto-flip-inner {
-    transition: none;
-  }
-}
-
-.proto-switcher {
-  position: fixed;
-  left: 50%;
-  bottom: 18px;
-  z-index: 9500;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 999px;
-  background: #111;
-  color: #fff;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
-  transform: translateX(-50%);
-  font-size: 12.5px;
-}
-.proto-switcher button {
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: #fff;
-  font-size: 15px;
-  cursor: pointer;
-}
-.proto-switcher button:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-.proto-switcher-label {
-  padding: 0 8px;
-  white-space: nowrap;
-}
-.proto-switcher-what {
-  opacity: 0.6;
 }

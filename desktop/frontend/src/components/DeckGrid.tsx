@@ -9,8 +9,8 @@
 // picked up — press and move the pointer a few pixels — and dropped anywhere;
 // the copies after the drop point shift along one slot, so the order never
 // has holes. Let go before it moves and it was a click: on the art, that opens
-// the card's printing picker, the same one its set · number button opens. The first drag switches the shared Sort to Custom, starting from
-// the order on screen, and the PDF and ZIP then print in that order. A copy is
+// the card's printing picker. The first drag switches the shared Sort to
+// Custom, starting from the order on screen, and the PDF and ZIP then print in that order. A copy is
 // independent in placement only: its printing, art and back are its card's,
 // so changing them on one tile changes every copy (hovering a tile outlines
 // its siblings). Quantity has no stepper here — the trash removes that copy,
@@ -22,18 +22,21 @@
 // tile now carries:
 //
 //   · the image the deck would actually print — the FRONT face's variant at
-//     the selected model and the highest selected DPI, when one exists —
-//     painted with the coverage that got it there: one badge per DPI, lowest
-//     first (the original's own DPI, then each goal DPI at the selected
-//     model). A grey badge IS its own button: the original's downloads, a
-//     goal DPI's upscales just that DPI and nothing else on the card;
-//   · the eye bottom-left of the art and the trash top-right, on hover, drawn
-//     in pills so they read as the same language as the badges. The eye opens
-//     every version of the card in a modal (CardImagesModal.tsx), so no tile
-//     ever changes size while you read one card's versions;
-//   · under the tile, this card's own controls, the same components the rows
-//     use: the printing picker (its button IS the card's set · number ·
-//     language, so the tile's own meta row is gone) and the card-back swatch;
+//     the selected model and the highest selected DPI, when one exists. A
+//     click on it opens the printing picker; the card's name and printing
+//     are printed on the card itself, so the tile draws neither;
+//   · the trash top-right of the art, on hover;
+//   · a foot under the art, in the Row view's own buttons and badges: Flip
+//     and the card-back swatch on the left; on the right, the coverage that
+//     got the art there — one badge per DPI, lowest first (the original's
+//     own DPI, then each goal DPI at the selected model), a grey one IS its
+//     own button (the original's downloads, a goal DPI's upscales just that
+//     DPI) — and the eye, which opens every version of the card in a modal
+//     (CardImagesModal.tsx), so no tile ever changes size while you read one;
+//   · Flip turns that one copy over: a double-faced card to its other face
+//     (whatever the PDF tab pairs), any other card to the back it prints
+//     with, resolved as the swatch resolves it. The button stays lit while
+//     flipped. It only shows — what prints is unchanged — and isn't saved;
 //   · right-click (or Control-click) anywhere on it for the menu: change
 //     printing, MPC Fill art, card back, show images, download, upscale, add
 //     another copy, remove this copy, remove all copies.
@@ -107,20 +110,9 @@ import { useBackLibrary } from "../cardBacks";
 import { useProject } from "../context/ProjectContext";
 import CardImagesModal from "./CardImagesModal";
 import { EyeIcon, TrashIcon } from "./RowIcons";
-import PrintingPicker, { pickerRequestFor, type PickerOpenRequest } from "./PrintingPicker";
+import { pickerRequestFor, type PickerOpenRequest } from "./PrintingPicker";
 import SetIcon from "./SetIcon";
-import PrototypeSwitcher, { usePrototypeVariant } from "./PrototypeSwitcher";
 import { useQueuedThumb, useThumbnailQueue, type ThumbnailQueue } from "./imageGrid";
-
-// PROTOTYPE — throwaway. What sits under a tile's art, switchable with
-// `?tileFooter=` (the floating bar, or ← / →): A is the footer as it ships,
-// B drops the name and the printing / back controls for just the View button
-// and the DPI badges (which leave the art). Delete once one wins.
-const TILE_FOOTERS = [
-  { key: "A", name: "Current: Name + Printing + Back" },
-  { key: "B", name: "View + DPI Badges" },
-] as const;
-type TileFooter = (typeof TILE_FOOTERS)[number]["key"];
 
 export interface DeckGridProps {
   /** Every printed copy in print order (deckEntries.deckCopies): the
@@ -217,9 +209,8 @@ export default function DeckGrid(props: DeckGridProps) {
     // The floating copy shows the art the tile already has on screen —
     // read off the tile rather than queued and fetched a second time.
     const cell = `[data-copy-key="${CSS_ESCAPE(key)}"]`;
-    const el =
-      document.querySelector<HTMLImageElement>(`${cell} .proto-flip-side.is-shown .deck-tile-frame img`) ??
-      document.querySelector<HTMLImageElement>(`${cell} .deck-tile-frame img`);
+    // The side on show: a flipped copy is picked up by its back.
+    const el = document.querySelector<HTMLImageElement>(`${cell} .deck-flip-side.is-shown .deck-tile-frame img`);
     setDragging({ key, src: el?.currentSrc || el?.src || null, name: copy?.card.name ?? "" });
     setMenu(null);
   };
@@ -258,7 +249,6 @@ export default function DeckGrid(props: DeckGridProps) {
   const menuActions = menu ? makeActions(props, menu.copy) : null;
   // The card-back picker is mounted once per card (its first copy), so the
   // menu's "Card Back…" has exactly one control to open.
-  const tileFooter = usePrototypeVariant(TILE_FOOTERS, "tileFooter") as TileFooter;
   const firstCopyKey = new Map<number, string>();
   for (const c of props.copies) if (!firstCopyKey.has(c.card.id)) firstCopyKey.set(c.card.id, c.key);
 
@@ -300,7 +290,6 @@ export default function DeckGrid(props: DeckGridProps) {
                       onShowImages={() => setImages(copy.card)}
                       onMenu={(x, y) => setMenu({ copy, x, y })}
                       onBackTrigger={registerBack}
-                      footer={tileFooter}
                     />
                   ))}
                   {pi === pages.length - 1 &&
@@ -324,7 +313,6 @@ export default function DeckGrid(props: DeckGridProps) {
           ) : null}
         </DragOverlay>
       </DndContext>
-      <PrototypeSwitcher variants={TILE_FOOTERS} param="tileFooter" label="Tile Footer" />
 
       {menu && menuActions && (
         <TileMenu
@@ -384,10 +372,8 @@ function SortableCell(props: {
   onShowImages: () => void;
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
-  /** PROTOTYPE: which footer to draw under the art. */
-  footer: TileFooter;
 }) {
-  const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker, footer } = props;
+  const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
   const { onHover, onShowImages, onMenu, onBackTrigger } = props;
   const card = copy.card;
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({
@@ -399,10 +385,12 @@ function SortableCell(props: {
   };
   const custom = card.custom_image_id != null;
   const hasSomeImages = hasImages(c);
-  // PROTOTYPE (footer B): this copy turned over. Per copy, not per card — if
-  // the flipped face ever becomes the one that prints (as on Proxxied), it is
-  // a placement's property. The back side mounts on the first flip only, so
-  // an unflipped deck queues no extra thumbnails.
+  // Flip turns this copy over: a double-faced card to its other face
+  // (whatever the PDF tab pairs), any other card to the back it prints with.
+  // Per copy, not per card — if the flipped face ever becomes the one that
+  // prints (as on Proxxied), it is a placement's property. Not saved: a
+  // reload shows every copy face up. The back side mounts on the first flip
+  // only, so an unflipped deck queues no extra thumbnails.
   const { settings } = useProject();
   const [flipped, setFlipped] = useState(false);
   const [backMounted, setBackMounted] = useState(false);
@@ -413,8 +401,9 @@ function SortableCell(props: {
     (card.face_art ?? []).some((fa) => fa.total_faces > 1);
   const singleKnown = custom || (!dfcKnown && c.faces.some((f) => f.variants.length > 0));
   const hasFace1Art = (card.face_art ?? []).some((fa) => fa.face === 1);
-  // A double-faced card shows its other face, whatever the PDF pairs; one
-  // not known either way tries face 1 and falls back to its card back.
+  // Whether a card is double-faced is known once its faces have been
+  // downloaded or generated (or face art says so); one not known either way
+  // tries face 1, and falls back to its card back when there is none.
   const showBackFace = !singleKnown && !noBackFace && (hasFace1Art || card.scryfall_id != null);
   const transformOnBack = !!settings.back_printing && !!settings.back_faces_as_reverse && backFace != null;
   // The tile paints the image it would actually print: the FRONT face's variant
@@ -449,7 +438,6 @@ function SortableCell(props: {
       serverThumbs={serverThumbs}
       queue={queue}
       variantSrc={paintedUrl}
-      showName={footer === "A"}
     />
   );
 
@@ -473,9 +461,8 @@ function SortableCell(props: {
       }}
     >
       {/* A click on the art (released before the pointer moved far enough to
-          drag) opens the same picker as the printing button under it; a
-          Custom Image has none, so nothing. A click on a badge or pill stays
-          that button's. */}
+          drag) opens the printing picker; a Custom Image has none, so
+          nothing. A click on the trash stays the trash's. */}
       <span
         className={`deck-tile-wrap${custom || p.serverUnavailable ? "" : " is-pickable"}`}
         onClick={(e) => {
@@ -484,70 +471,36 @@ function SortableCell(props: {
           a.openPrintingWith(pickerRequestFor(card));
         }}
       >
-        {footer === "B" ? (
-          <span className={`proto-flip${flipped ? " is-flipped" : ""}`}>
-            <span className="proto-flip-inner">
-              <span className={`proto-flip-side is-front${flipped ? "" : " is-shown"}`}>{frontTile}</span>
-              {backMounted && (
-                <span
-                  className={`proto-flip-side is-back${flipped ? " is-shown" : ""}`}
-                  aria-hidden={!flipped}
-                >
-                  {showBackFace ? (
-                    <DeckTile
-                      card={card}
-                      library={p.library}
-                      origin={origin}
-                      serverThumbs={serverThumbs}
-                      queue={queue}
-                      variantSrc={paintedBackUrl}
-                      showName={false}
-                      face={1}
-                      onFaceMissing={dfcKnown ? undefined : () => setNoBackFace(true)}
-                    />
-                  ) : (
-                    <BackSide card={card} />
-                  )}
-                </span>
-              )}
-            </span>
+        <span className={`deck-flip${flipped ? " is-flipped" : ""}`}>
+          <span className="deck-flip-inner">
+            <span className={`deck-flip-side is-front${flipped ? "" : " is-shown"}`}>{frontTile}</span>
+            {backMounted && (
+              <span className={`deck-flip-side is-back${flipped ? " is-shown" : ""}`} aria-hidden={!flipped}>
+                {showBackFace ? (
+                  <DeckTile
+                    card={card}
+                    library={p.library}
+                    origin={origin}
+                    serverThumbs={serverThumbs}
+                    queue={queue}
+                    variantSrc={paintedBackUrl}
+                    face={1}
+                    onFaceMissing={dfcKnown ? undefined : () => setNoBackFace(true)}
+                  />
+                ) : (
+                  <BackSide card={card} />
+                )}
+              </span>
+            )}
           </span>
-        ) : (
-          frontTile
-        )}
-        {/* Everything painted ON the art lives in a box that mirrors the art
-            frame's own box — same width, same 488/680 aspect — so the offsets
-            in styles.css are margins off the card, not off the name row under
-            it. */}
+        </span>
+        {/* Painted ON the art, in a box that mirrors the art frame's own box
+            (same width, same 488/680 aspect), so the offsets in styles.css
+            are margins off the card. Only the trash lives here, on hover. */}
         <span className="deck-tile-ov">
-          {/* The status IS the button here: a grey badge runs its job when
-              clicked. Bottom-right: the least interesting corner of a card. */}
-          {footer === "A" && (
-            <PaintedBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} />
-          )}
-          {/* The images live in a modal, so the grid never reflows; the
-              right-click menu opens it too, this icon is the shortcut. */}
-          {footer === "A" && <button
-            type="button"
-            className="deck-pill deck-pill-images deck-reveal"
-            onClick={onShowImages}
-            disabled={!hasSomeImages}
-            title={
-              hasSomeImages
-                ? "Show images — every version of this card, in a modal"
-                : "Nothing to show yet — download or generate this card first"
-            }
-            aria-label="Show images"
-          >
-            <EyeIcon />
-          </button>}
           <button
             type="button"
-            className={
-              footer === "B"
-                ? "btn-sm btn-danger icon-button proto-tile-trash deck-reveal"
-                : "deck-pill deck-pill-remove deck-reveal"
-            }
+            className="btn-sm btn-danger icon-button deck-tile-trash deck-reveal"
             onClick={a.removeCopy}
             title={
               a.quantity > 1
@@ -561,88 +514,63 @@ function SortableCell(props: {
         </span>
       </span>
 
-      {footer === "B" ? (
-        <span className="proto-tile-footer">
-          <span className="proto-tile-footer-left">
-            <button
-              type="button"
-              className="btn-sm icon-button proto-flip-btn"
-              onClick={() => {
-                setBackMounted(true);
-                setFlipped((f) => !f);
-              }}
-              aria-pressed={flipped}
-              title={flipped ? "Flip to the front" : "Flip — see this copy's back"}
-              aria-label="Flip"
-            >
-              <FlipIcon />
-            </button>
-            {/* The first copy's swatch is the one the right-click menu's
-                "Card Back…" opens. */}
-            <span
-              ref={
-                ownsBackPicker
-                  ? (el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)
-                  : undefined
-              }
-            >
-              <CardBackPicker card={card} transformOnBack={transformOnBack} />
-            </span>
-          </span>
-          <PaintedBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} look="row" />
+      {/* The foot, in the Row view's own buttons and badges: Flip and the
+          card's back swatch on the left; the coverage badges and the images
+          modal's eye in the bottom-right corner. The name and printing are
+          printed on the card itself, so the tile doesn't repeat them. */}
+      <span className="deck-cell-foot">
+        <span className="deck-cell-foot-left">
           <button
             type="button"
-            className="btn-sm icon-button"
-            aria-label="Show images"
-            onClick={onShowImages}
-            disabled={!hasSomeImages}
-            title={
-              hasSomeImages
-                ? "Every version of this card, in a modal"
-                : "Nothing to show yet — download or generate this card first"
+            className="btn-sm icon-button deck-flip-btn"
+            onClick={() => {
+              setBackMounted(true);
+              setFlipped((f) => !f);
+            }}
+            aria-pressed={flipped}
+            title={flipped ? "Flip to the front" : "Flip — see this copy's back"}
+            aria-label="Flip"
+          >
+            <FlipIcon />
+          </button>
+          {/* Mounted on every copy (they share the card's back); the first
+              copy's is registered so the right-click menu's "Card Back…"
+              opens this same control. */}
+          <span
+            ref={
+              ownsBackPicker
+                ? (el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)
+                : undefined
             }
           >
-            <EyeIcon />
-          </button>
-        </span>
-      ) : (
-      <span className="deck-cell-controls">
-        {/* The printing button, the same one the row uses: its label is the
-            card's set · number · language, which is why the tile no longer
-            draws that row itself. */}
-        {custom ? (
-          <span className="chip" title="Your own uploaded art — manage it on the Customs tab">
-            Custom
+            <CardBackPicker card={card} transformOnBack={transformOnBack} />
           </span>
-        ) : (
-          <PrintingPicker
-            card={card}
-            rarity={card.rarity ?? undefined}
-            disabled={p.serverUnavailable}
-            onOpen={a.openPrintingWith}
-          />
-        )}
-        {/* Mounted visibly on every copy (they share the card's back), and
-            the first copy's is registered so the right-click menu's
-            "Card Back…" opens this same control. */}
-        <span
-          ref={
-            ownsBackPicker
-              ? (el) => onBackTrigger(card.id, el?.querySelector("button") ?? null)
-              : undefined
+        </span>
+        {/* The status IS the button: a grey badge runs its job when clicked. */}
+        <CoverageBadges c={c} model={p.model} serverUnavailable={p.serverUnavailable} onDownload={a.download} onUpscaleAt={a.upscaleAt} />
+        {/* The images live in a modal, so the grid never reflows; the
+            right-click menu opens it too, this is the shortcut. */}
+        <button
+          type="button"
+          className="btn-sm icon-button"
+          aria-label="Show images"
+          onClick={onShowImages}
+          disabled={!hasSomeImages}
+          title={
+            hasSomeImages
+              ? "Show images — every version of this card, in a modal"
+              : "Nothing to show yet — download or generate this card first"
           }
         >
-          <CardBackPicker card={card} transformOnBack={false} />
-        </span>
+          <EyeIcon />
+        </button>
       </span>
-      )}
     </div>
   );
 }
 
-/** One copy's art, and nothing else: the tile the cell above paints its
- *  badges, pills and control row around. Its identity — the name — is the
- *  label under the art; its printing is the control row's button. */
+/** One face of one copy's art, and nothing else: the tile the cell above
+ *  turns over and puts its trash and foot around. */
 function DeckTile(props: {
   card: CardRow;
   library: ReadonlyMap<number, CustomImage>;
@@ -657,15 +585,13 @@ function DeckTile(props: {
    *  waits for its turn in the load queue and re-queues when it changes — and
    *  it falls back to the source art when it is missing or fails. */
   variantSrc?: string | null;
-  /** PROTOTYPE: footer B has no name row. */
-  showName?: boolean;
-  /** PROTOTYPE: which face to draw — 1 is a double-faced card's back. */
+  /** Which face to draw — 1 is a double-faced card's back. */
   face?: number;
-  /** PROTOTYPE: every image for this face failed (a card that turned out
-   *  not to have a face 1). */
+  /** Every image for this face failed: a card that turned out not to have
+   *  a face 1. */
   onFaceMissing?: () => void;
 }) {
-  const { card, library, origin, serverThumbs, queue, variantSrc, showName = true, face = 0, onFaceMissing } = props;
+  const { card, library, origin, serverThumbs, queue, variantSrc, face = 0, onFaceMissing } = props;
   const art = tileArt(card, face);
   // The image identity that failed, not just "something failed": a variant
   // thumbnail that 404s must not black out a tile that has its source art to
@@ -792,11 +718,6 @@ function DeckTile(props: {
           <TilePlaceholder card={card} setLabel={setLabel} reason={placeholderReason} />
         ) : null}
       </span>
-      {showName && (
-        <span className="deck-tile-label">
-          <span className="deck-tile-name">{card.name}</span>
-        </span>
-      )}
     </div>
   );
 }
@@ -834,7 +755,7 @@ function tileArt(card: CardRow, face = 0): TileArt {
   return { kind: "none" };
 }
 
-/** PROTOTYPE: a flipped single-faced copy — the card back it prints with,
+/** A flipped single-faced copy — the card back it prints with,
  *  resolved exactly as the Back swatch resolves it (this card's own back,
  *  the universal back, or blank). Never the transform side: a double-faced
  *  card flips to its other face instead. */
@@ -852,7 +773,7 @@ function BackSide({ card }: { card: CardRow }) {
     <div className="deck-tile">
       <span className="deck-tile-frame">
         {r.kind === "blank" ? (
-          <span className="deck-tile-placeholder proto-back-blank">
+          <span className="deck-tile-placeholder deck-back-blank">
             <span className="deck-tile-placeholder-name">Blank Back</span>
           </span>
         ) : thumb.data ? (
@@ -877,7 +798,7 @@ function BackSide({ card }: { card: CardRow }) {
   );
 }
 
-/** PROTOTYPE: two arrows turning about a vertical axis — "turn it over". */
+/** Two arrows turning about a vertical axis — "turn it over". */
 function FlipIcon() {
   return (
     <svg
@@ -958,32 +879,28 @@ function makeActions(p: DeckGridProps, copy: DeckCopy): TileActions {
   };
 }
 
-/** The status painted ON the art, bottom-right of it (that corner is the least
- *  interesting of a card — often just trademark text). A badge that is grey —
- *  nothing exists for that DPI at the selected model — IS its button: the
- *  original's downloads, a DPI's upscales just that DPI. Done badges are marks.
+/** The card's coverage, in the Row view's own badges, bottom-right of the
+ *  tile: one per DPI, lowest first. A badge that is grey — nothing exists for
+ *  that DPI at the selected model — IS its button: the original's downloads,
+ *  a DPI's upscales just that DPI. Done badges are marks.
  *
  *  The original is labelled with the DPI its file actually is rather than "OG",
  *  because it IS one of these badges: the server records a printing's own
  *  Scryfall original at 300 DPI and an MPC Fill / Custom Image original at that
  *  file's measured DPI. Sorted low to high, the row reads as the chain it
  *  describes — the source, then the upscales. */
-function PaintedBadges({
+function CoverageBadges({
   c,
   model,
   serverUnavailable,
   onDownload,
   onUpscaleAt,
-  look = "painted",
 }: {
   c: CardCoverage;
   model: string;
   serverUnavailable: boolean;
   onDownload: () => void;
   onUpscaleAt: (dpi: number) => void;
-  /** PROTOTYPE: "row" draws the Row view's StatusBadge pills (dot + label)
-   *  instead of the solid pills painted on the art. */
-  look?: "painted" | "row";
 }) {
   const name = modelDisplayName(model);
   // One card can print different sources per face (a Scryfall front, an MPC
@@ -995,35 +912,23 @@ function PaintedBadges({
   const ogDpi = faceDpis[0] ?? null;
   const badge = (cover: Cover, key: string, label: string, title: string, act?: () => void) => {
     const actionable = act != null && (cover === "none" || cover === "failed") && !serverUnavailable;
-    if (look === "row") {
-      // The Row view's badge colours: done green, in flight blue, failed red,
-      // nothing yet the neutral "off" grey.
-      const status = { done: "done", active: "running", failed: "failed", none: "canceled" }[cover];
-      const rowCls = `badge badge-${status}${actionable ? " proto-badge-act" : ""}`;
-      const body = (
-        <>
-          <span className="dot" />
-          {label}
-        </>
-      );
-      return actionable ? (
-        <button key={key} type="button" className={rowCls} title={`${title} — click to run it`} onClick={act}>
-          {body}
-        </button>
-      ) : (
-        <span key={key} className={rowCls} title={title}>
-          {body}
-        </span>
-      );
-    }
-    const cls = `deck-badge is-${cover}${actionable ? " is-act" : ""}`;
+    // The Row view's badge colours: done green, in flight blue, failed red,
+    // nothing yet the neutral "off" grey.
+    const status = { done: "done", active: "running", failed: "failed", none: "canceled" }[cover];
+    const cls = `badge badge-${status}${actionable ? " deck-badge-act" : ""}`;
+    const body = (
+      <>
+        <span className="dot" />
+        {label}
+      </>
+    );
     return actionable ? (
       <button key={key} type="button" className={cls} title={`${title} — click to run it`} onClick={act}>
-        {label}
+        {body}
       </button>
     ) : (
       <span key={key} className={cls} title={title}>
-        {label}
+        {body}
       </span>
     );
   };
@@ -1051,9 +956,7 @@ function PaintedBadges({
       ),
     },
   ].sort((a, b) => a.dpi - b.dpi);
-  return (
-    <span className={`deck-badges${look === "row" ? "" : " mono"}`}>{badges.map((b) => b.el)}</span>
-  );
+  return <span className="deck-badges">{badges.map((b) => b.el)}</span>;
 }
 
 interface MenuAction {
