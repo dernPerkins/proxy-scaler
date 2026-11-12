@@ -2699,8 +2699,10 @@ dependencies = [
 name = "proxy-scaler-spike"
 version = "0.5.0"
 dependencies = [
+ "dispatch2",
  "futures-util",
  "minisign-verify",
+ "objc2",
  "objc2-app-kit",
  "regex",
  "reqwest 0.12.28",
