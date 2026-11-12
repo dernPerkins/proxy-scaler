@@ -1310,8 +1310,13 @@ html.notch-full-screen .tabs a {
   border-radius: 20px;
   background: var(--deck-card-bg);
   box-shadow: var(--deck-card-shadow);
+  /* The lift is the `translate` property, not `transform`: `transform` is
+     dnd-kit's, which shifts copies aside while one is dragged and clears on
+     the drop. Were `transform` transitioned here, that clearing would
+     animate too, and a copy the drop reflowed would slide in from the
+     wrong slot instead of simply being in its new one. */
   transition:
-    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
+    translate 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
     box-shadow 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 /* Raised for keyboard focus only: a mouse click on a control inside leaves
@@ -1320,7 +1325,7 @@ html.notch-full-screen .tabs a {
 .deck-cell:hover,
 .deck-cell:focus-visible,
 .deck-cell:has(:focus-visible) {
-  transform: translateY(-3px);
+  translate: 0 -3px;
   box-shadow: var(--deck-card-shadow-lifted);
 }
 /* A copy is something you pick up (click and hold): no text selection or
@@ -1383,7 +1388,7 @@ html.notch-full-screen .tabs a {
   .deck-cell:hover,
   .deck-cell:focus-visible,
   .deck-cell:has(:focus-visible) {
-    transform: none;
+    translate: none;
   }
 }
 .deck-tile-wrap {

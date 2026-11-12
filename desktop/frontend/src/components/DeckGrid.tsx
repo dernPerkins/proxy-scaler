@@ -321,7 +321,10 @@ export default function DeckGrid(props: DeckGridProps) {
             ))}
           </div>
         </SortableContext>
-        <DragOverlay>
+        {/* No drop animation: the floating copy would glide into the slot
+            while the real tile under it, no longer "lifted", shows a frame
+            before dnd-kit hides it — a flash. Letting go just lands it. */}
+        <DragOverlay dropAnimation={null}>
           {dragging ? (
             <span className="deck-drag-ghost">
               {dragging.src ? (
@@ -396,8 +399,13 @@ function SortableCell(props: {
   const { copy, sibling, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
   const { onHover, onShowImages, onMenu, onBackTrigger } = props;
   const card = copy.card;
+  // No layout animation on the drop: dnd-kit's default slides the dropped
+  // copy in from the rect it measured at pick-up, i.e. it draws it in its
+  // ORIGINAL slot first — a one-frame flash of the old order. The new order
+  // just appears.
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({
     id: copy.key,
+    animateLayoutChanges: () => false,
   });
   const style: CSSProperties = {
     transform: CSS.Translate.toString(transform),
