@@ -591,6 +591,16 @@ function SortableCell(props: {
 
 /** One face of one copy's art, and nothing else: the tile the cell above
  *  turns over and puts its trash and foot around. */
+/** Every tile image that has finished loading this session, by its image
+ *  key. A copy dragged onto another page — or shifted across a page break
+ *  by someone else's drop — is a new React element under that page's grid,
+ *  so its tile mounts afresh. Without this it would go back into the load
+ *  queue and draw an empty frame until its turn came: a visible flicker on
+ *  every drop that crosses a page. An image in here is already in the
+ *  webview's cache, so a tile showing it skips the queue and decodes it
+ *  synchronously instead. */
+const loadedTileImages = new Set<string>();
+
 function DeckTile(props: {
   card: CardRow;
   library: ReadonlyMap<number, CustomImage>;
@@ -639,7 +649,10 @@ function DeckTile(props: {
     variantUrl != null ||
     art.kind === "local" ||
     (art.kind === "server" && serverThumbs && origin != null);
-  const { load, settle } = useQueuedThumb(queue, frameRef, canAsk, false, imageKey);
+  const warm = imageKey != null && loadedTileImages.has(imageKey);
+  const queued = useQueuedThumb(queue, frameRef, canAsk && !warm, false, imageKey);
+  const load = warm || queued.load;
+  const settle = queued.settle;
   const localQuery = useQuery({
     // The same key the Customs tab's tiles use, so a card and the library
     // copy of its art cost one round trip, not two.
@@ -715,7 +728,7 @@ function DeckTile(props: {
           <img
             src={src}
             alt={card.name}
-            decoding="async"
+            decoding={warm ? "sync" : "async"}
             draggable={false}
             style={
               trimmed
@@ -728,7 +741,13 @@ function DeckTile(props: {
                   }
                 : undefined
             }
-            onLoad={settle}
+            onLoad={() => {
+              // Only the tile's own first-choice image counts as warm: a
+              // fallback (after a variant thumbnail 404'd) is not what a
+              // remounted tile would ask for first.
+              if (imageKey != null && shown?.key === imageKey) loadedTileImages.add(imageKey);
+              settle();
+            }}
             onError={() => {
               settle();
               setFailedKey(shown?.key ?? null);

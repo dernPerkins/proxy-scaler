@@ -1121,9 +1121,11 @@ html.notch-full-screen .tabs a {
 
 /* ---------- decklist ---------- */
 
+/* "Cards (n)" and the Row / Grid switch on the left, the actions pushed to
+   the right. */
 .decklist-head {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
@@ -1133,6 +1135,7 @@ html.notch-full-screen .tabs a {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-left: auto;
 }
 
 /* The Decklist's Grid view (DeckGrid.tsx): three tiles to a row, the

@@ -1524,21 +1524,21 @@ export default function DecklistPage() {
           <h2>
             Cards <span style={{ color: "var(--text-faint)" }}>({cards.length})</span>
           </h2>
+          {/* Row or Grid: the same list drawn two ways. An app preference
+              (deckViewMode.ts), like Sort is — neither changes what prints,
+              only how the deck is read. */}
+          <span className="deck-view-mode" data-tour="deck-view-mode">
+            <SplitPill
+              ariaLabel="Card view"
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: "row", label: "Row", title: "One row per card, with its controls" },
+                { value: "grid", label: "Grid", title: "Card art, three to a row" },
+              ]}
+            />
+          </span>
           <div className="decklist-actions" data-tour="deck-actions">
-            {/* Row or Grid: the same list drawn two ways. An app preference
-                (deckViewMode.ts), like Sort is — neither changes what prints,
-                only how the deck is read. */}
-            <span className="deck-view-mode" data-tour="deck-view-mode">
-              <SplitPill
-                ariaLabel="Card view"
-                value={viewMode}
-                onChange={setViewMode}
-                options={[
-                  { value: "row", label: "Row", title: "One row per card, with its controls" },
-                  { value: "grid", label: "Grid", title: "Card art, three to a row" },
-                ]}
-              />
-            </span>
             <SortSelect />
             {ownBackCount > 0 && (
               <button
