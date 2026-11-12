@@ -1463,6 +1463,12 @@ html.notch-full-screen .tabs a {
   right: 10px;
   top: 10px;
 }
+/* Flip, bottom-left of the art: the trash's opposite corner. */
+.deck-tile-flip {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+}
 /* Shown on hover or keyboard focus only: the tile keeps its exact shape
    until you reach it. */
 .deck-tile-ov .deck-reveal {
@@ -1476,6 +1482,12 @@ html.notch-full-screen .tabs a {
   opacity: 1;
   pointer-events: auto;
 }
+/* A flipped copy keeps its Flip showing, lit (below), hover or not: a copy
+   showing its back (a transform side especially) can't pass for its front. */
+.deck-tile-ov .deck-tile-flip[aria-pressed="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
 /* Still hover-only when disabled (nothing to show yet), just dimmer. */
 .deck-cell:hover .deck-reveal:disabled,
 .deck-cell:focus-visible .deck-reveal:disabled,
@@ -1483,8 +1495,8 @@ html.notch-full-screen .tabs a {
   opacity: 0.55;
 }
 
-/* The foot under the art: Flip and the back swatch on the left, the badges
-   and the images eye pushed to the bottom-right corner. */
+/* The foot under the art: the back swatch on the left, the badges and the
+   images eye pushed to the bottom-right corner. */
 .deck-cell-foot {
   display: flex;
   align-items: center;
@@ -1503,14 +1515,13 @@ html.notch-full-screen .tabs a {
 .deck-cell-foot-left > span {
   display: flex;
 }
-/* Flipped: the button stays lit in the accent, so a copy showing its back
-   (a transform side especially) can't pass for its front. */
-.deck-flip-btn[aria-pressed="true"] {
+/* Flipped: the button stays lit in the accent. */
+.deck-tile-flip[aria-pressed="true"] {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent);
 }
-.deck-flip-btn[aria-pressed="true"]:hover:not(:disabled) {
+.deck-tile-flip[aria-pressed="true"]:hover:not(:disabled) {
   background: var(--accent-soft);
   border-color: var(--accent-hover);
 }

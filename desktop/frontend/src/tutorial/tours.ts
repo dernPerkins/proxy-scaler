@@ -162,7 +162,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "deck-view-mode",
         title: "Or see them as pictures",
-        body: "Switch to Grid to see every copy as a thumbnail on the pages the PDF tab prints — its columns across, a new page every columns × rows. Drag a card anywhere (that switches Sort to Custom, and the PDF follows), or click its art to change the printing. Under the art, Flip turns a copy over to see its back and the swatch next to it changes that back; the badges show what's downloaded and upscaled (click a grey one to run it), the eye shows every image, and right-click opens the rest.",
+        body: "Switch to Grid to see every copy as a thumbnail on the pages the PDF tab prints — its columns across, a new page every columns × rows. Drag a card anywhere (that switches Sort to Custom, and the PDF follows), or click its art to change the printing. Hover a card for Flip in its bottom-left corner, which turns a copy over to see its back; under the art, the swatch changes that back, the badges show what's downloaded and upscaled (click a grey one to run it), the eye shows every image, and right-click opens the rest.",
         placement: "bottom",
       },
       {

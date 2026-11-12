@@ -537,8 +537,23 @@ function SortableCell(props: {
         </span>
         {/* Painted ON the art, in a box that mirrors the art frame's own box
             (same width, same 488/680 aspect), so the offsets in styles.css
-            are margins off the card. Only the trash lives here, on hover. */}
+            are margins off the card. The trash (top-right) and Flip
+            (bottom-left) live here, on hover, so every card size has them —
+            the smaller sizes hide the foot. */}
         <span className="deck-tile-ov">
+          <button
+            type="button"
+            className="btn-sm icon-button deck-tile-flip deck-reveal"
+            onClick={() => {
+              setBackMounted(true);
+              setFlipped((f) => !f);
+            }}
+            aria-pressed={flipped}
+            title={flipped ? "Flip to the front" : "Flip — see this copy's back"}
+            aria-label="Flip"
+          >
+            <FlipIcon />
+          </button>
           <button
             type="button"
             className="btn-sm btn-danger icon-button deck-tile-trash deck-reveal"
@@ -555,25 +570,12 @@ function SortableCell(props: {
         </span>
       </span>
 
-      {/* The foot, in the Row view's own buttons and badges: Flip and the
-          card's back swatch on the left; the coverage badges and the images
-          modal's eye in the bottom-right corner. The name and printing are
-          printed on the card itself, so the tile doesn't repeat them. */}
+      {/* The foot, in the Row view's own buttons and badges: the card's back
+          swatch on the left; the coverage badges and the images modal's eye
+          in the bottom-right corner. The name and printing are printed on the
+          card itself, so the tile doesn't repeat them. */}
       <span className="deck-cell-foot">
         <span className="deck-cell-foot-left">
-          <button
-            type="button"
-            className="btn-sm icon-button deck-flip-btn"
-            onClick={() => {
-              setBackMounted(true);
-              setFlipped((f) => !f);
-            }}
-            aria-pressed={flipped}
-            title={flipped ? "Flip to the front" : "Flip — see this copy's back"}
-            aria-label="Flip"
-          >
-            <FlipIcon />
-          </button>
           {/* Mounted on every copy (they share the card's back); the first
               copy's is registered so the right-click menu's "Card Back…"
               opens this same control. */}
