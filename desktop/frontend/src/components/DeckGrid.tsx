@@ -8,6 +8,8 @@
 // How big the thumbnails are is the zoom dock's (GridZoomDock, ADR 0010):
 // at 100% each card is its real 63 × 88 mm on screen, and the page passes
 // that width and the layout for the size in as `tileWidth` / `tileLayout`.
+// Each page is as wide as its cards; the pages sit centred, side by side as
+// many as fit across the window (styles.css .deck-pages).
 //
 // Copies, not cards (docs/adr/0009): a 4-of is four tiles, and each can be
 // picked up — press and move the pointer a few pixels — and dropped anywhere;

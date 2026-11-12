@@ -1141,17 +1141,24 @@ html.notch-full-screen .tabs a {
    Fixed at 3, not auto-fill: the point of this view is that a row of it
    IS a row of a sheet. */
 /* The Grid view's pages: the PDF tab's cols × rows, one section per printed
-   sheet. A row of tiles is always one printed row, so when the columns can't
-   fit at a readable size the page scrolls sideways instead of wrapping (the
-   padding, taken back by the negative margin, keeps the tiles' lift and
-   shadow from being clipped by that scroll box). */
+   sheet, each as wide as its cards at the current zoom. Centred, and side by
+   side as many as fit across (so small sizes show several sheets at once),
+   wrapping onto the next line otherwise. A row of tiles is always one printed
+   row, so a page too wide for the window scrolls sideways instead of
+   wrapping (the padding, taken back by the negative margin, keeps the tiles'
+   lift and shadow from being clipped by that scroll box; the column gap is
+   the visible space between two pages' cards). */
 .deck-pages {
   display: flex;
-  flex-direction: column;
-  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 18px 40px;
   padding: 8px 0 4px;
 }
 .deck-page {
+  flex: 0 0 auto;
+  max-width: calc(100% + 28px);
   overflow-x: auto;
   margin: 0 -14px;
   padding: 2px 14px 16px;
@@ -1199,12 +1206,21 @@ html.notch-full-screen .tabs a {
 }
 .deck-grid.is-art .deck-slot-empty,
 .deck-grid.is-compact .deck-slot-empty {
-  min-height: 0;
   border-radius: 12px;
 }
-/* The rest of the last page: where the next copies would print. */
+.deck-grid.is-compact .deck-slot-empty {
+  min-height: calc(var(--deck-tile-w) * 680 / 488 + 18px);
+}
+.deck-grid.is-art .deck-slot-empty {
+  min-height: calc(var(--deck-tile-w) * 680 / 488 + 12px);
+}
+/* The rest of the last page: where the next copies would print. Beside a
+   card a slot stretches to that card's row; a row with no cards has nothing
+   to stretch to, so every slot is at least a card's height on its own: the
+   art (the frame's 488/680 aspect at the tile width) plus the cell's
+   padding, and in the full layout the foot (10px gap + 28px buttons). */
 .deck-slot-empty {
-  min-height: 120px;
+  min-height: calc(var(--deck-tile-w, 200px) * 680 / 488 + 64px);
   border: 1.5px dashed var(--border-strong);
   border-radius: 20px;
   opacity: 0.6;
