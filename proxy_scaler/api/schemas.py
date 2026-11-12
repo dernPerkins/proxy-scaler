@@ -618,6 +618,10 @@ class PdfPreviewOut(BaseModel):
     # resolution, so the UI must surface them as an error — otherwise they
     # would silently vanish from the sheet.
     missing_at_dpi: list[str] = []
+    # The request's `entries` indices behind `missing` and `missing_at_dpi`,
+    # so the PDF tab can offer to download or upscale exactly those cards.
+    missing_entries: list[int] = []
+    missing_at_dpi_entries: list[int] = []
     # Cards printing from their ~300 DPI Scryfall original because they
     # have no upscale (or none at preferred_dpi). They print; the UI says
     # so, since they come out softer than the rest of the sheet.

@@ -12,6 +12,10 @@ export interface ConfirmDialogProps {
   /** "primary" for a question that destroys nothing (adopting an MPC
    *  order's card back); destructive confirms keep the default. */
   tone?: "danger" | "primary";
+  /** A second way forward, between Cancel and the confirm button — for a
+   *  question with two answers that both go ahead. */
+  secondaryLabel?: string;
+  onSecondary?: () => void;
 }
 
 // The in-app replacement for `window.confirm()`, and the reason it exists:
@@ -38,6 +42,8 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
   tone = "danger",
+  secondaryLabel,
+  onSecondary,
 }: ConfirmDialogProps) {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -63,6 +69,7 @@ export default function ConfirmDialog({
           <button autoFocus onClick={onCancel}>
             Cancel
           </button>
+          {secondaryLabel && onSecondary && <button onClick={onSecondary}>{secondaryLabel}</button>}
           <button className={tone === "danger" ? "btn-danger" : "btn-primary"} onClick={onConfirm}>
             {confirmLabel}
           </button>

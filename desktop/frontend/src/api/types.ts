@@ -657,6 +657,11 @@ export interface PdfPreview {
   // excluded from the sheet rather than printed at another resolution, so
   // this must be shown — otherwise they silently disappear.
   missing_at_dpi: string[];
+  /** The request's `entries` indices behind `missing` and `missing_at_dpi`,
+   *  for offering to download or upscale exactly those cards. Absent on
+   *  older servers. */
+  missing_entries?: number[];
+  missing_at_dpi_entries?: number[];
   /** Scryfall cards printing from their ~300 DPI original because they
    *  have no upscale (or none at Preferred DPI). Absent on older servers. */
   from_originals?: string[];

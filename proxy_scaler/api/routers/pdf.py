@@ -173,6 +173,9 @@ class PreparedRender:
     pages: list[list[PrintSlot]]
     missing: list[str]
     missing_at_dpi: list[str]
+    # The request's `entries` indices behind the two lists above.
+    missing_entries: list[int]
+    missing_at_dpi_entries: list[int]
     from_originals: list[str]
     # Every Back Image the request named that this server holds, by
     # content hash, and the hash a card with no choice of its own
@@ -311,9 +314,13 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
     db_path = get_db_path()
     entries = [_to_deck_entry(e) for e in body.entries]
     items = gallery_for_print(body.project_tag, entries, db_path)
+    missing_entries: list[int] = []
+    missing_at_dpi_entries: list[int] = []
     units, missing, missing_at_dpi = match_quantities(
         entries,
         items,
+        missing_entries=missing_entries,
+        missing_at_dpi_entries=missing_at_dpi_entries,
         # use_originals narrows Scryfall faces only; the preferred pair
         # still picks among a custom's variants.
         preferred_dpi=body.preferred_dpi,
@@ -377,6 +384,8 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         pages=pages,
         missing=missing,
         missing_at_dpi=missing_at_dpi,
+        missing_entries=missing_entries,
+        missing_at_dpi_entries=missing_at_dpi_entries,
         from_originals=printing_from_originals(
             (u.best for u in units), use_originals=body.use_originals
         ),
@@ -445,6 +454,8 @@ def preview(body: PdfLayoutIn) -> PdfPreviewOut:
         missing=prepared.missing,
         page_count=len(prepared.pages),
         missing_at_dpi=prepared.missing_at_dpi,
+        missing_entries=prepared.missing_entries,
+        missing_at_dpi_entries=prepared.missing_at_dpi_entries,
         from_originals=prepared.from_originals,
         reverses_needing_back_image=prepared.reverses_needing_back_image,
         missing_back_image=prepared.missing_back_image,

@@ -2858,3 +2858,24 @@ def test_face_order_that_does_not_match_the_deck_is_refused() -> None:
     ):
         assert checked_face_order(bad, entries) is None
 
+
+
+def test_match_quantities_reports_the_entries_behind_missing() -> None:
+    gallery, entries = _copy_order_deck()
+    entries.insert(
+        1, DeckEntry(quantity=1, name="Black Lotus", set_code="lea", collector_number="232")
+    )
+    missing_entries: list[int] = []
+    at_dpi_entries: list[int] = []
+    _units, missing, missing_at_dpi = match_quantities(
+        entries,
+        gallery,
+        preferred_dpi=1200,
+        missing_entries=missing_entries,
+        missing_at_dpi_entries=at_dpi_entries,
+    )
+    assert len(missing) == 1 and missing_entries == [1]
+    # Nothing in the gallery is at 1200 DPI (and no original to fall back
+    # on): every matched entry is named once, however many faces it has.
+    assert len(missing_at_dpi) == 4
+    assert sorted(at_dpi_entries) == [0, 2, 3]

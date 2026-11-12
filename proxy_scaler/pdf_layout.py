@@ -1166,6 +1166,8 @@ def match_quantities(
     preferred_dpi: int | None = None,
     preferred_model: str | None = None,
     use_originals: bool = False,
+    missing_entries: list[int] | None = None,
+    missing_at_dpi_entries: list[int] | None = None,
 ) -> tuple[list[PrintUnit], list[str], list[str]]:
     """Match gallery face-groups to decklist quantities — decklist-driven:
     the current decklist decides what's eligible to print, not the
@@ -1232,6 +1234,10 @@ def match_quantities(
     entry's own printing's image: it takes the override's face group — a
     custom by hash, or the chosen face of another printing by scryfall_id
     — dressed as the entry's face (_substitute), in a unit of its own.
+
+    `missing_entries` and `missing_at_dpi_entries`, when given, are filled
+    with the `entries` indices behind `missing` and `missing_at_dpi`, so a
+    client can offer to download or upscale exactly those cards.
 
     Returns (units, missing, missing_at_dpi).
     """
@@ -1392,6 +1398,10 @@ def match_quantities(
             # on. Reported to the caller and left out of the print run
             # (see _pick_dpi_variant).
             missing_at_dpi.append(_describe_face(rep))
+            if missing_at_dpi_entries is not None:
+                missing_at_dpi_entries.extend(
+                    i for i in sorted(matched_indices) if i not in missing_at_dpi_entries
+                )
             continue
 
         for ((back_mode, back_hash), subst), qty in qty_by_key.items():
@@ -1429,6 +1439,8 @@ def match_quantities(
         expected = expected_faces_by_entry[i]
         if matched == 0 or (expected is not None and matched < expected):
             missing.append(_describe_entry(entry, matched, expected))
+            if missing_entries is not None:
+                missing_entries.append(i)
 
     return units, missing, missing_at_dpi
 

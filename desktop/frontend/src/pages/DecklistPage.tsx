@@ -46,23 +46,23 @@ import { invokeOpenDirectory, invokeOpenRemoteTerminal, isTauri } from "../tauri
 import { resolveImageOrigin } from "../imageOrigin";
 import { hasShortcutModifier, isDialogOpen, shortcutLabel } from "../shortcuts";
 import { useProject } from "../context/ProjectContext";
+import { toastUpscaleNotes, useDeckImageActions } from "../deckImageActions";
 import { cardToEntry, deckCopies, sortCards, type DeckCopy } from "../deckEntries";
 import { errorText, toast } from "../toasts";
 import { useMpcCatalogReady } from "../mpcCatalog";
-import { SCOPE_EMPTY, SCOPE_LABELS, scopeRequest, type UpscaleScope } from "../upscaleScope";
+import { SCOPE_LABELS, type UpscaleScope } from "../upscaleScope";
 import SortSelect from "../components/SortSelect";
 import DeckGrid from "../components/DeckGrid";
 import type { DisplayFace } from "../cardCoverage";
 import SplitPill from "../components/SplitPill";
 import { useDeckViewMode } from "../deckViewMode";
-import { getProjectSnapshot, registerCustomCards, syncCustomImages } from "../syncCustoms";
+import { registerCustomCards, syncCustomImages } from "../syncCustoms";
 import { alternateName } from "../cardNames";
 import { fillFrameWith, trimGeometry } from "../cardTrim";
 import { importMpcOrder } from "../mpcFill";
 import {
   autoPickMpcArt,
   fetchPendingFaceArt,
-  hasPendingFaceArt,
   dismissPendingFaceArt,
   downloadCardFaces,
   downloadPickedPrinting,
@@ -150,17 +150,6 @@ function withPendingPicks(
   ].sort((a, b) => (a.pick?.face ?? position(a)) - (b.pick?.face ?? position(b)));
 }
 
-/** The server's notes on an upscale request, as their own toasts beside
- *  the outcome, whether or not anything else queued: a card skipped for
- *  already reaching its DPI ("Sol Ring: already 1195 DPI.") is a warning,
- *  and a card that couldn't be prepared ("FAIL [...]") an error. */
-function toastUpscaleNotes(notes: string[]): void {
-  const failures = notes.filter((n) => n.startsWith("FAIL"));
-  const skips = notes.filter((n) => !n.startsWith("FAIL"));
-  if (skips.length) toast(`Skipped: ${skips.join(" ")}`, "warn", { key: "generate-skips" });
-  if (failures.length) toast(failures.join(" "), "err", { key: "generate-failures" });
-}
-
 export default function DecklistPage() {
   const queryClient = useQueryClient();
   const pendingArt = usePendingFaceArt();
@@ -218,14 +207,6 @@ export default function DecklistPage() {
   // would drop the field anyway, so the control is disabled and "off"
   // is sent rather than a choice it can't honour.
   const customUpscaleSupported = serverSupportsCustomUpscale(serverVersion);
-  // How custom and MPC art comes out when an upscale button asks for it
-  // (the buttons decide *whether*; this setting only decides the result).
-  const customResult = customUpscaleSupported
-    ? settings.custom_upscale === "off"
-      ? "target"
-      : settings.custom_upscale
-    : "off";
-
   // Purely an entry box — never seeded from the project's stored last
   // paste (the card rows below are the actual deck; decklistText lives on
   // only as Save As's copy source in ProjectContext). Cleared when a
@@ -686,26 +667,10 @@ export default function DecklistPage() {
   // same buttons that fetch a Scryfall import's images: Download images
   // queues it, Generate waits for it (it may be upscaled). Each face shows
   // its progress on its row.
-  // A pick adds its art to the library: put the image in the cached list
-  // as it lands, rather than re-reading the whole library, so the row's
-  // thumbnails already know the bleed to crop off.
-  const setPickedFaceArt = async (
-    cardId: number,
-    face: number,
-    totalFaces: number,
-    image: CustomImage,
-  ) => {
-    await setCardFaceArt(cardId, face, totalFaces, image);
-    queryClient.setQueryData<CustomImage[]>(["custom-images"], (list) =>
-      list && !list.some((i) => i.id === image.id) ? [...list, image] : list,
-    );
-  };
-  const pendingArtOpts = {
-    setFaceArt: setPickedFaceArt,
-    projectTag,
-    serverVersion,
-    refreshStatus: refetchStatus,
-  };
+  // The whole-deck Download and Upscale actions, shared with the PDF tab
+  // (deckImageActions.ts), and what they're built on.
+  const deckImages = useDeckImageActions();
+  const { customResult, pendingArtOpts, setPickedFaceArt, withPendingArtFetched } = deckImages;
   // Chosen MPC art that is already in the library (downloaded for another
   // card, project or earlier pick) needs no download: link it straight
   // away, so the row shows it as downloaded on import or load rather than
@@ -780,111 +745,12 @@ export default function DecklistPage() {
     downloadPickedPrinting(card, projectTag, refetchStatus);
   }
 
-  /** Fetch these cards' chosen MPC art, then the cards as they now are. */
-  async function withPendingArtFetched(subset: CardRow[]): Promise<CardRow[]> {
-    if (!hasPendingFaceArt(subset)) return subset;
-    await fetchPendingFaceArt(subset, pendingArtOpts);
-    const ids = new Set(subset.map((c) => c.id));
-    return getProjectSnapshot().cards.filter((c) => ids.has(c.id));
-  }
-
-  // Library images that came from MPC Fill: what "Upscale MPC Fill" covers
-  // among custom cards (face art says so itself).
-  const mpcImageIds = useMemo(
-    () => new Set((libraryQuery.data ?? []).flatMap((image) => (image.mpc ? [image.id] : []))),
-    [libraryQuery.data],
-  );
   // Every library image by id: a row's thumbnails need the bleed its
   // custom or MPC Fill art was declared with.
   const libraryById = useMemo(
     () => new Map((libraryQuery.data ?? []).map((image) => [image.id, image] as const)),
     [libraryQuery.data],
   );
-
-  const generateAllMutation = useMutation({
-    mutationFn: async (scope: UpscaleScope) => {
-      const first = scopeRequest(cards, scope, mpcImageIds);
-      if (first.entries.length === 0) return null;
-      const ready = await withPendingArtFetched(first.cards);
-      const request = scopeRequest(ready, scope, mpcImageIds);
-      if (request.entries.length === 0) return null;
-      // Custom art has to be on the server before the tasks that will read
-      // it are queued — see syncCustoms.ts.
-      await syncCustomImages(request.cards, serverVersion);
-      return generationApi.generate({
-        project_tag: projectTag as string,
-        entries: request.entries,
-        model: settings.model,
-        dpi_targets: settings.dpi_targets,
-        skip_existing: settings.skip_existing,
-        tile_size: settings.tile_size,
-        custom_upscale: request.upscaleCustoms ? customResult : "off",
-        scryfall_upscale: request.scryfallUpscale,
-        output_dir: DEFAULT_GEN_PATHS.output_dir,
-        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
-        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
-        image_origin: await resolveImageOrigin(queryClient),
-      });
-    },
-    onSuccess: (result, scope) => {
-      if (result == null) toast(SCOPE_EMPTY[scope], "info", { key: "generate" });
-      else {
-        toast(
-          result.queued
-            ? `Queued ${result.queued} task(s). The Tasks tab shows their progress.`
-            : "Nothing to do: every requested image already exists.",
-          result.queued ? "ok" : "info",
-          { key: "generate" },
-        );
-        toastUpscaleNotes(result.notes);
-      }
-      invalidateStatus();
-    },
-    onError: (err: Error) => {
-      // Cancelling the custom-image upload is a normal outcome, not a failure.
-      if (err instanceof UploadCanceled) return;
-      toast(`Upscale failed: ${err.message}`, "err", { key: "generate" });
-    },
-  });
-
-  const downloadAllMutation = useMutation({
-    mutationFn: async () => {
-      // Chosen MPC Fill art downloads in the background queue, each face
-      // registering itself as it lands (the rest needn't wait for it).
-      void fetchPendingFaceArt(cards, pendingArtOpts);
-      // Custom cards have no Scryfall original to download; this is what
-      // registers their uploaded art as printable instead, so they still
-      // need syncing first.
-      await syncCustomImages(cards, serverVersion);
-      return generationApi.downloadOriginals({
-        project_tag: projectTag as string,
-        entries: cards.map(cardToEntry),
-        output_dir: DEFAULT_GEN_PATHS.output_dir,
-        cache_dir: DEFAULT_GEN_PATHS.cache_dir,
-        weights_dir: DEFAULT_GEN_PATHS.weights_dir,
-        image_origin: await resolveImageOrigin(queryClient),
-      });
-    },
-    onSuccess: (result) => {
-      if (result.queued) {
-        toast(`Queued ${result.queued} download(s). The Tasks tab shows their progress.`, "ok", {
-          key: "download",
-        });
-      } else {
-        toast(
-          `Nothing to do: every original is already downloaded.${result.notes.length ? " " + result.notes.join(" ") : ""}`,
-          "info",
-          { key: "download" },
-        );
-      }
-      invalidateStatus();
-    },
-    onError: (err: Error) => {
-      // Cancelling the custom-image upload is a normal outcome, not a failure.
-      if (err instanceof UploadCanceled) return;
-      toast(`Download failed: ${err.message}`, "err", { key: "download" });
-    },
-  });
 
   // Upscale one card. `dpis` narrows the goal list (a grid badge asks for the
   // one DPI it is standing for); omit it and the card gets the full selection.
@@ -963,13 +829,13 @@ export default function DecklistPage() {
         if (decklistDraft.trim() && !importing && !serverUnavailable) void handleImport();
       },
       KeyG: () => {
-        if (cards.length && !generateAllMutation.isPending && !serverUnavailable) {
-          generateAllMutation.mutate("originals");
+        if (cards.length && !deckImages.upscale.isPending && !serverUnavailable) {
+          deckImages.upscale.mutate({ cards, scope: "originals" });
         }
       },
       KeyD: () => {
-        if (cards.length && !downloadAllMutation.isPending && !serverUnavailable) {
-          downloadAllMutation.mutate();
+        if (cards.length && !deckImages.download.isPending && !serverUnavailable) {
+          deckImages.download.mutate(cards);
         }
       },
     };
@@ -1584,8 +1450,8 @@ export default function DecklistPage() {
               </button>
             )}
             <button
-              onClick={() => downloadAllMutation.mutate()}
-              disabled={!cards.length || downloadAllMutation.isPending || serverUnavailable}
+              onClick={() => deckImages.download.mutate(cards)}
+              disabled={!cards.length || deckImages.download.isPending || serverUnavailable}
               title={
                 serverUnavailable
                   ? "Generation server is unreachable"
@@ -1597,13 +1463,13 @@ export default function DecklistPage() {
             <SplitButton
               primary
               label={SCOPE_LABELS.originals}
-              onClick={() => generateAllMutation.mutate("originals")}
+              onClick={() => deckImages.upscale.mutate({ cards, scope: "originals" })}
               options={(["customs", "mpc", "all"] as const).map((scope) => ({
                 key: scope,
                 label: SCOPE_LABELS[scope],
               }))}
-              onPick={(scope) => generateAllMutation.mutate(scope as UpscaleScope)}
-              disabled={!cards.length || generateAllMutation.isPending || serverUnavailable}
+              onPick={(scope) => deckImages.upscale.mutate({ cards, scope: scope as UpscaleScope })}
+              disabled={!cards.length || deckImages.upscale.isPending || serverUnavailable}
               title={
                 serverUnavailable
                   ? "Generation server is unreachable"

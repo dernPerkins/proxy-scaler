@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import ConfirmDialog from "../components/ConfirmDialog";
 import ModelSelect from "../components/ModelSelect";
 import SelectMenu from "../components/SelectMenu";
 import PresetBar from "../components/PresetBar";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { generationApi, ApiError } from "../api/generation";
-import { projectApi } from "../api/project";
+import { projectApi, type CardRow } from "../api/project";
 import NumberInput from "../components/NumberInput";
 import PdfPagePreview from "../components/PdfPagePreview";
 import { DPI_OPTIONS, EXPORT_DPI_OPTIONS } from "../constants";
@@ -21,7 +22,8 @@ import {
 } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { useTourOnFirstView, useTourWhenPresent } from "../tutorial/tutorialStore";
-import { printOrder } from "../deckEntries";
+import { printOrder, sortCards } from "../deckEntries";
+import { useDeckImageActions } from "../deckImageActions";
 import { backImageRef, referencedBackIds, summarizeCardBacks, useBackImagesSync, useBackLibrary } from "../cardBacks";
 import CardBackSummaryNote from "../components/CardBackSummaryNote";
 import SortSelect from "../components/SortSelect";
@@ -358,6 +360,86 @@ export default function PdfPage() {
       !serverTooOld &&
       backReady,
   });
+
+  // --- Cards the preview can't print ------------------------------------
+  // The preview names the entries it leaves out (no image at all, or none at
+  // Preferred DPI). The Decklist's Download and Upscale run right here for
+  // exactly those cards (deckImageActions.ts); an older server that doesn't
+  // name them gets the whole deck, which both skip what already exists.
+  const deckImages = useDeckImageActions();
+  const sortedCards = sortCards(cards, settings.sort_primary, placements);
+  const cardsAt = (indices: number[] | undefined): CardRow[] =>
+    indices == null ? cards : [...new Set(indices)].flatMap((i) => sortedCards[i] ?? []);
+  const summary = previewQuery.data;
+  const missingCards = summary?.missing.length ? cardsAt(summary.missing_entries) : [];
+  const atDpiCards = summary?.missing_at_dpi.length ? cardsAt(summary.missing_at_dpi_entries) : [];
+  const unprintableCards = [...new Map([...missingCards, ...atDpiCards].map((c) => [c.id, c])).values()];
+  const unprintableCount = (summary?.missing.length ?? 0) + (summary?.missing_at_dpi.length ?? 0);
+
+  // Tasks queued from here, watched so the preview catches up as each lands.
+  const [fixing, setFixing] = useState<{ kind: "download" | "upscale"; tasks: number[] } | null>(null);
+  const refreshPreviews = () => {
+    void queryClient.invalidateQueries({ queryKey: ["pdf-preview"] });
+    void queryClient.invalidateQueries({ queryKey: ["pdf-page-preview"] });
+  };
+  useEffect(() => {
+    if (fixing == null) return;
+    if (fixing.tasks.length === 0) {
+      setFixing(null);
+      return;
+    }
+    let alive = true;
+    const timer = setInterval(() => {
+      void Promise.all(fixing.tasks.map((id) => generationApi.getTask(id)))
+        .then((tasks) => {
+          if (!alive) return;
+          const left = tasks.filter((t) => t.status === "pending" || t.status === "running").map((t) => t.id);
+          if (left.length === fixing.tasks.length) return;
+          refreshPreviews();
+          setFixing(left.length ? { ...fixing, tasks: left } : null);
+        })
+        .catch(() => {});
+    }, TASK_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fixing]);
+  async function fixCards(kind: "download" | "upscale", targets: CardRow[]) {
+    try {
+      const result =
+        kind === "download"
+          ? await deckImages.download.mutateAsync(targets)
+          : // Everything on these cards, whatever kind — like a card's own
+            // Upscale button.
+            await deckImages.upscale.mutateAsync({ cards: targets, scope: "all" });
+      setFixing({ kind, tasks: result?.task_ids ?? [] });
+    } catch {
+      // The action has already said what went wrong.
+    }
+  }
+  const fixBusy = fixing != null || deckImages.download.isPending || deckImages.upscale.isPending;
+
+  // Generate with cards missing asks first: download their originals and
+  // then print, or print what there is.
+  const [askMissing, setAskMissing] = useState(false);
+  const [fetchingOriginals, setFetchingOriginals] = useState(false);
+  async function downloadThenPrint() {
+    setAskMissing(false);
+    setFetchingOriginals(true);
+    try {
+      const result = await deckImages.download.mutateAsync(unprintableCards);
+      await waitForTasks(result.task_ids, ORIGINALS_WAIT_MS);
+    } catch {
+      // The download has already said what went wrong.
+      return;
+    } finally {
+      setFetchingOriginals(false);
+      refreshPreviews();
+    }
+    await handleDownload();
+  }
 
   // cards_per_page is always cols*rows server-side (pdf_layout.resolve_page_
   // layout) and every page but the last is filled to exactly that (pdf_
@@ -1176,8 +1258,7 @@ export default function PdfPage() {
                         {previewQuery.data.missing.length} card(s) from your decklist have
                         no downloaded original
                       </strong>{" "}
-                      and are left out of this PDF — use Download images on the Decklist
-                      tab.
+                      and are left out of this PDF.
                     </>
                   ) : (
                     <>
@@ -1185,8 +1266,7 @@ export default function PdfPage() {
                         {previewQuery.data.missing.length} card(s) from your decklist have
                         no image yet
                       </strong>{" "}
-                      and are left out of this PDF — download or generate them from the
-                      Decklist tab.
+                      and are left out of this PDF.
                     </>
                   )}
                 </p>
@@ -1197,6 +1277,13 @@ export default function PdfPage() {
                     </li>
                   ))}
                 </ul>
+                <MissingCardActions
+                  count={missingCards.length}
+                  fixing={fixing?.kind ?? null}
+                  disabled={fixBusy || serverUnavailable}
+                  onDownload={() => void fixCards("download", missingCards)}
+                  onUpscale={() => void fixCards("upscale", missingCards)}
+                />
               </>
             )}
             {/* Only an error when a Reverse would ACTUALLY come up empty:
@@ -1218,8 +1305,9 @@ export default function PdfPage() {
                     {previewQuery.data.missing_at_dpi.length} card(s) have no image at{" "}
                     {layout.preferred_dpi} DPI
                   </strong>{" "}
-                  and are left out of this PDF — generate them at that DPI, or set
-                  Preferred DPI to &ldquo;Any&rdquo;.
+                  and are left out of this PDF — upscale them to that DPI, download
+                  their originals to print those instead, or set Preferred DPI to
+                  &ldquo;Any&rdquo;.
                 </p>
                 <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                   {previewQuery.data.missing_at_dpi.map((name, i) => (
@@ -1228,6 +1316,13 @@ export default function PdfPage() {
                     </li>
                   ))}
                 </ul>
+                <MissingCardActions
+                  count={atDpiCards.length}
+                  fixing={fixing?.kind ?? null}
+                  disabled={fixBusy || serverUnavailable}
+                  onDownload={() => void fixCards("download", atDpiCards)}
+                  onUpscale={() => void fixCards("upscale", atDpiCards)}
+                />
               </>
             )}
             <OriginalsFallbackNote names={previewQuery.data.from_originals} />
@@ -1324,9 +1419,10 @@ export default function PdfPage() {
         <div className="summary-row" data-tour="pdf-download" data-tour-fit>
           <button
             className="btn-primary"
-            onClick={() => handleDownload()}
+            onClick={() => (unprintableCount > 0 ? setAskMissing(true) : void handleDownload())}
             disabled={
               downloading ||
+              fetchingOriginals ||
               entries.length === 0 ||
               serverUnavailable ||
               serverTooOld ||
@@ -1342,8 +1438,29 @@ export default function PdfPage() {
                   : undefined
             }
           >
-            {downloading ? "Generating…" : "Generate & Download PDF"}
+            {fetchingOriginals
+              ? "Downloading Originals…"
+              : downloading
+                ? "Generating…"
+                : "Generate & Download PDF"}
           </button>
+          {askMissing && (
+            <ConfirmDialog
+              title="Some Cards Can't Print Yet"
+              tone="primary"
+              confirmLabel="Download Originals"
+              onConfirm={() => void downloadThenPrint()}
+              secondaryLabel="Print What I Have"
+              onSecondary={() => {
+                setAskMissing(false);
+                void handleDownload();
+              }}
+              onCancel={() => setAskMissing(false)}
+            >
+              {unprintableCount} card(s) have no image to print and would be left out of this PDF.
+              Download their originals first and then print, or print without them.
+            </ConfirmDialog>
+          )}
           {cutterSupported && (
             <div className="export-btn-stack">
               <button
@@ -1364,6 +1481,44 @@ export default function PdfPage() {
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+/** How often the PDF tab checks on the downloads and upscales it queued. */
+const TASK_POLL_MS = 2000;
+/** How long Download Originals waits for its downloads before printing
+ *  what has landed. */
+const ORIGINALS_WAIT_MS = 10 * 60_000;
+
+/** The Decklist's Download and Upscale, under a list of cards the PDF
+ *  leaves out, for just those cards. */
+function MissingCardActions(props: {
+  count: number;
+  fixing: "download" | "upscale" | null;
+  disabled: boolean;
+  onDownload: () => void;
+  onUpscale: () => void;
+}) {
+  const { count, fixing, disabled, onDownload, onUpscale } = props;
+  if (count === 0) return null;
+  const these = count === 1 ? "this card" : `these ${count} cards`;
+  return (
+    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <button
+        onClick={onDownload}
+        disabled={disabled}
+        title={`Download the ~300 DPI Scryfall originals of ${these}, without upscaling`}
+      >
+        {fixing === "download" ? "Downloading…" : "Download"}
+      </button>
+      <button
+        onClick={onUpscale}
+        disabled={disabled}
+        title={`Upscale ${these} to the selected DPIs`}
+      >
+        {fixing === "upscale" ? "Upscaling…" : "Upscale"}
+      </button>
     </div>
   );
 }
