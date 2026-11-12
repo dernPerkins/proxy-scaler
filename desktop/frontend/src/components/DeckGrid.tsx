@@ -991,9 +991,11 @@ function CoverageBadges({
   const ogDpi = faceDpis[0] ?? null;
   const badge = (cover: Cover, key: string, label: string, title: string, act?: () => void) => {
     const actionable = act != null && (cover === "none" || cover === "failed") && !serverUnavailable;
-    // The Row view's badge colours: done green, in flight blue, failed red,
-    // nothing yet the neutral "off" grey.
-    const status = { done: "done", active: "running", failed: "failed", none: "canceled" }[cover];
+    // The Row view's badge colours: done green, running blue (pulsing),
+    // queued the pending colour, failed red, nothing yet the neutral "off" grey.
+    const status = { done: "done", running: "running", pending: "pending", failed: "failed", none: "canceled" }[
+      cover
+    ];
     const cls = `badge badge-${status}${actionable ? " deck-badge-act" : ""}`;
     const body = (
       <>

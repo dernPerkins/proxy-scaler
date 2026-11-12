@@ -26,12 +26,14 @@ export type DisplayFace = CardFaceStatus<CardFaceArt> & {
 // or a Custom/MPC image's own source (its "full" image IS the uploaded file).
 export const SOURCE_MODELS = [ORIGINAL_MODEL, CUSTOM_SOURCE_MODEL];
 
-export type Cover = "done" | "active" | "failed" | "none";
+/** Queued work is "pending" and work the worker has picked up is "running",
+ *  as the Row view's badges tell them apart. */
+export type Cover = "done" | "running" | "pending" | "failed" | "none";
 
 function coverOf(v: VariantStatus | undefined): Cover {
   if (!v) return "none";
   if (v.status === "done") return "done";
-  if (v.status === "pending" || v.status === "running") return "active";
+  if (v.status === "pending" || v.status === "running") return v.status;
   if (v.status === "failed") return "failed";
   return "none";
 }
@@ -84,22 +86,30 @@ export function coverageFor(
   // (and clickable, offering a second download) while one is already in flight.
   // An upscale downloads the face's original itself, as its first step, and
   // the server registers it the moment it is on disk — so until then a face
-  // with an upscale queued or running has its original on the way too, just
-  // as if Download had been clicked.
+  // with an upscale queued or running has its original queued or on its way
+  // too, just as if Download had been clicked. A pick reads as the Row view
+  // reads it: downloading is running, queued is pending.
   const faceOriginal = (f: DisplayFace): Cover => {
     const v = f.variants.find((v) => SOURCE_MODELS.includes(v.model));
     if (v) return coverOf(v);
-    if (f.pick) return f.pick.status === "failed" ? "failed" : "active";
-    if (f.variants.some((v) => coverOf(v) === "active")) return "active";
+    if (f.pick)
+      return f.pick.status === "failed" ? "failed" : f.pick.status === "downloading" ? "running" : "pending";
+    const upscales = f.variants.map(coverOf);
+    if (upscales.includes("running")) return "running";
+    if (upscales.includes("pending")) return "pending";
     return "none";
   };
   const originals = faces.map(faceOriginal);
+  // Across faces, a download underway outranks one still queued: the badge
+  // shows the furthest-along work on the card's originals.
   const original: Cover =
     originals.length === 0
       ? "none"
-      : originals.some((c) => c === "active")
-        ? "active"
-        : originals.every((c) => c === "done")
+      : originals.includes("running")
+        ? "running"
+        : originals.includes("pending")
+          ? "pending"
+          : originals.every((c) => c === "done")
           ? "done"
           : originals.some((c) => c === "failed")
             ? "failed"
