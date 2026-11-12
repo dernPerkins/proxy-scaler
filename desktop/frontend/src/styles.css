@@ -1163,6 +1163,14 @@ html.notch-full-screen .tabs a {
   margin: 0 -14px;
   padding: 2px 14px 16px;
 }
+/* While a copy is dragged, the copies after the drop point preview their
+   shift by sliding onto the next slot, which across a page break is in the
+   neighbouring page, outside their own page's box. That box scrolls, so it
+   would clip them (the first copy of page 2 vanished instead of showing in
+   page 1's last slot): no clipping for the length of the drag. */
+.deck-pages.is-dragging .deck-page {
+  overflow: visible;
+}
 .deck-page-head {
   margin: 0 0 8px;
   font-size: 11.5px;

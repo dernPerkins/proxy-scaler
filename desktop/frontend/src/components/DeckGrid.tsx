@@ -276,7 +276,10 @@ export default function DeckGrid(props: DeckGridProps) {
         onDragCancel={() => setDragging(null)}
       >
         <SortableContext items={props.copies.map((c) => c.key)} strategy={rectSortingStrategy}>
-          <div className="deck-pages" data-tour="deck-grid">
+          {/* is-dragging lifts each page's sideways-scroll clipping for the
+              drag: the copies shifting along slide into a neighbouring page's
+              slots, outside their own page's box (styles.css). */}
+          <div className={"deck-pages" + (dragging ? " is-dragging" : "")} data-tour="deck-grid">
             {pages.map((page, pi) => (
               <section key={pi} className="deck-page">
                 <header className="deck-page-head mono">
