@@ -220,8 +220,13 @@ interface ProjectContextValue {
   /** Every printed copy's place in the custom order (the "Custom" sort),
    *  kept in step with the cards' quantities — see card_placements.rs. */
   placements: CardPlacement[];
-  /** Rewrite the custom order: every current placement id, once each, in
-   *  the new order. Applied locally at once; a refused (stale) list
+  /** The cards known to be double-faced, as the Decklist works them out
+   *  from their faces. Placements are reread when it grows, so those cards
+   *  get transform placements (CardPlacement.face 1). */
+  setDoubleFacedCards: (cardIds: number[]) => void;
+  /** Rewrite the custom order: every current front placement id, once
+   *  each, in the new order; transform placements left out go back beside
+   *  their fronts. Applied locally at once; a refused (stale) list
    *  refetches. */
   setPlacementOrder: (placementIds: number[]) => void;
   /** Remove one printed copy — that one, wherever it sits — and the card
@@ -387,6 +392,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [decklistText, setDecklistTextState] = useState("");
   const [cards, setCards] = useState<CardRow[]>([]);
   const [placements, setPlacements] = useState<CardPlacement[]>([]);
+  // Sorted and joined, so an unchanged set never refetches.
+  const [doubleFacedKey, setDoubleFacedKey] = useState("");
 
   // Mirror the cards + tag into syncCustoms' module-level snapshot for
   // connection.tsx::switchTo, which mounts above this provider and so
@@ -787,7 +794,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // quantity moves — from any page, by any path — reread them, and Rust
   // reconciles on the way (new copies after their siblings, removed ones
   // from the end). One effect here instead of a refetch in every mutation.
-  const placementSignature = cards.map((c) => `${c.id}:${c.quantity ?? 1}`).join(",");
+  const placementSignature = `${cards.map((c) => `${c.id}:${c.quantity ?? 1}`).join(",")}|${doubleFacedKey}`;
   const placementsFetch = useRef(0);
   const refreshPlacements = (id: number | null) => {
     const ticket = ++placementsFetch.current;
@@ -796,7 +803,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return;
     }
     projectApi
-      .cardPlacements(id)
+      .cardPlacements(id, doubleFacedKey ? doubleFacedKey.split(",").map(Number) : [])
       .then((next) => {
         if (ticket === placementsFetch.current) setPlacements(next);
       })
@@ -1335,21 +1342,34 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     removeCard: (cardId: number) => removeCardMutation.mutate(cardId),
     placements,
+    setDoubleFacedCards: (cardIds: number[]) => {
+      const key = [...new Set(cardIds)].sort((a, b) => a - b).join(",");
+      setDoubleFacedKey((prev) => (prev === key ? prev : key));
+    },
     setPlacementOrder: (placementIds: number[]) => {
       const id = projectIdRef.current;
       if (id == null) return;
       const byId = new Map(placements.map((p) => [p.id, p]));
+      const given = new Set(placementIds);
+      // Transforms left out keep their old relative order at the end until
+      // Rust's answer puts them back beside their fronts (the refetch below).
+      const leftOut = placements.filter((p) => !given.has(p.id));
       placementsFetch.current++;
       setPlacements(
-        placementIds.flatMap((pid, position) => {
-          const p = byId.get(pid);
-          return p ? [{ ...p, position }] : [];
-        }),
+        [...placementIds.flatMap((pid) => byId.get(pid) ?? []), ...leftOut].map((p, position) => ({
+          ...p,
+          position,
+        })),
       );
-      projectApi.setPlacementOrder(id, placementIds).catch((err: Error) => {
-        setError(err.message);
-        refreshPlacements(id);
-      });
+      projectApi
+        .setPlacementOrder(id, placementIds)
+        .then(() => {
+          if (leftOut.length > 0) refreshPlacements(id);
+        })
+        .catch((err: Error) => {
+          setError(err.message);
+          refreshPlacements(id);
+        });
     },
     removeCardCopy: (placementId: number) => {
       const copy = placements.find((p) => p.id === placementId);

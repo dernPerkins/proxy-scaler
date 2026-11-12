@@ -232,11 +232,13 @@ export default function PdfPage() {
   // useState here and silently reset to defaults on every reload.
   // Sorted before mapping: the server prints/paginates in entries order,
   // so this is where the shared sort dropdown reaches the actual PDF. A
-  // Custom sort adds copy_order (in `layout`, so every request and every
-  // preview query key carries it).
-  const { entries, copyOrder } = printOrder(cards, settings.sort_primary, placements);
+  // Custom sort adds copy_order, and face_order once transform sides have
+  // placements (in `layout`, so every request and every preview query key
+  // carries them).
+  const { entries, copyOrder, faceOrder } = printOrder(cards, settings.sort_primary, placements);
   const layout: LayoutSettings = {
     ...(copyOrder ? { copy_order: copyOrder } : {}),
+    ...(faceOrder ? { face_order: faceOrder } : {}),
     page_width_mm: settings.page_width_mm,
     page_height_mm: settings.page_height_mm,
     cols: settings.cols,

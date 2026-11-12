@@ -1511,11 +1511,48 @@ def checked_copy_order(
     return list(copy_order)
 
 
+def checked_face_order(
+    face_order: Sequence[Sequence[int]] | None, entries: Sequence[DeckEntry]
+) -> list[tuple[int, int]] | None:
+    """The client's per-card print order, transform sides included, if it
+    describes this deck exactly.
+
+    `face_order` is copy_order with a face on each item: (entry index, 0)
+    for a copy of the card, (entry index, 1) for a double-faced card's
+    transform side printed as a card of its own (docs/adr/0009). An entry
+    must appear with face 0 exactly `quantity` times, and with face 1
+    either `quantity` times or not at all — the client sends transform
+    items for the cards it has placed them for, and whether they print on
+    their own or on their fronts' backs is the server's call
+    (build_print_slots). Anything else returns None and the caller falls
+    back to copy_order.
+    """
+    if not face_order:
+        return None
+    fronts = [0] * len(entries)
+    transforms = [0] * len(entries)
+    out: list[tuple[int, int]] = []
+    for item in face_order:
+        if len(item) != 2:
+            return None
+        i, face = int(item[0]), int(item[1])
+        if not 0 <= i < len(entries) or face not in (0, 1):
+            return None
+        (transforms if face else fronts)[i] += 1
+        out.append((i, face))
+    for i, entry in enumerate(entries):
+        want = max(1, entry.quantity)
+        if fronts[i] != want or transforms[i] not in (0, want):
+            return None
+    return out
+
+
 def build_print_slots(
     units: list[PrintUnit],
     *,
     pair_back_faces: bool,
     copy_order: Sequence[int] | None = None,
+    face_order: Sequence[tuple[int, int]] | None = None,
 ) -> list[PrintSlot]:
     """Flatten matched units into one PrintSlot per physical printed card.
 
@@ -1547,6 +1584,14 @@ def build_print_slots(
     face order — so a paired DFC is still one slot, an unpaired DFC's back
     face lands right after its own front copy, and an entry with no image
     simply emits nothing and the copies after it move up.
+
+    `face_order` (already validated by checked_face_order) wins over
+    `copy_order` and also says where each unpaired transform side goes: for
+    an entry with face-1 items, a face-0 item emits only its front and a
+    face-1 item only its transform side. A paired transform rides on its
+    front's Reverse, so its face-1 items emit nothing — as do those of a
+    card that turns out not to be double-faced. An entry with no face-1
+    items behaves exactly as under copy_order.
     """
     pairs = _pairable_faces(units) if pair_back_faces else {}
     consumed_backs = {id(back) for _fronts, backs in pairs.values() for back in backs}
@@ -1566,33 +1611,47 @@ def build_print_slots(
         )
 
     surviving = [unit for unit in units if id(unit) not in consumed_backs]
-    if copy_order is None:
+    order: list[tuple[int, int]] | None = (
+        list(face_order)
+        if face_order is not None
+        else [(i, 0) for i in copy_order]
+        if copy_order is not None
+        else None
+    )
+    if order is None:
         slots: list[PrintSlot] = []
         for unit in surviving:
             slots.extend([slot_for(unit)] * unit.quantity)
         return slots
 
-    copies_of = [0] * (max(copy_order) + 1)
-    for i in copy_order:
-        copies_of[i] += 1
-    # Per entry: the units it feeds, front face first, each with how many
-    # slots it contributes per copy of that entry (normally one; two for an
-    # entry printing one custom on both faces of a DFC).
-    feeds: dict[int, list[tuple[PrintSlot, int, int]]] = {}
+    size = max(i for i, _face in order) + 1
+    copies_of = [0] * size
+    split: set[int] = set()  # entries whose transform sides are placed
+    for i, face in order:
+        if face:
+            split.add(i)
+        else:
+            copies_of[i] += 1
+    # Per (entry, face item): the units it feeds, front face first, each with
+    # how many slots it contributes per copy of that entry (normally one; two
+    # for an entry printing one custom on both faces of a DFC). An entry not
+    # in `split` feeds every face from its face-0 item.
+    feeds: dict[tuple[int, int], list[tuple[PrintSlot, int, int]]] = {}
     for _order, unit in sorted(
         enumerate(surviving), key=lambda pair: (pair[1].best.face_index or 0, pair[0])
     ):
         slot = slot_for(unit)
         for i, qty in unit.entry_qty:
-            if i < len(copies_of) and copies_of[i] > 0:
+            if i < size and copies_of[i] > 0:
+                face = 1 if i in split and unit.best.face_index == 1 else 0
                 per_copy, extra = divmod(qty, copies_of[i])
-                feeds.setdefault(i, []).append((slot, per_copy, extra))
-    seen = [0] * len(copies_of)
+                feeds.setdefault((i, face), []).append((slot, per_copy, extra))
+    seen: dict[tuple[int, int], int] = {}
     slots = []
-    for i in copy_order:
-        k = seen[i]
-        seen[i] += 1
-        for slot, per_copy, extra in feeds.get(i, ()):
+    for item in order:
+        k = seen.get(item, 0)
+        seen[item] = k + 1
+        for slot, per_copy, extra in feeds.get(item, ()):
             slots.extend([slot] * (per_copy + (1 if k < extra else 0)))
     return slots
 

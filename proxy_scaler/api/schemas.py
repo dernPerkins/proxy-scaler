@@ -466,6 +466,12 @@ class PdfLayoutIn(BaseModel):
     # A, B, A. Ignored unless it names each entry exactly `quantity` times
     # (pdf_layout.checked_copy_order); absent, copies print grouped.
     copy_order: list[int] | None = None
+    # copy_order with a face on each item — [entry index, 0] for a copy,
+    # [entry index, 1] for a double-faced card's transform side placed as a
+    # card of its own — saying where each unpaired transform side prints.
+    # Wins over copy_order when it describes the deck exactly
+    # (pdf_layout.checked_face_order); copy_order stays for older servers.
+    face_order: list[tuple[int, int]] | None = None
     page_width_mm: float
     page_height_mm: float
     cols: int
@@ -767,6 +773,12 @@ class ExportZipIn(BaseModel):
     # A, B, A. Ignored unless it names each entry exactly `quantity` times
     # (pdf_layout.checked_copy_order); absent, copies print grouped.
     copy_order: list[int] | None = None
+    # copy_order with a face on each item — [entry index, 0] for a copy,
+    # [entry index, 1] for a double-faced card's transform side placed as a
+    # card of its own — saying where each unpaired transform side prints.
+    # Wins over copy_order when it describes the deck exactly
+    # (pdf_layout.checked_face_order); copy_order stays for older servers.
+    face_order: list[tuple[int, int]] | None = None
     # Same selector semantics as PdfLayoutIn: preferred_dpi is a hard
     # filter (a face without that DPI is excluded and reported, never
     # substituted); preferred_model wins among the eligible variants.

@@ -175,6 +175,7 @@ export default function DecklistPage() {
     addCustomCardsWithBacks,
     removeCard,
     placements,
+    setDoubleFacedCards,
     setPlacementOrder,
     removeCardCopy,
     setCardQuantity,
@@ -1074,11 +1075,6 @@ export default function DecklistPage() {
   const { galleryByName, tasksByName } = groupByCardName(gallery, tasks);
 
   const sortedCards = sortCards(cards, settings.sort_primary, placements);
-  // The Grid's tiles: every printed copy, in print order.
-  const copies = useMemo(
-    () => deckCopies(cards, settings.sort_primary, placements),
-    [cards, settings.sort_primary, placements],
-  );
   const removeCopy = (copy: DeckCopy) => {
     if (copy.placementId != null) removeCardCopy(copy.placementId);
     else if ((copy.card.quantity ?? 1) > 1) setCardQuantity(copy.card.id, (copy.card.quantity ?? 1) - 1);
@@ -1167,6 +1163,30 @@ export default function DecklistPage() {
       pendingArt,
     );
   }
+
+  // The double-faced cards, as their rows work it out (a Back face listed).
+  // Rust gives each one transform placements; while the PDF tab prints a
+  // transform side as a card of its own — pairing off, or no back printing
+  // at all — the Grid draws it as a tile of its own too (docs/adr/0009).
+  const doubleFacedKey = cards
+    .filter((c) => c.custom_image_id == null && facesForCard(c).some((f) => f.faceLabel === "back"))
+    .map((c) => c.id)
+    .join(",");
+  useEffect(() => {
+    setDoubleFacedCards(doubleFacedKey ? doubleFacedKey.split(",").map(Number) : []);
+  }, [doubleFacedKey, setDoubleFacedCards]);
+  const transformsOnTheirOwn = !(settings.back_printing && settings.back_faces_as_reverse);
+  // The Grid's tiles: every printed copy, in print order.
+  const copies = useMemo(
+    () =>
+      deckCopies(
+        cards,
+        settings.sort_primary,
+        placements,
+        new Set(transformsOnTheirOwn && doubleFacedKey ? doubleFacedKey.split(",").map(Number) : []),
+      ),
+    [cards, settings.sort_primary, placements, transformsOnTheirOwn, doubleFacedKey],
+  );
 
   async function clearFaceArt(card: CardRow, face: number) {
     await clearCardFaceArt(card.id, face);
@@ -1604,6 +1624,17 @@ export default function DecklistPage() {
             serverUnavailable={serverUnavailable}
             openPicker={(card, request) => setWalk({ cardId: card.id, request })}
             reorder={(placementIds) => {
+              // Under Custom, placements the Grid doesn't draw — transform
+              // sides while they print on their fronts' backs — hold their
+              // slots, so turning pairing off again finds a dragged transform
+              // where it was left. Under any other sort the drawn order is all
+              // there is, and Rust puts the undrawn transforms beside their
+              // fronts.
+              if (settings.sort_primary === "Custom") {
+                const drawn = new Set(placementIds);
+                const next = placementIds[Symbol.iterator]();
+                placementIds = placements.map((p) => (drawn.has(p.id) ? next.next().value! : p.id));
+              }
               setPlacementOrder(placementIds);
               // A drag on any other sort starts the Custom order from what
               // was on screen; Name/Set/(none) are still there to go back to.

@@ -15,7 +15,7 @@ export function sortCards(
   if (primary === "(none)") return cards;
   if (primary === "Custom") {
     const first = new Map<number, number>();
-    for (const p of placements) if (!first.has(p.card_id)) first.set(p.card_id, p.position);
+    for (const p of placements) if ((p.face ?? 0) === 0 && !first.has(p.card_id)) first.set(p.card_id, p.position);
     const at = (c: CardRow) => first.get(c.id) ?? Number.MAX_SAFE_INTEGER;
     return [...cards].sort((a, b) => at(a) - at(b));
   }
@@ -31,53 +31,73 @@ export interface DeckCopy {
   key: string;
   placementId: number | null;
   card: CardRow;
+  /** 0 for the card itself; 1 for a double-faced card's transform side,
+   *  printed as a card of its own (see deckCopies' `transformCards`). */
+  face: 0 | 1;
 }
+
+const copiesWanted = (card: CardRow) => Math.max(1, Math.round(card.quantity ?? 1));
 
 /** The deck as printed copies, in the order they print.
  *
  *  Custom walks the placements, so copies of one card can sit anywhere.
  *  Every other sort is sortCards with each card's copies side by side —
  *  exactly how the server groups them — but still carries each copy's
- *  placement id, so a drag on that order can become the Custom order. */
+ *  placement id, so a drag on that order can become the Custom order.
+ *
+ *  `transformCards` are the double-faced cards whose transform side prints
+ *  as a card of its own (pairing off on the PDF tab): each copy of one also
+ *  gets a face-1 copy, where its transform placement puts it under Custom,
+ *  and after the card's fronts under every other sort — the server's
+ *  grouped order, a printing's face 0 before its face 1. */
 export function deckCopies(
   cards: CardRow[],
   primary: SortPrimary,
   placements: readonly CardPlacement[],
+  transformCards: ReadonlySet<number> = new Set(),
 ): DeckCopy[] {
-  const byCard = new Map<number, CardPlacement[]>();
+  const byCard = new Map<string, CardPlacement[]>();
   for (const p of placements) {
-    const list = byCard.get(p.card_id);
+    const k = `${p.card_id}:${p.face ?? 0}`;
+    const list = byCard.get(k);
     if (list) list.push(p);
-    else byCard.set(p.card_id, [p]);
+    else byCard.set(k, [p]);
   }
-  const copiesOf = (card: CardRow, have: readonly CardPlacement[]): DeckCopy[] => {
-    const n = Math.max(1, Math.round(card.quantity ?? 1));
-    return Array.from({ length: n }, (_, k) =>
+  const copiesOf = (card: CardRow, face: 0 | 1): DeckCopy[] => {
+    const have = byCard.get(`${card.id}:${face}`) ?? [];
+    const stand = face === 1 ? "t" : "c";
+    return Array.from({ length: copiesWanted(card) }, (_, k) =>
       have[k]
-        ? { key: `p${have[k].id}`, placementId: have[k].id, card }
-        : { key: `c${card.id}-${k}`, placementId: null, card },
+        ? { key: `p${have[k].id}`, placementId: have[k].id, card, face }
+        : { key: `${stand}${card.id}-${k}`, placementId: null, card, face },
     );
   };
+  const faces = (card: CardRow): (0 | 1)[] => (transformCards.has(card.id) ? [0, 1] : [0]);
   if (primary !== "Custom") {
-    return sortCards(cards, primary).flatMap((card) => copiesOf(card, byCard.get(card.id) ?? []));
+    return sortCards(cards, primary).flatMap((card) => faces(card).flatMap((f) => copiesOf(card, f)));
   }
   const cardById = new Map(cards.map((c) => [c.id, c]));
-  const taken = new Map<number, number>();
+  const taken = new Map<string, number>();
   const out: DeckCopy[] = [];
   for (const p of placements) {
     const card = cardById.get(p.card_id);
-    if (!card) continue;
-    const k = taken.get(card.id) ?? 0;
-    if (k >= Math.max(1, Math.round(card.quantity ?? 1))) continue;
-    taken.set(card.id, k + 1);
-    out.push({ key: `p${p.id}`, placementId: p.id, card });
+    const face = p.face ?? 0;
+    if (!card || (face === 1 && !transformCards.has(card.id))) continue;
+    const key = `${card.id}:${face}`;
+    const k = taken.get(key) ?? 0;
+    if (k >= copiesWanted(card)) continue;
+    taken.set(key, k + 1);
+    out.push({ key: `p${p.id}`, placementId: p.id, card, face });
   }
   // Copies the placements don't cover yet (a refetch in flight) go last,
   // where the reconcile will put them.
   for (const card of cards) {
-    const k = taken.get(card.id) ?? 0;
-    const n = Math.max(1, Math.round(card.quantity ?? 1));
-    for (let i = k; i < n; i++) out.push({ key: `c${card.id}-${i}`, placementId: null, card });
+    for (const face of faces(card)) {
+      const stand = face === 1 ? "t" : "c";
+      for (let i = taken.get(`${card.id}:${face}`) ?? 0; i < copiesWanted(card); i++) {
+        out.push({ key: `${stand}${card.id}-${i}`, placementId: null, card, face });
+      }
+    }
   }
   return out;
 }
@@ -86,18 +106,40 @@ export function deckCopies(
  *  and, for Custom, `copy_order` — one entries index per printed copy, in
  *  print order. The server ignores a copy_order that doesn't name every
  *  entry exactly `quantity` times (pdf_layout.checked_copy_order) and
- *  prints grouped, so a list racing a quantity change can't drop cards. */
+ *  prints grouped, so a list racing a quantity change can't drop cards.
+ *
+ *  Custom also sends `face_order` once any card has transform placements:
+ *  the same order with every transform placement in it, whether or not that
+ *  card is known here to be double-faced or its transform prints on its own
+ *  — the server pairs, and ignores transform items for a paired or
+ *  single-faced card. A card whose transform placements don't number its
+ *  copies (a refetch in flight) leaves them out, and the server puts its
+ *  transforms back beside its fronts. */
 export function printOrder(
   cards: CardRow[],
   primary: SortPrimary,
   placements: readonly CardPlacement[],
-): { entries: DeckEntryIn[]; copyOrder: number[] | undefined } {
+): {
+  entries: DeckEntryIn[];
+  copyOrder: number[] | undefined;
+  faceOrder: [number, 0 | 1][] | undefined;
+} {
   const sorted = sortCards(cards, primary, placements);
   const entries = sorted.map(cardToEntry);
-  if (primary !== "Custom") return { entries, copyOrder: undefined };
+  if (primary !== "Custom") return { entries, copyOrder: undefined, faceOrder: undefined };
   const index = new Map(sorted.map((c, i) => [c.id, i]));
-  const copyOrder = deckCopies(cards, primary, placements).map((c) => index.get(c.card.id)!);
-  return { entries, copyOrder };
+  const everyTransform = new Set(placements.filter((p) => p.face === 1).map((p) => p.card_id));
+  const copies = deckCopies(cards, primary, placements, everyTransform);
+  const copyOrder = copies.filter((c) => c.face === 0).map((c) => index.get(c.card.id)!);
+  if (everyTransform.size === 0) return { entries, copyOrder, faceOrder: undefined };
+  const placed = new Map<number, number>();
+  for (const c of copies) {
+    if (c.face === 1 && c.placementId != null) placed.set(c.card.id, (placed.get(c.card.id) ?? 0) + 1);
+  }
+  const faceOrder = copies.flatMap((c): [number, 0 | 1][] =>
+    c.face === 1 && placed.get(c.card.id) !== copiesWanted(c.card) ? [] : [[index.get(c.card.id)!, c.face]],
+  );
+  return { entries, copyOrder, faceOrder };
 }
 
 /** A project card as the DeckEntryIn the generation server expects.

@@ -62,6 +62,7 @@ from proxy_scaler.pdf_layout import (
     hex_to_rgb,
     build_print_slots,
     checked_copy_order,
+    checked_face_order,
     match_quantities,
     paginate,
     cell_corner_radii,
@@ -334,6 +335,7 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         units,
         pair_back_faces=body.back_printing and body.back_faces_as_reverse,
         copy_order=checked_copy_order(body.copy_order, entries),
+        face_order=checked_face_order(body.face_order, entries),
     )
     pages = paginate(slots, layout.cards_per_page)
 

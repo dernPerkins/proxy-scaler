@@ -43,6 +43,11 @@
 //     (whatever the PDF tab pairs), any other card to the back it prints
 //     with, resolved as the swatch resolves it. The button stays lit while
 //     flipped. It only shows — what prints is unchanged — and isn't saved;
+//   · a double-faced card whose transform side prints as a card of its own
+//     (pairing off on the PDF tab) has a tile for that side too, wherever its
+//     placement puts it (docs/adr/0009). It shows that face, opens the walk
+//     on that face, has no trash or copy items (its front's copy owns those),
+//     and it and its front both flip to the card back they print with;
 //   · right-click (or Control-click) anywhere on it for the menu: change
 //     printing, MPC Fill art, card back, show images, download, upscale, add
 //     another copy, remove this copy, remove all copies.
@@ -99,7 +104,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useQuery } from "@tanstack/react-query";
 import { generationApi } from "../api/generation";
-import { projectApi, type CardRow } from "../api/project";
+import { isImageFaceArt, projectApi, type CardRow } from "../api/project";
 import type { CustomImage, ImageOrigin } from "../api/types";
 import { modelDisplayName, ORIGINAL_DPI } from "../constants";
 import {
@@ -345,6 +350,7 @@ export default function DeckGrid(props: DeckGridProps) {
           items={menuFor(
             coverage.get(menu.copy.card.id)!,
             menuActions,
+            menu.copy.face === 1,
             menu.copy.card.custom_image_id != null,
             props.serverUnavailable,
             () => openBackPicker(menu.copy.card),
@@ -453,6 +459,12 @@ function SortableCell(props: {
   // tries face 1, and falls back to its card back when there is none.
   const showBackFace = !singleKnown && !noBackFace && (hasFace1Art || card.scryfall_id != null);
   const transformOnBack = !!settings.back_printing && !!settings.back_faces_as_reverse && backFace != null;
+  // A transform side printing as a card of its own has a tile of its own
+  // (copy.face 1, docs/adr/0009): it shows that face, and both it and its
+  // front flip to the card back each prints with — that is what's on their
+  // other side now.
+  const isTransform = copy.face === 1;
+  const splitDfc = isTransform || (backFace != null && !transformOnBack);
   // The tile paints the image it would actually print: the FRONT face's variant
   // at the selected model and the highest selected DPI, through the gallery thumb
   // endpoint like every other upscale thumb. When that badge is grey — nothing
@@ -477,7 +489,17 @@ function SortableCell(props: {
       : undefined;
   const paintedBackUrl =
     paintedBack?.galleryItemId != null ? generationApi.imageUrl(paintedBack.galleryItemId, "thumb") : null;
-  const frontTile = (
+  const frontTile = isTransform ? (
+    <DeckTile
+      card={card}
+      library={p.library}
+      origin={origin}
+      serverThumbs={serverThumbs}
+      queue={queue}
+      variantSrc={paintedBackUrl}
+      face={1}
+    />
+  ) : (
     <DeckTile
       card={card}
       library={p.library}
@@ -537,7 +559,7 @@ function SortableCell(props: {
         onClick={(e) => {
           if ((e.target as HTMLElement).closest("button")) return;
           if (custom || p.serverUnavailable) return;
-          a.openPrintingWith(pickerRequestFor(card));
+          a.openPrintingWith(isTransform ? transformPickerRequest(card) : pickerRequestFor(card));
         }}
       >
         <span className={`deck-flip${flipped ? " is-flipped" : ""}`}>
@@ -545,7 +567,7 @@ function SortableCell(props: {
             <span className={`deck-flip-side is-front${flipped ? "" : " is-shown"}`}>{frontTile}</span>
             {backMounted && (
               <span className={`deck-flip-side is-back${flipped ? " is-shown" : ""}`} aria-hidden={!flipped}>
-                {showBackFace ? (
+                {showBackFace && !splitDfc ? (
                   <DeckTile
                     card={card}
                     library={p.library}
@@ -582,19 +604,22 @@ function SortableCell(props: {
           >
             <FlipIcon />
           </button>
-          <button
-            type="button"
-            className="btn-sm btn-danger icon-button deck-tile-trash deck-reveal"
-            onClick={a.removeCopy}
-            title={
-              a.quantity > 1
-                ? `Remove this copy (${a.quantity - 1} left)`
-                : "Remove this card from the deck"
-            }
-            aria-label="Remove this copy"
-          >
-            <TrashIcon />
-          </button>
+          {/* A transform side goes with its front's copy: no trash of its own. */}
+          {!isTransform && (
+            <button
+              type="button"
+              className="btn-sm btn-danger icon-button deck-tile-trash deck-reveal"
+              onClick={a.removeCopy}
+              title={
+                a.quantity > 1
+                  ? `Remove this copy (${a.quantity - 1} left)`
+                  : "Remove this card from the deck"
+              }
+              aria-label="Remove this copy"
+            >
+              <TrashIcon />
+            </button>
+          )}
         </span>
       </span>
 
@@ -872,8 +897,9 @@ function tileArt(card: CardRow, face = 0): TileArt {
 
 /** A flipped single-faced copy — the card back it prints with,
  *  resolved exactly as the Back swatch resolves it (this card's own back,
- *  the universal back, or blank). Never the transform side: a double-faced
- *  card flips to its other face instead. */
+ *  the universal back, or blank). A paired double-faced card flips to its
+ *  other face instead; one whose transform side has a tile of its own
+ *  flips both tiles to this. */
 function BackSide({ card }: { card: CardRow }) {
   const { settings } = useProject();
   const library = useBackLibrary();
@@ -958,6 +984,13 @@ function TilePlaceholder({
       <span className="deck-tile-placeholder-name">{card.name}</span>
     </span>
   );
+}
+
+/** Where a click on a transform side's own tile opens the deck walk: that
+ *  face's MPC Fill art if it prints some, else its printings. */
+function transformPickerRequest(card: CardRow): PickerOpenRequest {
+  const art = card.face_art?.find((fa) => fa.face === 1 && isImageFaceArt(fa));
+  return { source: art ? "mpc" : "scryfall", face: 1 };
 }
 
 /** One copy's actions, each one the page's own handler. Plain function (not a
@@ -1098,6 +1131,7 @@ const SEP: MenuItem = { sep: true };
 function menuFor(
   c: CardCoverage,
   a: TileActions,
+  transform: boolean,
   custom: boolean,
   disabled: boolean,
   openBackPicker: () => void,
@@ -1152,6 +1186,14 @@ function menuFor(
         title: "This card's art to the selected DPIs",
       },
     },
+    // A transform side's tile adds and removes no copies: its front's does.
+    ...(transform ? [] : copyItems(a)),
+  ];
+}
+
+/** The menu's copy items, which stand in for the Row view's stepper. */
+function copyItems(a: TileActions): MenuItem[] {
+  return [
     SEP,
     {
       label: "Add Another Copy",

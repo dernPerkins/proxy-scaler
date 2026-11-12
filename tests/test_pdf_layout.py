@@ -30,6 +30,7 @@ from proxy_scaler.pdf_layout import (
     back_pages_are_rotated,
     build_print_slots,
     checked_copy_order,
+    checked_face_order,
     fit_cover,
     mirror_page_index,
     render_back_image,
@@ -2769,3 +2770,91 @@ def test_copy_order_keeps_merged_entries_apart() -> None:
     order = checked_copy_order([0, 1, 2], entries)
     slots = build_print_slots(units, pair_back_faces=False, copy_order=order)
     assert _fronts(slots) == ["Sol Ring", "Counterspell", "Sol Ring"]
+
+
+# --- Transform sides placed on their own (face_order, docs/adr/0009) --------
+
+
+def test_face_order_places_unpaired_transform_sides() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    # Dion, Sol, Sol, Counterspell, Bahamut, Dion, Bahamut.
+    order = checked_face_order(
+        [(2, 0), (0, 0), (0, 0), (1, 0), (2, 1), (2, 0), (2, 1)], entries
+    )
+    assert order is not None
+    slots = build_print_slots(units, pair_back_faces=False, face_order=order)
+    assert _fronts(slots) == [
+        "Dion, Bahamut's Dominant",
+        "Sol Ring",
+        "Sol Ring",
+        "Counterspell",
+        "Bahamut, Warden of Light",
+        "Dion, Bahamut's Dominant",
+        "Bahamut, Warden of Light",
+    ]
+
+
+def test_face_order_transform_items_emit_nothing_when_paired() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    order = checked_face_order(
+        [(2, 0), (0, 0), (0, 0), (1, 0), (2, 1), (2, 0), (2, 1)], entries
+    )
+    slots = build_print_slots(units, pair_back_faces=True, face_order=order)
+    assert _fronts(slots) == [
+        "Dion, Bahamut's Dominant",
+        "Sol Ring",
+        "Sol Ring",
+        "Counterspell",
+        "Dion, Bahamut's Dominant",
+    ]
+    assert slots[0].reverse is not None and slots[0].reverse.face_index == 1
+
+
+def test_face_order_without_transform_items_matches_copy_order() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    flat = [2, 0, 2, 1, 0]
+    by_copy = build_print_slots(
+        units, pair_back_faces=False, copy_order=checked_copy_order(flat, entries)
+    )
+    by_face = build_print_slots(
+        units,
+        pair_back_faces=False,
+        face_order=checked_face_order([(i, 0) for i in flat], entries),
+    )
+    assert by_face == by_copy
+
+
+def test_face_order_transform_items_for_a_single_faced_card_emit_nothing() -> None:
+    gallery, entries = _copy_order_deck()
+    units, _missing, _ = match_quantities(entries, gallery)
+    order = checked_face_order(
+        [(1, 1), (0, 0), (0, 0), (1, 0), (2, 0), (2, 0)], entries
+    )
+    assert order is not None
+    slots = build_print_slots(units, pair_back_faces=False, face_order=order)
+    assert _fronts(slots) == [
+        "Sol Ring",
+        "Sol Ring",
+        "Counterspell",
+        "Dion, Bahamut's Dominant",
+        "Bahamut, Warden of Light",
+        "Dion, Bahamut's Dominant",
+        "Bahamut, Warden of Light",
+    ]
+
+
+def test_face_order_that_does_not_match_the_deck_is_refused() -> None:
+    _gallery, entries = _copy_order_deck()
+    for bad in (
+        [(0, 0), (1, 0), (2, 0), (2, 0)],  # Sol Ring short a copy
+        [(0, 0), (0, 0), (1, 0), (2, 0), (2, 0), (2, 1)],  # one transform of two
+        [(0, 0), (0, 0), (1, 0), (2, 0), (2, 2)],  # no face 2
+        [(0, 0), (0, 0), (1, 0), (2, 0), (9, 0)],
+        [],
+        None,
+    ):
+        assert checked_face_order(bad, entries) is None
+

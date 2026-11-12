@@ -95,8 +95,9 @@ export default function ExportPage() {
 
   // Sorted before mapping: ZIP filenames are numbered in entries order,
   // so this is where the shared sort dropdown reaches the exported files.
-  // A Custom sort numbers them in its per-copy order (copy_order).
-  const { entries, copyOrder } = printOrder(cards, settings.sort_primary, placements);
+  // A Custom sort numbers them in its per-copy order (copy_order, and
+  // face_order for transform sides placed on their own).
+  const { entries, copyOrder, faceOrder } = printOrder(cards, settings.sort_primary, placements);
 
   // Same selectors, same persisted fields as the PDF tab (settings.
   // preferred_model / preferred_dpi) — deliberately shared, not
@@ -112,6 +113,7 @@ export default function ExportPage() {
       project_tag: projectTag as string,
       entries,
       ...(copyOrder ? { copy_order: copyOrder } : {}),
+      ...(faceOrder ? { face_order: faceOrder } : {}),
       project_name: projectName ?? "",
       preferred_dpi: settings.preferred_dpi,
       preferred_model: settings.preferred_model,
@@ -140,6 +142,7 @@ export default function ExportPage() {
       projectTag,
       entries,
       copyOrder,
+      faceOrder,
       settings.preferred_dpi,
       settings.preferred_model,
       useOriginals,

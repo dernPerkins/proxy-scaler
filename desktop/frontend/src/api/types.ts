@@ -483,6 +483,10 @@ export interface PdfLayoutRequest {
   /** The Custom sort's per-copy order: one `entries` index per printed
    *  copy. Omitted for every other sort; an older server ignores it. */
   copy_order?: number[];
+  /** The Custom sort's order with a face on each item: [index, 0] for a
+   *  copy, [index, 1] for a double-faced card's transform side placed as a
+   *  card of its own. Wins over copy_order on a server that knows it. */
+  face_order?: [number, 0 | 1][];
   project_name?: string;
   page_width_mm: number;
   page_height_mm: number;
@@ -763,6 +767,10 @@ export interface ExportZipRequest {
   /** The Custom sort's per-copy order: one `entries` index per printed
    *  copy. Omitted for every other sort; an older server ignores it. */
   copy_order?: number[];
+  /** The Custom sort's order with a face on each item: [index, 0] for a
+   *  copy, [index, 1] for a double-faced card's transform side placed as a
+   *  card of its own. Wins over copy_order on a server that knows it. */
+  face_order?: [number, 0 | 1][];
   project_name: string;
   preferred_dpi: number | null;
   preferred_model: string | null;

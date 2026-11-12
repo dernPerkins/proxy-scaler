@@ -175,6 +175,11 @@ export interface CardPlacement {
   id: number;
   card_id: number;
   position: number;
+  /** 0 for the card itself; 1 for a double-faced card's transform side,
+   *  placed as a card of its own for when it prints on its own rather than
+   *  on its front's back. Kept either way, so a dragged transform keeps its
+   *  spot while pairing is on. */
+  face: 0 | 1;
 }
 
 export interface CardRow {
@@ -369,10 +374,13 @@ export const projectApi = {
   removeCard: (cardId: number) => invokeCommand<void>("remove_card", { cardId }),
   // Card Placements (card_placements.rs, docs/adr/0009): the project's custom
   // order, one row per printed copy. Read reconciles them with the cards'
-  // quantities first, so it is always the whole deck.
-  cardPlacements: (projectId: number) =>
-    invokeCommand<CardPlacement[]>("get_card_placements", { projectId }),
-  // Must name exactly the current placements; a stale list is refused.
+  // quantities first, so it is always the whole deck. `doubleFaced` names
+  // the cards known to be double-faced, which get transform placements
+  // (face 1) if they have none yet; a card left out keeps any it has.
+  cardPlacements: (projectId: number, doubleFaced: number[] = []) =>
+    invokeCommand<CardPlacement[]>("get_card_placements", { projectId, doubleFaced }),
+  // Must name every current front placement once; transform placements left
+  // out go back beside their fronts. A stale list is refused.
   setPlacementOrder: (projectId: number, placementIds: number[]) =>
     invokeCommand<void>("set_placement_order", { projectId, placementIds }),
   // Removes that one copy (the card too, when it was the last). Returns the

@@ -111,7 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_project_cards_project_id ON project_cards(project
 -- No foreign keys on purpose: card_placements.rs sweeps orphans itself, and
 -- a REFERENCES here would make an old card delete path fail instead.
 -- project_cards.quantity still says how many copies there are; this only
--- says in what order they print. Positions are dense 0..n-1.
+-- says in what order they print. Positions are dense 0..n-1. A double-faced
+-- card's transform side has rows of its own (face = 1, added in
+-- CARD_PLACEMENTS_ADDED_COLUMNS) for when it prints as a card of its own.
 CREATE TABLE IF NOT EXISTS card_placements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -343,6 +345,12 @@ pub(crate) const CUSTOM_IMAGES_ADDED_COLUMNS: &[(&str, &str)] = &[
 pub(crate) const BACK_IMAGES_ADDED_COLUMNS: &[(&str, &str)] =
     &[("bleed_mm", "REAL NOT NULL DEFAULT 3.175")];
 
+// `card_placements` (card_placements.rs): which face of the card a printed
+// copy is. 0 is the card itself; 1 is a double-faced card's transform side,
+// placed as a card of its own for when it isn't printed on its front's back.
+pub(crate) const CARD_PLACEMENTS_ADDED_COLUMNS: &[(&str, &str)] =
+    &[("face", "INTEGER NOT NULL DEFAULT 0")];
+
 fn add_missing_columns(
     conn: &Connection,
     table: &str,
@@ -440,6 +448,7 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     add_missing_columns(&conn, "back_images", BACK_IMAGES_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "custom_images", crate::mpc_art::MPC_ADDED_COLUMNS)?;
     add_missing_columns(&conn, "back_images", crate::mpc_art::MPC_ADDED_COLUMNS)?;
+    add_missing_columns(&conn, "card_placements", CARD_PLACEMENTS_ADDED_COLUMNS)?;
     migrate_guide_flags(&conn)?;
     migrate_page_order_naming(&conn)?;
     Ok(conn)
@@ -3357,6 +3366,8 @@ pub(crate) mod test_support {
             .expect("custom_images mpc columns");
         add_missing_columns(&conn, "back_images", crate::mpc_art::MPC_ADDED_COLUMNS)
             .expect("back_images mpc columns");
+        add_missing_columns(&conn, "card_placements", CARD_PLACEMENTS_ADDED_COLUMNS)
+            .expect("card_placements columns");
         conn
     }
 }
