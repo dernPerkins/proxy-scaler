@@ -1163,10 +1163,44 @@ html.notch-full-screen .tabs a {
   letter-spacing: 0.02em;
   color: var(--text-muted);
 }
+/* Every column is the card art's width (--deck-tile-w, from the zoom dock;
+   at 100% the card's real 63 mm) plus the cell's padding, so a page row is
+   as wide as its cards and no wider; one too wide for the window scrolls
+   sideways (.deck-page). */
 .deck-grid {
   display: grid;
-  grid-template-columns: repeat(var(--deck-cols, 3), minmax(150px, 1fr));
+  grid-template-columns: repeat(var(--deck-cols, 3), calc(var(--deck-tile-w, 200px) + 24px));
+  justify-content: start;
   gap: 20px 16px;
+}
+/* The smaller sizes' layouts (gridZoom.ts CARD_SIZES): just the card, the
+   foot's controls left to the right-click menu. Art (XS) on tight padding,
+   compact (S, M) on medium. */
+.deck-grid.is-compact {
+  grid-template-columns: repeat(var(--deck-cols, 3), calc(var(--deck-tile-w) + 16px));
+  gap: 14px 12px;
+}
+.deck-grid.is-compact .deck-cell {
+  padding: 8px 8px 10px;
+  gap: 8px;
+  border-radius: 14px;
+}
+.deck-grid.is-art {
+  grid-template-columns: repeat(var(--deck-cols, 3), calc(var(--deck-tile-w) + 12px));
+  gap: 12px 10px;
+}
+.deck-grid.is-art .deck-cell {
+  padding: 6px;
+  border-radius: 12px;
+}
+.deck-grid.is-art .deck-cell-foot,
+.deck-grid.is-compact .deck-cell-foot {
+  display: none;
+}
+.deck-grid.is-art .deck-slot-empty,
+.deck-grid.is-compact .deck-slot-empty {
+  min-height: 0;
+  border-radius: 12px;
 }
 /* The rest of the last page: where the next copies would print. */
 .deck-slot-empty {
@@ -3212,6 +3246,287 @@ html.modal-open .back-to-top {
 }
 html.modal-open body.has-back-to-top .toast-stack {
   bottom: 18px;
+}
+
+/* ---------- Grid view zoom dock (GridZoomDock.tsx) ---------- */
+/* In the Grid view's bottom-right corner, where Back to Top sits elsewhere:
+   while it shows, Back to Top and the toasts move up above it. At rest the
+   dock is Back to Top's twin — the same accent circle — showing the zoom;
+   hovered, its panel opens leftward over it. */
+body.has-grid-zoom .back-to-top,
+body.has-grid-zoom .back-to-top:hover:not(:disabled) {
+  bottom: 78px;
+}
+body.has-grid-zoom .toast-stack {
+  bottom: 78px;
+}
+body.has-grid-zoom.has-back-to-top .toast-stack {
+  bottom: 134px;
+}
+html.modal-open .zoom-dock {
+  display: none;
+}
+html.modal-open body.has-grid-zoom .toast-stack {
+  bottom: 18px;
+}
+.zoom-dock {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 1500;
+}
+.zoom-dock-button,
+.zoom-dock-button:hover:not(:disabled) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  box-shadow: var(--shadow);
+}
+.zoom-dock-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.zoom-dock-panel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  white-space: nowrap;
+  opacity: 0;
+  transform: scale(0.96);
+  transform-origin: right center;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease-out,
+    transform 0.14s ease-out;
+}
+.zoom-dock.is-open .zoom-dock-panel {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .zoom-dock-panel {
+    transition: none;
+  }
+}
+.zoom-dock-calibrate {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+.zoom-dock-sep {
+  align-self: stretch;
+  width: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+.zoom-dock-step,
+.zoom-dock-step:hover:not(:disabled) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+}
+.zoom-dock-value {
+  min-width: 3.4em;
+  text-align: right;
+  font-size: 13px;
+}
+/* The size slider: our own track (see GridZoomDock). The thumb's centre is
+   the value's fraction of the track, so the size labels under it line up
+   exactly. */
+.zoom-slider {
+  position: relative;
+  display: inline-block;
+  width: 260px;
+  padding: 2px 0 16px;
+}
+.zoom-track {
+  position: relative;
+  display: block;
+  height: 24px;
+  margin: 0 12px;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+.zoom-rail,
+.zoom-fill {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 6px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+.zoom-rail {
+  right: 0;
+  background: var(--surface-3);
+}
+.zoom-fill {
+  background: var(--accent);
+}
+.zoom-notch {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--border-strong);
+  transform: translate(-50%, -50%);
+}
+.zoom-notch.is-passed {
+  background: color-mix(in srgb, #fff 55%, var(--accent));
+}
+.zoom-thumb {
+  position: absolute;
+  top: 50%;
+  width: 30px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    0 0 0 0.5px rgba(0, 0, 0, 0.2);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+}
+.zoom-track:active .zoom-thumb {
+  cursor: grabbing;
+}
+.zoom-track:focus-visible .zoom-thumb {
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.zoom-labels {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 16px;
+}
+.zoom-label,
+.zoom-label:hover:not(:disabled) {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  padding: 0 2px;
+  border: none;
+  background: none;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.zoom-label.is-on {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Calibrate Card Size: a card outline at the candidate size, which a real
+   card held against the screen should match. */
+/* The outline can be taller (or wider) than the window, so only it
+   scrolls: the head, the instructions, the adjust row and the buttons stay
+   put. */
+.calibrate-modal {
+  gap: 14px;
+  width: auto;
+  min-width: min(90vw, 420px);
+  max-width: 90vw;
+  padding: 16px 20px;
+}
+/* Centred with auto margins rather than align-items: center, which would
+   push a too-wide outline off the left edge where it can't be scrolled to. */
+.calibrate-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.calibrate-modal .modal-head {
+  margin-bottom: 0;
+}
+.calibrate-help {
+  max-width: 420px;
+  margin: 0 auto;
+  text-align: center;
+  color: var(--text-muted);
+}
+.calibrate-source {
+  margin: -6px auto 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+.calibrate-card {
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-bottom: 10px;
+  border: 2px solid var(--accent);
+  border-radius: 4.75% / 3.5%;
+}
+.calibrate-card-size {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.calibrate-card-px {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.calibrate-value {
+  min-width: 6.5em;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.calibrate-adjust {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  align-self: stretch;
+}
+.calibrate-adjust input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.calibrate-adjust button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.calibrate-reset {
+  margin-right: auto;
 }
 
 /* Split button: [Action][▾] read as one control; the menu is CompareMenu's. */

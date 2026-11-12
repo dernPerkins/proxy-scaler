@@ -2715,6 +2715,94 @@ pub fn set_deck_view_mode(app: AppHandle, mode: String) -> Result<(), String> {
     write_deck_view_mode(&conn, &mode)
 }
 
+// --- The Grid view's card size -------------------------------------------
+//
+// The zoom on the Decklist's Grid view (ADR 0010): 1.0 draws a card at its
+// real 63 × 88 mm on the screen the window is on. App preference like the
+// view mode above — how big the cards look changes nothing that prints.
+// Absent, unparsable or out of range means 1.0.
+
+const GRID_CARD_ZOOM_KEY: &str = "grid_card_zoom";
+
+fn valid_grid_card_zoom(zoom: f64) -> bool {
+    zoom.is_finite() && (0.1..=4.0).contains(&zoom)
+}
+
+fn read_grid_card_zoom(conn: &Connection) -> Result<f64, String> {
+    Ok(read_app_setting(conn, GRID_CARD_ZOOM_KEY)?
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|z| valid_grid_card_zoom(*z))
+        .unwrap_or(1.0))
+}
+
+fn write_grid_card_zoom(conn: &Connection, zoom: f64) -> Result<(), String> {
+    if !valid_grid_card_zoom(zoom) {
+        return Err(format!("Grid card zoom out of range: {zoom}"));
+    }
+    write_app_setting(conn, GRID_CARD_ZOOM_KEY, &zoom.to_string())
+}
+
+#[tauri::command]
+pub fn get_grid_card_zoom(app: AppHandle) -> Result<f64, String> {
+    let conn = open_db(&app)?;
+    read_grid_card_zoom(&conn)
+}
+
+#[tauri::command]
+pub fn set_grid_card_zoom(app: AppHandle, zoom: f64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_grid_card_zoom(&conn, zoom)
+}
+
+// Hand calibrations of that true size, one per display (ADR 0010), for a
+// screen whose detected size is wrong or missing. Keyed by the display's
+// stable key from display_size.rs, the value is the display's real width
+// in mm — not px per mm, so a calibration survives changing the display's
+// scaled resolution. The one exception is the key "unknown", used where
+// the platform reports no displays at all: there the value is CSS px per
+// mm directly. Stored as one JSON object; unreadable JSON reads as none.
+
+const DISPLAY_CALIBRATIONS_KEY: &str = "display_calibrations";
+
+fn read_display_calibrations(conn: &Connection) -> Result<HashMap<String, f64>, String> {
+    let mut map: HashMap<String, f64> = read_app_setting(conn, DISPLAY_CALIBRATIONS_KEY)?
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default();
+    map.retain(|_, v| v.is_finite() && *v > 0.0);
+    Ok(map)
+}
+
+fn write_display_calibration(conn: &Connection, key: &str, value: Option<f64>) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("Display key is empty".into());
+    }
+    let mut map = read_display_calibrations(conn)?;
+    match value {
+        Some(v) if v.is_finite() && v > 0.0 && v < 10_000.0 => {
+            map.insert(key.to_string(), v);
+        }
+        Some(v) => return Err(format!("Calibration out of range: {v}")),
+        None => {
+            map.remove(key);
+        }
+    }
+    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+    write_app_setting(conn, DISPLAY_CALIBRATIONS_KEY, &json)
+}
+
+#[tauri::command]
+pub fn get_display_calibrations(app: AppHandle) -> Result<HashMap<String, f64>, String> {
+    let conn = open_db(&app)?;
+    read_display_calibrations(&conn)
+}
+
+/// `value: None` clears the display's calibration (back to detected).
+#[tauri::command]
+pub fn set_display_calibration(app: AppHandle, key: String, value: Option<f64>) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    write_display_calibration(&conn, &key, value)
+}
+
 // The MPC Fill browser's language filter, remembered app-wide: whatever
 // was last chosen in its dropdown is where the next one starts. "any"
 // (the default: MPC Fill is nearly all English), "card" (the card's own
@@ -4029,6 +4117,38 @@ mod tests {
         assert_eq!(read_add_cards_mode(&conn).expect("read"), "search");
         assert!(write_add_cards_mode(&conn, "list").is_err());
         assert_eq!(read_add_cards_mode(&conn).expect("unchanged"), "search");
+    }
+
+    #[test]
+    fn grid_card_zoom_roundtrips_and_defaults_to_actual_size() {
+        let conn = test_conn();
+        assert_eq!(read_grid_card_zoom(&conn).expect("default"), 1.0);
+        write_grid_card_zoom(&conn, 0.65).expect("set");
+        assert_eq!(read_grid_card_zoom(&conn).expect("read"), 0.65);
+        assert!(write_grid_card_zoom(&conn, 0.0).is_err());
+        assert!(write_grid_card_zoom(&conn, f64::NAN).is_err());
+        assert_eq!(read_grid_card_zoom(&conn).expect("unchanged"), 0.65);
+        // A stored value from somewhere else that's out of range reads as 1.0.
+        write_app_setting(&conn, GRID_CARD_ZOOM_KEY, "9").expect("raw");
+        assert_eq!(read_grid_card_zoom(&conn).expect("fallback"), 1.0);
+    }
+
+    #[test]
+    fn display_calibrations_set_clear_and_survive_bad_json() {
+        let conn = test_conn();
+        assert!(read_display_calibrations(&conn).expect("empty").is_empty());
+        write_display_calibration(&conn, "610-a050-0", Some(301.5)).expect("set");
+        write_display_calibration(&conn, "unknown", Some(5.0)).expect("set unknown");
+        let map = read_display_calibrations(&conn).expect("read");
+        assert_eq!(map.get("610-a050-0"), Some(&301.5));
+        assert_eq!(map.get("unknown"), Some(&5.0));
+        write_display_calibration(&conn, "610-a050-0", None).expect("clear");
+        let map = read_display_calibrations(&conn).expect("read");
+        assert!(!map.contains_key("610-a050-0"));
+        assert!(write_display_calibration(&conn, "x", Some(-1.0)).is_err());
+        assert!(write_display_calibration(&conn, "", Some(1.0)).is_err());
+        write_app_setting(&conn, DISPLAY_CALIBRATIONS_KEY, "not json").expect("raw");
+        assert!(read_display_calibrations(&conn).expect("bad json").is_empty());
     }
 
     #[test]

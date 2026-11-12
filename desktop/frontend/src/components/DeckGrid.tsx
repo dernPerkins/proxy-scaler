@@ -5,6 +5,10 @@
 // mm-accurate margins or bleed, those are the PDF tab's). Every thumbnail
 // carries the Row view's functionality for its card.
 //
+// How big the thumbnails are is the zoom dock's (GridZoomDock, ADR 0010):
+// at 100% each card is its real 63 × 88 mm on screen, and the page passes
+// that width and the layout for the size in as `tileWidth` / `tileLayout`.
+//
 // Copies, not cards (docs/adr/0009): a 4-of is four tiles, and each can be
 // picked up — press and move the pointer a few pixels — and dropped anywhere;
 // the copies after the drop point shift along one slot, so the order never
@@ -112,6 +116,7 @@ import CardImagesModal from "./CardImagesModal";
 import { EyeIcon, TrashIcon } from "./RowIcons";
 import { pickerRequestFor, type PickerOpenRequest } from "./PrintingPicker";
 import SetIcon from "./SetIcon";
+import type { TileLayout } from "../gridZoom";
 import { useQueuedThumb, useThumbnailQueue, type ThumbnailQueue } from "./imageGrid";
 
 export interface DeckGridProps {
@@ -149,6 +154,13 @@ export interface DeckGridProps {
   /** The Row view's own per-image mutations, for the images modal. */
   refetch: (galleryItemId: number) => void;
   regen: (galleryItemId: number) => void;
+  /** The card art's width in CSS px, from the zoom dock (gridZoom.ts): at
+   *  100% it is the card's real 63 mm on this screen. Every column is this
+   *  wide, and a page row too wide for the window scrolls sideways. */
+  tileWidth: number;
+  /** Which parts of the tile show at this size: just the card, on tight
+   *  ("art") or medium ("compact") padding, or the card and its foot. */
+  tileLayout: TileLayout;
 }
 
 export default function DeckGrid(props: DeckGridProps) {
@@ -268,7 +280,10 @@ export default function DeckGrid(props: DeckGridProps) {
                 <header className="deck-page-head mono">
                   Page {pi + 1} · {page.length} of {perPage} Slots
                 </header>
-                <div className="deck-grid" style={{ "--deck-cols": cols } as CSSProperties}>
+                <div
+                  className={"deck-grid" + (props.tileLayout !== "full" ? ` is-${props.tileLayout}` : "")}
+                  style={{ "--deck-cols": cols, "--deck-tile-w": `${props.tileWidth}px` } as CSSProperties}
+                >
                   {page.map((copy) => (
                     <SortableCell
                       key={copy.key}

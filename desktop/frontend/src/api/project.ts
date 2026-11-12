@@ -154,6 +154,20 @@ export type ImportArtSource = "scryfall" | "mpc";
  *  to a row (see components/DeckGrid.tsx). */
 export type DeckViewMode = "row" | "grid";
 
+/** One display, as display_size.rs reports it. */
+export interface DisplaySize {
+  /** Stable across restarts (EDID vendor-model-serial): a calibration's key. */
+  key: string;
+  /** Global bounds in points, the space of `window.screenX/Y`. */
+  x: number;
+  y: number;
+  widthPt: number;
+  heightPt: number;
+  /** 0 when the display doesn't report its size. */
+  widthMm: number;
+  heightMm: number;
+}
+
 /** Where one printed copy of a card sits in the project's custom order
  *  (the "Custom" sort). A card at quantity 4 owns four of these; positions
  *  are dense, 0..n-1 across the project. See docs/adr/0009. */
@@ -459,6 +473,19 @@ export const projectApi = {
   getDeckViewMode: () => invokeCommand<DeckViewMode>("get_deck_view_mode"),
   setDeckViewMode: (mode: DeckViewMode) =>
     invokeCommand<void>("set_deck_view_mode", { mode }),
+
+  // The Grid view's card size (ADR 0010): 1 is the card's real size on the
+  // screen the window is on. An app preference, like the view mode.
+  getGridCardZoom: () => invokeCommand<number>("get_grid_card_zoom"),
+  setGridCardZoom: (zoom: number) => invokeCommand<void>("set_grid_card_zoom", { zoom }),
+
+  // What "real size" is measured against: each display's physical size
+  // (display_size.rs; macOS only, empty elsewhere), and the hand
+  // calibrations that override it, by display key (see project_store.rs).
+  getDisplaySizes: () => invokeCommand<DisplaySize[]>("get_display_sizes"),
+  getDisplayCalibrations: () => invokeCommand<Record<string, number>>("get_display_calibrations"),
+  setDisplayCalibration: (key: string, value: number | null) =>
+    invokeCommand<void>("set_display_calibration", { key, value }),
 
   getShowDigitalPrintings: () => invokeCommand<boolean>("get_show_digital_printings"),
   setShowDigitalPrintings: (show: boolean) =>

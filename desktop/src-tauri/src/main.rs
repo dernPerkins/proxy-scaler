@@ -50,6 +50,7 @@
 mod back_images;
 mod card_placements;
 mod custom_images;
+mod display_size;
 mod face_art;
 #[cfg(target_os = "macos")]
 mod fullscreen_menu;
@@ -966,6 +967,11 @@ fn main() {
             face_art::clear_card_face_art,
             face_art::count_face_art_using_custom_image,
             project_store::add_custom_cards_with_backs,
+            display_size::get_display_sizes,
+            project_store::get_grid_card_zoom,
+            project_store::set_grid_card_zoom,
+            project_store::get_display_calibrations,
+            project_store::set_display_calibration,
             #[cfg(target_os = "macos")]
             fullscreen_menu::get_true_full_screen
         ])

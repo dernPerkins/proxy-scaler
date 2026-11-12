@@ -96,6 +96,8 @@ import SidebarColumn from "../components/SidebarColumn";
 import BackToTopButton from "../components/BackToTopButton";
 import LibraryAddPanel from "../components/LibraryAddPanel";
 import AddCards from "../components/AddCards";
+import GridZoomDock from "../components/GridZoomDock";
+import { useGridCardSize } from "../gridZoom";
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -190,6 +192,8 @@ export default function DecklistPage() {
   // Rows or thumbnails: remembered across launches, like the Add Cards
   // mode (deckViewMode.ts).
   const { mode: viewMode, setMode: setViewMode } = useDeckViewMode();
+  // The Grid's card size: 100% is the card's real size (gridZoom.ts).
+  const cardSize = useGridCardSize(viewMode === "grid");
   const [confirmResetBacks, setConfirmResetBacks] = useState(false);
   const readiness = useServerReadiness();
   const connection = useConnection();
@@ -1588,6 +1592,8 @@ export default function DecklistPage() {
 
         {viewMode === "grid" && (
           <DeckGrid
+            tileWidth={cardSize.tileWidth}
+            tileLayout={cardSize.layout}
             copies={copies}
             cols={settings.cols}
             rows={settings.rows}
@@ -1615,6 +1621,7 @@ export default function DecklistPage() {
             regen={(galleryItemId) => regenerateMutation.mutate(galleryItemId)}
           />
         )}
+        {viewMode === "grid" && <GridZoomDock size={cardSize} />}
         {viewMode === "row" &&
           sortedCards.map((card) => {
             const faces = facesForCard(card);
