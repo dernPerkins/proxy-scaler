@@ -14,6 +14,11 @@ entry's preferred language (English fallback — matching what the live
 GET /cards/{set}/{number} would have answered) → exact name. Fuzzy name
 matching deliberately stays a live-API concern; a bare name that misses
 exactly here (typo, partial name) goes to /cards/named?fuzzy= as always.
+
+tokens_only (Add Cards' Tokens Only) narrows every name lookup to tokens
+and emblems, so "Ornithopter" finds the token, and rejects whatever else
+resolved — a set+number of a real card, or a live match that isn't a
+token — as that entry's error.
 """
 
 from __future__ import annotations
@@ -49,15 +54,19 @@ class CardResolver:
         return self._client
 
     def resolve(
-        self, entry: DeckEntry, *, strict_lang: bool = False
+        self, entry: DeckEntry, *, strict_lang: bool = False, tokens_only: bool = False
     ) -> tuple[dict[str, Any], list[str]]:
-        result = self.resolve_many([entry], strict_lang=strict_lang)[0]
+        result = self.resolve_many([entry], strict_lang=strict_lang, tokens_only=tokens_only)[0]
         if isinstance(result, ScryfallError):
             raise result
         return result
 
     def resolve_many(
-        self, entries: list[DeckEntry], *, strict_lang: bool = False
+        self,
+        entries: list[DeckEntry],
+        *,
+        strict_lang: bool = False,
+        tokens_only: bool = False,
     ) -> list[tuple[dict[str, Any], list[str]] | ScryfallError]:
         """Positionally aligned with `entries`, exactly like
         ScryfallClient.resolve_many: each slot is (card_json, warnings) or
@@ -69,7 +78,9 @@ class CardResolver:
         path uses /cards/{set}/{num}/{lang} with no bare fallback, and a
         fuzzy name match in any other language is rejected as that entry's
         error. Entries with no lang (the "All Languages" checkbox) behave
-        exactly like the relaxed mode."""
+        exactly like the relaxed mode.
+
+        tokens_only: only tokens and emblems match (see the module doc)."""
         results: list[tuple[dict[str, Any], list[str]] | ScryfallError | None] = [
             None
         ] * len(entries)
@@ -80,7 +91,9 @@ class CardResolver:
             try:
                 misses = []
                 for i, entry in enumerate(entries):
-                    card = _lookup_local(conn, entry, strict_lang=strict_lang)
+                    card = _lookup_local(
+                        conn, entry, strict_lang=strict_lang, tokens_only=tokens_only
+                    )
                     if card is None:
                         misses.append(i)
                     else:
@@ -90,6 +103,13 @@ class CardResolver:
 
         if misses:
             self._resolve_live(entries, misses, results, strict_lang=strict_lang)
+
+        if tokens_only:
+            for i, result in enumerate(results):
+                if result is not None and not isinstance(result, ScryfallError):
+                    card = result[0]
+                    if card.get("layout") not in carddb.TOKEN_LAYOUTS:
+                        results[i] = _not_a_token(entries[i], card)
 
         return results  # type: ignore[return-value]
 
@@ -180,8 +200,17 @@ class CardResolver:
             results[i] = (card, [warning] if warning else [])
 
 
+def _not_a_token(entry: DeckEntry, card: dict[str, Any]) -> ScryfallError:
+    """A Tokens Only entry that resolved to something else: the printing it
+    named, or (a name) the closest match the live fallback found."""
+    where = f"{card.get('name')} ({card.get('set')}/{card.get('collector_number')})"
+    if entry.has_exact_printing or entry.scryfall_id:
+        return ScryfallError(f"Not a token: {where}")
+    return ScryfallError(f"No token named {entry.name!r} — closest was {where}")
+
+
 def _lookup_local(
-    conn, entry: DeckEntry, *, strict_lang: bool = False
+    conn, entry: DeckEntry, *, strict_lang: bool = False, tokens_only: bool = False
 ) -> dict[str, Any] | None:
     prefer_lang = entry.lang or "en"
     # In strict mode the entry's language is a demand: every lookup below
@@ -212,15 +241,34 @@ def _lookup_local(
         #      instead of failing (the warning in _local_warnings says so).
         row = carddb.find_row_by_name_and_collector(
             conn, entry.name, entry.collector_number, prefer_lang,
-            only_lang=only_lang,
+            only_lang=only_lang, tokens_only=tokens_only,
         )
         if row is not None:
             return carddb._row_json(row)
         full_name = f"{entry.name} {entry.collector_number}"
-        card = carddb.get_card_by_name(conn, full_name, prefer_lang, only_lang=only_lang)
+        card = carddb.get_card_by_name(
+            conn, full_name, prefer_lang, only_lang=only_lang, tokens_only=tokens_only
+        )
         if card is not None:
             return card
-    return carddb.get_card_by_name(conn, entry.name, prefer_lang, only_lang=only_lang)
+    card = carddb.get_card_by_name(
+        conn, entry.name, prefer_lang, only_lang=only_lang, tokens_only=tokens_only
+    )
+    if card is None and tokens_only:
+        # "Treasure Token", as many lists write a token, is the Treasure.
+        bare = _without_token_suffix(entry.name)
+        if bare:
+            card = carddb.get_card_by_name(
+                conn, bare, prefer_lang, only_lang=only_lang, tokens_only=True
+            )
+    return card
+
+
+def _without_token_suffix(name: str) -> str | None:
+    """`name` less a trailing " Token" (any case), or None without one."""
+    if name.lower().endswith(" token"):
+        return name[: -len(" token")].strip() or None
+    return None
 
 
 def _local_warnings(entry: DeckEntry, card: dict[str, Any]) -> list[str]:

@@ -238,6 +238,9 @@ export default function DecklistPage() {
   >([]);
   const [importing, setImporting] = useState(false);
   useEffect(() => setImportFailures([]), [projectId]);
+  // Add Cards' Tokens Only (its switch, ⌘T): owned here so this page's
+  // ⌘Enter import honors it like the Import button does.
+  const [tokensOnly, setTokensOnly] = useState(false);
 
   // The resolve-gated import: parse locally (Rust), resolve against the
   // server (strictly in the chosen language unless "All Languages"),
@@ -261,7 +264,7 @@ export default function DecklistPage() {
           raw_line: e.raw_line,
           lang,
         })),
-        { strict_lang: !settings.lang_any },
+        { strict_lang: !settings.lang_any, tokens_only: tokensOnly },
       );
       const resolvedCards = result.resolved.flatMap((rc) => {
         const face = rc.faces[0];
@@ -312,7 +315,7 @@ export default function DecklistPage() {
         );
         setImportFailures(failures);
         toast(
-          `Imported ${resolvedCards.length} card(s). ${failures.length} line(s) didn't match and weren't added; they're listed under the import box.`,
+          `Imported ${resolvedCards.length} ${tokensOnly ? "token" : "card"}(s). ${failures.length} line(s) didn't match and weren't added; they're listed under the import box.`,
           "warn",
           { key: "import" },
         );
@@ -1400,6 +1403,8 @@ export default function DecklistPage() {
             draft={decklistDraft}
             setDraft={setDecklistDraft}
             onImport={() => void handleImport()}
+            tokensOnly={tokensOnly}
+            setTokensOnly={setTokensOnly}
             canImport={!!decklistDraft.trim() && !importing && !serverUnavailable}
             importing={importing}
             importTitle={

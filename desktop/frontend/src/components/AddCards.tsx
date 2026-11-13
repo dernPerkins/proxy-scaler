@@ -9,7 +9,14 @@
 // both searches to tokens and emblems, which otherwise rank below every
 // real card; the field and palette turn amber while it's on
 // (.scratch/token-search-prototype/).
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, generationApi } from "../api/generation";
@@ -64,6 +71,10 @@ interface AddCardsProps {
   /** Rows a search or Card Search just added, for Art From: MPC Fill's
    *  automatic pick. */
   afterAdd: (added: CardRow[]) => void;
+  /** Tokens Only: searches and the list import match only tokens and
+   *  emblems. The page owns it, since its ⌘Enter imports too. */
+  tokensOnly: boolean;
+  setTokensOnly: Dispatch<SetStateAction<boolean>>;
 }
 
 const TOKEN_LIST_PLACEHOLDER =
@@ -78,9 +89,9 @@ export default function AddCards(props: AddCardsProps) {
   const lang = settings.langAny ? null : settings.lang;
   const adds = useDeckAdds(props.afterAdd);
   const [cardSearchFor, setCardSearchFor] = useState<CardSearchHit | null | undefined>(undefined);
-  // One Tokens Only for the field and the palette, kept after an add so
-  // several tokens go in a row.
-  const [tokensOnly, setTokensOnly] = useState(false);
+  // One Tokens Only for the field, the list and the palette, kept after an
+  // add so several tokens go in a row.
+  const { tokensOnly, setTokensOnly } = props;
   const quick = useQuickAdd(lang, adds, (hit) => setCardSearchFor(hit), tokensOnly);
   const { mode, setMode, chooseMode } = useAddMode(draft);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -234,7 +245,6 @@ export default function AddCards(props: AddCardsProps) {
           {...props}
           lang={lang}
           adds={adds}
-          tokensOnly={tokensOnly}
           onClose={() => setPaletteOpen(false)}
           onCardSearch={(hit) => {
             setPaletteOpen(false);
@@ -602,7 +612,6 @@ function Palette({
 }: AddCardsProps & {
   lang: string | null;
   adds: DeckAdds;
-  tokensOnly: boolean;
   onClose: () => void;
   onCardSearch: (hit: CardSearchHit) => void;
 }) {

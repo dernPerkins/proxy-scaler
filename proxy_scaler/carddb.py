@@ -351,6 +351,15 @@ _NON_GAME_LAYOUT_SQL = """(layout IN (
     'vanguard', 'planar', 'scheme'
 ))"""
 
+# What Add Cards' Tokens Only mode accepts: tokens and emblems. Card search
+# (card_search.py) and the import's name lookups below share it.
+TOKEN_LAYOUTS: tuple[str, ...] = ("token", "double_faced_token", "emblem")
+_TOKEN_LAYOUT_SQL = "AND layout IN ({})".format(", ".join(f"'{l}'" for l in TOKEN_LAYOUTS))
+
+
+def _token_clause(tokens_only: bool) -> str:
+    return _TOKEN_LAYOUT_SQL if tokens_only else ""
+
 
 def find_row_by_set_collector(
     conn: sqlite3.Connection,
@@ -390,6 +399,7 @@ def find_row_by_name_and_collector(
     prefer_lang: str = "en",
     *,
     only_lang: str | None = None,
+    tokens_only: bool = False,
 ) -> sqlite3.Row | None:
     """Name plus a collector-number *hint* with no set code — the best some
     deck managers can export (see decklist._NAME_COLLECTOR_RE). Any set's
@@ -397,7 +407,8 @@ def find_row_by_name_and_collector(
     qualifies; among those, the same preference order as find_row_by_name
     (real cards before non-game layouts, then language, …) — or exactly
     only_lang in strict import mode. None when the hint
-    matches no printing — the caller falls back to the plain name lookup."""
+    matches no printing — the caller falls back to the plain name lookup.
+    tokens_only keeps tokens and emblems alone (Tokens Only imports)."""
     lang_clause = "AND lang = ?4" if only_lang is not None else ""
     params: tuple = (name, str(collector_number), prefer_lang)
     if only_lang is not None:
@@ -408,6 +419,7 @@ def find_row_by_name_and_collector(
         WHERE {_NAME_MATCH_SQL}
           AND collector_number = ?2
           {lang_clause}
+          {_token_clause(tokens_only)}
         ORDER BY {_NON_GAME_LAYOUT_SQL} ASC,
                  (lang = ?3) DESC, (lang = 'en') DESC,
                  digital ASC, highres_image DESC,
@@ -424,6 +436,7 @@ def find_row_by_name(
     prefer_lang: str = "en",
     *,
     only_lang: str | None = None,
+    tokens_only: bool = False,
 ) -> sqlite3.Row | None:
     """Exact-name lookup returning the best printing to show for a bare
     name (matched against the English name or a localized printed name):
@@ -431,8 +444,9 @@ def find_row_by_name(
     same-named token or art card never beats the card itself, even in the
     preferred language), then preferred language, then English, then paper
     over digital, high-res scans over placeholders, newest release first — or restricted to
-    exactly only_lang in strict import mode. Fuzzy matching stays a
-    live-API concern on purpose."""
+    exactly only_lang in strict import mode. tokens_only keeps tokens and
+    emblems alone, so "Ornithopter" finds the token rather than the
+    artifact. Fuzzy matching stays a live-API concern on purpose."""
     lang_clause = "AND lang = ?3" if only_lang is not None else ""
     params: tuple = (name, prefer_lang)
     if only_lang is not None:
@@ -442,6 +456,7 @@ def find_row_by_name(
         SELECT * FROM cards
         WHERE {_NAME_MATCH_SQL}
           {lang_clause}
+          {_token_clause(tokens_only)}
         ORDER BY {_NON_GAME_LAYOUT_SQL} ASC,
                  (lang = ?2) DESC, (lang = 'en') DESC,
                  digital ASC, highres_image DESC,
@@ -511,8 +526,11 @@ def get_card_by_name(
     prefer_lang: str = "en",
     *,
     only_lang: str | None = None,
+    tokens_only: bool = False,
 ) -> dict[str, Any] | None:
-    return _row_json(find_row_by_name(conn, name, prefer_lang, only_lang=only_lang))
+    return _row_json(
+        find_row_by_name(conn, name, prefer_lang, only_lang=only_lang, tokens_only=tokens_only)
+    )
 
 
 def rarities_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str, str]:

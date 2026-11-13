@@ -150,6 +150,9 @@ class ResolveIn(BaseModel):
     # relaxed preference ladder for legacy callers and the "All Languages"
     # import mode (entries with lang = null).
     strict_lang: bool = False
+    # Add Cards' Tokens Only: only tokens and emblems match; anything else
+    # an entry resolves to becomes its failure (card_lookup.CardResolver).
+    tokens_only: bool = False
 
 
 class AdoptGalleryIn(BaseModel):

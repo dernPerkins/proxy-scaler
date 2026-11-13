@@ -433,3 +433,69 @@ def test_entries_without_lang_ignore_strict_flag(tmp_path: Path) -> None:
     resolver = _resolver(tmp_path, client=live)
     card, _ = resolver.resolve(_entry(name="Aang, Air Nomad"), strict_lang=True)
     assert card["id"] == "aang-de"
+
+
+# ---------------------------------------------------------------------------
+# Tokens Only (Add Cards' ⌘T): only tokens and emblems match
+
+
+def _tokens_corpus(tmp_path: Path) -> None:
+    _seed(
+        tmp_path,
+        [
+            _card(id="thopter-card", oracle_id="o-thopter", name="Ornithopter",
+                  set="m11", collector_number="211"),
+            _card(id="thopter-token", oracle_id="o-thopter-token", name="Ornithopter",
+                  set="tmh2", collector_number="2", layout="token"),
+            _card(id="treasure-token", oracle_id="o-treasure", name="Treasure",
+                  set="ttrk", collector_number="26", layout="token"),
+            _card(id="cruise", oracle_id="o-cruise", name="Treasure Cruise",
+                  set="ktk", collector_number="59"),
+            _card(id="sol-ring", oracle_id="o-sol", name="Sol Ring",
+                  set="c21", collector_number="263"),
+        ],
+    )
+
+
+def test_tokens_only_name_prefers_the_token_over_a_same_named_card(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    resolver = _resolver(tmp_path)
+    entry = _entry(name="Ornithopter", raw_line="1 Ornithopter")
+    assert resolver.resolve(entry, tokens_only=True)[0]["id"] == "thopter-token"
+    # Without Tokens Only the real card still wins.
+    assert resolver.resolve(entry)[0]["id"] == "thopter-card"
+
+
+def test_tokens_only_drops_a_trailing_token_word(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    resolver = _resolver(tmp_path)
+    entry = _entry(name="Treasure Token", raw_line="2 Treasure Token")
+    assert resolver.resolve(entry, tokens_only=True)[0]["id"] == "treasure-token"
+
+
+def test_tokens_only_collector_hint_finds_the_token(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    resolver = _resolver(tmp_path)
+    entry = _entry(name="Ornithopter", collector_number="2", raw_line="1 Ornithopter 2")
+    assert resolver.resolve(entry, tokens_only=True)[0]["id"] == "thopter-token"
+
+
+def test_tokens_only_fails_a_set_and_number_that_is_not_a_token(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    resolver = _resolver(tmp_path)
+    entry = _entry(name="Sol Ring", set_code="c21", collector_number="263",
+                   raw_line="1 Sol Ring (c21) 263")
+    [result] = resolver.resolve_many([entry], tokens_only=True)
+    assert isinstance(result, ScryfallError)
+    assert "Not a token: Sol Ring (c21/263)" in str(result)
+
+
+def test_tokens_only_rejects_a_live_match_that_is_not_a_token(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    live = _FakeClient(by_key={"Treasure Cru": _card(name="Treasure Cruise", set="ktk",
+                                                      collector_number="59")})
+    resolver = _resolver(tmp_path, live)
+    entry = _entry(name="Treasure Cru", raw_line="1 Treasure Cru")
+    [result] = resolver.resolve_many([entry], tokens_only=True)
+    assert isinstance(result, ScryfallError)
+    assert "No token named 'Treasure Cru'" in str(result)

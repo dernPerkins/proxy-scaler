@@ -43,7 +43,9 @@ def resolve(body: ResolveIn) -> ResolveOut:
     # Local-first: answered from the imported card corpus when possible,
     # live Scryfall only for the leftovers (see card_lookup.CardResolver).
     resolver = CardResolver(card_db_path=get_card_db_path())
-    results = resolver.resolve_many(entries, strict_lang=body.strict_lang)
+    results = resolver.resolve_many(
+        entries, strict_lang=body.strict_lang, tokens_only=body.tokens_only
+    )
 
     resolved: list[ResolvedCardOut] = []
     failed: list[ResolveFailureOut] = []

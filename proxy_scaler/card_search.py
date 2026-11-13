@@ -39,8 +39,8 @@ _LESSER_LAYOUTS = frozenset(
     {"token", "double_faced_token", "emblem", "front_card", "vanguard", "planar", "scheme"}
 )
 _SKIPPED_LAYOUTS = frozenset({"art_series"})
-# What a Tokens Only search keeps (Add Cards' ⌘T).
-_TOKEN_LAYOUTS = frozenset({"token", "double_faced_token", "emblem"})
+# What a Tokens Only search keeps (Add Cards' ⌘T), as the import does.
+_TOKEN_LAYOUTS = frozenset(carddb.TOKEN_LAYOUTS)
 
 
 def name_key(text: str) -> str:

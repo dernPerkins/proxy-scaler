@@ -126,10 +126,15 @@ export const generationApi = {
   // strict_lang: the resolve-gated import's "strictly literal" language
   // mode — each entry's lang is a demand, not a preference (see
   // card_lookup.CardResolver). Omitted/false keeps the relaxed ladder.
-  resolve: (entries: DeckEntryIn[], opts?: { strict_lang?: boolean }) =>
+  // tokens_only: Add Cards' Tokens Only — only tokens and emblems match.
+  resolve: (entries: DeckEntryIn[], opts?: { strict_lang?: boolean; tokens_only?: boolean }) =>
     request<ResolveResult>("/api/resolve", {
       method: "POST",
-      body: JSON.stringify({ entries, strict_lang: opts?.strict_lang ?? false }),
+      body: JSON.stringify({
+        entries,
+        strict_lang: opts?.strict_lang ?? false,
+        tokens_only: opts?.tokens_only ?? false,
+      }),
     }),
 
   generate: (body: GenerateRequest) =>
