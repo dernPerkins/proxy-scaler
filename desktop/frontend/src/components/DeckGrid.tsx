@@ -19,7 +19,8 @@
 // Custom, starting from the order on screen, and the PDF and ZIP then print in that order. A copy is
 // independent in placement only: its printing, art and back are its card's,
 // so changing them on one tile changes every copy (hovering a tile outlines
-// its siblings). Quantity has no stepper here — the trash removes that copy,
+// its siblings, and a double-faced card's front and transform tile outline
+// each other in green). Quantity has no stepper here — the trash removes that copy,
 // the menu adds another — while the Row view keeps its stepper.
 //
 // It used to be thumbnails only ("viewing only, on purpose"). ADR 0008
@@ -45,7 +46,9 @@
 //     flipped. It only shows — what prints is unchanged — and isn't saved;
 //   · a double-faced card whose transform side prints as a card of its own
 //     (pairing off on the PDF tab) has a tile for that side too, wherever its
-//     placement puts it (docs/adr/0009). It shows that face, opens the walk
+//     placement puts it (docs/adr/0009). It is drawn as a recessed, dashed
+//     slot that never lifts, not a raised card: part of its front's copy
+//     rather than a card of its own. It shows that face, opens the walk
 //     on that face, has no trash or copy items (its front's copy owns those),
 //     and it and its front both flip to the card back they print with;
 //   · right-click (or Control-click) anywhere on it for the menu: change
@@ -187,9 +190,11 @@ export default function DeckGrid(props: DeckGridProps) {
   const queue = useThumbnailQueue(scrollRef);
   const [images, setImages] = useState<CardRow | null>(null);
   const [menu, setMenu] = useState<{ copy: DeckCopy; x: number; y: number } | null>(null);
-  // The card under the pointer: its other copies get an outline, so it is
-  // plain what a printing or back change on this tile will also touch.
-  const [hover, setHover] = useState<{ card: number; key: string } | null>(null);
+  // The copy under the pointer. A front's other fronts get the accent
+  // outline — what a printing or back change on this tile will also touch —
+  // and its own transform tile, if it has one, a green one; a transform
+  // tile outlines just its front, in green.
+  const [hover, setHover] = useState<{ card: number; key: string; face: 0 | 1 } | null>(null);
 
   // One coverage per card, shared by all its copies.
   const cards = useMemo(() => {
@@ -272,6 +277,30 @@ export default function DeckGrid(props: DeckGridProps) {
   const firstCopyKey = new Map<number, string>();
   for (const c of props.copies) if (!firstCopyKey.has(c.card.id)) firstCopyKey.set(c.card.id, c.key);
   const splitCards = new Set(props.copies.flatMap((c) => (c.face === 1 ? [c.card.id] : [])));
+  // Which transform tile goes with which front: a card's k-th transform in
+  // print order with its k-th front, as the placements anchor them
+  // (card_placements.rs). Nothing ties a particular pair together beyond
+  // that — every copy of a card prints the same images.
+  const partnerOf = useMemo(() => {
+    const fronts = new Map<number, string[]>();
+    const backs = new Map<number, string[]>();
+    for (const c of props.copies) {
+      const by = c.face === 1 ? backs : fronts;
+      const list = by.get(c.card.id);
+      if (list) list.push(c.key);
+      else by.set(c.card.id, [c.key]);
+    }
+    const out = new Map<string, string>();
+    for (const [id, keys] of backs) {
+      const f = fronts.get(id) ?? [];
+      keys.forEach((key, k) => {
+        if (f[k] == null) return;
+        out.set(key, f[k]);
+        out.set(f[k], key);
+      });
+    }
+    return out;
+  }, [props.copies]);
 
   return (
     <>
@@ -293,14 +322,22 @@ export default function DeckGrid(props: DeckGridProps) {
                   Page {pi + 1} · {page.length} of {perPage} Slots
                 </header>
                 <div
-                  className={"deck-grid" + (props.tileLayout !== "full" ? ` is-${props.tileLayout}` : "")}
+                  className={
+                    "deck-grid" + (props.tileLayout !== "full" ? ` is-${props.tileLayout}` : "")
+                  }
                   style={{ "--deck-cols": cols, "--deck-tile-w": `${props.tileWidth}px` } as CSSProperties}
                 >
                   {page.map((copy) => (
                     <SortableCell
                       key={copy.key}
                       copy={copy}
-                      sibling={hover?.card === copy.card.id && hover.key !== copy.key}
+                      sibling={
+                        hover?.face === 0 &&
+                        copy.face === 0 &&
+                        hover.card === copy.card.id &&
+                        hover.key !== copy.key
+                      }
+                      partner={hover != null && partnerOf.get(hover.key) === copy.key}
                       split={splitCards.has(copy.card.id)}
                       lifted={dragging?.key === copy.key}
                       c={coverage.get(copy.card.id)!}
@@ -312,7 +349,11 @@ export default function DeckGrid(props: DeckGridProps) {
                       ownsBackPicker={firstCopyKey.get(copy.card.id) === copy.key}
                       onHover={(on) =>
                         setHover((h) =>
-                          on ? { card: copy.card.id, key: copy.key } : h?.key === copy.key ? null : h,
+                          on
+                            ? { card: copy.card.id, key: copy.key, face: copy.face }
+                            : h?.key === copy.key
+                              ? null
+                              : h,
                         )
                       }
                       onShowImages={() => setImages(copy.card)}
@@ -388,8 +429,11 @@ const CSS_ESCAPE = (s: string) => (typeof window !== "undefined" && window.CSS?.
  *  pick up. */
 function SortableCell(props: {
   copy: DeckCopy;
-  /** Another copy of the card under the pointer. */
+  /** Another front of the card whose front is under the pointer. */
   sibling: boolean;
+  /** The other half of the copy under the pointer: a front's transform
+   *  tile, or a transform tile's front. */
+  partner: boolean;
   /** This card's transform side has tiles of its own (DeckCopy.face 1). */
   split: boolean;
   /** This copy is the one being dragged: its slot stays, faded, as the
@@ -407,7 +451,7 @@ function SortableCell(props: {
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
 }) {
-  const { copy, sibling, split, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
+  const { copy, sibling, partner, split, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
   const { onHover, onShowImages, onMenu, onBackTrigger } = props;
   const card = copy.card;
   // No layout animation on the drop: dnd-kit's default slides the dropped
@@ -523,7 +567,13 @@ function SortableCell(props: {
         setActivatorNodeRef(el);
       }}
       style={style}
-      className={`deck-cell${sibling ? " is-sibling" : ""}${lifted ? " is-lifted" : ""}`}
+      className={
+        "deck-cell" +
+        (isTransform ? " is-transform" : "") +
+        (sibling ? " is-sibling" : "") +
+        (partner ? " is-partner" : "") +
+        (lifted ? " is-lifted" : "")
+      }
       data-copy-key={copy.key}
       {...attributes}
       {...ownListeners}
