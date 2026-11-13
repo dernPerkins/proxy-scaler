@@ -161,8 +161,8 @@ export const TOURS: Record<TourId, Tour> = {
       },
       {
         target: "deck-view-mode",
-        title: "Or see them as pictures",
-        body: "Switch to Grid to see every copy as a thumbnail on the pages the PDF tab prints — its columns across, a new page every columns × rows. Drag a card anywhere (that switches Sort to Custom, and the PDF follows), or click its art to change the printing. Hover a card for Flip in its bottom-left corner, which turns a copy over to see its back; under the art, the swatch changes that back, the badges show what's downloaded and upscaled (click a grey one to run it), the eye shows every image, and right-click opens the rest.",
+        title: "You'll see them in a Grid now!",
+        body: "There's an older view from the original design where the cards are listed in Rows. This was meant solely for the purpose of reviewing the upscaling models and making comparisons at a glance. With the recent improvements to the overall experience, your typical Grid layout is being provided and effectively acts as a \"Page Preview\". Here you can drag cards around for custom ordering. Clicking a DPI Badge will perform the download or upscale. Clicking a Card brings up the Art Picker. Right Click a Card for all the options available. Explore! Feedback is appreciated so by all means, join the Discord, message the admin directly, I'll respond ❤️",
         placement: "bottom",
       },
       {

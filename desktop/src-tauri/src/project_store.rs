@@ -2693,14 +2693,16 @@ pub fn set_add_cards_mode(app: AppHandle, mode: String) -> Result<(), String> {
 // kept across restarts for the same reason as the Add Cards mode above —
 // a big deck is scanned the same way every time. App preference, not a
 // project setting: nothing about what gets printed changes. Absent (or
-// anything unexpected) means rows.
+// anything unexpected) means the grid, the default since it became a page
+// preview: no released build ever wrote this key, so everyone upgrading
+// starts on the grid, and from then on gets whichever view they used last.
 
 const DECK_VIEW_MODE_KEY: &str = "deck_view_mode";
 
 fn read_deck_view_mode(conn: &Connection) -> Result<String, String> {
     let mode = match read_app_setting(conn, DECK_VIEW_MODE_KEY)?.as_deref() {
-        Some("grid") => "grid",
-        _ => "row",
+        Some("row") => "row",
+        _ => "grid",
     };
     Ok(mode.to_string())
 }
@@ -4213,15 +4215,18 @@ mod tests {
     }
 
     #[test]
-    fn deck_view_mode_roundtrips_and_defaults_to_row() {
+    fn deck_view_mode_roundtrips_and_defaults_to_grid() {
         let conn = test_conn();
-        assert_eq!(read_deck_view_mode(&conn).expect("default"), "row");
-        write_deck_view_mode(&conn, "grid").expect("set grid");
-        assert_eq!(read_deck_view_mode(&conn).expect("read"), "grid");
+        assert_eq!(read_deck_view_mode(&conn).expect("default"), "grid");
         write_deck_view_mode(&conn, "row").expect("set row");
-        assert_eq!(read_deck_view_mode(&conn).expect("row again"), "row");
+        assert_eq!(read_deck_view_mode(&conn).expect("read"), "row");
+        write_deck_view_mode(&conn, "grid").expect("set grid");
+        assert_eq!(read_deck_view_mode(&conn).expect("grid again"), "grid");
+        write_deck_view_mode(&conn, "row").expect("row again");
         assert!(write_deck_view_mode(&conn, "cards").is_err());
         assert_eq!(read_deck_view_mode(&conn).expect("unchanged"), "row");
+        write_app_setting(&conn, DECK_VIEW_MODE_KEY, "cards").expect("raw");
+        assert_eq!(read_deck_view_mode(&conn).expect("unexpected"), "grid");
     }
 
     #[test]
