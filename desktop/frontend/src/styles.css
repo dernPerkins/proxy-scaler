@@ -778,8 +778,8 @@ button:disabled {
    less the 6px its own negative right margin already gives back, plus the
    .layout gap after it. Visibility waits out the slide, so the panel stays
    drawn while it leaves and is out of the tab order once gone. Transitions
-   only once the user has toggled (.sidebar-column-animate), so a hidden
-   state loaded at launch lands in place. */
+   only once the saved state has loaded (.sidebar-column-animate), so a
+   hidden state loaded at launch lands in place. */
 .sidebar-column-animate {
   transition:
     margin-left 240ms ease,
@@ -831,11 +831,21 @@ button:disabled {
     opacity 200ms ease,
     visibility 0s linear 240ms;
 }
+/* With Add Cards shut, the Cards row drops the gap that separated it from
+   the box and rises to the content's top, level with the sidebar, moving
+   in step with the slide. */
+.collapse-y-hidden ~ .decklist-head {
+  margin-top: 0;
+}
+.collapse-y-animate ~ .decklist-head {
+  transition: margin-top 240ms ease;
+}
 @media (prefers-reduced-motion: reduce) {
   .sidebar-column-animate,
   .sidebar-column-animate.sidebar-column-hidden,
   .collapse-y-animate,
-  .collapse-y-animate.collapse-y-hidden {
+  .collapse-y-animate.collapse-y-hidden,
+  .collapse-y-animate ~ .decklist-head {
     transition: none;
   }
 }
@@ -4626,6 +4636,11 @@ html.modal-open {
   max-width: 70px;
   opacity: 1;
   margin: 0 3px 0 4px;
+}
+/* Room for a longer label: the Decklist's "Hide Add Cards". */
+.reveal-btn-wide:hover .reveal-btn-label,
+.reveal-btn-wide:focus-visible .reveal-btn-label {
+  max-width: 110px;
 }
 /* On the connect screen, level with the title at the picker's right edge. */
 .gate-head {

@@ -13,8 +13,8 @@ const SLIDE_MS = 240;
  *  transitionend, which never fires under reduced motion or on a webview
  *  that can't animate grid rows — the clip would stay on for good.
  *
- *  `animate` is off until the user toggles: the saved state loading in at
- *  launch should land, not slide. */
+ *  `animate` is off until the saved state has loaded: a hidden state
+ *  loading in at launch should land, not slide. */
 export default function CollapseY({
   hidden,
   animate,

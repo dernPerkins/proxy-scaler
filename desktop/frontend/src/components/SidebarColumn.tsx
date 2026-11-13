@@ -30,8 +30,8 @@ export default function SidebarColumn({
   /** Slid away to the left, the content taking its room (the Decklist's
    *  Cmd/Ctrl+B). Stays mounted, so nothing in it loses its state. */
   hidden?: boolean;
-  /** Slide rather than jump: off until the user toggles, so a hidden state
-   *  loaded at launch lands in place. */
+  /** Slide rather than jump: off until the saved state has loaded, so a
+   *  hidden state loaded at launch lands in place. */
   animate?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);

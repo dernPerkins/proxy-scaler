@@ -3,6 +3,7 @@ import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "reac
 import AppSettingsModal from "./components/AppSettingsModal";
 import CardDbImportModal from "./components/CardDbImportModal";
 import CardDbPrompt from "./components/CardDbPrompt";
+import DecklistPanelButtons from "./components/DecklistPanelButtons";
 import MpcCatalogPrompt from "./components/MpcCatalogPrompt";
 import GearIcon from "./components/GearIcon";
 import ConnectionLostDialog from "./components/ConnectionLostDialog";
@@ -66,6 +67,7 @@ function AppVersion({ onOpenSettings }: { onOpenSettings: () => void }) {
   }, []);
   return (
     <span className="tabs-version">
+      <TabPanelButtons />
       <TabTutorialButton />
       {update && (
         <button className="btn-sm btn-ok" onClick={requestUpdatePrompt}>
@@ -146,6 +148,14 @@ function useTabShortcuts() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [navigate]);
+}
+
+// The Decklist's hide/show buttons for its sidebar and Add Cards box
+// (Cmd/Ctrl+B and +I), just left of the ?. Up here for the same reason as
+// the ?: the one top-right spot the tab has, and out of the deck's way.
+function TabPanelButtons() {
+  const { pathname } = useLocation();
+  return pathname === "/decklist" ? <DecklistPanelButtons /> : null;
 }
 
 // The ? that replays the current tab's tour. In the tab bar's right-hand
