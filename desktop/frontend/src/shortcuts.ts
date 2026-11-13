@@ -31,6 +31,10 @@ export function shortcutLabel(key: string): string {
   return IS_MAC ? `⌘${key}` : `Ctrl+${key}`;
 }
 
+/** The Return key as each OS writes it on a key hint: "↩" on a Mac,
+ *  "Enter" elsewhere. `shortcutLabel(ENTER_KEY)` is "⌘↩" / "Ctrl+Enter". */
+export const ENTER_KEY = IS_MAC ? "↩" : "Enter";
+
 /** The same for an Alt chord: "⌥" (Option) on a Mac, "Alt" elsewhere. */
 export function altLabel(key: string): string {
   return IS_MAC ? `⌥${key}` : `Alt+${key}`;

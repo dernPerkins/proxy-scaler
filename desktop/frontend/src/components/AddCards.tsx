@@ -26,6 +26,7 @@ import { errorText, toast } from "../toasts";
 import ModalOverlay from "./ModalOverlay";
 import SelectMenu from "./SelectMenu";
 import SplitPill from "./SplitPill";
+import { ENTER_KEY, shortcutLabel } from "../shortcuts";
 import { PrintingGridModal, type PickerSource } from "./PrintingPicker";
 
 /** The project's import settings, which searches and adds follow too. */
@@ -170,7 +171,7 @@ export default function AddCards(props: AddCardsProps) {
             title="Open the command palette"
             onClick={() => setPaletteOpen(true)}
           >
-            <kbd>⌘K</kbd>
+            <kbd>{shortcutLabel("K")}</kbd>
           </button>
           {quick.open && <ResultList quick={quick} className="add-cards-sheet" />}
         </div>
@@ -515,7 +516,7 @@ function ResultList({ quick, className }: { quick: QuickAdd; className: string }
             </span>
             {i === quick.active && (
               <span className="add-cards-result-keys">
-                <kbd>↩</kbd> Add <kbd>⌘↩</kbd> Printings
+                <kbd>{ENTER_KEY}</kbd> Add <kbd>{shortcutLabel(ENTER_KEY)}</kbd> Printings
               </span>
             )}
           </button>
@@ -685,10 +686,10 @@ function Palette({
             )}
             <div className="add-cards-palette-foot">
               <span>
-                <kbd>↩</kbd> Add
+                <kbd>{ENTER_KEY}</kbd> Add
               </span>
               <span>
-                <kbd>⌘↩</kbd> All Printings
+                <kbd>{shortcutLabel(ENTER_KEY)}</kbd> All Printings
               </span>
               <span>
                 <kbd>esc</kbd> Close
