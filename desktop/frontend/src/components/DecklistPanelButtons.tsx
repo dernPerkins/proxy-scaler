@@ -11,8 +11,9 @@ import { shortcutLabel } from "../shortcuts";
 // at a glance without opening.
 export default function DecklistPanelButtons() {
   const panels = useDecklistPanels();
+  // One box around both, for the Decklist tour's step on them (tours.ts).
   return (
-    <>
+    <span className="panel-buttons" data-tour="panel-buttons">
       <PanelButton
         label={panels.sidebarHidden ? "Show Sidebar" : "Hide Sidebar"}
         shortcut={shortcutLabel("B")}
@@ -27,7 +28,7 @@ export default function DecklistPanelButtons() {
         onClick={panels.toggleAddCards}
         icon={<TopPanelIcon shown={!panels.addCardsHidden} />}
       />
-    </>
+    </span>
   );
 }
 

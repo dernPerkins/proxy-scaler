@@ -1113,6 +1113,13 @@ html.notch-full-screen .tabs a {
   font-size: 12px;
   color: var(--text-muted);
 }
+/* DecklistPanelButtons' two pills, spaced as if they sat in the cluster
+   directly. */
+.panel-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 /* The version label doubles as the Patch Notes re-opener, but must keep
    reading as the same muted readout it always was — a plain-text button,
    not a button-shaped one, that only announces itself on hover. */

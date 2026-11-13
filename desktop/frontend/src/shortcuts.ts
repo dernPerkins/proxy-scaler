@@ -31,6 +31,15 @@ export function shortcutLabel(key: string): string {
   return IS_MAC ? `⌘${key}` : `Ctrl+${key}`;
 }
 
+/** The same for an Alt chord: "⌥" (Option) on a Mac, "Alt" elsewhere. */
+export function altLabel(key: string): string {
+  return IS_MAC ? `⌥${key}` : `Alt+${key}`;
+}
+
+/** The Grid's zoom keys (GridZoomDock.tsx), written as each OS writes
+ *  them: "Ctrl++" reads as a typo. */
+export const ZOOM_KEYS_LABEL = IS_MAC ? "⌘+ and ⌘−" : "Ctrl+Plus and Ctrl+Minus";
+
 /** True while something is asking the user a question — a confirm, a
  *  progress modal, the image viewer, a tutorial step. Shortcuts stay out
  *  of it: switching tabs would unmount a page-level viewer, and New would

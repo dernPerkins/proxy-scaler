@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import { isImageFaceArt, type CardFaceArt, type CardRow, type ScryfallFaceSource } from "../api/project";
 import type { MpcCard } from "../api/types";
 import ModalOverlay from "./ModalOverlay";
+import { altLabel } from "../shortcuts";
 import {
   DEFAULT_PICKER_FILTERS,
   PrintingGridModal,
@@ -272,7 +273,7 @@ export default function DeckArtWalk(props: {
           type="button"
           className="btn-sm"
           disabled={index === 0}
-          title={prevCard ? `Previous: ${prevCard.name} (Alt+←)` : "Previous card (Alt+←)"}
+          title={prevCard ? `Previous: ${prevCard.name} (${altLabel("←")})` : `Previous card (${altLabel("←")})`}
           onClick={() => go(index - 1)}
         >
           ‹ Prev
@@ -284,7 +285,7 @@ export default function DeckArtWalk(props: {
           type="button"
           className="btn-sm"
           disabled={index === cards.length - 1}
-          title={nextCard ? `Next: ${nextCard.name} (Alt+→)` : "Next card (Alt+→)"}
+          title={nextCard ? `Next: ${nextCard.name} (${altLabel("→")})` : `Next card (${altLabel("→")})`}
           onClick={() => go(index + 1)}
         >
           Next ›

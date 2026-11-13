@@ -11,6 +11,12 @@
 // Vulkan-only control, a cutter button on an older server); a step with
 // no target shows as a centered card.
 
+import { altLabel, shortcutLabel, ZOOM_KEYS_LABEL } from "../shortcuts";
+
+// Shortcuts in the copy are written as the user's OS writes them
+// (shortcuts.ts): ⌘K on a Mac, Ctrl+K elsewhere.
+const mod = shortcutLabel;
+
 export type Placement = "top" | "bottom" | "left" | "right";
 
 export interface TourStep {
@@ -47,7 +53,7 @@ export type TourId =
 const WALK_STEP: TourStep = {
   target: "picker-walk",
   title: "Go through your deck",
-  body: "Prev and Next (or Alt+← and Alt+→) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you Confirm, which downloads every card you looked at, both faces of a double-faced card included. Closing any other way asks whether to keep your choices.",
+  body: `Prev and Next (or ${altLabel("←")} and ${altLabel("→")}) move to the deck's other cards, in the Decklist's order, so you can choose art for each in turn. Nothing downloads until you Confirm, which downloads every card you looked at, both faces of a double-faced card included. Closing any other way asks whether to keep your choices.`,
   placement: "bottom",
 };
 
@@ -85,7 +91,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "add-cards",
         title: "This is the Decklist tab",
-        body: "Let's take a quick look around, starting here: type a card's name and press Enter to add it, or Ctrl+Enter (Cmd on a Mac) to choose its printing. Switch to List to paste a whole decklist, one card per line, like \"1 Sol Ring (c21) 263\". Ctrl+K opens a palette with every way to add cards.",
+        body: `Let's take a quick look around, starting here: type a card's name and press Enter to add it, or ${mod("Enter")} to choose its printing. Switch to List to paste a whole decklist, one card per line, like "1 Sol Ring (c21) 263". ${mod("K")} opens a palette with every way to add cards.`,
         placement: "bottom",
       },
       {
@@ -97,7 +103,7 @@ export const TOURS: Record<TourId, Tour> = {
       {
         target: "tabs",
         title: "The tabs, left to right",
-        body: "Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running. Ctrl+1 to Ctrl+7 (Cmd on a Mac) jump straight to a tab, and Ctrl+N starts a new project.",
+        body: `Roughly the workflow: build the deck, add your own art or backs, then turn it into a PDF or a ZIP. Tasks shows what's running. ${mod("1")} to ${mod("7")} jump straight to a tab, and ${mod("N")} starts a new project.`,
         placement: "bottom",
       },
       {
@@ -193,6 +199,18 @@ export const TOURS: Record<TourId, Tour> = {
         target: "card-variants",
         title: "Versions",
         body: "Every model and DPI you've generated for this card shows up here with its status. Keep what you like. The PDF tab picks which version to print.",
+        placement: "bottom",
+      },
+      {
+        target: "grid-zoom",
+        title: "You can adjust the zoom of the Grid",
+        body: `Pinch or use ${ZOOM_KEYS_LABEL} to adjust the size of the Cards in the grid. M and under will hide the buttons underneath the cards. You can hover over the Zoom to expand options where you can interact with the slider instead, it'll snap to where you fling it! For the "Actual" zoom it will attempt to be auto detected if the size of your screen and resolution data are available to the app to show a true sized card. If it's incorrect use the Calibrate tool.`,
+        placement: "top",
+      },
+      {
+        target: "panel-buttons",
+        title: "You can expand the card view",
+        body: `In the case where you don't need to look at the options on the left Sidebar or you don't need the import options, you may hide them! Use these buttons or the shortcuts ${mod("B")} for the Sidebar, ${mod("I")} for the "Add Cards"`,
         placement: "bottom",
       },
     ],

@@ -237,6 +237,7 @@ export default function GridZoomDock({ size }: { size: GridCardSize }) {
     <>
       <div
         className={"zoom-dock" + (open ? " is-open" : "")}
+        data-tour="grid-zoom"
         onPointerEnter={() => {
           window.clearTimeout(leaveT.current);
           setHover(true);
