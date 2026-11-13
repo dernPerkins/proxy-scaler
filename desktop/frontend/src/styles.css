@@ -3099,6 +3099,17 @@ textarea.add-cards-list {
   font-size: 15px;
   font-weight: 600;
 }
+/* Tokens Only on a pasted list: the same amber as the search field. */
+.tokens-only textarea:is(.add-cards-list, .add-cards-palette-list) {
+  border-color: var(--token);
+  background: color-mix(in srgb, var(--token-soft) 55%, var(--surface));
+}
+.tokens-only textarea:is(.add-cards-list, .add-cards-palette-list):focus-visible {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--token) 25%, transparent);
+}
+.tokens-only textarea::placeholder {
+  color: color-mix(in srgb, var(--token) 70%, transparent);
+}
 .add-cards-palette textarea.add-cards-palette-list {
   width: calc(100% - 32px);
   margin: 6px 16px;

@@ -66,6 +66,10 @@ interface AddCardsProps {
   afterAdd: (added: CardRow[]) => void;
 }
 
+const TOKEN_LIST_PLACEHOLDER =
+  "One token per line - 1 Treasure (ttrk) 26\n3 Goblin (tfrc) 9\n2 Clue";
+const listPlaceholder = (tokensOnly: boolean) =>
+  tokensOnly ? TOKEN_LIST_PLACEHOLDER : LIST_PLACEHOLDER;
 const LIST_PLACEHOLDER =
   "One card per line — 4 Card Name (set) 123\n1 Sol Ring (c21) 263\n4 Lightning Bolt";
 
@@ -82,15 +86,15 @@ export default function AddCards(props: AddCardsProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const fieldRef = useRef<HTMLInputElement>(null);
   useCmdK(() => setPaletteOpen(true));
-  // The switch and ⌘T / Ctrl+T both flip Tokens Only. Outside the
-  // palette that also means Search (from List) with the field focused.
+  const listRef = useRef<HTMLTextAreaElement>(null);
+  // The switch and ⌘T / Ctrl+T both flip Tokens Only, for Search and List
+  // alike. Outside the palette, the field or list then takes focus.
   const paletteOpenRef = useRef(paletteOpen);
   paletteOpenRef.current = paletteOpen;
   function toggleTokens() {
     setTokensOnly((on) => !on);
     if (!paletteOpenRef.current) {
-      setMode("search");
-      setTimeout(() => fieldRef.current?.focus(), 0);
+      setTimeout(() => (mode === "search" ? fieldRef : listRef).current?.focus(), 0);
     }
   }
   useCmdT(toggleTokens);
@@ -200,13 +204,14 @@ export default function AddCards(props: AddCardsProps) {
           {quick.open && <ResultList quick={quick} className="add-cards-sheet" />}
         </div>
       ) : (
-        <div className="add-cards-paste">
+        <div className={`add-cards-paste${tokensOnly ? " tokens-only" : ""}`}>
           <textarea
+            ref={listRef}
             className="add-cards-list"
             value={draft}
             onChange={(e) => props.setDraft(e.target.value)}
             rows={6}
-            placeholder={LIST_PLACEHOLDER}
+            placeholder={listPlaceholder(tokensOnly)}
             autoFocus
           />
           <div className="add-cards-paste-bar">
@@ -217,7 +222,7 @@ export default function AddCards(props: AddCardsProps) {
               disabled={!props.canImport}
               title={props.importTitle}
             >
-              {importLabel(props.importing, lineCount)}
+              {importLabel(props.importing, lineCount, tokensOnly)}
             </button>
           </div>
         </div>
@@ -281,10 +286,11 @@ function useAddMode(draft: string) {
   };
 }
 
-function importLabel(importing: boolean, lines: number) {
+function importLabel(importing: boolean, lines: number, tokensOnly: boolean) {
   if (importing) return "Importing…";
-  if (lines === 0) return "Import Cards";
-  return `Import ${lines} ${lines === 1 ? "Card" : "Cards"}`;
+  const [one, many] = tokensOnly ? ["Token", "Tokens"] : ["Card", "Cards"];
+  if (lines === 0) return `Import ${many}`;
+  return `Import ${lines} ${lines === 1 ? one : many}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -658,7 +664,7 @@ function Palette({
   return (
     <ModalOverlay onClick={onClose} className="add-cards-palette-overlay">
       <div
-        className={`add-cards-palette${tokensOnly && !listMode ? " tokens-only" : ""}`}
+        className={`add-cards-palette${tokensOnly ? " tokens-only" : ""}`}
         role="dialog"
         aria-label="Add Cards"
         onClick={(e) => e.stopPropagation()}
@@ -676,7 +682,7 @@ function Palette({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               rows={10}
-              placeholder={LIST_PLACEHOLDER}
+              placeholder={listPlaceholder(tokensOnly)}
               autoFocus
             />
             <div className="add-cards-palette-list-bar">
@@ -689,7 +695,7 @@ function Palette({
                 }}
                 disabled={!canImport}
               >
-                {importLabel(importing, countLines(draft))}
+                {importLabel(importing, countLines(draft), tokensOnly)}
               </button>
             </div>
           </>
