@@ -382,16 +382,22 @@ export const generationApi = {
   // An <img> src, not a fetch: one face of one printing as a JPEG, served
   // from the server's thumbnail cache or fetched through `via`. `version`
   // (CardVariant.image_version) makes the URL name exactly one image, which
-  // the server then lets the webview cache forever. Only for servers
-  // serverSupportsPrintingImages() accepts — older ones 404.
+  // the server then lets the webview cache forever. A caller without the
+  // version passes `corpus` (the card database's imported_at) instead: the
+  // server ignores it, but a new import makes a new URL, so an answer given
+  // under the old corpus — a 404 for a card it didn't hold yet, or an older
+  // scan — isn't what the webview (or a tile's failed mark) keeps showing.
+  // Only for servers serverSupportsPrintingImages() accepts — older ones 404.
   cardThumbUrl: (
     scryfallId: string,
     face: number,
     via: ImageOrigin,
     version?: string | null,
+    corpus?: string | null,
   ) => {
     const search = new URLSearchParams({ face: String(face), via });
     if (version) search.set("v", version);
+    else if (corpus) search.set("db", corpus);
     return `${getApiBaseUrl()}/api/cards/${encodeURIComponent(scryfallId)}/thumb?${search}`;
   },
   // The full-size PNG Generate would download (~1.3 MB), for the grid's

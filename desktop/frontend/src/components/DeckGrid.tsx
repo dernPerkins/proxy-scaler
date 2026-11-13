@@ -180,6 +180,17 @@ export default function DeckGrid(props: DeckGridProps) {
   // nothing to serve, and every tile becomes its placeholder.
   const serverThumbs = serverSupportsPrintingImages(serverVersion);
   const { origin } = useImageCacheSetting();
+  // Which card database the thumbnails were answered from. A deck imported
+  // ahead of the database (a set newer than its last import, resolved
+  // through live Scryfall) gets 404s for those printings; importing the
+  // newer database changes this, and with it every thumbnail URL, so those
+  // tiles ask again instead of holding on to the failure. The status is
+  // prefetched at connect and refetched when an import finishes.
+  const cardDbQuery = useQuery({
+    queryKey: ["card-db-status"],
+    queryFn: () => generationApi.cardDbStatus(),
+  });
+  const corpus: CorpusStamp = cardDbQuery.isPending ? undefined : (cardDbQuery.data?.local?.imported_at ?? null);
   // Same rule the row uses for its "· CPU" note: only worth saying on a
   // machine that has a GPU and fell back off it.
   const warnCpu = useSyncExternalStore(subscribeProbedDevice, getProbedDevice)?.kind === "gpu";
@@ -345,6 +356,7 @@ export default function DeckGrid(props: DeckGridProps) {
                       p={props}
                       origin={origin}
                       serverThumbs={serverThumbs}
+                      corpus={corpus}
                       queue={queue}
                       ownsBackPicker={firstCopyKey.get(copy.card.id) === copy.key}
                       onHover={(on) =>
@@ -444,6 +456,7 @@ function SortableCell(props: {
   p: DeckGridProps;
   origin: ImageOrigin | null;
   serverThumbs: boolean;
+  corpus: CorpusStamp;
   queue: ThumbnailQueue;
   ownsBackPicker: boolean;
   onHover: (on: boolean) => void;
@@ -451,7 +464,7 @@ function SortableCell(props: {
   onMenu: (x: number, y: number) => void;
   onBackTrigger: (cardId: number, button: HTMLElement | null) => void;
 }) {
-  const { copy, sibling, partner, split, lifted, c, a, p, origin, serverThumbs, queue, ownsBackPicker } = props;
+  const { copy, sibling, partner, split, lifted, c, a, p, origin, serverThumbs, corpus, queue, ownsBackPicker } = props;
   const { onHover, onShowImages, onMenu, onBackTrigger } = props;
   const card = copy.card;
   // No layout animation on the drop: dnd-kit's default slides the dropped
@@ -545,6 +558,7 @@ function SortableCell(props: {
       library={p.library}
       origin={origin}
       serverThumbs={serverThumbs}
+      corpus={corpus}
       queue={queue}
       variantSrc={paintedBackUrl}
       face={1}
@@ -555,6 +569,7 @@ function SortableCell(props: {
       library={p.library}
       origin={origin}
       serverThumbs={serverThumbs}
+      corpus={corpus}
       queue={queue}
       variantSrc={paintedUrl}
     />
@@ -629,6 +644,7 @@ function SortableCell(props: {
                     library={p.library}
                     origin={origin}
                     serverThumbs={serverThumbs}
+                    corpus={corpus}
                     queue={queue}
                     variantSrc={paintedBackUrl}
                     face={1}
@@ -740,6 +756,12 @@ function inCell(e: SyntheticEvent<HTMLElement>): boolean {
  *  synchronously instead. */
 const loadedTileImages = new Set<string>();
 
+/** The card database's imported_at, which the printing thumbnails' URLs
+ *  carry; null when the server has no database (or the status failed), and
+ *  undefined until the status has answered — nothing is asked for until
+ *  then, so a tile doesn't load once without it and again with it. */
+type CorpusStamp = string | null | undefined;
+
 function DeckTile(props: {
   card: CardRow;
   library: ReadonlyMap<number, CustomImage>;
@@ -747,6 +769,7 @@ function DeckTile(props: {
    *  for until the tile knows which origin to ask it through. */
   origin: ImageOrigin | null;
   serverThumbs: boolean;
+  corpus: CorpusStamp;
   queue: ThumbnailQueue;
   /** Paint a generated variant's own thumbnail (the gallery thumb endpoint)
    *  instead of the art this card prints from, so the tile shows the image
@@ -760,7 +783,7 @@ function DeckTile(props: {
    *  a face 1. */
   onFaceMissing?: () => void;
 }) {
-  const { card, library, origin, serverThumbs, queue, variantSrc, face = 0, onFaceMissing } = props;
+  const { card, library, origin, serverThumbs, corpus, queue, variantSrc, face = 0, onFaceMissing } = props;
   const art = tileArt(card, face);
   // The image identity that failed, not just "something failed": a variant
   // thumbnail that 404s must not black out a tile that has its source art to
@@ -770,9 +793,11 @@ function DeckTile(props: {
   // Which image this tile WOULD draw, worked out before its turn in the queue
   // is asked for: a tile spends one turn per image, and a generated variant's
   // thumbnail is a different image from the printing's (imageGrid.ts).
+  // Keyed by the card database too (CorpusStamp): a failure is remembered
+  // under its url, so the next import's url is a fresh try.
   const artUrl =
-    art.kind === "server" && serverThumbs && origin != null
-      ? generationApi.cardThumbUrl(art.scryfallId, art.face, origin)
+    art.kind === "server" && serverThumbs && origin != null && corpus !== undefined
+      ? generationApi.cardThumbUrl(art.scryfallId, art.face, origin, null, corpus)
       : null;
   const variantUrl = variantSrc != null && serverThumbs ? variantSrc : null;
   const customId = art.kind === "local" ? art.customImageId : null;
@@ -787,7 +812,7 @@ function DeckTile(props: {
   const canAsk =
     variantUrl != null ||
     art.kind === "local" ||
-    (art.kind === "server" && serverThumbs && origin != null);
+    (art.kind === "server" && serverThumbs && origin != null && corpus !== undefined);
   const warm = imageKey != null && loadedTileImages.has(imageKey);
   const queued = useQueuedThumb(queue, frameRef, canAsk && !warm, false, imageKey);
   const load = warm || queued.load;
