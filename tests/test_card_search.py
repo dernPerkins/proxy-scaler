@@ -149,3 +149,23 @@ def test_a_reimport_rebuilds_the_index(db) -> None:
     conn.execute("UPDATE card_dataset_meta SET value = 'later' WHERE key = 'imported_at'")
     carddb.upsert_cards(conn, [_card("Sol Talisman")])
     assert _names(db, "talisman") == ["Sol Talisman"]
+
+
+def test_tokens_only_keeps_tokens_and_emblems(db) -> None:
+    """Tokens rank below every real card (so a short list rarely reaches
+    them); Tokens Only keeps them and emblems alone."""
+    _seed(
+        db[0],
+        _printings("Goblin Guide", 5)
+        + [
+            _card("Goblin", "oracle-goblin-token", layout="token"),
+            _card("Goblin // Treasure", "oracle-dfc-token", layout="double_faced_token"),
+            _card("Goblin Emblem", "oracle-emblem", layout="emblem"),
+        ],
+    )
+    assert _names(db, "goblin", limit=1) == ["Goblin Guide"]
+    assert set(_names(db, "goblin", tokens_only=True)) == {
+        "Goblin",
+        "Goblin // Treasure",
+        "Goblin Emblem",
+    }

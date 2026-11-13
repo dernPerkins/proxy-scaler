@@ -36,6 +36,10 @@
   --run-soft: #e3eff9;
   --wait: #7a5d10;
   --wait-soft: #fbf1d8;
+  /* Add Cards' Tokens Only mode (AddCards.tsx). */
+  --token: #b45309;
+  --token-soft: #fdf0dc;
+  --on-token: #ffffff;
   --err: #a52820;
   --err-soft: #fbe8e6;
   --off: #63636e;
@@ -101,6 +105,9 @@
     --run-soft: #10293a;
     --wait: #e6cd7c;
     --wait-soft: #302810;
+    --token: #f0a94a;
+    --token-soft: #3a2a12;
+    --on-token: #1b1b1f;
     --err: #f6918a;
     --err-soft: #391613;
     --off: #a2a2af;
@@ -2754,8 +2761,57 @@ kbd {
   align-items: center;
   gap: 12px;
 }
-.add-cards-head > .split-pill:first-child {
+.add-cards-head-left {
   justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+/* Tokens Only: a switch beside Search | List. */
+.tokens-only-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.tokens-only-switch:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+.tokens-only-switch-track {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  transition: background 140ms ease;
+}
+.tokens-only-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 140ms ease;
+}
+.tokens-only-switch.on,
+.tokens-only-switch.on:hover:not(:disabled) {
+  color: var(--token);
+  font-weight: 600;
+}
+.tokens-only-switch.on .tokens-only-switch-track {
+  background: var(--token);
+}
+.tokens-only-switch.on .tokens-only-switch-knob {
+  transform: translateX(12px);
 }
 .add-cards-lang {
   justify-self: center;
@@ -2789,6 +2845,24 @@ kbd {
   box-shadow:
     0 0 0 4px var(--accent-soft),
     0 14px 40px rgba(0, 0, 0, 0.12);
+}
+/* Tokens Only turns the field, and the palette below, amber. */
+.add-cards-field.tokens-only {
+  border-color: var(--token);
+  background: color-mix(in srgb, var(--token-soft) 55%, var(--surface));
+}
+.add-cards-field.tokens-only:focus-within {
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--token) 25%, transparent),
+    0 14px 40px rgba(0, 0, 0, 0.12);
+}
+.tokens-only input::placeholder {
+  color: color-mix(in srgb, var(--token) 70%, transparent);
+}
+.tokens-only .add-cards-option.active,
+.tokens-only .add-cards-option.active:is(:hover, :active):not(:disabled) {
+  background: var(--token);
+  color: var(--on-token);
 }
 .add-cards-field > .add-cards-glyph {
   width: 19px;
@@ -2956,6 +3030,15 @@ textarea.add-cards-list {
   backdrop-filter: blur(30px) saturate(1.6);
   border: 1px solid var(--border);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+}
+.add-cards-palette.tokens-only {
+  border-color: var(--token);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--token) 30%, transparent),
+    0 30px 80px rgba(0, 0, 0, 0.35);
+}
+.tokens-only .add-cards-palette-input {
+  background: color-mix(in srgb, var(--token-soft) 60%, transparent);
 }
 .add-cards-palette-input {
   display: flex;

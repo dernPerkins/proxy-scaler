@@ -39,6 +39,8 @@ _LESSER_LAYOUTS = frozenset(
     {"token", "double_faced_token", "emblem", "front_card", "vanguard", "planar", "scheme"}
 )
 _SKIPPED_LAYOUTS = frozenset({"art_series"})
+# What a Tokens Only search keeps (Add Cards' ⌘T).
+_TOKEN_LAYOUTS = frozenset({"token", "double_faced_token", "emblem"})
 
 
 def name_key(text: str) -> str:
@@ -63,6 +65,7 @@ class _Entry:
     # Sorts last: a non-game layout, or no paper printing at all.
     lesser: bool
     names: list[_Name] = field(default_factory=list)
+    token: bool = False
 
 
 @dataclass
@@ -118,6 +121,7 @@ def _build(conn: sqlite3.Connection, imported_at: str) -> _Index:
         entry = by_oracle.get(oracle_id)
         if entry is None:
             entry = _Entry(oracle_id, name, 0, layout in _LESSER_LAYOUTS)
+            entry.token = layout in _TOKEN_LAYOUTS
             _add_name(entry, name)
             by_oracle[oracle_id] = entry
             entries.append(entry)
@@ -218,9 +222,13 @@ def _tier(name: _Name, query: str, tokens: list[tuple[str, ...]]) -> int | None:
     return SUBSTRING
 
 
-def _rank(index: _Index, query: str, tokens: list[tuple[str, ...]]) -> list[_Entry]:
+def _rank(
+    index: _Index, query: str, tokens: list[tuple[str, ...]], tokens_only: bool = False
+) -> list[_Entry]:
     scored = []
     for entry in index.entries:
+        if tokens_only and not entry.token:
+            continue
         best = min(
             (t for t in (_tier(n, query, tokens) for n in entry.names) if t is not None),
             default=None,
@@ -275,20 +283,23 @@ def search(
     *,
     lang: str = "en",
     limit: int = 8,
+    tokens_only: bool = False,
 ) -> list[SearchHit]:
     """The best `limit` cards for a typed query; nothing for an empty one.
-    Hits on what was typed come first, then hits on a corrected spelling."""
+    Hits on what was typed come first, then hits on a corrected spelling.
+    `tokens_only` keeps tokens and emblems alone, which otherwise sort
+    after every real card and rarely make the cut."""
     q = name_key(query)
     if not q:
         return []
     index = _index_for(conn, db_path, lang)
     words = q.split()
-    ranked = _rank(index, q, [(w,) for w in words])
+    ranked = _rank(index, q, [(w,) for w in words], tokens_only)
     if len(ranked) < limit:
         spellings = [_spellings(index, w) for w in words]
         if any(len(s) > 1 for s in spellings):
             seen = {e.oracle_id for e in ranked}
-            ranked += [e for e in _rank(index, q, spellings) if e.oracle_id not in seen]
+            ranked += [e for e in _rank(index, q, spellings, tokens_only) if e.oracle_id not in seen]
     return [SearchHit(e.oracle_id, e.name, e.printings) for e in ranked[:limit]]
 
 

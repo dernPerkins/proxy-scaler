@@ -373,9 +373,13 @@ export const generationApi = {
   /** Card names matching a typed query, forgiving of partial words and
    *  typos ("so rin" finds Sol Ring). Answered from the local corpus;
    *  404 without one. */
-  searchCards: (q: string, opts: { lang: string; strictLang: boolean; limit?: number }) => {
+  searchCards: (
+    q: string,
+    opts: { lang: string; strictLang: boolean; limit?: number; tokens?: boolean },
+  ) => {
     const search = new URLSearchParams({ q, lang: opts.lang });
     if (opts.strictLang) search.set("strict_lang", "true");
+    if (opts.tokens) search.set("tokens", "true");
     if (opts.limit) search.set("limit", String(opts.limit));
     return request<{ results: CardSearchHit[] }>(`/api/cards/search?${search}`);
   },

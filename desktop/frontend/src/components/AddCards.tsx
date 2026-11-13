@@ -5,7 +5,10 @@
 // a command palette that searches the same way and holds the other ways in
 // (a pasted list, your own art, an MPC Fill order). Adding from files sits
 // in the page's sidebar. Chosen from a prototype
-// (.scratch/deck-add-prototype/).
+// (.scratch/deck-add-prototype/). Tokens Only (the switch, or ⌘T) narrows
+// both searches to tokens and emblems, which otherwise rank below every
+// real card; the field and palette turn amber while it's on
+// (.scratch/token-search-prototype/).
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,7 +29,7 @@ import { errorText, toast } from "../toasts";
 import ModalOverlay from "./ModalOverlay";
 import SelectMenu from "./SelectMenu";
 import SplitPill from "./SplitPill";
-import { ENTER_KEY, shortcutLabel } from "../shortcuts";
+import { ENTER_KEY, hasShortcutModifier, shortcutLabel } from "../shortcuts";
 import { PrintingGridModal, type PickerSource } from "./PrintingPicker";
 
 /** The project's import settings, which searches and adds follow too. */
@@ -71,11 +74,26 @@ export default function AddCards(props: AddCardsProps) {
   const lang = settings.langAny ? null : settings.lang;
   const adds = useDeckAdds(props.afterAdd);
   const [cardSearchFor, setCardSearchFor] = useState<CardSearchHit | null | undefined>(undefined);
-  const quick = useQuickAdd(lang, adds, (hit) => setCardSearchFor(hit));
+  // One Tokens Only for the field and the palette, kept after an add so
+  // several tokens go in a row.
+  const [tokensOnly, setTokensOnly] = useState(false);
+  const quick = useQuickAdd(lang, adds, (hit) => setCardSearchFor(hit), tokensOnly);
   const { mode, setMode, chooseMode } = useAddMode(draft);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const fieldRef = useRef<HTMLInputElement>(null);
   useCmdK(() => setPaletteOpen(true));
+  // The switch and ⌘T / Ctrl+T both flip Tokens Only. Outside the
+  // palette that also means Search (from List) with the field focused.
+  const paletteOpenRef = useRef(paletteOpen);
+  paletteOpenRef.current = paletteOpen;
+  function toggleTokens() {
+    setTokensOnly((on) => !on);
+    if (!paletteOpenRef.current) {
+      setMode("search");
+      setTimeout(() => fieldRef.current?.focus(), 0);
+    }
+  }
+  useCmdT(toggleTokens);
   const lineCount = countLines(draft);
 
   // A list that imports in full flips back to Search, ready for the next
@@ -94,15 +112,18 @@ export default function AddCards(props: AddCardsProps) {
       {/* Three columns over the field: how to add, the language centred,
           and where the art comes from. */}
       <div className="add-cards-head">
-        <SplitPill
-          ariaLabel="Add cards by"
-          value={mode}
-          onChange={chooseMode}
-          options={[
-            { value: "search", label: "Search", title: "Find cards by name" },
-            { value: "paste", label: "List", title: "Paste a list, one card per line" },
-          ]}
-        />
+        <span className="add-cards-head-left">
+          <SplitPill
+            ariaLabel="Add cards by"
+            value={mode}
+            onChange={chooseMode}
+            options={[
+              { value: "search", label: "Search", title: "Find cards by name" },
+              { value: "paste", label: "List", title: "Paste a list, one card per line" },
+            ]}
+          />
+          <TokensOnlySwitch on={tokensOnly} toggle={toggleTokens} />
+        </span>
         {/* The language adds demand ("strictly literal": a card without a
             version in this language errors and is not added), unless All
             Languages hands matching back to best effort. */}
@@ -153,12 +174,15 @@ export default function AddCards(props: AddCardsProps) {
       </div>
 
       {mode === "search" ? (
-        <div className="add-cards-field">
+        <div className={`add-cards-field${tokensOnly ? " tokens-only" : ""}`}>
           <SearchGlyph />
           <input
             ref={fieldRef}
             value={quick.query}
-            placeholder={quick.placeholder ?? "Add Cards — type a card name"}
+            placeholder={
+              quick.placeholder ??
+              (tokensOnly ? "Add Tokens - type a token name" : "Add Cards - type a card name")
+            }
             onChange={(e) => quick.setQuery(e.target.value)}
             onKeyDown={quick.onKeyDown}
             onFocus={() => quick.setOpen(true)}
@@ -205,6 +229,7 @@ export default function AddCards(props: AddCardsProps) {
           {...props}
           lang={lang}
           adds={adds}
+          tokensOnly={tokensOnly}
           onClose={() => setPaletteOpen(false)}
           onCardSearch={(hit) => {
             setPaletteOpen(false);
@@ -276,12 +301,12 @@ function useDebounced<T>(value: T, ms: number): T {
 
 /** Cards matching `query` (fuzzy, by name, local to the server). `lang`
  *  null is All Languages. */
-function useCardSearch(query: string, lang: string | null, limit = 8) {
+function useCardSearch(query: string, lang: string | null, limit = 8, tokens = false) {
   const q = useDebounced(query.trim(), 120);
   const search = useQuery({
-    queryKey: ["card-search", q, lang, limit],
+    queryKey: ["card-search", q, lang, limit, tokens],
     queryFn: () =>
-      generationApi.searchCards(q, { lang: lang ?? "en", strictLang: lang != null, limit }),
+      generationApi.searchCards(q, { lang: lang ?? "en", strictLang: lang != null, limit, tokens }),
     enabled: q.length >= 2,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
@@ -291,7 +316,7 @@ function useCardSearch(query: string, lang: string | null, limit = 8) {
   // Settled: what's shown answers what's typed (not a debounce or a
   // request behind it), so "no matches" never flashes mid-typing.
   const settled = q === query.trim() && !search.isFetching;
-  return { hits, noCorpus, error: search.error, settled };
+  return { hits, noCorpus, error: search.error, settled, tokens };
 }
 
 type CardSearch = ReturnType<typeof useCardSearch>;
@@ -381,12 +406,13 @@ function useQuickAdd(
   lang: string | null,
   adds: DeckAdds,
   openCardSearch: (hit: CardSearchHit) => void,
+  tokensOnly = false,
 ) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [lastAdded, setLastAdded] = useState<string | null>(null);
-  const search = useCardSearch(query, lang);
+  const search = useCardSearch(query, lang, 8, tokensOnly);
   const hits = search.hits;
   useEffect(() => setActive(0), [hits]);
 
@@ -433,7 +459,9 @@ function useQuickAdd(
     search,
     add,
     onKeyDown,
-    placeholder: lastAdded ? `Added ${lastAdded} — type the next card` : null,
+    placeholder: lastAdded
+      ? `Added ${lastAdded} - type the next ${tokensOnly ? "token" : "card"}`
+      : null,
   };
 }
 
@@ -447,6 +475,23 @@ function useAddedSince(adds: DeckAdds, key: unknown): number {
   const [since, setSince] = useState({ key, base: adds.added });
   if (since.key !== key) setSince({ key, base: adds.added });
   return Math.max(0, adds.added - since.base);
+}
+
+/** ⌘T / Ctrl+T (Tokens Only) from anywhere on the tab, palette included:
+ *  the page's own shortcuts stay quiet while a dialog is open. */
+function useCmdT(onCmdT: () => void) {
+  const ref = useRef(onCmdT);
+  ref.current = onCmdT;
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (hasShortcutModifier(e) && !e.shiftKey && e.code === "KeyT") {
+        e.preventDefault();
+        ref.current();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 }
 
 /** ⌘K from anywhere on the tab. */
@@ -482,7 +527,11 @@ function SearchStatus({ search, query }: { search: CardSearch; query: string }) 
   if (search.error)
     return <p className="hint add-cards-status">Search failed: {errorText(search.error)}</p>;
   if (search.settled && search.hits.length === 0 && query.trim().length >= 2)
-    return <p className="hint add-cards-status">No cards match “{query.trim()}”.</p>;
+    return (
+      <p className="hint add-cards-status">
+        No {search.tokens ? "Tokens" : "cards"} match “{query.trim()}”.
+      </p>
+    );
   return null;
 }
 
@@ -541,15 +590,18 @@ function Palette({
   orderDisabled,
   lang,
   adds,
+  tokensOnly,
   onClose,
   onCardSearch,
 }: AddCardsProps & {
   lang: string | null;
   adds: DeckAdds;
+  tokensOnly: boolean;
   onClose: () => void;
   onCardSearch: (hit: CardSearchHit) => void;
 }) {
-  const quick = useQuickAdd(lang, adds, onCardSearch);
+  const quick = useQuickAdd(lang, adds, onCardSearch, tokensOnly);
+
   const added = useAddedSince(adds, null);
   const [listMode, setListMode] = useState(draft.trim().length > 0);
   const [cmd, setCmd] = useState(0);
@@ -606,7 +658,7 @@ function Palette({
   return (
     <ModalOverlay onClick={onClose} className="add-cards-palette-overlay">
       <div
-        className="add-cards-palette"
+        className={`add-cards-palette${tokensOnly && !listMode ? " tokens-only" : ""}`}
         role="dialog"
         aria-label="Add Cards"
         onClick={(e) => e.stopPropagation()}
@@ -647,7 +699,10 @@ function Palette({
               <SearchGlyph />
               <input
                 value={quick.query}
-                placeholder={quick.placeholder ?? "Search cards, or choose an action"}
+                placeholder={
+                  quick.placeholder ??
+                  `Search ${tokensOnly ? "tokens" : "cards"}, or choose an action`
+                }
                 onChange={(e) => quick.setQuery(e.target.value)}
                 onKeyDown={onKeyDown}
                 onPaste={(e) => {
@@ -690,6 +745,9 @@ function Palette({
               </span>
               <span>
                 <kbd>{shortcutLabel(ENTER_KEY)}</kbd> All Printings
+              </span>
+              <span>
+                <kbd>{shortcutLabel("T")}</kbd> {tokensOnly ? "All Cards" : "Tokens Only"}
               </span>
               <span>
                 <kbd>esc</kbd> Close
@@ -889,6 +947,26 @@ function CardSearchField({
         </span>
       )}
     </span>
+  );
+}
+
+/** Beside Search | List: narrows Search and the palette to tokens. */
+function TokensOnlySwitch({ on, toggle }: { on: boolean; toggle: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      className={`tokens-only-switch${on ? " on" : ""}`}
+      title={`Search only tokens and emblems (${shortcutLabel("T")})`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggle}
+    >
+      <span className="tokens-only-switch-track">
+        <span className="tokens-only-switch-knob" />
+      </span>
+      Tokens Only
+    </button>
   );
 }
 

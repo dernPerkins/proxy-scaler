@@ -5,9 +5,9 @@
 // switcher (1–7, P for PDF, E for Export) in App.tsx beside the tab list,
 // New in ProjectBar.tsx beside the New button, Import/Generate all/
 // Download all and the B (sidebar) / I (Add Cards) toggles in
-// DecklistPage.tsx — so a shortcut can never drift from the click it
-// stands in for. The first two work on every tab; a page's own exist only
-// while it shows.
+// DecklistPage.tsx, K (palette) and T (Tokens Only) in AddCards.tsx —
+// so a shortcut can never drift from the click it stands in for. The
+// first two work on every tab; a page's own exist only while it shows.
 
 // Cmd on macOS, Ctrl everywhere else: the platform's own "app command"
 // key, matching what the browser and every other desktop app on that OS

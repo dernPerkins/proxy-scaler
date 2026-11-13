@@ -270,6 +270,7 @@ def card_search_route(
     lang: str = "en",
     strict_lang: bool = False,
     limit: int = Query(8, ge=1, le=50),
+    tokens: bool = False,
 ) -> CardSearchOut:
     """Cards whose names match a typed query, forgiving of partial words
     and typos (card_search.py), each with the printing a bare-name import
@@ -279,7 +280,7 @@ def card_search_route(
     if conn is None:
         raise HTTPException(status_code=404, detail=_IMPORT_HINT)
     try:
-        hits = card_search.search(conn, db_path, q, lang=lang, limit=limit)
+        hits = card_search.search(conn, db_path, q, lang=lang, limit=limit, tokens_only=tokens)
         results = []
         for hit in hits:
             row = carddb.find_default_for_oracle(
