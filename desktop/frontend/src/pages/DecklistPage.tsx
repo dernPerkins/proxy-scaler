@@ -1063,6 +1063,22 @@ export default function DecklistPage() {
     );
   }
 
+  /** The image status of a card's Back Card (docs/adr/0011), read from the
+   *  Back Card's own identity, or null when the card has none. Kept apart
+   *  from `faces`: it is another card on the Reverse, not a face of this
+   *  one, and nothing that counts or lays out faces should see it. */
+  function backCardVariantsFor(card: CardRow): VariantStatus[] | null {
+    const back = card.back_mode === "card" ? card.back_card : null;
+    if (!back) return null;
+    const identity = cardIdentity(back.set_code, back.collector_number, null, null, back.lang);
+    const ofFace = <T extends { face_index: number | null }>(rows: T[]) =>
+      rows.filter((r) => (r.face_index ?? 0) === back.source_face);
+    return statusForPairs(
+      ofFace(galleryByCard.get(identity) ?? []),
+      ofFace(tasksByCard.get(identity) ?? []),
+    ).filter((v) => v.status !== "canceled");
+  }
+
   // The double-faced cards (isDoubleFaced). Rust gives each one transform
   // placements; while the PDF tab prints a transform side as a card of its
   // own — pairing off, or no back printing at all — the Grid draws it as a
@@ -1576,6 +1592,7 @@ export default function DecklistPage() {
                 key={card.id}
                 card={card}
                 faces={faces}
+                backCardVariants={backCardVariantsFor(card)}
                 transformOnBack={transformOnBack}
                 expandedFaces={expandedFaces}
                 onToggleExpand={toggleExpanded}
@@ -1672,6 +1689,8 @@ interface CompareTarget {
 function CardRowView(props: {
   card: CardRow;
   faces: DisplayFace[];
+  /** The Back Card's image status when the card has one, else null. */
+  backCardVariants: VariantStatus[] | null;
   /** This card's transform side prints on its back — see CardBackPicker. */
   transformOnBack: boolean;
   expandedFaces: Set<string>;
@@ -1705,6 +1724,7 @@ function CardRowView(props: {
   const {
     card,
     faces,
+    backCardVariants,
     transformOnBack,
     expandedFaces,
     onToggleExpand,
@@ -1919,6 +1939,33 @@ function CardRowView(props: {
             ))}
           </div>
         ))
+      )}
+
+      {/* The Back Card: another card on this one's Reverse, named as
+          itself, with its own image status. */}
+      {card.back_card && backCardVariants && (
+        <div className="variants">
+          <span className="variant-face">
+            Back: {card.back_card.printed_name ?? card.back_card.name}
+          </span>
+          <span
+            className="variant-note variant-printing mono"
+            title={`${card.back_card.name}, ${card.back_card.set_code.toUpperCase()} #${card.back_card.collector_number}`}
+          >
+            <SetIcon setCode={card.back_card.set_code} rarity={card.back_card.rarity} />
+            {card.back_card.set_code.toUpperCase()} #{card.back_card.collector_number}
+          </span>
+          {backCardVariants.length === 0 && (
+            <span className="variant-note" title="Download images or Generate fetches it">
+              Not Generated Yet
+            </span>
+          )}
+          {backCardVariants.map((v) => (
+            <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
+              {v.dpi} · {modelDisplayName(v.model)}
+            </StatusBadge>
+          ))}
+        </div>
       )}
 
       {expanded &&

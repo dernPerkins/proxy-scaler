@@ -90,7 +90,8 @@ def _override_printings(entries: list) -> list:
     """One pinned entry per distinct (printing, face) the entries print on
     a face of another printing, so that face is downloaded/upscaled like
     any Scryfall face — and only that face: the rest of the printing is
-    not part of the deck."""
+    not part of the deck. A Back Card (docs/adr/0011) is fetched the same
+    way, under its own name."""
     seen: set[tuple[str, int]] = set()
     out = []
     for entry in entries:
@@ -110,6 +111,23 @@ def _override_printings(entries: list) -> list:
                     only_face=override.source_position,
                 )
             )
+        back = getattr(entry, "back_card", None)
+        if back is None or getattr(entry, "back_mode", None) != "card":
+            continue
+        key = (back.scryfall_id, back.source_face)
+        if key in seen:
+            continue
+        seen.add(key)
+        name = back.name or entry.name
+        out.append(
+            _PrintingFace(
+                quantity=1,
+                name=name,
+                raw_line=name,
+                scryfall_id=back.scryfall_id,
+                only_face=back.source_face,
+            )
+        )
     return out
 
 

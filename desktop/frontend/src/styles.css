@@ -1886,7 +1886,8 @@ html.notch-full-screen .tabs a {
 .card-back-swatch.is-universal .card-back-swatch-img {
   opacity: 0.45;
 }
-.card-back-swatch.is-image {
+.card-back-swatch.is-image,
+.card-back-swatch.is-card {
   border: 2px solid var(--accent);
 }
 .card-back-swatch.is-locked {
@@ -1989,6 +1990,40 @@ html.notch-full-screen .tabs a {
 .card-back-tile-glyph svg {
   width: 16px;
   height: 16px;
+}
+/* "Choose a Card…": the tiles give way to a card search. */
+.card-back-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 320px;
+}
+.card-back-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.card-back-search-bar input {
+  flex: 1;
+  min-width: 0;
+}
+.card-back-search-bar.tokens-only input {
+  border-color: var(--token);
+}
+.card-back-results {
+  overflow: auto;
+  min-height: 0;
+}
+.card-back-faces {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.card-back-face-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(104px, 150px));
+  gap: 10px;
 }
 .card-back-tile-badge {
   position: absolute;

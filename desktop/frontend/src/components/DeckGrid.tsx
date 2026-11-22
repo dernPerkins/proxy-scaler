@@ -120,7 +120,11 @@ import { coverageFor, hasImages, type CardCoverage, type Cover, type DisplayFace
 import type { DeckCopy } from "../deckEntries";
 import { fillFrameWith, isAlphaPrinting, trimGeometry } from "../cardTrim";
 import { useImageCacheSetting } from "../imageOrigin";
-import CardBackPicker, { resolve as resolveBack, useBackThumb } from "./CardBackPicker";
+import CardBackPicker, {
+  resolve as resolveBack,
+  useBackCardThumb,
+  useBackThumb,
+} from "./CardBackPicker";
 import { useBackLibrary } from "../cardBacks";
 import { useProject } from "../context/ProjectContext";
 import CardImagesModal from "./CardImagesModal";
@@ -638,7 +642,7 @@ function SortableCell(props: {
             <span className={`deck-flip-side is-front${flipped ? "" : " is-shown"}`}>{frontTile}</span>
             {backMounted && (
               <span className={`deck-flip-side is-back${flipped ? " is-shown" : ""}`} aria-hidden={!flipped}>
-                {showBackFace && !splitDfc ? (
+                {showBackFace && !splitDfc && !(card.back_mode === "card" && card.back_card) ? (
                   <DeckTile
                     card={card}
                     library={p.library}
@@ -987,6 +991,7 @@ function BackSide({ card }: { card: CardRow }) {
   const r = resolveBack(card, library.data, settings.back_image_id ?? null, false);
   const back = r.kind === "image" ? r.back : r.kind === "universal" ? r.back : undefined;
   const thumb = useBackThumb(back?.id);
+  const cardThumb = useBackCardThumb(r.kind === "card" ? r.back : null);
   const trimmed =
     back?.includes_bleed && back.bleed_mm > 0
       ? fillFrameWith(trimGeometry({ w: back.width, h: back.height }, back.bleed_mm).trim)
@@ -994,7 +999,15 @@ function BackSide({ card }: { card: CardRow }) {
   return (
     <div className="deck-tile">
       <span className="deck-tile-frame">
-        {r.kind === "blank" ? (
+        {r.kind === "card" ? (
+          cardThumb ? (
+            <img src={cardThumb} alt={r.back.name} draggable={false} />
+          ) : (
+            <span className="deck-tile-placeholder">
+              <span className="deck-tile-placeholder-name">{r.back.name}</span>
+            </span>
+          )
+        ) : r.kind === "blank" ? (
           <span className="deck-tile-placeholder deck-back-blank">
             <span className="deck-tile-placeholder-name">Blank Back</span>
           </span>

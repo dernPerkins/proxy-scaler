@@ -99,6 +99,16 @@ class FaceOverrideIn(BaseModel):
     source_face: int | None = Field(default=None, ge=0, le=1)
 
 
+class BackCardIn(BaseModel):
+    """A Back Card (docs/adr/0011): one face of a different Scryfall
+    printing, printed on this entry's Reverse under its own identity.
+    `name` is that card's name, for reports."""
+
+    scryfall_id: str
+    source_face: int = Field(default=0, ge=0, le=1)
+    name: str = ""
+
+
 class DeckEntryIn(BaseModel):
     quantity: int = 1
     name: str
@@ -119,8 +129,13 @@ class DeckEntryIn(BaseModel):
     # exactly the sheet it always did. `back_hash` is only read in "image"
     # mode and must then also appear in the request's `back_images`
     # manifest, which carries the bleed declaration.
-    back_mode: Literal["inherit", "blank", "image"] = "inherit"
+    back_mode: Literal["inherit", "blank", "image", "card"] = "inherit"
     back_hash: str | None = None
+    # Read only in "card" mode: the Back Card. Generate/Download fetch its
+    # face like any Scryfall face, and PDF/ZIP print it on the Reverse. An
+    # older server rejects the mode, which is why the client gates on the
+    # server version.
+    back_card: BackCardIn | None = None
     # Faces of this (Scryfall) entry printed from a Custom Image or another
     # printing's face instead. Generate skips those faces' own Scryfall
     # download/upscale and does the override's work instead (registers,

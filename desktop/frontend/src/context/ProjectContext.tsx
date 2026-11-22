@@ -256,6 +256,9 @@ interface ProjectContextValue {
    *  Back ("inherit"), nothing ("blank"), or a Back Library image. Resolves
    *  once stored. */
   setCardBack: (cardId: number, backMode: BackMode, backImageId: number | null) => Promise<void>;
+  /** Puts a Back Card (one face of a different card) on one card's
+   *  Reverse, replacing any other back choice. Resolves once stored. */
+  setCardBackCard: (cardId: number, backCard: ScryfallFaceSource) => Promise<void>;
   /** Print a Custom Image (picked on MPC Fill) in place of one face of a
    *  Scryfall card; `totalFaces` is the printing's face count. */
   setCardFaceArt: (
@@ -896,6 +899,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 back_mode: backMode,
                 back_image_id: backMode === "image" ? backImageId : null,
                 back_hash: hash,
+                back_card: null,
               }
             : c,
         ),
@@ -956,6 +960,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     onError: (err: Error) => setError(err.message),
   });
 
+  const setCardBackCardMutation = useMutation({
+    mutationFn: async (args: { cardId: number; backCard: ScryfallFaceSource }) => {
+      await projectApi.setCardBackCard(args.cardId, args.backCard);
+      return args;
+    },
+    onSuccess: ({ cardId, backCard }) => {
+      setCards((prev) =>
+        prev.map((c) =>
+          c.id === cardId
+            ? { ...c, back_mode: "card" as const, back_image_id: null, back_hash: null, back_card: backCard }
+            : c,
+        ),
+      );
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
   const resetCardBacksMutation = useMutation({
     mutationFn: async () => {
       const id = projectIdRef.current;
@@ -964,7 +985,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: () => {
       setCards((prev) =>
-        prev.map((c) => ({ ...c, back_mode: "inherit" as const, back_image_id: null, back_hash: null })),
+        prev.map((c) => ({
+          ...c,
+          back_mode: "inherit" as const,
+          back_image_id: null,
+          back_hash: null,
+          back_card: null,
+        })),
       );
     },
     onError: (err: Error) => setError(err.message),
@@ -1453,6 +1480,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     setCardBack: async (cardId, backMode, backImageId) => {
       await setCardBackMutation.mutateAsync({ cardId, backMode, backImageId });
+    },
+    setCardBackCard: async (cardId, backCard) => {
+      await setCardBackCardMutation.mutateAsync({ cardId, backCard });
     },
     resetCardBacks: async () => {
       await resetCardBacksMutation.mutateAsync();

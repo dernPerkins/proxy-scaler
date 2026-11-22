@@ -77,17 +77,21 @@ export interface CardBackSummary {
   inherit: number;
   image: number;
   blank: number;
+  /** Cards printing a Back Card (another card) on their Reverse. */
+  card: number;
   /** The distinct per-card backs in use, deck order, resolved against the
    *  library (missing rows dropped). */
   ownBacks: BackImage[];
 }
 
 export function summarizeCardBacks(cards: CardRow[], library: BackImage[] | undefined): CardBackSummary {
-  const summary: CardBackSummary = { inherit: 0, image: 0, blank: 0, ownBacks: [] };
+  const summary: CardBackSummary = { inherit: 0, image: 0, blank: 0, card: 0, ownBacks: [] };
   const seen = new Set<number>();
   for (const card of cards) {
     if (card.back_mode === "blank") {
       summary.blank += 1;
+    } else if (card.back_mode === "card" && card.back_card != null) {
+      summary.card += 1;
     } else if (card.back_mode === "image" && card.back_image_id != null) {
       summary.image += 1;
       if (!seen.has(card.back_image_id)) {

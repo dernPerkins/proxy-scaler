@@ -294,6 +294,11 @@ def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> li
         for o in e.face_overrides:
             if o.scryfall_id:
                 printing_faces.setdefault(o.scryfall_id, set()).add(o.source_position)
+        # A Back Card's face, likewise.
+        if e.back_mode == "card" and e.back_card is not None:
+            printing_faces.setdefault(e.back_card.scryfall_id, set()).add(
+                e.back_card.source_face
+            )
     for scryfall_id, faces in printing_faces.items():
         # Only the overriding face: the printing's other face is not part
         # of the deck.
@@ -365,7 +370,9 @@ def _prepare(body: PdfLayoutIn) -> PreparedRender:
         reverse_fill = ReverseFill(body.reverse_fill.value)
         for page in pages:
             for slot in page:
-                if slot.reverse is not None or slot.back_mode == "blank":
+                if slot.reverse is not None or slot.back_mode in ("blank", "card"):
+                    # "card" with no reverse is a Back Card whose image is
+                    # missing: match_quantities already reported it.
                     continue
                 if slot.back_mode == "image":
                     if slot.back_hash not in back_images:

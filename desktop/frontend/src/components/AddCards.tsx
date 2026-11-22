@@ -332,7 +332,7 @@ function useDebounced<T>(value: T, ms: number): T {
 
 /** Cards matching `query` (fuzzy, by name, local to the server). `lang`
  *  null is All Languages. */
-function useCardSearch(query: string, lang: string | null, limit = 8, tokens = false) {
+export function useCardSearch(query: string, lang: string | null, limit = 8, tokens = false) {
   const q = useDebounced(query.trim(), 120);
   const search = useQuery({
     queryKey: ["card-search", q, lang, limit, tokens],
@@ -552,7 +552,7 @@ const hitDetail = (hit: CardSearchHit) =>
     ? `(${hit.default.set_code.toUpperCase()}) (${hit.default.collector_number})`
     : "No printing in this language";
 
-function SearchStatus({ search, query }: { search: CardSearch; query: string }) {
+export function SearchStatus({ search, query }: { search: CardSearch; query: string }) {
   if (search.noCorpus)
     return <p className="hint add-cards-status">Import the card database (sidebar) to search cards.</p>;
   if (search.error)
@@ -996,7 +996,7 @@ function CardSearchField({
 }
 
 /** Beside Search | List: narrows Search and the palette to tokens. */
-function TokensOnlySwitch({ on, toggle }: { on: boolean; toggle: () => void }) {
+export function TokensOnlySwitch({ on, toggle }: { on: boolean; toggle: () => void }) {
   return (
     <button
       type="button"

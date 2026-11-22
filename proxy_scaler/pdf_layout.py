@@ -963,6 +963,10 @@ class PrintUnit:
     # different physical cards even though their fronts are the same file.
     back_mode: str = "inherit"
     back_hash: str | None = None
+    # In back_mode "card": the Back Card's chosen image (docs/adr/0011),
+    # under its own identity. None when it has no printable image, which
+    # match_quantities reports. back_hash then holds its "<id>:<face>" key.
+    back_face: FaceResult | None = None
     # (entry index, copies that entry contributed) for every decklist entry
     # merged into this unit — what lets build_print_slots lay copies out in
     # a client-chosen per-copy order (copy_order) instead of all of a
@@ -971,7 +975,13 @@ class PrintUnit:
 
 
 BackKey = tuple[str, str | None]
-"""(back_mode, back_hash) as match_quantities groups copies by it."""
+"""(back_mode, back_hash) as match_quantities groups copies by it. For a
+Back Card the second item is _back_card_key, not a content hash."""
+
+
+def _back_card_key(scryfall_id: str | None, face_index: int | None) -> str:
+    """One face of one printing, as a Back Card names it."""
+    return f"{scryfall_id}:{face_index or 0}"
 
 SubstKey = tuple[str, int, int] | None
 """For a custom image or another printing's face printed on a face of a
@@ -1028,6 +1038,9 @@ def _back_key(entry: DeckEntry) -> BackKey:
         return ("image", entry.back_hash)
     if mode == "blank":
         return ("blank", None)
+    if mode == "card" and entry.back_card is not None:
+        back = entry.back_card
+        return ("card", _back_card_key(back.scryfall_id, back.source_face))
     return ("inherit", None)
 
 
@@ -1235,6 +1248,12 @@ def match_quantities(
     custom by hash, or the chosen face of another printing by scryfall_id
     — dressed as the entry's face (_substitute), in a unit of its own.
 
+    A Back Card (DeckEntry.back_card, docs/adr/0011) is the opposite: its
+    face group is never dressed as the entry. Its chosen image rides on
+    the entry's units as `back_face`, under its own identity, and adds no
+    unit and no quantity of its own. An entry whose Back Card has no
+    image is reported in `missing` by the Back Card's name.
+
     `missing_entries` and `missing_at_dpi_entries`, when given, are filled
     with the `entries` indices behind `missing` and `missing_at_dpi`, so a
     client can offer to download or upscale exactly those cards.
@@ -1265,9 +1284,41 @@ def match_quantities(
     # / db migration 003) — None until a matched group with a known value is
     # seen, same "unknown, don't verify" meaning as on the row itself.
     expected_faces_by_entry: list[int | None] = [None] * len(entries)
+    # Back Cards: the entries wanting each one, and the image chosen for
+    # it once its face group is seen.
+    back_card_entries: dict[str, list[int]] = {}
+    for i, entry in enumerate(entries):
+        mode, back_key = _back_key(entry)
+        if mode == "card" and back_key is not None:
+            back_card_entries.setdefault(back_key, []).append(i)
+    back_faces: dict[str, FaceResult] = {}
+    back_cards_seen: set[str] = set()
+
+    def _pick(face_items: list[FaceResult], rep: FaceResult) -> tuple[FaceResult | None, bool]:
+        if rep.is_custom:
+            return _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
+        if use_originals:
+            # Only originals are eligible here, one per face in practice.
+            return max(face_items, key=_recency_key), False
+        return _pick_scryfall_variant(face_items, preferred_dpi, preferred_model)
 
     for key, face_items in group_by_face(gallery):
         rep = face_items[0]
+        if not rep.is_custom:
+            back_key = _back_card_key(rep.scryfall_id, rep.face_index)
+            if back_key in back_card_entries and back_key not in back_cards_seen:
+                back_cards_seen.add(back_key)
+                back_best, _unavailable = _pick(face_items, rep)
+                if back_best is not None:
+                    back_faces[back_key] = back_best
+                else:
+                    missing_at_dpi.append(_describe_face(rep))
+                    if missing_at_dpi_entries is not None:
+                        missing_at_dpi_entries.extend(
+                            i
+                            for i in back_card_entries[back_key]
+                            if i not in missing_at_dpi_entries
+                        )
         set_code = (rep.set_code or "").lower() or None
         collector = rep.collector_number
         card_name = (rep.card_name or rep.face_name or "").casefold()
@@ -1384,15 +1435,7 @@ def match_quantities(
             elif rep.total_faces is not None:
                 expected_faces_by_entry[i] = rep.total_faces
 
-        if rep.is_custom:
-            best, unavailable = _pick_dpi_variant(face_items, preferred_dpi, preferred_model)
-        elif use_originals:
-            # Only originals are eligible here, one per face in practice.
-            best, unavailable = max(face_items, key=_recency_key), False
-        else:
-            best, unavailable = _pick_scryfall_variant(
-                face_items, preferred_dpi, preferred_model
-            )
+        best, unavailable = _pick(face_items, rep)
         if best is None:
             # No upscale at the requested DPI and no original to fall back
             # on. Reported to the caller and left out of the print run
@@ -1432,6 +1475,9 @@ def match_quantities(
     # Stable, so ties beyond the (entry, face_index) key keep gallery
     # order (dpi ASC, face_index ASC from db.list_gallery_items).
     units = [units[i] for i in sorted(range(len(units)), key=lambda i: unit_order_keys[i])]
+    for unit in units:
+        if unit.back_mode == "card" and unit.back_hash is not None:
+            unit.back_face = back_faces.get(unit.back_hash)
 
     missing: list[str] = []
     for i, entry in enumerate(entries):
@@ -1441,6 +1487,15 @@ def match_quantities(
             missing.append(_describe_entry(entry, matched, expected))
             if missing_entries is not None:
                 missing_entries.append(i)
+    # A Back Card with no image at all, named as itself. One whose image
+    # exists but not at the requested DPI was reported above.
+    for back_key, wanting in back_card_entries.items():
+        if back_key in back_cards_seen:
+            continue
+        back = entries[wanting[0]].back_card
+        missing.append(back.name or f"Back of {entries[wanting[0]].name}")
+        if missing_entries is not None:
+            missing_entries.extend(i for i in wanting if i not in missing_entries)
 
     return units, missing, missing_at_dpi
 
@@ -1449,8 +1504,9 @@ def match_quantities(
 class PrintSlot:
     """One physical printed card: a front, and what goes on its Reverse.
 
-    `reverse` is the Back Face image when this card's transform side is
-    being printed on its own back, and None when the Reverse should take
+    `reverse` is the card image printed on this card's back: its Back
+    Card (docs/adr/0011), or its transform side when that is being
+    printed on its own back. It is None when the Reverse should take
     a Back Image (or nothing) instead — which one is `resolve_reverse`'s
     call, from `back_mode`/`back_hash` (this card's own choice, copied
     from its PrintUnit) and the project's defaults. None does NOT mean
@@ -1615,6 +1671,8 @@ def build_print_slots(
         # Only a face-0 unit survives for a paired id (its face-1 units
         # were all consumed above), so this is None for everything else.
         reverse = back_face_by_id.get(unit.best.scryfall_id) if unit.best.scryfall_id else None
+        # A Back Card wins over the transform side, pairing on or off.
+        reverse = unit.back_face or reverse
         return PrintSlot(
             front=unit.best,
             reverse=reverse,
@@ -1712,7 +1770,10 @@ def resolve_reverse(
     precedence lives, shared by the renderer, its progress total and the
     ZIP export, so none of them can disagree about what a Reverse shows:
 
-    1. A transform side being printed on its own back always wins.
+    1. A Back Card, or a transform side being printed on its own back,
+       always wins (build_print_slots puts either in `slot.reverse`). A
+       Back Card with no image draws nothing; it never falls through to
+       a Back Image.
     2. The card's own choice of "blank" draws nothing.
     3. The card's own choice of an image prints that image — or nothing
        if the manifest lacks it, which the routers refuse up front.
@@ -1722,7 +1783,7 @@ def resolve_reverse(
     """
     if slot.reverse is not None:
         return slot.reverse.out_path, slot.reverse, None
-    if slot.back_mode == "blank":
+    if slot.back_mode in ("blank", "card"):
         return None, None, None
     backs = back_images or {}
     if slot.back_mode == "image":

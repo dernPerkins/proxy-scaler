@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from proxy_scaler import customs
 from proxy_scaler.api.schemas import DeckEntryIn
-from proxy_scaler.decklist import DeckEntry, FaceOverride
+from proxy_scaler.decklist import BackCard, DeckEntry, FaceOverride
 
 
 def _printing_id(value: str) -> str:
@@ -26,8 +26,9 @@ def _printing_id(value: str) -> str:
 
 def to_deck_entry(e: DeckEntryIn) -> DeckEntry:
     """Raises a 400 for a face override naming a malformed hash or
-    printing id, or both at once: either ends up in filesystem paths, so
-    it is never trusted unchecked."""
+    printing id, or both at once, and for a Back Card naming a malformed
+    printing id: either ends up in filesystem paths, so it is never
+    trusted unchecked."""
     overrides: list[FaceOverride] = []
     for o in e.face_overrides:
         if o.custom_hash and o.scryfall_id:
@@ -57,6 +58,19 @@ def to_deck_entry(e: DeckEntryIn) -> DeckEntry:
                 ),
             )
         )
+    # A "card" back with no card to name has nothing to print: it reads
+    # as "inherit", like an "image" back with no hash (pdf_layout._back_key).
+    back_card = None
+    back_mode = e.back_mode
+    if back_mode == "card":
+        if e.back_card is None:
+            back_mode = "inherit"
+        else:
+            back_card = BackCard(
+                _printing_id(e.back_card.scryfall_id),
+                e.back_card.source_face,
+                e.back_card.name,
+            )
     return DeckEntry(
         quantity=e.quantity,
         name=e.name,
@@ -66,8 +80,9 @@ def to_deck_entry(e: DeckEntryIn) -> DeckEntry:
         scryfall_id=e.scryfall_id,
         lang=e.lang,
         custom_hash=e.custom_hash,
-        back_mode=e.back_mode,
+        back_mode=back_mode,
         back_hash=e.back_hash,
+        back_card=back_card,
         # Overrides only mean anything on a Scryfall card.
         face_overrides=() if e.custom_hash else tuple(overrides),
     )

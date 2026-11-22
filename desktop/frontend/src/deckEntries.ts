@@ -169,8 +169,23 @@ export function cardToEntry(card: CardRow): DeckEntryIn {
     // The card's own back. An "image" whose library row is gone is sent as
     // "inherit": Rust already normalizes that, this just keeps the wire
     // honest if a stale CardRow is still in memory.
-    back_mode: card.back_mode === "image" && card.back_hash == null ? "inherit" : card.back_mode,
+    // Likewise a "card" with no Back Card.
+    back_mode:
+      (card.back_mode === "image" && card.back_hash == null) ||
+      (card.back_mode === "card" && card.back_card == null)
+        ? "inherit"
+        : card.back_mode,
     back_hash: card.back_mode === "image" ? card.back_hash : null,
+    // Only sent for a Back Card, so every other request is unchanged.
+    ...(card.back_mode === "card" && card.back_card
+      ? {
+          back_card: {
+            scryfall_id: card.back_card.scryfall_id,
+            source_face: card.back_card.source_face,
+            name: card.back_card.name,
+          },
+        }
+      : {}),
     // Only sent when there are some, so an all-Scryfall deck's request is
     // exactly what an older server has always accepted.
     ...(card.face_art?.length

@@ -274,6 +274,12 @@ export const GUIDE_STYLES_MIN_SERVER_VERSION = "0.5.0";
 // The release these ship in; packaging/set-version.py must never rewrite it.
 export const MPC_FILL_MIN_SERVER_VERSION = "0.5.0";
 
+// Back Cards (docs/adr/0011): DeckEntryIn.back_mode "card" + back_card.
+// A server older than per-card backs drops both and prints the universal
+// back; one that has per-card backs but not this rejects the request.
+// The release these ship in; packaging/set-version.py must never rewrite it.
+export const BACK_CARD_MIN_SERVER_VERSION = "0.5.0";
+
 function parseVersion(version: string): number[] | null {
   const parts = version.trim().split(".");
   if (parts.length === 0 || parts.length > 4) return null;
@@ -385,6 +391,14 @@ export function serverSupportsCustomUpscale(serverVersion: string | null): boole
 export function serverSupportsPerCardBacks(serverVersion: string | null): boolean {
   if (serverVersion == null) return false;
   const comparison = compareVersions(serverVersion, PER_CARD_BACKS_MIN_SERVER_VERSION);
+  return comparison == null || comparison >= 0;
+}
+
+/** Does the connected server print Back Cards? Same null/unparseable
+ *  semantics as serverSupportsBackPrinting. */
+export function serverSupportsBackCards(serverVersion: string | null): boolean {
+  if (serverVersion == null) return false;
+  const comparison = compareVersions(serverVersion, BACK_CARD_MIN_SERVER_VERSION);
   return comparison == null || comparison >= 0;
 }
 

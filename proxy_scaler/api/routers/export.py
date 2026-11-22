@@ -209,15 +209,20 @@ def _paired_reverse(
     return resolve_reverse(slot, back_images, default_back_hash, reverse_fill)
 
 
+BackEntry = tuple[Path, FaceResult | None, BackSource | None]
+"""One default-format BACK/ file: its path, and either the card face it
+is (a Back Card) or the Back Image declaration it carries."""
+
+
 def _default_backs(
     slots: list[PrintSlot],
     back_images: dict[str, BackSource],
     default_back_hash: str | None,
     reverse_fill: ReverseFill,
-) -> list[BackSource]:
-    """The default format's BACK/ entries: each distinct Back Image once,
-    the Selected Back first and then each per-card choice in the order
-    the deck first uses it. The Selected Back ships only when some card
+) -> list[BackEntry]:
+    """The default format's BACK/ entries: each distinct Back Image or
+    Back Card once, the Selected Back first and then each per-card choice
+    in the order the deck first uses it. The Selected Back ships only when some card
     would actually take it — one inherits and the project fills with a
     back image. Blank ships nothing: this format has no per-slot pairing
     to hold a white card's place."""
@@ -229,10 +234,18 @@ def _default_backs(
         and any(s.reverse is None and s.back_mode == "inherit" for s in slots)
     ):
         ordered.setdefault(default_back_hash)
+    cards: dict[str, FaceResult] = {}
     for slot in slots:
         if slot.back_mode == "image" and slot.back_hash in back_images:
             ordered.setdefault(slot.back_hash)
-    return [back_images[h] for h in ordered]
+        elif slot.back_mode == "card" and slot.reverse is not None and slot.back_hash:
+            # A Back Card: a card face, keyed apart from the content hashes.
+            ordered.setdefault(slot.back_hash)
+            cards.setdefault(slot.back_hash, slot.reverse)
+    return [
+        (cards[h].out_path, cards[h], None) if h in cards else (back_images[h].path, None, back_images[h])
+        for h in ordered
+    ]
 
 
 @dataclass(frozen=True)
@@ -250,7 +263,7 @@ class PreparedExport:
     deck: str
     # The default format's BACK/ entries in order (see _default_backs);
     # empty for the paired format, whose backs are per slot.
-    default_backs: list[BackSource]
+    default_backs: list[BackEntry]
 
     def paired_reverse(
         self, slot: PrintSlot
@@ -340,8 +353,8 @@ def _unique_sources(prepared: PreparedExport) -> list[Path]:
         for slot in prepared.slots:
             sources.setdefault(prepared.paired_reverse(slot)[0] or _BLANK_SOURCE)
     else:
-        for back in prepared.default_backs:
-            sources.setdefault(back.path)
+        for path, _face, _back in prepared.default_backs:
+            sources.setdefault(path)
     return list(sources)
 
 
@@ -485,8 +498,8 @@ def _write_zip(
                     path, suffix = blank_entry() if source is None else entry(source, face, back)
                     archive.write(path, f"{deck}/BACK/{i:0{width}d}{suffix}")
             else:
-                for i, back in enumerate(prepared.default_backs, start=1):
-                    path, suffix = entry(back.path, None, back)
+                for i, (source, face, back) in enumerate(prepared.default_backs, start=1):
+                    path, suffix = entry(source, face, back)
                     archive.write(path, f"{deck}/BACK/{i:0{width}d}{suffix}")
         tmp.close()
     except BaseException:

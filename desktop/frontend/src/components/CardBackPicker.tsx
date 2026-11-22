@@ -10,16 +10,25 @@
 // was chosen for it, because that is what the paper will say. The stored
 // choice is kept (the picker says so) and applies again the moment the
 // PDF-tab pairing setting goes off. Resolution order, mirrored from
-// pdf_layout.resolve_reverse: transform face > this card's own mode > the
-// project's reverse_fill + universal back.
+// pdf_layout.resolve_reverse: Back Card > transform face > this card's own
+// mode > the project's reverse_fill + universal back.
+//
+// A Back Card (docs/adr/0011) is one face of a different card — usually a
+// token — chosen through "Choose a Card…", which swaps the tiles for a
+// card search. It keeps its own identity; the front stays the card.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import type { CardRow } from "../api/project";
+import { generationApi } from "../api/generation";
+import type { CardRow, ScryfallFaceSource } from "../api/project";
 import { projectApi } from "../api/project";
-import type { BackImage, BackMode } from "../api/types";
+import type { BackImage, BackMode, CardVariant } from "../api/types";
+import { BACK_CARD_MIN_SERVER_VERSION, serverSupportsBackCards, useServerVersion } from "../config";
 import { useProject } from "../context/ProjectContext";
 import { useBackLibrary } from "../cardBacks";
+import { useImageCacheSetting } from "../imageOrigin";
+import { downloadPickedPrinting } from "../pickDownloads";
+import { SearchStatus, TokensOnlySwitch, useCardSearch } from "./AddCards";
 import { ACCEPTED_IMAGE_TYPES, MAX_UPLOAD_MB, readPickedImage } from "../imageUpload";
 import FullImageDialog from "./FullImageDialog";
 import { MagnifierIcon } from "./ImageViewer";
@@ -51,6 +60,14 @@ function FlipIcon() {
     </svg>
   );
 }
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4.5 4.5" />
+    </svg>
+  );
+}
 function QuestionIcon() {
   return (
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -72,6 +89,7 @@ export function useBackThumb(id: number | null | undefined) {
 /** What the row swatch has to say, derived once so the swatch, its
  *  tooltip and the picker's header all agree. */
 export type Resolved =
+  | { kind: "card"; back: ScryfallFaceSource }
   | { kind: "locked" }
   | { kind: "blank" }
   | { kind: "image"; back: BackImage }
@@ -83,6 +101,8 @@ export function resolve(
   universalId: number | null,
   transformOnBack: boolean,
 ): Resolved {
+  // A Back Card wins over the transform side, as on the server.
+  if (card.back_mode === "card" && card.back_card) return { kind: "card", back: card.back_card };
   if (transformOnBack) return { kind: "locked" };
   if (card.back_mode === "blank") return { kind: "blank" };
   if (card.back_mode === "image" && card.back_image_id != null) {
@@ -96,6 +116,19 @@ export function resolve(
     back: universalId != null ? library?.find((b) => b.id === universalId) : undefined,
   };
 }
+
+/** The server's thumbnail of a Back Card's face, or null until the image
+ *  origin is known. */
+export function useBackCardThumb(back: ScryfallFaceSource | null | undefined): string | null {
+  const { origin } = useImageCacheSetting();
+  return back && origin
+    ? generationApi.cardThumbUrl(back.scryfall_id, back.source_face, origin)
+    : null;
+}
+
+/** A Back Card as the picker's sub-label says it: "TM19 · 1". */
+const backCardDetail = (back: ScryfallFaceSource) =>
+  `${back.set_code.toUpperCase()} · ${back.collector_number}`;
 
 export default function CardBackPicker({
   card,
@@ -113,10 +146,13 @@ export default function CardBackPicker({
   const thumbId =
     resolved.kind === "image" ? resolved.back.id : resolved.kind === "universal" ? resolved.back?.id : null;
   const thumbQuery = useBackThumb(thumbId);
+  const cardThumb = useBackCardThumb(resolved.kind === "card" ? resolved.back : null);
   const [open, setOpen] = useState(false);
 
   const title = (() => {
     switch (resolved.kind) {
+      case "card":
+        return `Back: ${resolved.back.printed_name ?? resolved.back.name} (this card only)`;
       case "locked":
         return "Back: this card's transform side. Turn off “print a double-faced card's transform side on its own back” on the PDF tab to use a back image.";
       case "blank":
@@ -142,6 +178,7 @@ export default function CardBackPicker({
         {thumbQuery.data && (resolved.kind === "image" || resolved.kind === "universal") ? (
           <img src={thumbQuery.data} alt="" className="card-back-swatch-img" />
         ) : null}
+        {cardThumb && <img src={cardThumb} alt="" className="card-back-swatch-img" />}
         {resolved.kind === "locked" ? (
           <FlipIcon />
         ) : resolved.kind === "blank" ? (
@@ -254,8 +291,14 @@ function CardBackModal({
   universal: BackImage | undefined;
   onClose: () => void;
 }) {
-  const { cards, setCardBack } = useProject();
+  const { cards, setCardBack, setCardBackCard, projectTag } = useProject();
   const queryClient = useQueryClient();
+  const backCardsSupported = serverSupportsBackCards(useServerVersion());
+  const backCardThumb = useBackCardThumb(card.back_card);
+  // "Choose a Card…" swaps the tiles for the card search.
+  const [searching, setSearching] = useState(false);
+  const searchingRef = useRef(false);
+  searchingRef.current = searching;
   const [viewTarget, setViewTarget] = useState<{ title: string; src: string } | null>(null);
   const viewOpen = useRef(false);
   viewOpen.current = viewTarget != null;
@@ -265,7 +308,10 @@ function CardBackModal({
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       // The full-image view has its own Esc; one press closes one layer.
-      if (e.key === "Escape" && !viewOpen.current) onClose();
+      if (e.key !== "Escape" || viewOpen.current) return;
+      // From the card search, Esc goes back to the tiles first.
+      if (searchingRef.current) setSearching(false);
+      else onClose();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -306,7 +352,24 @@ function CardBackModal({
     onError: (err: Error) => setError(err.message),
   });
 
-  const busy = pickMutation.isPending || uploadMutation.isPending;
+  // A Back Card pick closes at once; its image downloads in the
+  // background, with the card's own, like a printing pick.
+  const backCardMutation = useMutation({
+    mutationFn: (back: ScryfallFaceSource) => setCardBackCard(card.id, back),
+    onSuccess: (_void, back) => {
+      setError(null);
+      downloadPickedPrinting({ ...card, back_mode: "card", back_card: back }, projectTag, () =>
+        queryClient.invalidateQueries({ queryKey: ["generation-status", projectTag] }),
+      );
+      onClose();
+    },
+    onError: (err: Error) => {
+      setSearching(false);
+      setError(err.message);
+    },
+  });
+
+  const busy = pickMutation.isPending || uploadMutation.isPending || backCardMutation.isPending;
   const quantity = card.quantity ?? 1;
   const ownCount = cards.filter((c) => c.back_mode !== "inherit").length;
 
@@ -336,7 +399,15 @@ function CardBackModal({
           </button>
         </div>
 
-        {transformOnBack && (
+        {searching && (
+          <BackCardSearch
+            onPick={(back) => backCardMutation.mutate(back)}
+            onBack={() => setSearching(false)}
+            disabled={busy}
+          />
+        )}
+
+        {!searching && transformOnBack && card.back_mode !== "card" && (
           <div className="card-back-banner">
             <FlipIcon />
             <span>
@@ -347,7 +418,11 @@ function CardBackModal({
           </div>
         )}
 
-        <div className="modal-body card-back-tiles" data-tour="card-back-tiles">
+        <div
+          className="modal-body card-back-tiles"
+          data-tour="card-back-tiles"
+          style={searching ? { display: "none" } : undefined}
+        >
           <CardBackTile
             selected={card.back_mode === "inherit"}
             onSelect={() => pickMutation.mutate({ mode: "inherit", id: null })}
@@ -375,6 +450,31 @@ function CardBackModal({
             }
             label="Blank"
             sub="Nothing printed on the back"
+          />
+          <CardBackTile
+            selected={card.back_mode === "card"}
+            onSelect={() => backCardsSupported && setSearching(true)}
+            onPickAndClose={() => backCardsSupported && setSearching(true)}
+            art={
+              <>
+                {backCardThumb && <img src={backCardThumb} alt="" />}
+                <span className="card-back-tile-glyph">
+                  <SearchIcon />
+                </span>
+              </>
+            }
+            label={
+              card.back_card && card.back_mode === "card"
+                ? (card.back_card.printed_name ?? card.back_card.name)
+                : "Choose a Card…"
+            }
+            sub={
+              !backCardsSupported
+                ? `Needs generation server v${BACK_CARD_MIN_SERVER_VERSION} or later`
+                : card.back_card && card.back_mode === "card"
+                  ? `${backCardDetail(card.back_card)} · Choose Another…`
+                  : "Any card or token on the back"
+            }
           />
           {library.map((back) => (
             <CardBackTile
@@ -427,7 +527,7 @@ function CardBackModal({
         {error && <p className="error-text" style={{ marginTop: 8 }}>{error}</p>}
 
         <div className="card-back-foot">
-          <span className="hint">
+          <span className="hint" style={searching ? { visibility: "hidden" } : undefined}>
             {ownCount === 0
               ? "Every card takes the universal back."
               : `${ownCount} of ${cards.length} cards use their own back setting.`}{" "}
@@ -442,5 +542,157 @@ function CardBackModal({
         <FullImageDialog title={viewTarget.title} src={viewTarget.src} onClose={() => setViewTarget(null)} />
       )}
     </ModalOverlay>
+  );
+}
+
+/** One face of a searched printing as a Back Card. A double-faced card's
+ *  face goes by its own name, since that is what the reports will call it. */
+function backCardFrom(v: CardVariant, face: number): ScryfallFaceSource {
+  const faces = v.face_count ?? 1;
+  return {
+    scryfall_id: v.scryfall_id,
+    source_face: faces > 1 ? face : 0,
+    name: (faces > 1 ? v.face_names?.[face] : undefined) ?? v.name,
+    set_code: v.set_code,
+    collector_number: v.collector_number,
+    lang: v.lang,
+    // A printed or flavor name belongs to the whole card, not one face.
+    printed_name: faces > 1 ? null : v.printed_name,
+    flavor_name: faces > 1 ? null : (v.flavor_name ?? null),
+    rarity: v.rarity ?? null,
+  };
+}
+
+/** The card search behind "Choose a Card…": type a name, pick a result
+ *  and it is the Back Card. A double-faced result asks which face. ↑/↓
+ *  move, Enter picks, Esc goes back to the tiles. */
+function BackCardSearch({
+  onPick,
+  onBack,
+  disabled,
+}: {
+  onPick: (back: ScryfallFaceSource) => void;
+  onBack: () => void;
+  disabled: boolean;
+}) {
+  const { origin } = useImageCacheSetting();
+  const [query, setQuery] = useState("");
+  const [tokensOnly, setTokensOnly] = useState(false);
+  const [active, setActive] = useState(0);
+  // A double-faced pick waiting on which of its faces to print.
+  const [faceOf, setFaceOf] = useState<CardVariant | null>(null);
+  const search = useCardSearch(query, null, 12, tokensOnly);
+  const hits = search.hits.filter((hit) => hit.default != null);
+  const activeIndex = Math.min(active, Math.max(0, hits.length - 1));
+
+  const thumb = (v: CardVariant, face = 0) =>
+    origin ? generationApi.cardThumbUrl(v.scryfall_id, face, origin, v.image_version) : null;
+
+  function choose(v: CardVariant) {
+    if ((v.face_count ?? 1) > 1) setFaceOf(v);
+    else onPick(backCardFrom(v, 0));
+  }
+
+  return (
+    <div className="modal-body card-back-search">
+      <div className={`card-back-search-bar${tokensOnly ? " tokens-only" : ""}`}>
+        <button type="button" className="btn-sm" onClick={onBack} disabled={disabled}>
+          Back
+        </button>
+        <input
+          autoFocus
+          type="text"
+          value={query}
+          placeholder={tokensOnly ? "Type a token name" : "Type a card name"}
+          aria-label="Search for a card to print on the back"
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+            setFaceOf(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActive(Math.min(activeIndex + 1, hits.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActive(Math.max(activeIndex - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              const hit = hits[activeIndex];
+              if (hit?.default && !disabled && !faceOf) choose(hit.default);
+            }
+          }}
+        />
+        <TokensOnlySwitch
+          on={tokensOnly}
+          toggle={() => {
+            setTokensOnly((on) => !on);
+            setActive(0);
+            setFaceOf(null);
+          }}
+        />
+      </div>
+
+      {faceOf ? (
+        <div className="card-back-faces">
+          <div className="hint">Which Face of {faceOf.name}?</div>
+          <div className="card-back-face-choices">
+            {[0, 1].map((face) => {
+              const src = thumb(faceOf, face);
+              const name = faceOf.face_names?.[face] ?? (face === 0 ? "Front" : "Back");
+              return (
+                <button
+                  key={face}
+                  type="button"
+                  className="card-back-tile"
+                  disabled={disabled}
+                  onClick={() => onPick(backCardFrom(faceOf, face))}
+                >
+                  <div className="card-back-tile-art">{src && <img src={src} alt="" />}</div>
+                  <div className="card-back-tile-label" title={name}>
+                    {name}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className={`card-back-results${tokensOnly ? " tokens-only" : ""}`} role="listbox">
+          {hits.map((hit, i) => {
+            const v = hit.default as CardVariant;
+            const src = thumb(v);
+            return (
+              <button
+                key={hit.oracle_id}
+                type="button"
+                role="option"
+                aria-selected={i === activeIndex}
+                className={`add-cards-option add-cards-result${i === activeIndex ? " active" : ""}`}
+                onMouseMove={() => setActive(i)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => choose(v)}
+                disabled={disabled}
+              >
+                <span className="add-cards-thumb">{src && <img src={src} alt="" />}</span>
+                <span className="add-cards-result-text">
+                  <span className="add-cards-result-name">{hit.name}</span>
+                  <span className="add-cards-result-meta">
+                    {v.set_name} ({v.set_code.toUpperCase()}) ({v.collector_number})
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+          <SearchStatus search={search} query={query} />
+          {query.trim().length < 2 && (
+            <p className="hint add-cards-status">
+              Search for any card or token to print on this card's back.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

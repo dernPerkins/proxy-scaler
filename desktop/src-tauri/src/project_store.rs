@@ -332,6 +332,11 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // only, like printed_name; filled by imports, picks and the rarity
     // backfill.
     ("flavor_name", "TEXT"),
+    // The Back Card (docs/adr/0011) printed on this card's Reverse while
+    // back_mode is 'card': one face of a different Scryfall printing, as a
+    // JSON face_art::ScryfallFaceSource. Unlike face_art it is another
+    // card with its own identity, not this printing's face.
+    ("back_card", "TEXT"),
 ];
 
 // Columns added to the two image libraries after their initial release.
@@ -893,7 +898,7 @@ pub struct CardRow {
     /// (customs.identity_key / mergeCardStatus.cardIdentity), and deriving
     /// it in the frontend would mean a second lookup on every render.
     pub custom_hash: Option<String>,
-    /// "inherit" | "blank" | "image" — see the back_mode column comment.
+    /// "inherit" | "blank" | "image" | "card" — see the back_mode column comment.
     /// Never NULL on the way out: an unset column reads as "inherit".
     pub back_mode: String,
     /// The back_images row this card prints when back_mode is "image".
@@ -902,6 +907,8 @@ pub struct CardRow {
     /// the server uses (back_hash on a deck entry), carried alongside the
     /// local id for the same reason custom_hash is.
     pub back_hash: Option<String>,
+    /// The Back Card this card prints when back_mode is "card".
+    pub back_card: Option<crate::face_art::ScryfallFaceSource>,
     /// Faces printed from a Custom Image instead of this printing's own
     /// art (face_art.rs). Empty for almost every card.
     pub face_art: Vec<crate::face_art::CardFaceArt>,
@@ -1034,7 +1041,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                     c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
                     c.custom_image_id, ci.content_hash, c.rarity,
                     c.back_mode, c.back_image_id, bi.content_hash, c.face_art,
-                    c.flavor_name
+                    c.flavor_name, c.back_card
              FROM project_cards c
              LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
              LEFT JOIN back_images bi ON bi.id = c.back_image_id
@@ -1044,6 +1051,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
     let mut face_art_cache = HashMap::new();
     let rows = stmt
         .query_map(params![project_id], |row| {
+            let back_card = parse_back_card(row.get::<_, Option<String>>(18)?.as_deref());
             Ok((CardRow {
                 id: row.get(0)?,
                 sort_order: row.get(1)?,
@@ -1059,9 +1067,10 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 custom_image_id: row.get(10)?,
                 custom_hash: row.get(11)?,
                 rarity: row.get(12)?,
-                back_mode: normalize_back_mode(row.get(13)?, row.get(14)?),
+                back_mode: normalize_back_mode(row.get(13)?, row.get(14)?, back_card.is_some()),
                 back_image_id: row.get(14)?,
                 back_hash: row.get(15)?,
+                back_card,
                 face_art: Vec::new(),
             }, row.get::<_, Option<String>>(16)?))
         })
@@ -1710,13 +1719,14 @@ fn import_decklist_into(
         let mut stmt = tx
             .prepare(
                 "SELECT sort_order, name, set_code, collector_number, printed_name, lang,
-                        custom_image_id
+                        custom_image_id, back_mode = 'card' AND back_card IS NOT NULL
                  FROM project_cards WHERE project_id = ?1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![project_id], |row| {
                 let sort_order: i64 = row.get(0)?;
+                let has_back_card: Option<bool> = row.get(7)?;
                 let name: String = row.get(1)?;
                 let set_code: Option<String> = row.get(2)?;
                 let collector_number: Option<String> = row.get(3)?;
@@ -1731,12 +1741,28 @@ fn import_decklist_into(
                     printed_name,
                     lang,
                     custom_image_id,
+                    has_back_card.unwrap_or(false),
                 ))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (sort_order, name, set_code, collector_number, printed_name, lang, custom_image_id) =
-                row.map_err(|e| e.to_string())?;
+            let (
+                sort_order,
+                name,
+                set_code,
+                collector_number,
+                printed_name,
+                lang,
+                custom_image_id,
+                has_back_card,
+            ) = row.map_err(|e| e.to_string())?;
+            next_sort_order = next_sort_order.max(sort_order + 1);
+            // The back is part of a card's identity (docs/adr/0011): a
+            // pasted line carries none, so a row with a Back Card is a
+            // different card and never stands in for it.
+            if has_back_card {
+                continue;
+            }
             seen_keys.extend(stored_card_dedup_keys(
                 set_code.as_deref(),
                 collector_number.as_deref(),
@@ -1745,7 +1771,6 @@ fn import_decklist_into(
                 lang.as_deref(),
                 custom_image_id,
             ));
-            next_sort_order = next_sort_order.max(sort_order + 1);
         }
     }
 
@@ -1841,15 +1866,25 @@ fn import_resolved_cards_into(
     // import of it adds its quantity to. Where rows share a key, a plain
     // row (no face art) wins, then the earliest: a card added from the MPC
     // Fill tab with art on its face is a card of its own, and must not
-    // soak up a plain line of the same card.
+    // soak up a plain line of the same card. A row with a Back Card is
+    // left out altogether: the back is part of a card's identity
+    // (docs/adr/0011), and an imported line carries none.
     let mut row_for_key: HashMap<String, (bool, i64, i64)> = HashMap::new();
-    let mut next_sort_order: i64 = 0;
+    let mut next_sort_order: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM project_cards WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     {
         let mut stmt = tx
             .prepare(
                 "SELECT id, sort_order, name, set_code, collector_number, printed_name, lang,
                         custom_image_id, face_art
-                 FROM project_cards WHERE project_id = ?1",
+                 FROM project_cards
+                 WHERE project_id = ?1
+                   AND NOT COALESCE(back_mode = 'card' AND back_card IS NOT NULL, 0)",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -2383,17 +2418,29 @@ fn set_card_printing_row(conn: &Connection, update: &CardResolutionUpdate) -> Re
     apply_card_resolution(conn, update)
 }
 
-/// The three back modes a card can store. Validated here rather than typed
+/// The back modes set_card_back takes. "card" (a Back Card) has its own
+/// command, set_card_back_card, because it carries a card, not an image. Validated here rather than typed
 /// as an enum across IPC so an unknown value from a newer frontend is a
 /// loud error, not a silently-coerced default.
 pub const BACK_MODES: &[&str] = &["inherit", "blank", "image"];
 
+/// A stored back_card column, or None when it is absent or unreadable.
+fn parse_back_card(raw: Option<&str>) -> Option<crate::face_art::ScryfallFaceSource> {
+    raw.and_then(|s| serde_json::from_str(s).ok())
+}
+
 /// What a stored back_mode means once read back: a NULL (row predates the
 /// column) is "inherit", and an "image" whose pointer is gone is "inherit"
-/// too — "print the image I don't have" has no useful rendering.
-fn normalize_back_mode(mode: Option<String>, back_image_id: Option<i64>) -> String {
+/// too — "print the image I don't have" has no useful rendering. Likewise
+/// a "card" with no Back Card stored.
+fn normalize_back_mode(
+    mode: Option<String>,
+    back_image_id: Option<i64>,
+    has_back_card: bool,
+) -> String {
     match mode.as_deref() {
         Some("image") if back_image_id.is_some() => "image".to_string(),
+        Some("card") if has_back_card => "card".to_string(),
         Some("blank") => "blank".to_string(),
         _ => "inherit".to_string(),
     }
@@ -2401,7 +2448,8 @@ fn normalize_back_mode(mode: Option<String>, back_image_id: Option<i64>) -> Stri
 
 /// Choose what prints on one card's Reverse. `back_image_id` is required
 /// for "image" and ignored (stored as NULL) otherwise, so the two columns
-/// can never disagree about whether a back is in use.
+/// can never disagree about whether a back is in use. Any choice made
+/// here clears a Back Card.
 pub fn set_card_back_row(
     conn: &Connection,
     card_id: i64,
@@ -2417,7 +2465,8 @@ pub fn set_card_back_row(
     };
     let changed = conn
         .execute(
-            "UPDATE project_cards SET back_mode = ?1, back_image_id = ?2 WHERE id = ?3",
+            "UPDATE project_cards SET back_mode = ?1, back_image_id = ?2, back_card = NULL
+             WHERE id = ?3",
             params![back_mode, stored_id, card_id],
         )
         .map_err(|e| e.to_string())?;
@@ -2425,6 +2474,45 @@ pub fn set_card_back_row(
         return Err(format!("card {card_id} not found"));
     }
     Ok(())
+}
+
+/// Put a Back Card on one card's Reverse (docs/adr/0011): face
+/// `source_face` of another Scryfall printing, with the display cache the
+/// frontend renders it from. Replaces any other back choice. The card's
+/// own printing, quantity and face art are untouched.
+pub fn set_card_back_card_row(
+    conn: &Connection,
+    card_id: i64,
+    back_card: &crate::face_art::ScryfallFaceSource,
+) -> Result<(), String> {
+    if back_card.scryfall_id.trim().is_empty() {
+        return Err("a back card needs a Scryfall id".to_string());
+    }
+    if back_card.source_face > 1 {
+        return Err(format!("no face {} on a card", back_card.source_face));
+    }
+    let raw = serde_json::to_string(back_card).map_err(|e| e.to_string())?;
+    let changed = conn
+        .execute(
+            "UPDATE project_cards SET back_mode = 'card', back_image_id = NULL, back_card = ?1
+             WHERE id = ?2",
+            params![raw, card_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("card {card_id} not found"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_card_back_card(
+    app: AppHandle,
+    card_id: i64,
+    back_card: crate::face_art::ScryfallFaceSource,
+) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    set_card_back_card_row(&conn, card_id, &back_card)
 }
 
 #[tauri::command]
@@ -2439,12 +2527,18 @@ pub fn set_card_back(
 }
 
 /// Every card in a project back to the project's Selected Back — the
-/// Decklist tab's bulk escape hatch after experimenting with per-card backs.
+/// Decklist tab's bulk escape hatch after experimenting with per-card
+/// backs. Back Cards are cleared too.
 #[tauri::command]
 pub fn reset_project_card_backs(app: AppHandle, project_id: i64) -> Result<(), String> {
     let conn = open_db(&app)?;
+    reset_project_card_backs_in(&conn, project_id)
+}
+
+fn reset_project_card_backs_in(conn: &Connection, project_id: i64) -> Result<(), String> {
     conn.execute(
-        "UPDATE project_cards SET back_mode = NULL, back_image_id = NULL WHERE project_id = ?1",
+        "UPDATE project_cards SET back_mode = NULL, back_image_id = NULL, back_card = NULL
+         WHERE project_id = ?1",
         params![project_id],
     )
     .map_err(|e| e.to_string())?;
@@ -5053,6 +5147,148 @@ mod tests {
         assert_eq!(card.back_image_id, None);
 
         assert!(set_card_back_row(&conn, cards[0].id, "sideways", None).is_err());
+        assert!(
+            set_card_back_row(&conn, cards[0].id, "card", None).is_err(),
+            "a Back Card is set through set_card_back_card"
+        );
+    }
+
+    fn treasure_back() -> crate::face_art::ScryfallFaceSource {
+        crate::face_art::ScryfallFaceSource {
+            scryfall_id: "treasure-id".to_string(),
+            source_face: 0,
+            name: "Treasure".to_string(),
+            set_code: "tm19".to_string(),
+            collector_number: "1".to_string(),
+            lang: "en".to_string(),
+            printed_name: None,
+            flavor_name: None,
+            rarity: Some("common".to_string()),
+        }
+    }
+
+    fn resolved(name: &str, set_code: &str, collector: &str, id: &str) -> ResolvedImportCard {
+        serde_json::from_value(serde_json::json!({
+            "raw_line": format!("1 {name}"),
+            "quantity": 1,
+            "name": name,
+            "set_code": set_code,
+            "collector_number": collector,
+            "scryfall_id": id,
+            "lang": "en",
+        }))
+        .expect("resolved card")
+    }
+
+    #[test]
+    fn back_card_roundtrips_and_other_choices_clear_it() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "2 Llanowar Elves (m19) 314").expect("import");
+        let card_id = cards[0].id;
+
+        set_card_back_card_row(&conn, card_id, &treasure_back()).expect("back card");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "card");
+        assert_eq!(card.back_card, Some(treasure_back()));
+        assert_eq!(card.back_image_id, None);
+        // The front is untouched.
+        assert_eq!(card.name, "Llanowar Elves");
+        assert_eq!(card.quantity, Some(2));
+
+        // Any other choice clears it.
+        set_card_back_row(&conn, card_id, "blank", None).expect("blank");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "blank");
+        assert_eq!(card.back_card, None);
+
+        // So does the bulk reset.
+        set_card_back_card_row(&conn, card_id, &treasure_back()).expect("back card");
+        reset_project_card_backs_in(&conn, id).expect("reset");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "inherit");
+        assert_eq!(card.back_card, None);
+
+        let mut bad = treasure_back();
+        bad.source_face = 2;
+        assert!(set_card_back_card_row(&conn, card_id, &bad).is_err());
+        bad = treasure_back();
+        bad.scryfall_id = " ".to_string();
+        assert!(set_card_back_card_row(&conn, card_id, &bad).is_err());
+        assert!(set_card_back_card_row(&conn, 9999, &treasure_back()).is_err());
+    }
+
+    #[test]
+    fn back_card_mode_without_a_card_reads_as_inherit() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Sol Ring (c21) 263").expect("import");
+        conn.execute(
+            "UPDATE project_cards SET back_mode = 'card', back_card = NULL WHERE id = ?1",
+            params![cards[0].id],
+        )
+        .expect("corrupt row");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.back_mode, "inherit");
+    }
+
+    #[test]
+    fn a_back_card_survives_a_printing_change() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let cards = import_decklist_into(&mut conn, id, "1 Llanowar Elves (m19) 314").expect("import");
+        set_card_back_card_row(&conn, cards[0].id, &treasure_back()).expect("back card");
+        set_card_printing_row(
+            &conn,
+            &CardResolutionUpdate {
+                card_id: cards[0].id,
+                scryfall_id: "elves-dom".to_string(),
+                name: "Llanowar Elves".to_string(),
+                set_code: "dom".to_string(),
+                collector_number: "168".to_string(),
+                lang: "en".to_string(),
+                printed_name: None,
+                flavor_name: None,
+                rarity: None,
+            },
+        )
+        .expect("change printing");
+        let card = &cards_for_project(&conn, id).expect("cards")[0];
+        assert_eq!(card.set_code.as_deref(), Some("dom"));
+        assert_eq!(card.back_mode, "card");
+        assert_eq!(card.back_card, Some(treasure_back()));
+    }
+
+    #[test]
+    fn imports_never_merge_into_a_row_with_a_back_card() {
+        let mut conn = test_conn();
+        let id = get_or_create_unnamed_project_id(&conn).expect("create");
+        let elves = resolved("Llanowar Elves", "m19", "314", "elves-id");
+        let cards = import_resolved_cards_into(&mut conn, id, "", &[elves]).expect("import");
+        set_card_back_card_row(&conn, cards[0].id, &treasure_back()).expect("back card");
+
+        // The same card again has no back: it is a new row, after the first.
+        let elves = resolved("Llanowar Elves", "m19", "314", "elves-id");
+        let cards = import_resolved_cards_into(&mut conn, id, "", &[elves]).expect("import");
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].back_mode, "card");
+        assert_eq!(cards[0].quantity, Some(1));
+        assert_eq!(cards[1].back_mode, "inherit");
+        assert!(cards[1].sort_order > cards[0].sort_order);
+
+        // A third import merges into the plain row.
+        let elves = resolved("Llanowar Elves", "m19", "314", "elves-id");
+        let cards = import_resolved_cards_into(&mut conn, id, "", &[elves]).expect("import");
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].quantity, Some(1));
+        assert_eq!(cards[1].quantity, Some(2));
+
+        // The legacy text import follows the same rule.
+        conn.execute("DELETE FROM project_cards WHERE id = ?1", params![cards[1].id])
+            .expect("drop plain row");
+        let cards = import_decklist_into(&mut conn, id, "1 Llanowar Elves (m19) 314").expect("import");
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].back_mode, "inherit");
     }
 
     #[test]

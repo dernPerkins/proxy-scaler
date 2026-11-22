@@ -64,6 +64,17 @@ class FaceOverride:
 
 
 @dataclass(frozen=True)
+class BackCard:
+    """A Back Card (docs/adr/0011): face `source_face` of the Scryfall
+    printing `scryfall_id`, printed on an entry's Reverse. Unlike a
+    FaceOverride it is a different card and keeps its own identity."""
+
+    scryfall_id: str
+    source_face: int = 0
+    name: str = ""
+
+
+@dataclass(frozen=True)
 class DeckEntry:
     quantity: int
     name: str
@@ -89,6 +100,8 @@ class DeckEntry:
     # — see pdf_layout.build_print_slots.
     back_mode: str = "inherit"
     back_hash: str | None = None
+    # Set in back_mode "card": the Back Card on this entry's Reverse.
+    back_card: BackCard | None = None
     # Client-only too: faces of this Scryfall card printed from a Custom
     # Image (MPC Fill art) or another printing's face rather than the
     # printing's own art. A tuple so the entry stays hashable.

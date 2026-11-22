@@ -111,6 +111,13 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
         for o in to_deck_entry(e).face_overrides
         if o.scryfall_id
     ]
+    # A Back Card's printing likewise, under its own name.
+    for e in body.entries:
+        back = to_deck_entry(e).back_card
+        if back is not None:
+            entries.append(
+                DeckEntry(quantity=1, name=back.name or e.name, scryfall_id=back.scryfall_id)
+            )
     adopted = db.adopt_gallery_items(
         body.project_tag,
         entries,

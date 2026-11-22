@@ -80,6 +80,8 @@ export interface DeckEntryIn {
   // request's back_images manifest. Servers before 0.6.0 ignore both.
   back_mode?: BackMode;
   back_hash?: string | null;
+  // Sent only in back_mode "card": the Back Card (docs/adr/0011).
+  back_card?: BackCardIn | null;
   // Faces of this Scryfall card printed from a Custom Image (MPC Fill art)
   // instead of the printing's own art. Servers before
   // MPC_FILL_MIN_SERVER_VERSION drop it and print the Scryfall art.
@@ -103,7 +105,15 @@ export interface FaceOverrideIn {
 
 /** What a card's Reverse takes when it isn't a transform face. Mirrors
  *  project_cards.back_mode (Rust) and DeckEntryIn.back_mode (server). */
-export type BackMode = "inherit" | "blank" | "image";
+export type BackMode = "inherit" | "blank" | "image" | "card";
+
+/** A Back Card on the wire (BackCardIn): one face of a different Scryfall
+ *  printing, printed on the entry's Reverse under its own name. */
+export interface BackCardIn {
+  scryfall_id: string;
+  source_face: number;
+  name: string;
+}
 
 /** One back a print request may draw on, with the Back Library's own
  *  declaration about its bleed — per back, because a themed token back and
