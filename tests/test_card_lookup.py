@@ -55,11 +55,25 @@ class _NoNetworkAllowed:
 class _FakeClient:
     """Stands in for ScryfallClient on the fallback path, recording calls."""
 
-    def __init__(self, by_key: dict | None = None, by_lang_key: dict | None = None):
+    def __init__(
+        self,
+        by_key: dict | None = None,
+        by_lang_key: dict | None = None,
+        tokens: dict | None = None,
+    ):
         self.by_key = by_key or {}
         self.by_lang_key = by_lang_key or {}
+        self.tokens = tokens or {}
         self.resolve_many_calls: list[list[DeckEntry]] = []
         self.fetch_calls: list[tuple] = []
+        self.token_calls: list[list[str]] = []
+
+    def fetch_token_by_name(self, names):
+        self.token_calls.append(names)
+        for name in names:
+            if name in self.tokens:
+                return self.tokens[name]
+        raise ScryfallError(f"No token named {names[0]!r}")
 
     def resolve_many(self, entries):
         self.resolve_many_calls.append(entries)
@@ -490,12 +504,46 @@ def test_tokens_only_fails_a_set_and_number_that_is_not_a_token(tmp_path: Path) 
     assert "Not a token: Sol Ring (c21/263)" in str(result)
 
 
-def test_tokens_only_rejects_a_live_match_that_is_not_a_token(tmp_path: Path) -> None:
+def test_tokens_only_rejects_a_live_printing_that_is_not_a_token(tmp_path: Path) -> None:
     _tokens_corpus(tmp_path)
-    live = _FakeClient(by_key={"Treasure Cru": _card(name="Treasure Cruise", set="ktk",
-                                                      collector_number="59")})
+    live = _FakeClient(by_key={("ktk", "60"): _card(name="Treasure Cruise", set="ktk",
+                                                     collector_number="60")})
+    resolver = _resolver(tmp_path, live)
+    entry = _entry(name="Treasure Cruise", set_code="ktk", collector_number="60",
+                   raw_line="1 Treasure Cruise (ktk) 60")
+    [result] = resolver.resolve_many([entry], tokens_only=True)
+    assert isinstance(result, ScryfallError)
+    assert "Not a token: Treasure Cruise (ktk/60)" in str(result)
+
+
+def test_tokens_only_live_name_searches_tokens_without_the_token_word(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    goblin = _card(id="goblin-token", name="Goblin", set="tfrc", collector_number="9",
+                   layout="token")
+    live = _FakeClient(tokens={"Goblin": goblin})
+    resolver = _resolver(tmp_path, live)
+    entry = _entry(name="Goblin Token", raw_line="3 Goblin Token")
+    card, warnings = resolver.resolve(entry, tokens_only=True)
+    assert card["id"] == "goblin-token"
+    assert live.token_calls == [["Goblin Token", "Goblin"]]
+    # The name never reaches /cards/named's fuzzy match.
+    assert live.resolve_many_calls == []
+    assert warnings and "Name-only lookup resolved to Goblin (tfrc/9)" in warnings[0]
+
+
+def test_tokens_only_live_name_with_no_token_fails(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    live = _FakeClient(by_key={"Treasure Cru": _card(name="Treasure Cruise")})
     resolver = _resolver(tmp_path, live)
     entry = _entry(name="Treasure Cru", raw_line="1 Treasure Cru")
     [result] = resolver.resolve_many([entry], tokens_only=True)
     assert isinstance(result, ScryfallError)
     assert "No token named 'Treasure Cru'" in str(result)
+    assert live.resolve_many_calls == []
+
+
+def test_trailing_token_word_finds_the_token_with_tokens_only_off(tmp_path: Path) -> None:
+    _tokens_corpus(tmp_path)
+    resolver = _resolver(tmp_path)  # local only: no live lookup
+    entry = _entry(name="Treasure Token", raw_line="2 Treasure Token")
+    assert resolver.resolve(entry)[0]["id"] == "treasure-token"

@@ -357,6 +357,53 @@ def test_get_raises_not_found_subclass_on_404() -> None:
         client._get("/cards/named", params={"exact": "nope"})
 
 
+def test_fetch_token_by_name_searches_tokens_and_emblems_newest_first() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class _Resp:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {"data": [{"name": "Goblin", "set": "tfrc"}, {"name": "Goblin", "set": "tm20"}]}
+
+    class _Session:
+        headers: dict = {}
+
+        def get(self, url, params=None, timeout=None):
+            calls.append((url, params))
+            return _Resp()
+
+    client = ScryfallClient(session=_Session(), delay_s=0)  # type: ignore[arg-type]
+    card = client.fetch_token_by_name(["Goblin Token", "Goblin"])
+    assert card["set"] == "tfrc"
+    [(url, params)] = calls
+    assert url.endswith("/cards/search")
+    assert params == {
+        "q": '(!"Goblin Token" OR !"Goblin") (t:token OR t:emblem)',
+        "include_extras": "true",
+        "order": "released",
+        "dir": "desc",
+    }
+
+
+def test_fetch_token_by_name_miss_says_no_token() -> None:
+    class _Resp:
+        status_code = 404
+        ok = False
+        text = ""
+
+    class _Session:
+        headers: dict = {}
+
+        def get(self, url, params=None, timeout=None):
+            return _Resp()
+
+    client = ScryfallClient(session=_Session(), delay_s=0)  # type: ignore[arg-type]
+    with pytest.raises(ScryfallNotFound, match="No token named 'Gobln'"):
+        client.fetch_token_by_name(["Gobln"])
+
+
 # --- Image origin: the Proxy Scaler image cache (Worker) vs Scryfall direct ---
 
 

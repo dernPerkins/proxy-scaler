@@ -223,6 +223,7 @@ export default function AddCards(props: AddCardsProps) {
             onChange={(e) => props.setDraft(e.target.value)}
             rows={6}
             placeholder={listPlaceholder(tokensOnly)}
+            onKeyDown={(e) => onImportKey(e, props.canImport, props.onImport)}
             autoFocus
           />
           <div className="add-cards-paste-bar">
@@ -294,6 +295,20 @@ function useAddMode(draft: string) {
       save.mutate(next);
     },
   };
+}
+
+/** ⌘Enter / Ctrl+Enter in a list box: Import, as its button would. Kept
+ *  from the page's own ⌘Enter, which stays quiet in the palette (a dialog)
+ *  and would otherwise import twice from the Decklist's box. */
+function onImportKey(
+  e: ReactKeyboardEvent<HTMLTextAreaElement>,
+  canImport: boolean,
+  importNow: () => void,
+) {
+  if (e.key !== "Enter" || !hasShortcutModifier(e.nativeEvent) || e.shiftKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (canImport) importNow();
 }
 
 function importLabel(importing: boolean, lines: number, tokensOnly: boolean) {
@@ -601,6 +616,7 @@ function Palette({
   onImport,
   canImport,
   importing,
+  importTitle,
   onChooseFiles,
   onChooseOrder,
   orderDisabled,
@@ -618,10 +634,17 @@ function Palette({
   const quick = useQuickAdd(lang, adds, onCardSearch, tokensOnly);
 
   const added = useAddedSince(adds, null);
-  const [listMode, setListMode] = useState(draft.trim().length > 0);
+  // Always opens on the commands. Lines left in the list after an import
+  // (the ones that failed) wait there; Paste a List… says how many.
+  const [listMode, setListMode] = useState(false);
   const [cmd, setCmd] = useState(0);
+  const waiting = countLines(draft);
   const commands: { label: string; hint: string; run: () => void; disabled?: boolean }[] = [
-    { label: "Paste a List…", hint: "One card per line", run: () => setListMode(true) },
+    {
+      label: "Paste a List…",
+      hint: waiting > 0 ? `${waiting} ${waiting === 1 ? "Line" : "Lines"} Waiting` : "One card per line",
+      run: () => setListMode(true),
+    },
     {
       label: "Add Your Own Art…",
       hint: "Images become cards",
@@ -692,6 +715,12 @@ function Palette({
               onChange={(e) => setDraft(e.target.value)}
               rows={10}
               placeholder={listPlaceholder(tokensOnly)}
+              onKeyDown={(e) =>
+                onImportKey(e, canImport, () => {
+                  onImport();
+                  onClose();
+                })
+              }
               autoFocus
             />
             <div className="add-cards-palette-list-bar">
@@ -703,6 +732,7 @@ function Palette({
                   onClose();
                 }}
                 disabled={!canImport}
+                title={importTitle}
               >
                 {importLabel(importing, countLines(draft), tokensOnly)}
               </button>

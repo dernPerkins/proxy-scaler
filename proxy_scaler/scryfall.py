@@ -207,6 +207,31 @@ class ScryfallClient:
         except ScryfallNotFound:
             return self._get("/cards/named", params={"fuzzy": name})
 
+    def fetch_token_by_name(self, names: list[str]) -> dict[str, Any]:
+        """The newest token or emblem named exactly any of `names` (Add
+        Cards' Tokens Only). /cards/named can't filter by type, and its
+        fuzzy match prefers real cards — "Goblin Token" lands on a Goblin
+        creature card, not the Goblin token — so this is a search instead.
+        include_extras is what lets a search see tokens at all. Exact names
+        only: Scryfall has no fuzzy match that takes a type filter."""
+        wanted = " OR ".join(f'!"{n.replace(chr(34), "")}"' for n in names)
+        try:
+            resp = self._get(
+                "/cards/search",
+                params={
+                    "q": f"({wanted}) (t:token OR t:emblem)",
+                    "include_extras": "true",
+                    "order": "released",
+                    "dir": "desc",
+                },
+            )
+        except ScryfallNotFound:
+            raise ScryfallNotFound(f"No token named {names[0]!r}") from None
+        data = resp.get("data") or []
+        if not data:
+            raise ScryfallNotFound(f"No token named {names[0]!r}")
+        return data[0]
+
     def resolve_collection(
         self, identifiers: list[dict[str, str]], *, chunk_size: int = 75
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

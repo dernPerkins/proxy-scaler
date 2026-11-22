@@ -100,6 +100,7 @@ import LibraryAddPanel from "../components/LibraryAddPanel";
 import AddCards from "../components/AddCards";
 import GridZoomDock from "../components/GridZoomDock";
 import { useGridCardSize } from "../gridZoom";
+import { useTokensOnly } from "../tokensOnly";
 
 // Generation-machine-local directory names, fixed and not
 // user-configurable: every generate/regenerate/clear request sends these
@@ -238,9 +239,10 @@ export default function DecklistPage() {
   >([]);
   const [importing, setImporting] = useState(false);
   useEffect(() => setImportFailures([]), [projectId]);
-  // Add Cards' Tokens Only (its switch, ⌘T): owned here so this page's
-  // ⌘Enter import honors it like the Import button does.
-  const [tokensOnly, setTokensOnly] = useState(false);
+  // Add Cards' Tokens Only (its switch, ⌘T): read here so this page's
+  // ⌘Enter import honors it like the Import button does. Kept outside
+  // the page (tokensOnly.ts) so a tab switch doesn't turn it off.
+  const [tokensOnly, setTokensOnly] = useTokensOnly();
 
   // The resolve-gated import: parse locally (Rust), resolve against the
   // server (strictly in the chosen language unless "All Languages"),

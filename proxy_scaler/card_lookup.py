@@ -18,7 +18,11 @@ exactly here (typo, partial name) goes to /cards/named?fuzzy= as always.
 tokens_only (Add Cards' Tokens Only) narrows every name lookup to tokens
 and emblems, so "Ornithopter" finds the token, and rejects whatever else
 resolved — a set+number of a real card, or a live match that isn't a
-token — as that entry's error.
+token — as that entry's error. A name the corpus misses is searched live
+among tokens and emblems (exact name), not through the fuzzy lookup.
+
+A name ending in " Token" that matches no card exactly is looked up as a
+token of the bare name, Tokens Only or not: "Goblin Token" is the Goblin.
 """
 
 from __future__ import annotations
@@ -102,7 +106,9 @@ class CardResolver:
                 conn.close()
 
         if misses:
-            self._resolve_live(entries, misses, results, strict_lang=strict_lang)
+            self._resolve_live(
+                entries, misses, results, strict_lang=strict_lang, tokens_only=tokens_only
+            )
 
         if tokens_only:
             for i, result in enumerate(results):
@@ -120,8 +126,23 @@ class CardResolver:
         results: list,
         *,
         strict_lang: bool = False,
+        tokens_only: bool = False,
     ) -> None:
         client = self._live()
+        if tokens_only:
+            # A Tokens Only name goes to a token search, not /cards/named
+            # (whose fuzzy match prefers real cards). Printings and pins
+            # keep the normal path; what they find is checked afterwards.
+            names = [
+                i
+                for i in misses
+                if not entries[i].has_exact_printing and not entries[i].scryfall_id
+            ]
+            misses = [i for i in misses if i not in names]
+            for i in names:
+                results[i] = _live_token(client, entries[i], strict_lang=strict_lang)
+            if not misses:
+                return
         # /cards/collection can't express a language, so an exact-printing
         # entry that wants a non-English language gets its own
         # /cards/{set}/{number}/{lang} request (English printing as the
@@ -200,6 +221,28 @@ class CardResolver:
             results[i] = (card, [warning] if warning else [])
 
 
+def _live_token(
+    client: ScryfallClient, entry: DeckEntry, *, strict_lang: bool = False
+) -> tuple[dict[str, Any], list[str]] | ScryfallError:
+    """A Tokens Only name the corpus missed, searched live among tokens and
+    emblems — as written, and less a trailing " Token"."""
+    names = [entry.name]
+    bare = _without_token_suffix(entry.name)
+    if bare:
+        names.append(bare)
+    try:
+        card = client.fetch_token_by_name(names)
+    except ScryfallError as exc:
+        return exc
+    if strict_lang and entry.lang and card.get("lang") != entry.lang:
+        return ScryfallError(
+            f"No {entry.lang} token named {entry.name!r} — closest was "
+            f"{card.get('name')} ({card.get('set')}/{card.get('collector_number')}, "
+            f"{card.get('lang')})"
+        )
+    return card, [_name_only_note(card)]
+
+
 def _not_a_token(entry: DeckEntry, card: dict[str, Any]) -> ScryfallError:
     """A Tokens Only entry that resolved to something else: the printing it
     named, or (a name) the closest match the live fallback found."""
@@ -254,8 +297,10 @@ def _lookup_local(
     card = carddb.get_card_by_name(
         conn, entry.name, prefer_lang, only_lang=only_lang, tokens_only=tokens_only
     )
-    if card is None and tokens_only:
-        # "Treasure Token", as many lists write a token, is the Treasure.
+    if card is None:
+        # "Treasure Token", as many lists write a token, is the Treasure —
+        # with Tokens Only off too: no card has that exact name, and the
+        # live fuzzy match would pick a real card over the token.
         bare = _without_token_suffix(entry.name)
         if bare:
             card = carddb.get_card_by_name(
