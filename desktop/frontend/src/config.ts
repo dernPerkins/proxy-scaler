@@ -277,7 +277,11 @@ export const MPC_FILL_MIN_SERVER_VERSION = "0.5.0";
 // Back Cards (docs/adr/0011): DeckEntryIn.back_mode "card" + back_card.
 // A server older than per-card backs drops both and prints the universal
 // back; one that has per-card backs but not this rejects the request.
-// The release these ship in; packaging/set-version.py must never rewrite it.
+// Ships in 0.6.0. Held at 0.5.0 while the tree itself still reports 0.5.0,
+// or the picker's tile would be disabled in development: MUST become
+// "0.6.0" when the version is bumped. Until then a released 0.5.0 server
+// rejects the request loudly (its back_mode is a closed Literal).
+// packaging/set-version.py must never rewrite it.
 export const BACK_CARD_MIN_SERVER_VERSION = "0.5.0";
 
 function parseVersion(version: string): number[] | null {

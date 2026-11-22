@@ -174,6 +174,8 @@ export default function DecklistPage() {
     setCardPrinting,
     setCardFaceArt,
     setCardFaceArtPending,
+    setCardBack,
+    setCardBackCard,
     setCardFacePrinting,
     clearCardFaceArt,
     resetCardBacks,
@@ -1098,7 +1100,17 @@ export default function DecklistPage() {
         cards,
         settings.sort_primary,
         placements,
-        new Set(transformsOnTheirOwn && doubleFacedKey ? doubleFacedKey.split(",").map(Number) : []),
+        // Not a card whose Back Card took its transform side's place: that
+        // side leaves the print, so it has no tile. Its placements are
+        // kept, and the tile returns where it was with the real back.
+        new Set(
+          transformsOnTheirOwn && doubleFacedKey
+            ? doubleFacedKey
+                .split(",")
+                .map(Number)
+                .filter((id) => cards.find((c) => c.id === id)?.back_mode !== "card")
+            : [],
+        ),
       ),
     [cards, settings.sort_primary, placements, transformsOnTheirOwn, doubleFacedKey],
   );
@@ -1107,6 +1119,14 @@ export default function DecklistPage() {
     await clearCardFaceArt(card.id, face);
     invalidateStatus();
   }
+
+  // A double-faced card's "back" face is what prints on its Reverse while
+  // the PDF tab pairs faces. Known only once its faces have been generated
+  // or downloaded.
+  const transformOnBackOf = (card: CardRow) =>
+    settings.back_printing &&
+    settings.back_faces_as_reverse &&
+    facesForCard(card).some((f) => f.faceLabel === "back");
 
   const walkApply: WalkApply = {
     // Persisting the pick changes the card's identity string, which
@@ -1133,7 +1153,14 @@ export default function DecklistPage() {
         refreshStatus: refetchStatus,
       });
     },
+    faceCustom: async (card, face, totalFaces, image) => {
+      dismissPendingFaceArt(card.id, face);
+      await setCardFaceArt(card.id, face, totalFaces, image);
+      invalidateStatus();
+    },
     clearFaceArt: (card, face) => clearFaceArt(card, face),
+    backCard: (card, source) => setCardBackCard(card.id, source),
+    back: (card, mode, backImageId) => setCardBack(card.id, mode, backImageId),
     // Every card the walk visited, as it prints now: its Scryfall faces
     // (its own printing's, or another printing's) face by face, and any
     // MPC Fill art chosen but not downloaded yet.
@@ -1583,10 +1610,7 @@ export default function DecklistPage() {
             // downloaded: a double-faced card's "back" face is what prints
             // on its Reverse while the PDF tab pairs faces, so the per-card
             // back control shows locked for it (CardBackPicker).
-            const transformOnBack =
-              settings.back_printing &&
-              settings.back_faces_as_reverse &&
-              faces.some((f) => f.faceLabel === "back");
+            const transformOnBack = transformOnBackOf(card);
             return (
               <CardRowView
                 key={card.id}
@@ -1633,6 +1657,7 @@ export default function DecklistPage() {
           startCardId={walk.cardId}
           startRequest={walk.request}
           preferredLang={settings.preferred_lang}
+          transformOnBack={transformOnBackOf}
           apply={walkApply}
           onClose={() => {
             setWalk(null);
@@ -1807,7 +1832,15 @@ function CardRowView(props: {
             onOpen={onOpenPicker}
           />
         )}
-        <CardBackPicker card={card} transformOnBack={transformOnBack} />
+        <CardBackPicker
+          card={card}
+          transformOnBack={transformOnBack}
+          onOpenPicker={
+            card.scryfall_id != null && card.custom_image_id == null && !disabled
+              ? () => onOpenPicker({ source: "scryfall", face: 0, side: "back" })
+              : undefined
+          }
+        />
         <span className="card-qty-stepper" data-tour="card-qty">
           <button
             className="btn-sm"

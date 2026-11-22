@@ -314,3 +314,93 @@ def test_the_default_zip_ships_each_back_card_once() -> None:
     assert [(path, face.card_name if face else None, back) for path, face, back in backs] == [
         (Path("/o/treasure-1200.png"), "Treasure", None)
     ]
+
+
+# --- a double-faced front ----------------------------------------------------
+
+DELVER_ID = "44444444-4444-4444-4444-444444444444"
+
+
+def _delver_face(index: int, name: str) -> FaceResult:
+    return FaceResult(
+        out_path=Path(f"/o/delver-{index}-1200.png"),
+        original_path=Path(f"/c/delver-{index}.png"),
+        scryfall_id=DELVER_ID,
+        face_index=index,
+        face_name=name,
+        card_name="Delver of Secrets // Insectile Aberration",
+        set_code="isd",
+        collector_number="51",
+        png_url="",
+        dpi=1200,
+        total_faces=2,
+    )
+
+
+def _delver(back: BackCard | None = None, *, quantity: int = 1) -> DeckEntry:
+    return DeckEntry(
+        quantity=quantity,
+        name="Delver of Secrets // Insectile Aberration",
+        set_code="isd",
+        collector_number="51",
+        scryfall_id=DELVER_ID,
+        back_mode="card" if back else "inherit",
+        back_card=back,
+    )
+
+
+def _delver_gallery() -> list[FaceResult]:
+    return [
+        _delver_face(0, "Delver of Secrets"),
+        _delver_face(1, "Insectile Aberration"),
+        _treasure_face(),
+    ]
+
+
+@pytest.mark.parametrize("pair", [True, False])
+def test_a_back_card_replaces_a_double_faced_cards_own_back(pair: bool) -> None:
+    units, missing, missing_at_dpi = match_quantities(
+        [_delver(_treasure_back(), quantity=2)], _delver_gallery(), preferred_dpi=1200
+    )
+    assert missing == [] and missing_at_dpi == []
+    # The transform side neither prints behind the front nor as a card of
+    # its own, paired or not.
+    (unit,) = units
+    assert unit.best.face_name == "Delver of Secrets"
+    slots = build_print_slots(units, pair_back_faces=pair)
+    assert len(slots) == 2
+    assert all(s.reverse is unit.back_face for s in slots)
+    assert unit.back_face is not None and unit.back_face.card_name == "Treasure"
+
+
+def test_a_double_faced_card_without_a_back_card_keeps_its_back() -> None:
+    units, missing, _ = match_quantities([_delver(quantity=2)], _delver_gallery())
+    assert missing == []
+    assert sorted(u.best.face_name for u in units) == ["Delver of Secrets", "Insectile Aberration"]
+    assert len(build_print_slots(units, pair_back_faces=True)) == 2
+    assert len(build_print_slots(units, pair_back_faces=False)) == 4
+
+
+def test_only_the_line_with_a_back_card_loses_its_back_face() -> None:
+    entries = [_delver(_treasure_back()), _delver(quantity=3)]
+    units, missing, _ = match_quantities(entries, _delver_gallery())
+    assert missing == []
+    backs = [u for u in units if u.best.face_name == "Insectile Aberration"]
+    assert sum(u.quantity for u in backs) == 3
+    assert len(build_print_slots(units, pair_back_faces=True)) == 4
+
+
+def test_transform_placements_are_ignored_while_a_back_card_replaces_it() -> None:
+    # The client keeps the transform side's placements (Reset to Real Back
+    # puts its tile back), so face_order may still carry them.
+    entries = [_delver(_treasure_back(), quantity=2), _elves()]
+    gallery = [*_delver_gallery(), _elves_face()]
+    units, missing, _ = match_quantities(entries, gallery)
+    assert missing == []
+    face_order = [(1, 0), (0, 0), (0, 1), (0, 0), (0, 1)]
+    slots = build_print_slots(units, pair_back_faces=False, face_order=face_order)
+    assert [s.front.face_name for s in slots] == [
+        "Llanowar Elves",
+        "Delver of Secrets",
+        "Delver of Secrets",
+    ]

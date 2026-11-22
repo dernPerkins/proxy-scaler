@@ -13,10 +13,14 @@
 // it. Close, Esc or a click outside close it without downloading; with
 // choices made they ask first — Keep (the same as Confirm), Discard or
 // Cancel — so unconfirmed work isn't lost to a stray click.
+// The walk covers both sides of a card (PickerSides.tsx): the Reverse (a
+// Back Card, or Universal / Blank / a back image) and a Custom Image for a
+// face are chosen and applied the same way.
 // Chosen from a prototype (.scratch/mpcfill-art-picker/prototype-deck-walk/).
 import { useEffect, useState } from "react";
 import { isImageFaceArt, type CardFaceArt, type CardRow, type ScryfallFaceSource } from "../api/project";
-import type { MpcCard } from "../api/types";
+import type { BackMode, CustomImage, MpcCard } from "../api/types";
+import { backAfter, backUnchanged } from "./PickerSides";
 import ModalOverlay from "./ModalOverlay";
 import { altLabel } from "../shortcuts";
 import {
@@ -26,6 +30,7 @@ import {
   type PickerFilters,
   type Pick,
   type PickerOpenRequest,
+  type Side,
   type StagedChanges,
   type WalkChoice,
 } from "./PrintingPicker";
@@ -39,8 +44,15 @@ export interface WalkApply {
   facePrinting: (card: CardRow, face: number, totalFaces: number, source: ScryfallFaceSource) => Promise<void>;
   /** MPC Fill art on one face; downloads in the background. */
   faceArt: (card: CardRow, face: number, totalFaces: number, art: MpcCard) => void;
+  /** A Custom Image on one face. */
+  faceCustom: (card: CardRow, face: number, totalFaces: number, image: CustomImage) => Promise<void>;
   /** A face back on the card's own printing. */
   clearFaceArt: (card: CardRow, face: number) => Promise<void>;
+  /** A Back Card on the card's Reverse. */
+  backCard: (card: CardRow, source: ScryfallFaceSource) => Promise<void>;
+  /** Universal, Blank or a back image on the Reverse; takes a Back Card
+   *  off. */
+  back: (card: CardRow, mode: Exclude<BackMode, "card">, backImageId: number | null) => Promise<void>;
   /** Download a card the walk visited, as it prints now (`card` already
    *  carries the walk's choices): every face that isn't MPC Fill art, and
    *  any MPC Fill art chosen but not downloaded yet. */
@@ -67,7 +79,7 @@ export function sourceOf(pick: Pick, face: number): ScryfallFaceSource {
  *  drops the front's art and keeps the back's; a back given the card's
  *  printing follows it, with no override. */
 function cardAfter(card: CardRow, change: StagedChanges): CardRow {
-  let next: CardRow = { ...card, face_art: [...(card.face_art ?? [])] };
+  let next: CardRow = { ...card, ...backAfter(card, change), face_art: [...(card.face_art ?? [])] };
   const front = change.faces.get(0);
   if (front?.kind === "printing" && front.pick.scryfallId !== card.scryfall_id) {
     const p = front.pick;
@@ -101,6 +113,16 @@ function cardAfter(card: CardRow, change: StagedChanges): CardRow {
         mpc_drive_id: choice.art.drive_id,
         mpc_source: choice.art.source_name,
       };
+    } else if (choice.kind === "custom") {
+      added = {
+        face,
+        total_faces: choice.totalFaces,
+        custom_image_id: choice.image.id,
+        custom_hash: choice.image.content_hash,
+        label: choice.image.label,
+        mpc_drive_id: null,
+        mpc_source: null,
+      };
     } else if (choice.pick.scryfallId !== next.scryfall_id) {
       added = {
         face,
@@ -126,9 +148,19 @@ function withChoice(
   choice: WalkChoice,
 ): StagedChanges | undefined {
   const faces = new Map(prev?.faces);
+  if (choice.kind === "back") {
+    const back = backUnchanged(card, choice.back) ? undefined : choice.back;
+    return faces.size > 0 || back ? { faces, back } : undefined;
+  }
   faces.delete(choice.face);
   let unchanged: boolean;
-  if (choice.kind === "printing") {
+  if (choice.kind === "custom") {
+    const existing = card.face_art?.find((fa) => fa.face === choice.face);
+    unchanged = existing?.custom_image_id === choice.image.id;
+    if (!unchanged) {
+      faces.set(choice.face, { kind: "custom", totalFaces: choice.totalFaces, image: choice.image });
+    }
+  } else if (choice.kind === "printing") {
     // What the face prints with nothing chosen for it (a back with no
     // printing of its own follows the front, as chosen so far).
     unchanged = facePrinting(card, { faces }, choice.face) === choice.pick.scryfallId;
@@ -145,7 +177,7 @@ function withChoice(
       faces.set(choice.face, { kind: "art", totalFaces: choice.totalFaces, art: choice.art });
     }
   }
-  return faces.size > 0 ? { faces } : undefined;
+  return faces.size > 0 || prev?.back ? { faces, back: prev?.back } : undefined;
 }
 
 export default function DeckArtWalk(props: {
@@ -154,6 +186,9 @@ export default function DeckArtWalk(props: {
   startCardId: number;
   startRequest: PickerOpenRequest;
   preferredLang: string;
+  /** Whether a card's back face prints on its back (a double-faced card
+   *  while the PDF tab pairs faces). */
+  transformOnBack: (card: CardRow) => boolean;
   apply: WalkApply;
   /** The walk closed, applied or not. */
   onClose: () => void;
@@ -168,6 +203,9 @@ export default function DeckArtWalk(props: {
   // The next card opens on the tab this one was left on.
   const [request, setRequest] = useState<PickerOpenRequest>(props.startRequest);
   const [source, setSource] = useState(props.startRequest.source);
+  const [side, setSide] = useState<Side>(
+    props.startRequest.side ?? (props.startRequest.face === 1 ? "back" : "front"),
+  );
   // ... and with the filters it was left with.
   const [filters, setFilters] = useState<PickerFilters>(DEFAULT_PICKER_FILTERS);
   // Closing with choices made: Keep, Discard or Cancel.
@@ -180,7 +218,8 @@ export default function DeckArtWalk(props: {
     setVisited((prev) => new Set(prev).add(target.id));
     // On MPC Fill, at the first face printing some; else the front.
     const art = source === "mpc" ? target.face_art?.find(isImageFaceArt) : undefined;
-    setRequest({ source, face: art?.face ?? 0 });
+    // ... and on the side: someone setting backs stays on the Back.
+    setRequest({ source, face: art?.face ?? 0, side: art ? undefined : side });
   };
 
   const choose = (choice: WalkChoice) => {
@@ -215,6 +254,8 @@ export default function DeckArtWalk(props: {
         else if (hasArt(0)) await apply.clearFaceArt(target, 0);
       } else if (front?.kind === "art") {
         apply.faceArt(target, 0, front.totalFaces, front.art);
+      } else if (front?.kind === "custom") {
+        await apply.faceCustom(target, 0, front.totalFaces, front.image);
       }
       const cardPrinting =
         front?.kind === "printing" ? front.pick.scryfallId : target.scryfall_id;
@@ -228,7 +269,12 @@ export default function DeckArtWalk(props: {
         }
       } else if (back?.kind === "art") {
         apply.faceArt(target, 1, back.totalFaces, back.art);
+      } else if (back?.kind === "custom") {
+        await apply.faceCustom(target, 1, back.totalFaces, back.image);
       }
+      // The Reverse last: it stands apart from the faces' art.
+      if (change.back?.kind === "card") await apply.backCard(target, change.back.source);
+      else if (change.back) await apply.back(target, change.back.mode, change.back.backImageId);
     } catch {
       // Each apply surfaces its own error; download what did land.
     }
@@ -314,6 +360,8 @@ export default function DeckArtWalk(props: {
       // Esc and a click outside are Close.
       onClose={requestClose}
       onSourceChange={setSource}
+      onSideChange={setSide}
+      transformOnBack={props.transformOnBack(card)}
       filters={filters}
       onFiltersChange={(patch) =>
         setFilters((prev) => ({
@@ -325,7 +373,7 @@ export default function DeckArtWalk(props: {
         nav,
         staged: staged.get(card.id) ?? null,
         onSelect: (choice) => void choose(choice),
-        onChoose: (choice) => finish(choose(choice)),
+        onChoose: (choice) => finish(choice ? choose(choice) : staged),
         footer,
       }}
     />

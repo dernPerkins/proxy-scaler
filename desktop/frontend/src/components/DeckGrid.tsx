@@ -715,7 +715,15 @@ function SortableCell(props: {
                 : undefined
             }
           >
-            <CardBackPicker card={card} transformOnBack={transformOnBack} />
+            <CardBackPicker
+              card={card}
+              transformOnBack={transformOnBack}
+              onOpenPicker={
+                card.scryfall_id != null && card.custom_image_id == null && !p.serverUnavailable
+                  ? () => a.openPrintingWith({ source: "scryfall", face: 0, side: "back" })
+                  : undefined
+              }
+            />
           </span>
         </span>
         {/* The status IS the button: a grey badge runs its job when clicked. */}

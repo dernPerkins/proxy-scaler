@@ -3153,6 +3153,109 @@ textarea.add-cards-list {
   font-size: 14px;
   line-height: 1.5;
 }
+/* A two-faced Back Card's face switch, in the walk's bar, centred in the
+   space between the deck navigation and Confirm (PrintingPicker.tsx). */
+.walk-footer:has(.walk-footer-mid) > .walk-head {
+  margin-right: 0;
+}
+.walk-footer:has(.walk-footer-mid) > :not(.walk-head):not(.walk-footer-mid) {
+  order: 2;
+}
+.walk-footer-mid {
+  order: 1;
+  margin: 0 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.walk-footer-mid .segmented button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The art picker's two sides (PickerSides.tsx). Front | Back sits on the
+   preview column above the card, in the head's and the notes' rows, which
+   the card doesn't use, so the preview keeps its size. Text only. Dark in
+   both themes, like the preview it sits on. */
+.picker-sides {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  z-index: 2;
+  align-self: start;
+  justify-self: stretch;
+  display: flex;
+  gap: 2px;
+  margin: 24px 12px 0 26px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+}
+.picker-side,
+.picker-side:active:not(:disabled),
+.picker-side:hover:not(:disabled) {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.picker-side.active,
+.picker-side.active:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.picker-side-label {
+  font-weight: 700;
+}
+.picker-side-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+}
+/* The head's search: Card Search's field, Tokens Only beside it. */
+.picker-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.picker-search .card-search-combo {
+  max-width: 300px;
+}
+.picker-search.tokens-only input {
+  border-color: var(--token);
+  background: color-mix(in srgb, var(--token-soft) 55%, var(--surface));
+}
+.picker-head-left:has(.picker-search) {
+  flex: 1;
+  min-width: 0;
+}
+/* Backs and Custom have no filters: the row keeps its height, so the
+   tiles start where the printings' do. */
+.printing-grid-controls.picker-side-controls {
+  min-height: 40px;
+}
+.picker-side-empty {
+  padding: 40px 12px;
+  text-align: center;
+}
+/* A tile with no image of its own: Blank, Real Back, an upload. */
+.printing-tile-frame.picker-blank-frame {
+  outline: 1.5px dashed var(--border);
+  outline-offset: -1.5px;
+  background: var(--surface-2);
+}
 .add-cards-palette-list-bar {
   display: flex;
   justify-content: flex-end;

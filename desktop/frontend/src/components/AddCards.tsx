@@ -895,8 +895,10 @@ function CardSearchModal({
         staged: null,
         onSelect: () => {},
         onChoose: (choice) => {
-          if (choice.kind === "printing") void adds.addPrinting(variantOfPick(choice.pick, v));
-          else void adds.addArt(v, choice.face, choice.totalFaces, choice.art);
+          // Card Search's picker offers only printings and MPC Fill art.
+          if (choice?.kind === "printing") void adds.addPrinting(variantOfPick(choice.pick, v));
+          else if (choice?.kind === "art")
+            void adds.addArt(v, choice.face, choice.totalFaces, choice.art);
         },
       }}
     />

@@ -1348,11 +1348,20 @@ def match_quantities(
             matched_indices.add(i)
             faces_taken[i] = faces_taken.get(i, 0) + 1
 
+        def _back_replaced(entry: DeckEntry, face: int | None) -> bool:
+            # A Back Card takes the place of a double-faced card's own back
+            # face: that face leaves the print entirely, whatever prints
+            # there (its own image, another printing's, a custom), paired
+            # or not (docs/adr/0011).
+            return (face or 0) >= 1 and entry.back_mode == "card" and entry.back_card is not None
+
         def _overridden(entry: DeckEntry) -> bool:
             # This Scryfall face prints from a custom or another printing
             # instead, for this entry: its own image must neither print
             # nor count.
-            return entry.override_for(rep.face_index) is not None
+            return entry.override_for(rep.face_index) is not None or _back_replaced(
+                entry, rep.face_index
+            )
 
         if rep.is_custom:
             # Matched on content hash alone, and never by name: two
@@ -1363,7 +1372,9 @@ def match_quantities(
                 if entry.custom_hash == rep.custom_hash:
                     _take(i, entry)
                 for override in entry.face_overrides:
-                    if _override_prints(override, rep):
+                    if _override_prints(override, rep) and not _back_replaced(
+                        entry, override.face
+                    ):
                         _take(i, entry, override)
         elif set_code and collector:
             rep_lang = (rep.lang or "en").lower()
@@ -1404,7 +1415,9 @@ def match_quantities(
             # name-only line from finding this printing.
             for i, entry in enumerate(entries):
                 for override in entry.face_overrides:
-                    if _override_prints(override, rep):
+                    if _override_prints(override, rep) and not _back_replaced(
+                        entry, override.face
+                    ):
                         _take(i, entry, override)
 
         if not matched_indices:
@@ -1483,6 +1496,9 @@ def match_quantities(
     for i, entry in enumerate(entries):
         matched = matched_face_counts[i]
         expected = expected_faces_by_entry[i]
+        if expected and expected > 1 and entry.back_mode == "card" and entry.back_card is not None:
+            # A Back Card stands in for the card's own back face.
+            expected = 1
         if matched == 0 or (expected is not None and matched < expected):
             missing.append(_describe_entry(entry, matched, expected))
             if missing_entries is not None:

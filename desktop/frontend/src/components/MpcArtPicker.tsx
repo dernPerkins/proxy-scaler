@@ -372,6 +372,9 @@ export interface MpcArtBrowserProps {
   /** The base tour that must be done before this picker's own
    *  ("mpc-picker") auto-shows: the screen it was opened from. */
   tourAfter: TourId;
+  /** No name search of its own: the art is for the card the art picker's
+   *  head search chose (PickerSides.tsx). */
+  hideSearch?: boolean;
 }
 
 export function MpcArtBrowser(props: MpcArtBrowserProps) {
@@ -681,6 +684,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
       </div>
 
       <div className="printing-grid-controls mpc-controls" data-tour="mpc-picker-filters" data-tour-fit>
+        {!props.hideSearch && (
         <form
           className="mpc-search-form"
           onSubmit={(e) => {
@@ -699,6 +703,7 @@ export function MpcArtBrowser(props: MpcArtBrowserProps) {
             Search
           </button>
         </form>
+        )}
         {search.data && (
           <span className="printing-grid-count">
             {ids.length} {ids.length === 1 ? "result" : "results"}

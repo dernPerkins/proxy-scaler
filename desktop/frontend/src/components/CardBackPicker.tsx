@@ -133,12 +133,17 @@ const backCardDetail = (back: ScryfallFaceSource) =>
 export default function CardBackPicker({
   card,
   transformOnBack,
+  onOpenPicker,
 }: {
   card: CardRow;
   /** This card's transform side is what prints on its back (a generated
    *  double-faced card while the PDF tab pairs faces) — the per-card
    *  choice is saved but has nowhere to land. */
   transformOnBack: boolean;
+  /** Open the art picker on this card's Back (PickerSides.tsx), which is
+   *  where a Scryfall card's back is chosen. Without it (a Custom Image
+   *  card, or no generation server) the swatch opens the modal below. */
+  onOpenPicker?: () => void;
 }) {
   const { settings } = useProject();
   const libraryQuery = useBackLibrary();
@@ -173,7 +178,7 @@ export default function CardBackPicker({
         className={`card-back-swatch is-${resolved.kind}`}
         title={title}
         aria-label={title}
-        onClick={() => setOpen(true)}
+        onClick={() => (onOpenPicker ? onOpenPicker() : setOpen(true))}
       >
         {thumbQuery.data && (resolved.kind === "image" || resolved.kind === "universal") ? (
           <img src={thumbQuery.data} alt="" className="card-back-swatch-img" />
