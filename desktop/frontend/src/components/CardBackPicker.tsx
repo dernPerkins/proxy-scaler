@@ -20,7 +20,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { generationApi } from "../api/generation";
-import type { CardRow, ScryfallFaceSource } from "../api/project";
+import type { CardFaceArt, CardRow, ScryfallFaceSource } from "../api/project";
 import { projectApi } from "../api/project";
 import type { BackImage, BackMode, CardVariant } from "../api/types";
 import { BACK_CARD_MIN_SERVER_VERSION, serverSupportsBackCards, useServerVersion } from "../config";
@@ -119,8 +119,20 @@ export function resolve(
 
 /** The server's thumbnail of a Back Card's face, or null until the image
  *  origin is known. */
-export function useBackCardThumb(back: ScryfallFaceSource | null | undefined): string | null {
+export function useBackCardThumb(
+  back: ScryfallFaceSource | null | undefined,
+  /** The Back Card's art, when it has some: that is what prints. */
+  art?: CardFaceArt | null,
+): string | null {
   const { origin } = useImageCacheSetting();
+  const artId = back ? (art?.custom_image_id ?? null) : null;
+  const artThumb = useQuery({
+    queryKey: ["custom-thumb", artId],
+    queryFn: () => projectApi.customImageThumbnail(artId as number),
+    enabled: artId != null,
+    staleTime: Infinity,
+  });
+  if (artId != null) return artThumb.data ?? null;
   return back && origin
     ? generationApi.cardThumbUrl(back.scryfall_id, back.source_face, origin)
     : null;
@@ -151,7 +163,7 @@ export default function CardBackPicker({
   const thumbId =
     resolved.kind === "image" ? resolved.back.id : resolved.kind === "universal" ? resolved.back?.id : null;
   const thumbQuery = useBackThumb(thumbId);
-  const cardThumb = useBackCardThumb(resolved.kind === "card" ? resolved.back : null);
+  const cardThumb = useBackCardThumb(resolved.kind === "card" ? resolved.back : null, card.back_art);
   const [open, setOpen] = useState(false);
 
   const title = (() => {
@@ -299,7 +311,7 @@ function CardBackModal({
   const { cards, setCardBack, setCardBackCard, projectTag } = useProject();
   const queryClient = useQueryClient();
   const backCardsSupported = serverSupportsBackCards(useServerVersion());
-  const backCardThumb = useBackCardThumb(card.back_card);
+  const backCardThumb = useBackCardThumb(card.back_card, card.back_art);
   // "Choose a Card…" swaps the tiles for the card search.
   const [searching, setSearching] = useState(false);
   const searchingRef = useRef(false);

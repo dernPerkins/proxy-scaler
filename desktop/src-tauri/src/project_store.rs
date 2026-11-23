@@ -337,6 +337,7 @@ const PROJECT_CARDS_ADDED_COLUMNS: &[(&str, &str)] = &[
     // JSON face_art::ScryfallFaceSource. Unlike face_art it is another
     // card with its own identity, not this printing's face.
     ("back_card", "TEXT"),
+    ("back_art", "TEXT"),
 ];
 
 // Columns added to the two image libraries after their initial release.
@@ -909,6 +910,10 @@ pub struct CardRow {
     pub back_hash: Option<String>,
     /// The Back Card this card prints when back_mode is "card".
     pub back_card: Option<crate::face_art::ScryfallFaceSource>,
+    /// The Back Card's art, when it doesn't print its own Scryfall face: a
+    /// library image, or MPC Fill art chosen and not downloaded yet
+    /// (face_art.rs). Always None without a Back Card.
+    pub back_art: Option<crate::face_art::CardFaceArt>,
     /// Faces printed from a Custom Image instead of this printing's own
     /// art (face_art.rs). Empty for almost every card.
     pub face_art: Vec<crate::face_art::CardFaceArt>,
@@ -1041,7 +1046,7 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                     c.set_code, c.collector_number, c.scryfall_id, c.lang, c.printed_name,
                     c.custom_image_id, ci.content_hash, c.rarity,
                     c.back_mode, c.back_image_id, bi.content_hash, c.face_art,
-                    c.flavor_name, c.back_card
+                    c.flavor_name, c.back_card, c.back_art
              FROM project_cards c
              LEFT JOIN custom_images ci ON ci.id = c.custom_image_id
              LEFT JOIN back_images bi ON bi.id = c.back_image_id
@@ -1071,13 +1076,21 @@ fn cards_for_project(conn: &Connection, project_id: i64) -> Result<Vec<CardRow>,
                 back_image_id: row.get(14)?,
                 back_hash: row.get(15)?,
                 back_card,
+                back_art: None,
                 face_art: Vec::new(),
-            }, row.get::<_, Option<String>>(16)?))
+            }, row.get::<_, Option<String>>(16)?, row.get::<_, Option<String>>(19)?))
         })
         .map_err(|e| e.to_string())?;
     let mut cards = Vec::new();
     for row in rows {
-        let (mut card, raw_face_art) = row.map_err(|e| e.to_string())?;
+        let (mut card, raw_face_art, raw_back_art) = row.map_err(|e| e.to_string())?;
+        if raw_back_art.is_some() && card.back_mode == "card" {
+            card.back_art = crate::face_art::load_back_art(
+                conn,
+                raw_back_art.as_deref(),
+                &mut face_art_cache,
+            )?;
+        }
         if raw_face_art.is_some() {
             card.face_art = crate::face_art::load_card_face_art(
                 conn,
@@ -2465,7 +2478,8 @@ pub fn set_card_back_row(
     };
     let changed = conn
         .execute(
-            "UPDATE project_cards SET back_mode = ?1, back_image_id = ?2, back_card = NULL
+            "UPDATE project_cards SET back_mode = ?1, back_image_id = ?2, back_card = NULL,
+                                      back_art = NULL
              WHERE id = ?3",
             params![back_mode, stored_id, card_id],
         )
@@ -2479,7 +2493,9 @@ pub fn set_card_back_row(
 /// Put a Back Card on one card's Reverse (docs/adr/0011): face
 /// `source_face` of another Scryfall printing, with the display cache the
 /// frontend renders it from. Replaces any other back choice. The card's
-/// own printing, quantity and face art are untouched.
+/// own printing, quantity and face art are untouched. The Back Card
+/// prints its own Scryfall face until it is given art (face_art.rs), so
+/// any art the last one had goes.
 pub fn set_card_back_card_row(
     conn: &Connection,
     card_id: i64,
@@ -2494,7 +2510,8 @@ pub fn set_card_back_card_row(
     let raw = serde_json::to_string(back_card).map_err(|e| e.to_string())?;
     let changed = conn
         .execute(
-            "UPDATE project_cards SET back_mode = 'card', back_image_id = NULL, back_card = ?1
+            "UPDATE project_cards SET back_mode = 'card', back_image_id = NULL, back_card = ?1,
+                                      back_art = NULL
              WHERE id = ?2",
             params![raw, card_id],
         )
@@ -2537,7 +2554,8 @@ pub fn reset_project_card_backs(app: AppHandle, project_id: i64) -> Result<(), S
 
 fn reset_project_card_backs_in(conn: &Connection, project_id: i64) -> Result<(), String> {
     conn.execute(
-        "UPDATE project_cards SET back_mode = NULL, back_image_id = NULL, back_card = NULL
+        "UPDATE project_cards SET back_mode = NULL, back_image_id = NULL, back_card = NULL,
+                                  back_art = NULL
          WHERE project_id = ?1",
         params![project_id],
     )

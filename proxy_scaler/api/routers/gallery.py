@@ -114,7 +114,7 @@ def adopt_gallery(body: AdoptGalleryIn) -> AdoptGalleryOut:
     # A Back Card's printing likewise, under its own name.
     for e in body.entries:
         back = to_deck_entry(e).back_card
-        if back is not None:
+        if back is not None and back.prints_scryfall:
             entries.append(
                 DeckEntry(quantity=1, name=back.name or e.name, scryfall_id=back.scryfall_id)
             )

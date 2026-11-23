@@ -29,6 +29,7 @@ import {
   facePrinting,
   type PickerFilters,
   type Pick,
+  type BackArt,
   type PickerOpenRequest,
   type Side,
   type StagedChanges,
@@ -48,8 +49,11 @@ export interface WalkApply {
   faceCustom: (card: CardRow, face: number, totalFaces: number, image: CustomImage) => Promise<void>;
   /** A face back on the card's own printing. */
   clearFaceArt: (card: CardRow, face: number) => Promise<void>;
-  /** A Back Card on the card's Reverse. */
+  /** A Back Card on the card's Reverse, printing its own Scryfall face. */
   backCard: (card: CardRow, source: ScryfallFaceSource) => Promise<void>;
+  /** Art for the card's Back Card (`card` already carries it): a Custom
+   *  Image, or MPC Fill art, which downloads in the background. */
+  backArt: (card: CardRow, art: BackArt) => Promise<void>;
   /** Universal, Blank or a back image on the Reverse; takes a Back Card
    *  off. */
   back: (card: CardRow, mode: Exclude<BackMode, "card">, backImageId: number | null) => Promise<void>;
@@ -273,7 +277,12 @@ export default function DeckArtWalk(props: {
         await apply.faceCustom(target, 1, back.totalFaces, back.image);
       }
       // The Reverse last: it stands apart from the faces' art.
-      if (change.back?.kind === "card") await apply.backCard(target, change.back.source);
+      if (change.back?.kind === "card") {
+        await apply.backCard(target, change.back.source);
+        if (change.back.art) {
+          await apply.backArt({ ...target, ...backAfter(target, change) }, change.back.art);
+        }
+      }
       else if (change.back) await apply.back(target, change.back.mode, change.back.backImageId);
     } catch {
       // Each apply surfaces its own error; download what did land.

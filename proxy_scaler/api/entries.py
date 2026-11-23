@@ -70,6 +70,8 @@ def to_deck_entry(e: DeckEntryIn) -> DeckEntry:
                 _printing_id(e.back_card.scryfall_id),
                 e.back_card.source_face,
                 e.back_card.name,
+                custom_hash=e.back_card.custom_hash or None,
+                art_pending=e.back_card.art_pending and not e.back_card.custom_hash,
             )
     return DeckEntry(
         quantity=e.quantity,

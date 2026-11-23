@@ -238,6 +238,10 @@ export interface CardRow {
   // one face of a different card, kept under its own identity. Rust never
   // returns "card" without it.
   back_card: ScryfallFaceSource | null;
+  // The Back Card's art, when it doesn't print its own Scryfall face: a
+  // Custom Image, or MPC Fill art chosen and not downloaded yet (face 0 of
+  // 1, in the face art shape). Null without a Back Card.
+  back_art: CardFaceArt | null;
   // Faces of this Scryfall card printed from a Custom Image instead of the
   // printing's own art (MPC Fill art picked in the change-printing modal).
   // Empty for almost every card; always empty for a Custom Image card.
@@ -433,6 +437,20 @@ export const projectApi = {
   // Put a Back Card on one card's Reverse, replacing any other back choice.
   setCardBackCard: (cardId: number, backCard: ScryfallFaceSource) =>
     invokeCommand<void>("set_card_back_card", { cardId, backCard }),
+  // A Custom Image as the Back Card's art, in place of its Scryfall face.
+  setCardBackArt: (cardId: number, customImageId: number) =>
+    invokeCommand<void>("set_card_back_art", { cardId, customImageId }),
+  // MPC Fill art chosen for the Back Card, not downloaded yet.
+  setCardBackArtPending: (
+    cardId: number,
+    art: { driveId: string; mpcSource: string; mpcName: string },
+  ) =>
+    invokeCommand<void>("set_card_back_art_pending", {
+      cardId,
+      driveId: art.driveId,
+      mpcSource: art.mpcSource,
+      mpcName: art.mpcName,
+    }),
   // Every card in the project back to "inherit".
   resetProjectCardBacks: (projectId: number) =>
     invokeCommand<void>("reset_project_card_backs", { projectId }),

@@ -18,7 +18,7 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
-from .decklist import DeckEntry, FaceOverride
+from .decklist import BackCard, DeckEntry, FaceOverride
 from .dpi import (
     CARD_HEIGHT_MM,
     CARD_WIDTH_MM,
@@ -983,6 +983,23 @@ def _back_card_key(scryfall_id: str | None, face_index: int | None) -> str:
     """One face of one printing, as a Back Card names it."""
     return f"{scryfall_id}:{face_index or 0}"
 
+
+def _back_art_key(custom_hash: str) -> str:
+    """A Custom Image printed as a Back Card's art."""
+    return f"custom:{custom_hash}"
+
+
+def _entry_back_card_key(back: BackCard) -> str:
+    """What a Back Card prints from: its art when it has some, else its
+    own Scryfall face. Art chosen but not downloaded yet matches nothing,
+    so the Back Card is reported missing rather than printed from its
+    Scryfall face."""
+    if back.custom_hash:
+        return _back_art_key(back.custom_hash)
+    if back.art_pending:
+        return f"pending:{_back_card_key(back.scryfall_id, back.source_face)}"
+    return _back_card_key(back.scryfall_id, back.source_face)
+
 SubstKey = tuple[str, int, int] | None
 """For a custom image or another printing's face printed on a face of a
 Scryfall card (a face override): (scryfall_id, face, total_faces) — copies
@@ -1039,8 +1056,7 @@ def _back_key(entry: DeckEntry) -> BackKey:
     if mode == "blank":
         return ("blank", None)
     if mode == "card" and entry.back_card is not None:
-        back = entry.back_card
-        return ("card", _back_card_key(back.scryfall_id, back.source_face))
+        return ("card", _entry_back_card_key(entry.back_card))
     return ("inherit", None)
 
 
@@ -1304,21 +1320,24 @@ def match_quantities(
 
     for key, face_items in group_by_face(gallery):
         rep = face_items[0]
-        if not rep.is_custom:
-            back_key = _back_card_key(rep.scryfall_id, rep.face_index)
-            if back_key in back_card_entries and back_key not in back_cards_seen:
-                back_cards_seen.add(back_key)
-                back_best, _unavailable = _pick(face_items, rep)
-                if back_best is not None:
-                    back_faces[back_key] = back_best
-                else:
-                    missing_at_dpi.append(_describe_face(rep))
-                    if missing_at_dpi_entries is not None:
-                        missing_at_dpi_entries.extend(
-                            i
-                            for i in back_card_entries[back_key]
-                            if i not in missing_at_dpi_entries
-                        )
+        back_key = (
+            _back_art_key(rep.custom_hash)
+            if rep.is_custom
+            else _back_card_key(rep.scryfall_id, rep.face_index)
+        )
+        if back_key in back_card_entries and back_key not in back_cards_seen:
+            back_cards_seen.add(back_key)
+            back_best, _unavailable = _pick(face_items, rep)
+            if back_best is not None:
+                back_faces[back_key] = back_best
+            else:
+                missing_at_dpi.append(_describe_face(rep))
+                if missing_at_dpi_entries is not None:
+                    missing_at_dpi_entries.extend(
+                        i
+                        for i in back_card_entries[back_key]
+                        if i not in missing_at_dpi_entries
+                    )
         set_code = (rep.set_code or "").lower() or None
         collector = rep.collector_number
         card_name = (rep.card_name or rep.face_name or "").casefold()

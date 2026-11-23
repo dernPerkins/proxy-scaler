@@ -999,7 +999,7 @@ function BackSide({ card }: { card: CardRow }) {
   const r = resolveBack(card, library.data, settings.back_image_id ?? null, false);
   const back = r.kind === "image" ? r.back : r.kind === "universal" ? r.back : undefined;
   const thumb = useBackThumb(back?.id);
-  const cardThumb = useBackCardThumb(r.kind === "card" ? r.back : null);
+  const cardThumb = useBackCardThumb(r.kind === "card" ? r.back : null, card.back_art);
   const trimmed =
     back?.includes_bleed && back.bleed_mm > 0
       ? fillFrameWith(trimGeometry({ w: back.width, h: back.height }, back.bleed_mm).trim)

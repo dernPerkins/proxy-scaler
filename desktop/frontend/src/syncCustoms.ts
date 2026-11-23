@@ -68,6 +68,11 @@ export function customImageRefs(card: CardRow): CustomSyncItem[] {
     if (fa.custom_image_id == null) continue;
     refs.push({ id: fa.custom_image_id, hash: fa.custom_hash, label: fa.label, faceArt: true });
   }
+  // A Back Card's art syncs and registers the same way.
+  const back = card.back_mode === "card" ? card.back_art : null;
+  if (back?.custom_image_id != null) {
+    refs.push({ id: back.custom_image_id, hash: back.custom_hash, label: back.label, faceArt: true });
+  }
   return refs;
 }
 
@@ -276,7 +281,7 @@ export async function registerCustomCards(
   const customs = cards.filter((c) => c.custom_image_id != null);
   // Face art registers as plain customs: sending the Scryfall card's own
   // entry here would also download its Scryfall originals.
-  const faceArt = distinctCustoms(cards.filter((c) => c.face_art?.length)).filter(
+  const faceArt = distinctCustoms(cards.filter((c) => c.face_art?.length || c.back_art)).filter(
     (item) => item.faceArt && item.hash != null,
   );
   if ((customs.length === 0 && faceArt.length === 0) || projectTag == null) return [];

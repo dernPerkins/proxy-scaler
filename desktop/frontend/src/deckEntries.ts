@@ -183,6 +183,13 @@ export function cardToEntry(card: CardRow): DeckEntryIn {
             scryfall_id: card.back_card.scryfall_id,
             source_face: card.back_card.source_face,
             name: card.back_card.name,
+            // Its art, when it has some. Not downloaded yet: nothing
+            // prints there, rather than its Scryfall face.
+            ...(card.back_art
+              ? card.back_art.custom_hash
+                ? { custom_hash: card.back_art.custom_hash }
+                : { art_pending: true }
+              : {}),
           },
         }
       : {}),

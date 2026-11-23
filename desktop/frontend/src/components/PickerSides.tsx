@@ -36,28 +36,69 @@ const SOURCE_LABELS: Record<SideSource, string> = {
 };
 
 /** What a card's Reverse is set to: the three stored fields. */
-export type BackFields = Pick<CardRow, "back_mode" | "back_card" | "back_image_id">;
+export type BackFields = Pick<CardRow, "back_mode" | "back_card" | "back_image_id" | "back_art">;
 
 /** The card's Reverse once `staged` applies. */
 export function backAfter(card: CardRow, staged: StagedChanges | null): BackFields {
   const change = staged?.back;
   if (!change) {
-    return { back_mode: card.back_mode, back_card: card.back_card, back_image_id: card.back_image_id };
+    return {
+      back_mode: card.back_mode,
+      back_card: card.back_card,
+      back_image_id: card.back_image_id,
+      back_art: card.back_mode === "card" ? card.back_art : null,
+    };
   }
-  return change.kind === "card"
-    ? { back_mode: "card", back_card: change.source, back_image_id: null }
-    : { back_mode: change.mode, back_card: null, back_image_id: change.backImageId };
+  if (change.kind !== "card") {
+    return { back_mode: change.mode, back_card: null, back_image_id: change.backImageId, back_art: null };
+  }
+  const art = change.art;
+  return {
+    back_mode: "card",
+    back_card: change.source,
+    back_image_id: null,
+    back_art: !art
+      ? null
+      : art.kind === "custom"
+        ? {
+            face: 0,
+            total_faces: 1,
+            custom_image_id: art.image.id,
+            custom_hash: art.image.content_hash,
+            label: art.image.label,
+            mpc_drive_id: art.image.mpc?.drive_id ?? null,
+            mpc_source: art.image.mpc?.source ?? null,
+          }
+        : {
+            // Chosen, downloaded on Confirm.
+            face: 0,
+            total_faces: 1,
+            custom_image_id: null,
+            custom_hash: null,
+            label: art.art.name,
+            mpc_drive_id: art.art.drive_id,
+            mpc_source: art.art.source_name,
+          },
+  };
 }
 
 /** Whether `change` is what the card already has. */
 export function backUnchanged(card: CardRow, change: BackChange): boolean {
   if (change.kind === "card") {
     const b = card.back_mode === "card" ? card.back_card : null;
-    return (
-      b != null &&
-      b.scryfall_id === change.source.scryfall_id &&
-      b.source_face === change.source.source_face
-    );
+    if (
+      b == null ||
+      b.scryfall_id !== change.source.scryfall_id ||
+      b.source_face !== change.source.source_face
+    ) {
+      return false;
+    }
+    const has = card.back_art;
+    const art = change.art;
+    if (!art) return has == null;
+    if (art.kind === "custom") return has?.custom_image_id === art.image.id;
+    // Already-fetched art is no change; art still to download downloads.
+    return has?.mpc_drive_id === art.art.drive_id && has.custom_image_id != null;
   }
   if (card.back_mode !== change.mode) return false;
   return change.mode !== "image" || card.back_image_id === change.backImageId;
@@ -312,26 +353,38 @@ function ImgTile(props: {
   );
 }
 
-/** The preview column for something that isn't a Scryfall printing. */
+/** The preview column for something that isn't a Scryfall printing, in
+ *  the printing preview's shape (PrintingPreview): the card on a wash of
+ *  its own art, and a scrim of the same height, so nothing moves between
+ *  tabs. */
 function ImagePreview(props: {
   src: string | null | undefined;
   name: string;
   meta: string;
-  cta?: { label: string; onClick: () => void };
+  cta: { label: string; onClick: () => void; disabled?: boolean };
 }) {
   return (
     <aside className="printing-preview" aria-label={props.name}>
+      {props.src && (
+        <div className="printing-preview-wash" style={{ backgroundImage: `url("${props.src}")` }} />
+      )}
       <div className="printing-preview-stage">
         <div className="printing-preview-frame">{props.src && <img src={props.src} alt="" />}</div>
       </div>
       <div className="printing-preview-scrim">
         <h3 className="printing-preview-name">{props.name}</h3>
         <p className="printing-preview-meta">{props.meta}</p>
-        {props.cta && (
-          <button type="button" className="printing-preview-cta" onClick={props.cta.onClick}>
-            {props.cta.label}
-          </button>
-        )}
+        {/* The printing preview's row of generated versions: kept, empty,
+            for its height. */}
+        <div className="printing-preview-versions" />
+        <button
+          type="button"
+          className="printing-preview-cta"
+          disabled={props.cta.disabled}
+          onClick={props.cta.onClick}
+        >
+          {props.cta.label}
+        </button>
       </div>
     </aside>
   );
@@ -358,14 +411,22 @@ function BackPreview(props: {
         ? settings.back_image_id
         : null;
   const image = useBackThumb(imageId);
-  const cardThumb = useBackCardThumb(isCard ? back.back_card : null);
+  // The full image once it has loaded: the thumbnail is small for the
+  // preview's size.
+  const full = useQuery({
+    queryKey: ["back-full", imageId],
+    queryFn: () => projectApi.backImageFull(imageId as number),
+    enabled: imageId != null,
+    staleTime: Infinity,
+  });
+  const cardThumb = useBackCardThumb(isCard ? back.back_card : null, back.back_art);
   const realThumb =
     showsReal && origin && card.scryfall_id
       ? generationApi.cardThumbUrl(card.scryfall_id, 1, origin)
       : null;
   return (
     <ImagePreview
-      src={cardThumb ?? realThumb ?? image.data}
+      src={cardThumb ?? realThumb ?? full.data ?? image.data}
       name={isCard || showsReal ? name : `${name} Back`}
       meta={`On the back of ${card.name}`}
       cta={{ label: "Confirm", onClick: props.onConfirm }}
@@ -393,18 +454,19 @@ function LibraryBackTile(props: {
   );
 }
 
-/** A tile that opens the file picker. */
-function UploadTile(props: { label: string; onFile: (file: File) => void; busy: boolean }) {
+/** Opens the file picker; sits where the other tabs have their filters. */
+function UploadButton(props: { label: string; onFile: (file: File) => void; busy: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <>
-      <ImgTile
-        src={null}
-        blank
-        label={props.busy ? "Uploading…" : props.label}
-        active={false}
-        onSelect={() => input.current?.click()}
-      />
+      <button
+        type="button"
+        className="btn-sm"
+        disabled={props.busy}
+        onClick={() => input.current?.click()}
+      >
+        {props.busy ? "Uploading…" : props.label}
+      </button>
       <input
         ref={input}
         type="file"
@@ -421,7 +483,8 @@ function UploadTile(props: { label: string; onFile: (file: File) => void; busy: 
 }
 
 /** Backs: Universal, Blank and the Back Library. Choosing one is the
- *  card's back, and takes a Back Card off it. */
+ *  card's back, and takes a Back Card off it. The filter row (the upload)
+ *  and the tiles. */
 function BacksGrid(props: {
   back: BackFields;
   /** A double-faced card's back face prints on its back: "follow the
@@ -459,6 +522,13 @@ function BacksGrid(props: {
   };
   return (
     <>
+      <div className="printing-grid-controls">
+        <span className="printing-grid-count">
+          {(library.data?.length ?? 0) + 2} Backs
+        </span>
+        <UploadButton label="Upload New Back" busy={busy} onFile={(file) => void upload(file)} />
+      </div>
+      <div className="modal-body">
       {transformOnBack && (
         <p className="hint">
           This card's back face prints on its back. Another back is kept, and prints once back
@@ -499,7 +569,7 @@ function BacksGrid(props: {
             onPick={() => props.onPick("image", b.id)}
           />
         ))}
-        <UploadTile label="Upload New Back" busy={busy} onFile={(file) => void upload(file)} />
+      </div>
       </div>
     </>
   );
@@ -528,7 +598,8 @@ function CustomTile(props: {
   );
 }
 
-/** Custom: the Custom Image library, as art for one face. */
+/** Custom: the Custom Image library, as art for one face. The filter row
+ *  (the upload) and the tiles. */
 function CustomGrid(props: {
   /** The image this face prints (staged, else stored), if it is one. */
   chosenId: number | null;
@@ -558,6 +629,13 @@ function CustomGrid(props: {
   };
   return (
     <>
+      <div className="printing-grid-controls">
+        <span className="printing-grid-count">
+          {images.data?.length ?? 0} {images.data?.length === 1 ? "Image" : "Images"}
+        </span>
+        <UploadButton label="Upload New Image" busy={busy} onFile={(file) => void upload(file)} />
+      </div>
+      <div className="modal-body">
       {error && <p className="hint">{error}</p>}
       <div className="printing-grid">
         {(images.data ?? []).map((image) => (
@@ -569,7 +647,7 @@ function CustomGrid(props: {
             onPick={() => props.onPick(image)}
           />
         ))}
-        <UploadTile label="Upload New Image" busy={busy} onFile={(file) => void upload(file)} />
+      </div>
       </div>
     </>
   );
@@ -587,24 +665,33 @@ function CustomPreview(props: {
     enabled: image != null,
     staleTime: Infinity,
   });
-  if (!image) {
-    return <ImagePreview src={null} name={props.fallbackName} meta="Choose a Custom Image" />;
-  }
+  // The full image once it has loaded: the thumbnail is small for the
+  // preview's size.
+  const full = useQuery({
+    queryKey: ["custom-full", image?.id],
+    queryFn: () => projectApi.customImageFull(image!.id),
+    enabled: image != null,
+    staleTime: Infinity,
+  });
   return (
     <ImagePreview
-      src={thumb.data}
-      name={image.label}
-      meta={`${image.width} × ${image.height}`}
-      cta={{ label: "Use This Image", onClick: () => props.onPick(image) }}
+      src={image ? (full.data ?? thumb.data) : null}
+      name={image?.label ?? props.fallbackName}
+      meta={image ? `${image.width} × ${image.height} px` : "Choose a Custom Image"}
+      cta={{
+        label: "Use This Image",
+        disabled: image == null,
+        onClick: () => image && props.onPick(image),
+      }}
     />
   );
 }
 
 /** The picker's views that aren't the printing grid or MPC Fill: Custom
- *  on either side, Backs, and the Back with no card on it yet. Renders the
- *  modal's children but the side toggle and the walk's bar. */
+ *  on either side, and Backs. Renders the modal's children but the side
+ *  toggle and the walk's bar. */
 export function SideBody(props: {
-  view: "custom" | "backs" | "empty";
+  view: "custom" | "backs";
   card: CardRow;
   /** The head's contents: source switch, search, Close. */
   head: ReactNode;
@@ -622,74 +709,58 @@ export function SideBody(props: {
 }) {
   const { view, card, back } = props;
   const [selected, setSelected] = useState<CustomImage | null>(null);
+  const images = useQuery({
+    queryKey: ["custom-images"],
+    queryFn: () => projectApi.listCustomImages(),
+    enabled: view === "custom",
+  });
   const head = <div className="modal-head printing-grid-head">{props.head}</div>;
   if (view === "custom") {
+    // What is selected, else the image this face already prints.
+    const shown =
+      selected ?? images.data?.find((image) => image.id === props.customChosenId) ?? null;
     return (
       <>
         <CustomPreview
-          image={selected}
+          image={shown}
           fallbackName={props.faceName}
           onPick={(image) => props.onCustom(image, true)}
         />
         {head}
         <div className="printing-grid-notes" />
-        <div className="printing-grid-controls picker-side-controls" />
-        <div className="modal-body">
-          <CustomGrid
-            chosenId={props.customChosenId}
-            onSelect={(image) => {
-              setSelected(image);
-              props.onCustom(image, false);
-            }}
-            onPick={(image) => props.onCustom(image, true)}
-          />
-        </div>
+        <CustomGrid
+          chosenId={props.customChosenId}
+          onSelect={(image) => {
+            setSelected(image);
+            props.onCustom(image, false);
+          }}
+          onPick={(image) => props.onCustom(image, true)}
+        />
       </>
     );
   }
-  const preview = (
-    <BackPreview
-      card={card}
-      back={back}
-      realBack={props.realBack}
-      origin={props.origin}
-      onConfirm={props.onConfirm}
-    />
-  );
-  if (view === "backs") {
-    const change = (mode: Exclude<BackMode, "card">, backImageId: number | null): BackChange => ({
-      kind: "back",
-      mode,
-      backImageId,
-    });
-    return (
-      <>
-        {preview}
-        {head}
-        <div className="printing-grid-notes" />
-        <div className="printing-grid-controls picker-side-controls" />
-        <div className="modal-body">
-          <BacksGrid
-            back={back}
-            transformOnBack={props.transformOnBack}
-            onSelect={(mode, id) => props.onBack(change(mode, id), false)}
-            onPick={(mode, id) => props.onBack(change(mode, id), true)}
-          />
-        </div>
-      </>
-    );
-  }
+  const change = (mode: Exclude<BackMode, "card">, backImageId: number | null): BackChange => ({
+    kind: "back",
+    mode,
+    backImageId,
+  });
   return (
     <>
-      {preview}
+      <BackPreview
+        card={card}
+        back={back}
+        realBack={props.realBack}
+        origin={props.origin}
+        onConfirm={props.onConfirm}
+      />
       {head}
       <div className="printing-grid-notes" />
-      <div className="printing-grid-controls picker-side-controls" />
-      <div className="modal-body">
-        <p className="hint picker-side-empty">
-          Search for any card or token above to put it on the back of {card.name}.
-        </p>
-      </div>
+      <BacksGrid
+        back={back}
+        transformOnBack={props.transformOnBack}
+        onSelect={(mode, id) => props.onBack(change(mode, id), false)}
+        onPick={(mode, id) => props.onBack(change(mode, id), true)}
+      />
     </>
   );
 }

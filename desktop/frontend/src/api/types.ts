@@ -113,6 +113,10 @@ export interface BackCardIn {
   scryfall_id: string;
   source_face: number;
   name: string;
+  /** Its art, when not its own Scryfall face: a Custom Image's hash. */
+  custom_hash?: string | null;
+  /** MPC Fill art chosen for it but not downloaded yet. */
+  art_pending?: boolean;
 }
 
 /** One back a print request may draw on, with the Back Library's own

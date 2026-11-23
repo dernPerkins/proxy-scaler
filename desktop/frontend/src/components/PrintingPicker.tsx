@@ -536,11 +536,15 @@ export interface PickerOpenRequest {
  *  image. */
 export type Side = "front" | "back";
 
+/** A Back Card's art, when it isn't its own Scryfall face: MPC Fill art
+ *  (downloaded on Confirm) or a Custom Image. */
+export type BackArt = { kind: "mpc"; art: MpcCard } | { kind: "custom"; image: CustomImage };
+
 /** What the walk will put on a card's Reverse: a Back Card (one face of
  *  another card, docs/adr/0011), or one of the back modes, which takes a
  *  Back Card off. */
 export type BackChange =
-  | { kind: "card"; source: ScryfallFaceSource }
+  | { kind: "card"; source: ScryfallFaceSource; art?: BackArt }
   | { kind: "back"; mode: "inherit" | "blank" | "image"; backImageId: number | null };
 
 export type PickerSource = "scryfall" | "mpc";
@@ -677,14 +681,14 @@ export function PrintingGridModal(props: {
   );
   const mpcOk = stored.scryfall_id != null && serverSupportsMpcFill(serverVersion);
   const frontSources: SideSource[] = mpcOk ? ["scryfall", "mpc", "custom"] : ["scryfall", "custom"];
-  // A Back Card prints from Scryfall (MPC Fill and custom art for one:
-  // .scratch/back-card issue 04); a double-faced card's own back takes
-  // everything its front does.
+  // A Back Card, like a double-faced card's own back, takes everything a
+  // front does: its Scryfall printings, or MPC Fill or custom art for it.
   const backSources: SideSource[] = backCard
-    ? ["scryfall", "backs"]
+    ? [...frontSources, "backs"]
     : doubleFaced
       ? [...frontSources, "backs"]
-      : ["scryfall", "backs"];
+      : // Nothing on it yet: a back image, or a card through the search.
+        ["backs"];
   const backSource: SideSource =
     backPicked && backSources.includes(backPicked)
       ? backPicked
@@ -692,20 +696,29 @@ export function PrintingGridModal(props: {
         ? "scryfall"
         : "backs";
   const viewSource: SideSource = side === "front" ? frontSource : backSource;
-  const backTarget = unified && side === "back" && viewSource === "scryfall" ? backCard : null;
+  const backTarget =
+    unified && side === "back" && (viewSource === "scryfall" || viewSource === "mpc")
+      ? backCard
+      : null;
   // A double-faced card's own back: face 1, chosen through the walk.
   const realBackShown = unified && side === "back" && !backCard && doubleFaced;
   const card = backTarget ? backRow(stored, backTarget) : frontCard;
   const walk: WalkHooks = backTarget
     ? {
         ...props.walk,
-        // The grid's choice is the Back Card's printing.
+        // The grid's choice is the Back Card's printing; MPC Fill's, its art.
         staged: null,
         onSelect: (choice) => props.walk.onSelect(asBackCard(choice)),
         onChoose: (choice) => props.walk.onChoose(choice && asBackCard(choice)),
       }
     : props.walk;
   function asBackCard(choice: WalkChoice): WalkChoice {
+    if (choice.kind === "art" && backCard) {
+      return {
+        kind: "back",
+        back: { kind: "card", source: backCard, art: { kind: "mpc", art: choice.art } },
+      };
+    }
     if (choice.kind !== "printing") return choice;
     const v = variants.find((x) => x.scryfall_id === choice.pick.scryfallId);
     const two = choice.totalFaces > 1;
@@ -913,8 +926,11 @@ export function PrintingGridModal(props: {
   // the card (Prev / Next) can land on it.
   // Only one face of a two-faced Back Card prints. Viewing its other face,
   // nothing is chosen: the printing only opens selected.
+  // Nor is one while the Back Card prints art of its own.
   const stagedId =
-    backTarget && backTarget.source_face !== face ? null : facePrinting(card, walk.staged, face);
+    backTarget && (backTarget.source_face !== face || back.back_art != null)
+      ? null
+      : facePrinting(card, walk.staged, face);
   const shown = useMemo(
     () =>
       sortVariants(
@@ -1000,6 +1016,9 @@ export function PrintingGridModal(props: {
   // selected, focused and scrolled into view, once, the first time the
   // grid has tiles to show.
   const placedFor = useRef<number | null>(null);
+  // Bumped by resetGrid: coming back to a side whose list and face haven't
+  // changed (from Backs or Custom, say) still has to place its selection.
+  const [gridEpoch, setGridEpoch] = useState(0);
   useEffect(() => {
     if (placedFor.current === face || shown.length === 0) return;
     placedFor.current = face;
@@ -1011,7 +1030,7 @@ export function PrintingGridModal(props: {
     setSelectedId(shown[index].scryfall_id);
     // isChosen and isCurrent read only what is fixed until a selection
     // changes it.
-  }, [shown, face]);
+  }, [shown, face, gridEpoch]);
   // The scroll waits for that selection to render: the preview pane it
   // mounts narrows the grid, reflowing every tile, so scrolling any
   // earlier lands on the wrong row. A layout effect, so it happens before
@@ -1068,6 +1087,7 @@ export function PrintingGridModal(props: {
     setSelectedId(null);
     setFaceById(new Map());
     setFaceState(nextFace);
+    setGridEpoch((n) => n + 1);
   };
   const setSide = (next: Side) => {
     if (next === side) return;
@@ -1096,7 +1116,8 @@ export function PrintingGridModal(props: {
     resetGrid(0);
     if (side === "back") {
       props.walk.onSelect({ kind: "back", back: { kind: "card", source: backSourceOf(v, 0) } });
-      setBackPicked("scryfall");
+      // Its printings next, unless MPC Fill is showing: then its art there.
+      if (backSource !== "mpc") setBackPicked("scryfall");
       return;
     }
     if (frontSource === "custom") changeSource("scryfall");
@@ -1186,22 +1207,24 @@ export function PrintingGridModal(props: {
     </>
   );
 
-  // Custom on either side, Backs, and a Back with no card on it yet.
-  const sideView: "custom" | "backs" | "empty" | null = !unified
-    ? null
-    : viewSource === "custom" || viewSource === "backs"
-      ? viewSource
-      : side === "back" && !backTarget && !realBackShown
-        ? "empty"
-        : null;
+  // Custom on either side, and Backs.
+  const sideView: "custom" | "backs" | null =
+    unified && (viewSource === "custom" || viewSource === "backs") ? viewSource : null;
   if (sideView) {
     const customFace = side === "back" ? 1 : 0;
     const stagedCustom = props.walk.staged?.faces.get(customFace);
-    const customChosenId = stagedCustom
-      ? stagedCustom.kind === "custom"
-        ? stagedCustom.image.id
-        : null
-      : (stored.face_art?.find((fa) => fa.face === customFace)?.custom_image_id ?? null);
+    const customChosenId = backCard
+      ? (back.back_art?.custom_image_id ?? null)
+      : stagedCustom
+        ? stagedCustom.kind === "custom"
+          ? stagedCustom.image.id
+          : null
+        : (stored.face_art?.find((fa) => fa.face === customFace)?.custom_image_id ?? null);
+    // On a Back Card, a Custom Image is that card's art.
+    const customChoice = (image: CustomImage): WalkChoice =>
+      side === "back" && backCard
+        ? { kind: "back", back: { kind: "card", source: backCard, art: { kind: "custom", image } } }
+        : { kind: "custom", face: customFace, totalFaces: frontInfo.faces, image };
     return (
       <ModalOverlay onClick={onClose}>
         <div
@@ -1219,15 +1242,16 @@ export function PrintingGridModal(props: {
             back={back}
             realBack={realBack}
             transformOnBack={props.transformOnBack ?? false}
-            faceName={customFace === 1 ? frontInfo.backName : frontCard.name}
+            faceName={
+              side === "back" && backCard
+                ? (backCard.printed_name ?? backCard.name)
+                : customFace === 1
+                  ? frontInfo.backName
+                  : frontCard.name
+            }
             customChosenId={customChosenId}
             onCustom={(image, choose) =>
-              (choose ? props.walk.onChoose : props.walk.onSelect)({
-                kind: "custom",
-                face: customFace,
-                totalFaces: frontInfo.faces,
-                image,
-              })
+              (choose ? props.walk.onChoose : props.walk.onSelect)(customChoice(image))
             }
             onBack={(change, choose) =>
               (choose ? props.walk.onChoose : props.walk.onSelect)({ kind: "back", back: change })
@@ -1277,7 +1301,9 @@ export function PrintingGridModal(props: {
             cardTypes={["CARD", "TOKEN"]}
             defaultLang={card.lang}
             currentDriveId={
-              stagedFace
+              backTarget
+                ? (back.back_art?.mpc_drive_id ?? null)
+                : stagedFace
                 ? stagedFace.kind === "art"
                   ? stagedFace.art.drive_id
                   : null

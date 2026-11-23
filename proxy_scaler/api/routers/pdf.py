@@ -287,6 +287,12 @@ def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> li
     custom_hashes |= {
         o.custom_hash for e in entries for o in e.face_overrides if o.custom_hash
     }
+    # ... and as a Back Card's art.
+    custom_hashes |= {
+        e.back_card.custom_hash
+        for e in entries
+        if e.back_mode == "card" and e.back_card is not None and e.back_card.custom_hash
+    }
     for custom_hash in custom_hashes:
         _add(db.list_registry_items_for_custom(custom_hash, db_path=db_path))
     printing_faces: dict[str, set[int]] = {}
@@ -295,7 +301,7 @@ def gallery_for_print(project_tag: str, entries: list[DeckEntry], db_path) -> li
             if o.scryfall_id:
                 printing_faces.setdefault(o.scryfall_id, set()).add(o.source_position)
         # A Back Card's face, likewise.
-        if e.back_mode == "card" and e.back_card is not None:
+        if e.back_mode == "card" and e.back_card is not None and e.back_card.prints_scryfall:
             printing_faces.setdefault(e.back_card.scryfall_id, set()).add(
                 e.back_card.source_face
             )

@@ -72,6 +72,15 @@ class BackCard:
     scryfall_id: str
     source_face: int = 0
     name: str = ""
+    # Its art, when not its own Scryfall face (BackCardIn): a Custom
+    # Image's hash, or art_pending while that image is still on its way.
+    custom_hash: str | None = None
+    art_pending: bool = False
+
+    @property
+    def prints_scryfall(self) -> bool:
+        """Whether it prints its own Scryfall face (no art of its own)."""
+        return not self.custom_hash and not self.art_pending
 
 
 @dataclass(frozen=True)

@@ -352,30 +352,48 @@ pub(crate) fn clear_card_face_art_row(
     write_card(conn, card_id, &map)
 }
 
+/// The two columns that hold face art maps: a card's own faces, and the
+/// art of its Back Card (one entry, under face "0": see set_card_back_art_row).
+const ART_COLUMNS: [&str; 2] = ["face_art", "back_art"];
+
+/// Every (card id, stored map) with something in `column`.
+fn art_rows(conn: &Connection, column: &str) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT id, {column} FROM project_cards WHERE {column} IS NOT NULL"))
+        .map_err(|e| e.to_string())?;
+    let mapped = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    mapped.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+fn write_art(conn: &Connection, column: &str, card_id: i64, map: &FaceArtMap) -> Result<(), String> {
+    conn.execute(
+        &format!("UPDATE project_cards SET {column} = ?1 WHERE id = ?2"),
+        params![serialize(map), card_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Drop every reference to a library image that is being deleted. Those
-/// faces go back to their Scryfall art rather than the card going away:
-/// unlike a Custom Image card, the card still has a printing.
+/// faces (and Back Cards) go back to their Scryfall art rather than the
+/// card going away: unlike a Custom Image card, the card still has a
+/// printing.
 pub(crate) fn strip_custom_image_references(
     conn: &Connection,
     custom_image_id: i64,
 ) -> Result<usize, String> {
-    let rows: Vec<(i64, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, face_art FROM project_cards WHERE face_art IS NOT NULL")
-            .map_err(|e| e.to_string())?;
-        let mapped = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| e.to_string())?;
-        mapped.collect::<Result<_, _>>().map_err(|e| e.to_string())?
-    };
     let mut touched = 0;
-    for (card_id, raw) in rows {
-        let mut map = parse(Some(&raw));
-        let before = map.len();
-        map.retain(|_, entry| entry.custom_image_id != Some(custom_image_id));
-        if map.len() != before {
-            write_card(conn, card_id, &map)?;
-            touched += 1;
+    for column in ART_COLUMNS {
+        for (card_id, raw) in art_rows(conn, column)? {
+            let mut map = parse(Some(&raw));
+            let before = map.len();
+            map.retain(|_, entry| entry.custom_image_id != Some(custom_image_id));
+            if map.len() != before {
+                write_art(conn, column, card_id, &map)?;
+                touched += 1;
+            }
         }
     }
     Ok(touched)
@@ -392,29 +410,22 @@ pub(crate) fn detach_custom_image_references(
     custom_image_id: i64,
     mpc: &MpcProvenance,
 ) -> Result<usize, String> {
-    let rows: Vec<(i64, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, face_art FROM project_cards WHERE face_art IS NOT NULL")
-            .map_err(|e| e.to_string())?;
-        let mapped = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| e.to_string())?;
-        mapped.collect::<Result<_, _>>().map_err(|e| e.to_string())?
-    };
     let mut touched = 0;
-    for (card_id, raw) in rows {
-        let mut map = parse(Some(&raw));
-        let mut changed = false;
-        for entry in map.values_mut() {
-            if entry.custom_image_id == Some(custom_image_id) {
-                entry.custom_image_id = None;
-                entry.mpc = Some(mpc.clone());
-                changed = true;
+    for column in ART_COLUMNS {
+        for (card_id, raw) in art_rows(conn, column)? {
+            let mut map = parse(Some(&raw));
+            let mut changed = false;
+            for entry in map.values_mut() {
+                if entry.custom_image_id == Some(custom_image_id) {
+                    entry.custom_image_id = None;
+                    entry.mpc = Some(mpc.clone());
+                    changed = true;
+                }
             }
-        }
-        if changed {
-            write_card(conn, card_id, &map)?;
-            touched += 1;
+            if changed {
+                write_art(conn, column, card_id, &map)?;
+                touched += 1;
+            }
         }
     }
     Ok(touched)
@@ -432,22 +443,132 @@ pub(crate) fn has_face_art(raw: Option<&str>) -> bool {
     !parse(raw).is_empty()
 }
 
-/// How many project cards (in any project) print this image on a face.
+/// How many project cards (in any project) print this image on a face,
+/// or as their Back Card's art.
 pub(crate) fn count_face_art_using_row(conn: &Connection, custom_image_id: i64) -> Result<i64, String> {
-    let mut stmt = conn
-        .prepare("SELECT face_art FROM project_cards WHERE face_art IS NOT NULL")
-        .map_err(|e| e.to_string())?;
-    let raws = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
     let mut count = 0;
-    for raw in raws {
-        let raw = raw.map_err(|e| e.to_string())?;
-        if parse(Some(&raw)).values().any(|e| e.custom_image_id == Some(custom_image_id)) {
-            count += 1;
+    for column in ART_COLUMNS {
+        for (_, raw) in art_rows(conn, column)? {
+            if parse(Some(&raw)).values().any(|e| e.custom_image_id == Some(custom_image_id)) {
+                count += 1;
+            }
         }
     }
     Ok(count)
+}
+
+// ---- A Back Card's art -------------------------------------------------
+//
+// A Back Card (docs/adr/0011) prints its own Scryfall face unless it is
+// given art: a library image, or MPC Fill art chosen and not downloaded
+// yet. Stored in project_cards.back_art in the face art format, as the
+// one entry {"0": {...}}, so the library's cleanup above covers it. It is
+// the Back Card's picture only: the Back Card keeps its identity, and the
+// image is never a Back Library entry. Anything that sets or clears the
+// card's back clears it (project_store.rs).
+
+/// The art of a card's Back Card, joined with the library; None when it
+/// prints its own Scryfall face.
+pub(crate) fn load_back_art(
+    conn: &Connection,
+    raw: Option<&str>,
+    cache: &mut HashMap<i64, ImageInfo>,
+) -> Result<Option<CardFaceArt>, String> {
+    Ok(load_card_face_art(conn, raw, cache)?.into_iter().find(|art| art.face == 0))
+}
+
+/// Whether the card has a Back Card for art to go on.
+fn require_back_card(conn: &Connection, card_id: i64) -> Result<(), String> {
+    let has: Option<bool> = conn
+        .query_row(
+            "SELECT COALESCE(back_mode = 'card' AND back_card IS NOT NULL, 0)
+             FROM project_cards WHERE id = ?1",
+            params![card_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match has {
+        None => Err(format!("card {card_id} not found")),
+        Some(false) => Err("Only a Back Card can take art of its own.".to_string()),
+        Some(true) => Ok(()),
+    }
+}
+
+fn write_back_art(conn: &Connection, card_id: i64, entry: Option<FaceArtEntry>) -> Result<(), String> {
+    let mut map = FaceArtMap::new();
+    if let Some(entry) = entry {
+        map.insert("0".to_string(), entry);
+    }
+    write_art(conn, "back_art", card_id, &map)
+}
+
+/// Print a library image as the card's Back Card.
+pub(crate) fn set_card_back_art_row(
+    conn: &Connection,
+    card_id: i64,
+    custom_image_id: i64,
+) -> Result<(), String> {
+    require_back_card(conn, card_id)?;
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM custom_images WHERE id = ?1)",
+            params![custom_image_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Err("That image is no longer in the library.".to_string());
+    }
+    write_back_art(
+        conn,
+        card_id,
+        Some(FaceArtEntry { custom_image_id: Some(custom_image_id), total_faces: 1, mpc: None, scryfall: None }),
+    )
+}
+
+/// Choose MPC Fill art for the card's Back Card without downloading it.
+pub(crate) fn set_card_back_art_pending_row(
+    conn: &Connection,
+    card_id: i64,
+    mpc: MpcProvenance,
+) -> Result<(), String> {
+    require_back_card(conn, card_id)?;
+    write_back_art(
+        conn,
+        card_id,
+        Some(FaceArtEntry { custom_image_id: None, total_faces: 1, mpc: Some(mpc), scryfall: None }),
+    )
+}
+
+/// The Back Card back on its own Scryfall face.
+pub(crate) fn clear_card_back_art_row(conn: &Connection, card_id: i64) -> Result<(), String> {
+    write_back_art(conn, card_id, None)
+}
+
+#[tauri::command]
+pub fn set_card_back_art(app: AppHandle, card_id: i64, custom_image_id: i64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    set_card_back_art_row(&conn, card_id, custom_image_id)
+}
+
+#[tauri::command]
+pub fn set_card_back_art_pending(
+    app: AppHandle,
+    card_id: i64,
+    drive_id: String,
+    mpc_source: String,
+    mpc_name: String,
+) -> Result<(), String> {
+    let mpc = MpcProvenance::new(&drive_id, &mpc_source, &mpc_name)?;
+    let conn = open_db(&app)?;
+    set_card_back_art_pending_row(&conn, card_id, mpc)
+}
+
+#[tauri::command]
+pub fn clear_card_back_art(app: AppHandle, card_id: i64) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    clear_card_back_art_row(&conn, card_id)
 }
 
 #[tauri::command]
@@ -542,6 +663,70 @@ mod tests {
             })
             .expect("row");
         load_card_face_art(conn, raw.as_deref(), &mut HashMap::new()).expect("load")
+    }
+
+    fn back_card(conn: &Connection, card_id: i64) {
+        conn.execute(
+            "UPDATE project_cards SET back_mode = 'card', back_card = '{}' WHERE id = ?1",
+            params![card_id],
+        )
+        .expect("back card");
+    }
+
+    fn stored_back(conn: &Connection, card_id: i64) -> Option<CardFaceArt> {
+        let raw: Option<String> = conn
+            .query_row("SELECT back_art FROM project_cards WHERE id = ?1", params![card_id], |r| {
+                r.get(0)
+            })
+            .expect("row");
+        load_back_art(conn, raw.as_deref(), &mut HashMap::new()).expect("load")
+    }
+
+    #[test]
+    fn a_back_card_takes_art_of_its_own() {
+        let conn = test_conn();
+        let image = custom(&conn, "treasure-art", "Treasure");
+        let elves = card(&conn, Some("elves"), None);
+        // No Back Card, nothing to put art on.
+        assert!(set_card_back_art_row(&conn, elves, image).is_err());
+        back_card(&conn, elves);
+        assert!(set_card_back_art_row(&conn, elves, 9999).is_err());
+
+        let mpc = MpcProvenance::new("1AbCdEfGhIjKlMnOpQrStUvWxYz012345", "Chilli", "Treasure").unwrap();
+        set_card_back_art_pending_row(&conn, elves, mpc).expect("pending");
+        let pending = stored_back(&conn, elves).expect("pending art");
+        assert_eq!(pending.custom_image_id, None);
+        assert_eq!(pending.mpc_drive_id.as_deref(), Some("1AbCdEfGhIjKlMnOpQrStUvWxYz012345"));
+
+        set_card_back_art_row(&conn, elves, image).expect("art");
+        let art = stored_back(&conn, elves).expect("art");
+        assert_eq!(art.custom_image_id, Some(image));
+        assert_eq!(art.custom_hash.as_deref(), Some("treasure-art"));
+        // The card's own faces are untouched.
+        assert!(stored(&conn, elves).is_empty());
+        assert_eq!(count_face_art_using_row(&conn, image).unwrap(), 1);
+
+        clear_card_back_art_row(&conn, elves).expect("clear");
+        assert_eq!(stored_back(&conn, elves), None);
+    }
+
+    #[test]
+    fn deleting_or_detaching_the_image_reaches_back_art() {
+        let conn = test_conn();
+        let image = custom(&conn, "treasure-art", "Treasure");
+        let elves = card(&conn, Some("elves"), None);
+        back_card(&conn, elves);
+        set_card_back_art_row(&conn, elves, image).expect("art");
+
+        let mpc = MpcProvenance::new("1AbCdEfGhIjKlMnOpQrStUvWxYz012345", "Chilli", "Treasure").unwrap();
+        assert_eq!(detach_custom_image_references(&conn, image, &mpc).unwrap(), 1);
+        let detached = stored_back(&conn, elves).expect("still chosen");
+        assert_eq!(detached.custom_image_id, None);
+        assert!(detached.mpc_drive_id.is_some());
+
+        set_card_back_art_row(&conn, elves, image).expect("art");
+        assert_eq!(strip_custom_image_references(&conn, image).unwrap(), 1);
+        assert_eq!(stored_back(&conn, elves), None);
     }
 
     #[test]

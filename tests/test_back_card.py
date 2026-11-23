@@ -404,3 +404,99 @@ def test_transform_placements_are_ignored_while_a_back_card_replaces_it() -> Non
         "Delver of Secrets",
         "Delver of Secrets",
     ]
+
+
+# --- art of its own ----------------------------------------------------------
+
+ART_HASH = "a" * 64
+
+
+def _custom_face(custom_hash: str, label: str, dpi: int = 1200) -> FaceResult:
+    return FaceResult(
+        out_path=Path(f"/o/custom-{label.lower()}-{dpi}.png"),
+        original_path=Path(f"/c/custom-{label}.png"),
+        scryfall_id=None,
+        face_index=None,
+        face_name=label,
+        card_name=label,
+        set_code=None,
+        collector_number=None,
+        png_url="",
+        dpi=dpi,
+        total_faces=1,
+        custom_hash=custom_hash,
+    )
+
+
+def _art_back(**kwargs) -> BackCard:
+    return BackCard(TREASURE_ID, 0, "Treasure", **kwargs)
+
+
+def test_converter_takes_a_back_cards_art() -> None:
+    from proxy_scaler.api.entries import to_deck_entry
+    from proxy_scaler.api.schemas import BackCardIn, DeckEntryIn
+
+    def convert(**back) -> BackCard | None:
+        body = DeckEntryIn(
+            name="Llanowar Elves",
+            scryfall_id=ELVES_ID,
+            back_mode="card",
+            back_card=BackCardIn(scryfall_id=TREASURE_ID, name="Treasure", **back),
+        )
+        return to_deck_entry(body).back_card
+
+    art = convert(custom_hash=ART_HASH)
+    assert art is not None and art.custom_hash == ART_HASH and not art.prints_scryfall
+    pending = convert(art_pending=True)
+    assert pending is not None and pending.art_pending and not pending.prints_scryfall
+    plain = convert()
+    assert plain is not None and plain.prints_scryfall
+    # Downloaded art wins over a stale pending flag.
+    both = convert(custom_hash=ART_HASH, art_pending=True)
+    assert both is not None and both.custom_hash == ART_HASH and not both.art_pending
+
+
+def test_a_back_card_prints_its_art_and_adds_no_card() -> None:
+    gallery = [_elves_face(), _treasure_face(), _custom_face(ART_HASH, "Treasure Art")]
+    units, missing, missing_at_dpi = match_quantities(
+        [_elves(_art_back(custom_hash=ART_HASH), quantity=2)], gallery, preferred_dpi=1200
+    )
+    assert missing == [] and missing_at_dpi == []
+    (unit,) = units
+    assert unit.quantity == 2 and unit.best.card_name == "Llanowar Elves"
+    assert unit.back_face is not None and unit.back_face.custom_hash == ART_HASH
+    slots = build_print_slots(units, pair_back_faces=True)
+    assert len(slots) == 2 and all(s.reverse is unit.back_face for s in slots)
+
+
+def test_the_same_back_card_with_and_without_art_stays_apart() -> None:
+    gallery = [_elves_face(), _treasure_face(), _custom_face(ART_HASH, "Treasure Art")]
+    entries = [_elves(_art_back(custom_hash=ART_HASH)), _elves(_treasure_back(), quantity=2)]
+    units, missing, _ = match_quantities(entries, gallery)
+    assert missing == []
+    assert [(u.quantity, u.back_face.custom_hash if u.back_face else None) for u in units] == [
+        (1, ART_HASH),
+        (2, None),
+    ]
+
+
+def test_art_not_downloaded_yet_is_missing_not_the_scryfall_face() -> None:
+    gallery = [_elves_face(), _treasure_face()]
+    units, missing, _ = match_quantities([_elves(_art_back(art_pending=True))], gallery)
+    assert missing == ["Treasure"]
+    (unit,) = units
+    assert unit.back_face is None
+    (slot,) = build_print_slots(units, pair_back_faces=True)
+    # Never a Back Image in its place either.
+    assert resolve_reverse(slot, {}, None, ReverseFill.BLANK) == (None, None, None)
+
+
+def test_a_back_card_with_art_does_not_fetch_its_scryfall_face(db_path, tmp_path, resolves) -> None:
+    entry = _elves(_art_back(custom_hash=ART_HASH))
+    faces = generation._override_printings([entry])
+    assert faces == []
+    # ... and registers (and upscales) the art like any custom, by the
+    # Back Card's name.
+    (custom,) = generation._override_customs([entry])
+    assert custom.custom_hash == ART_HASH and custom.name == "Treasure"
+    assert generation._override_customs([_elves(_treasure_back())]) == []

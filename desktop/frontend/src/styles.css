@@ -3241,16 +3241,12 @@ textarea.add-cards-list {
   flex: 1;
   min-width: 0;
 }
-/* Backs and Custom have no filters: the row keeps its height, so the
-   tiles start where the printings' do. */
-.printing-grid-controls.picker-side-controls {
-  min-height: 40px;
+/* Custom or Backs with nothing to use yet. */
+.printing-preview-cta:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
-.picker-side-empty {
-  padding: 40px 12px;
-  text-align: center;
-}
-/* A tile with no image of its own: Blank, Real Back, an upload. */
+/* A tile with no image of its own: Blank, Real Back. */
 .printing-tile-frame.picker-blank-frame {
   outline: 1.5px dashed var(--border);
   outline-offset: -1.5px;

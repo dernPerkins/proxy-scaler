@@ -135,11 +135,17 @@ export interface PendingFaceArt {
   error?: string;
 }
 
+/** The pending-state "face" of a Back Card's art: not a face of the card,
+ *  so it never collides with one. */
+export const BACK_ART_FACE = -1;
+
 interface Job {
   pending: PendingFaceArt;
   card: CardRow;
   art: MpcCard;
   setFaceArt: (cardId: number, face: number, totalFaces: number, image: CustomImage) => Promise<void>;
+  /** The same for a Back Card's art (face BACK_ART_FACE). */
+  setBackArt?: (cardId: number, image: CustomImage) => Promise<void>;
   projectTag: string | null;
   serverVersion: string | null;
   /** Re-fetch the Decklist's status, resolving once it has the new rows. */
@@ -175,10 +181,24 @@ async function drain() {
     update(key, { status: "downloading" });
     try {
       const image = await importMpcArt("custom", job.art);
-      await job.setFaceArt(job.pending.cardId, job.pending.face, job.pending.totalFaces, image);
+      if (job.pending.face === BACK_ART_FACE) {
+        if (!job.setBackArt) throw new Error("This card's back art can't be set here.");
+        await job.setBackArt(job.pending.cardId, image);
+      } else {
+        await job.setFaceArt(job.pending.cardId, job.pending.face, job.pending.totalFaces, image);
+      }
       // Registered for this project straight away, like a dropped custom
       // (with the art on the card, since the caller's list predates it).
-      const withArt: CardRow = {
+      const added = {
+        custom_image_id: image.id,
+        custom_hash: image.content_hash,
+        label: image.label,
+        mpc_drive_id: image.mpc?.drive_id ?? null,
+        mpc_source: image.mpc?.source ?? null,
+      };
+      const withArt: CardRow = job.pending.face === BACK_ART_FACE
+        ? { ...job.card, back_art: { face: 0, total_faces: 1, ...added } }
+        : {
         ...job.card,
         face_art: [
           ...(job.card.face_art ?? []).filter((fa) => fa.face !== job.pending.face),
@@ -232,6 +252,7 @@ export function queueFaceArtPick(args: {
   totalFaces: number;
   art: MpcCard;
   setFaceArt: Job["setFaceArt"];
+  setBackArt?: Job["setBackArt"];
   projectTag: string | null;
   serverVersion: string | null;
   refreshStatus: Job["refreshStatus"];
@@ -371,29 +392,32 @@ export function fetchPendingFaceArt(
   opts: Omit<Parameters<typeof queueFaceArtPick>[0], "card" | "face" | "totalFaces" | "art">,
 ): Promise<boolean[]> {
   const picks: Promise<boolean>[] = [];
+  const artOf = (fa: { mpc_drive_id: string | null; label: string; mpc_source: string | null }) => ({
+    drive_id: fa.mpc_drive_id as string,
+    name: fa.label,
+    source_name: fa.mpc_source ?? "",
+    card_type: "CARD" as const,
+    extension: "",
+    dpi: 0,
+    size_bytes: 0,
+    language: "",
+    date_created: "",
+    tags: [],
+  });
   for (const card of cards) {
     for (const fa of card.face_art ?? []) {
       if (fa.custom_image_id != null || !fa.mpc_drive_id) continue;
       if (pending.has(keyOf(card.id, fa.face))) continue;
       picks.push(
-        queueFaceArtPick({
-          ...opts,
-          card,
-          face: fa.face,
-          totalFaces: fa.total_faces,
-          art: {
-            drive_id: fa.mpc_drive_id,
-            name: fa.label,
-            source_name: fa.mpc_source ?? "",
-            card_type: "CARD",
-            extension: "",
-            dpi: 0,
-            size_bytes: 0,
-            language: "",
-            date_created: "",
-            tags: [],
-          },
-        }),
+        queueFaceArtPick({ ...opts, card, face: fa.face, totalFaces: fa.total_faces, art: artOf(fa) }),
+      );
+    }
+    // A Back Card's art, chosen and not fetched yet, likewise.
+    const back = card.back_mode === "card" ? card.back_art : null;
+    if (back && back.custom_image_id == null && back.mpc_drive_id) {
+      if (pending.has(keyOf(card.id, BACK_ART_FACE))) continue;
+      picks.push(
+        queueFaceArtPick({ ...opts, card, face: BACK_ART_FACE, totalFaces: 1, art: artOf(back) }),
       );
     }
   }
@@ -402,5 +426,9 @@ export function fetchPendingFaceArt(
 
 /** Whether any of these cards has MPC Fill art chosen but not fetched. */
 export function hasPendingFaceArt(cards: CardRow[]): boolean {
-  return cards.some((c) => c.face_art?.some((fa) => fa.custom_image_id == null && fa.mpc_drive_id));
+  return cards.some(
+    (c) =>
+      c.face_art?.some((fa) => fa.custom_image_id == null && fa.mpc_drive_id) ||
+      (c.back_mode === "card" && c.back_art?.custom_image_id == null && c.back_art?.mpc_drive_id),
+  );
 }

@@ -114,6 +114,9 @@ def _override_printings(entries: list) -> list:
         back = getattr(entry, "back_card", None)
         if back is None or getattr(entry, "back_mode", None) != "card":
             continue
+        if not back.prints_scryfall:
+            # Its art is a Custom Image: the Scryfall face isn't wanted.
+            continue
         key = (back.scryfall_id, back.source_face)
         if key in seen:
             continue
@@ -133,7 +136,7 @@ def _override_printings(entries: list) -> list:
 
 def _override_customs(entries: list) -> list:
     """One Custom Image entry per distinct hash the entries print on a
-    face of a Scryfall card, so those customs are registered (and, with
+    face of a Scryfall card or as a Back Card's art, so those customs are registered (and, with
     custom_upscale, upscaled) exactly like a custom card — minus any the
     decklist already has as a card of its own."""
     plain = {e.custom_hash for e in entries if getattr(e, "custom_hash", None)}
@@ -151,6 +154,15 @@ def _override_customs(entries: list) -> list:
             out.append(
                 DeckEntry(quantity=1, name=entry.name, custom_hash=override.custom_hash)
             )
+        # A Back Card's art (docs/adr/0011) likewise, under the Back Card's
+        # name.
+        back = getattr(entry, "back_card", None)
+        back_hash = None
+        if back is not None and getattr(entry, "back_mode", None) == "card":
+            back_hash = back.custom_hash
+        if back_hash and back_hash not in plain and back_hash not in seen:
+            seen.add(back_hash)
+            out.append(DeckEntry(quantity=1, name=back.name or entry.name, custom_hash=back_hash))
     return out
 
 

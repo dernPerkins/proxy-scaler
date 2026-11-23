@@ -64,6 +64,7 @@ import { importMpcOrder } from "../mpcFill";
 import {
   autoPickMpcArt,
   fetchPendingFaceArt,
+  BACK_ART_FACE,
   dismissPendingFaceArt,
   downloadCardFaces,
   downloadPickedPrinting,
@@ -176,6 +177,7 @@ export default function DecklistPage() {
     setCardFaceArtPending,
     setCardBack,
     setCardBackCard,
+    setCardBackArtPending,
     setCardFacePrinting,
     clearCardFaceArt,
     resetCardBacks,
@@ -686,7 +688,8 @@ export default function DecklistPage() {
   // The whole-deck Download and Upscale actions, shared with the PDF tab
   // (deckImageActions.ts), and what they're built on.
   const deckImages = useDeckImageActions();
-  const { customResult, pendingArtOpts, setPickedFaceArt, withPendingArtFetched } = deckImages;
+  const { customResult, pendingArtOpts, setPickedFaceArt, setPickedBackArt, withPendingArtFetched } =
+    deckImages;
   // Chosen MPC art that is already in the library (downloaded for another
   // card, project or earlier pick) needs no download: link it straight
   // away, so the row shows it as downloaded on import or load rather than
@@ -1160,6 +1163,28 @@ export default function DecklistPage() {
     },
     clearFaceArt: (card, face) => clearFaceArt(card, face),
     backCard: (card, source) => setCardBackCard(card.id, source),
+    // A Custom Image is in the library already. MPC Fill art is recorded
+    // as chosen, then downloads in the background like a face's.
+    backArt: async (card, art) => {
+      dismissPendingFaceArt(card.id, BACK_ART_FACE);
+      if (art.kind === "custom") {
+        await setPickedBackArt(card.id, art.image);
+        invalidateStatus();
+        return;
+      }
+      await setCardBackArtPending(card.id, art.art);
+      void queueFaceArtPick({
+        card,
+        face: BACK_ART_FACE,
+        totalFaces: 1,
+        art: art.art,
+        setFaceArt: setPickedFaceArt,
+        setBackArt: setPickedBackArt,
+        projectTag,
+        serverVersion,
+        refreshStatus: refetchStatus,
+      });
+    },
     back: (card, mode, backImageId) => setCardBack(card.id, mode, backImageId),
     // Every card the walk visited, as it prints now: its Scryfall faces
     // (its own printing's, or another printing's) face by face, and any
@@ -1765,6 +1790,8 @@ function CardRowView(props: {
     library,
     disabled,
   } = props;
+  // The Back Card's art on its way (or failed), if any.
+  const backArtPending = usePendingFaceArt().get(pendingFaceArtKey(card.id, BACK_ART_FACE));
   const quantity = card.quantity ?? 1;
   const rowKey = `card-${card.id}`;
   const expanded = expandedFaces.has(rowKey);
@@ -1981,23 +2008,50 @@ function CardRowView(props: {
           <span className="variant-face">
             Back: {card.back_card.printed_name ?? card.back_card.name}
           </span>
-          <span
-            className="variant-note variant-printing mono"
-            title={`${card.back_card.name}, ${card.back_card.set_code.toUpperCase()} #${card.back_card.collector_number}`}
-          >
-            <SetIcon setCode={card.back_card.set_code} rarity={card.back_card.rarity} />
-            {card.back_card.set_code.toUpperCase()} #{card.back_card.collector_number}
-          </span>
-          {backCardVariants.length === 0 && (
-            <span className="variant-note" title="Download images or Generate fetches it">
-              Not Generated Yet
-            </span>
+          {card.back_art ? (
+            // Its own art, not its Scryfall face: say which, and whether
+            // it has arrived.
+            <>
+              <span className="variant-note" title={card.back_art.label}>
+                {card.back_art.mpc_drive_id ? "MPC Fill Art" : "Custom Image"}
+              </span>
+              {backArtPending ? (
+                <span className="variant-note" title={backArtPending.error}>
+                  {backArtPending.status === "failed"
+                    ? "Download Failed"
+                    : backArtPending.status === "queued"
+                      ? "Queued"
+                      : "Downloading…"}
+                </span>
+              ) : (
+                card.back_art.custom_image_id == null && (
+                  <span className="variant-note" title="Download images or Generate fetches it">
+                    Not Downloaded Yet
+                  </span>
+                )
+              )}
+            </>
+          ) : (
+            <>
+              <span
+                className="variant-note variant-printing mono"
+                title={`${card.back_card.name}, ${card.back_card.set_code.toUpperCase()} #${card.back_card.collector_number}`}
+              >
+                <SetIcon setCode={card.back_card.set_code} rarity={card.back_card.rarity} />
+                {card.back_card.set_code.toUpperCase()} #{card.back_card.collector_number}
+              </span>
+              {backCardVariants.length === 0 && (
+                <span className="variant-note" title="Download images or Generate fetches it">
+                  Not Generated Yet
+                </span>
+              )}
+              {backCardVariants.map((v) => (
+                <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
+                  {v.dpi} · {modelDisplayName(v.model)}
+                </StatusBadge>
+              ))}
+            </>
           )}
-          {backCardVariants.map((v) => (
-            <StatusBadge key={`${v.dpi}-${v.model}`} status={v.status}>
-              {v.dpi} · {modelDisplayName(v.model)}
-            </StatusBadge>
-          ))}
         </div>
       )}
 

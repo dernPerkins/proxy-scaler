@@ -286,6 +286,11 @@ interface ProjectContextValue {
     totalFaces: number,
     art: MpcCard,
   ) => Promise<void>;
+  /** A Custom Image as the card's Back Card's art, in place of its
+   *  Scryfall face. */
+  setCardBackArt: (cardId: number, image: CustomImage) => Promise<void>;
+  /** MPC Fill art chosen for the Back Card, not downloaded yet. */
+  setCardBackArtPending: (cardId: number, art: MpcCard) => Promise<void>;
   /** Every card in the project back to "inherit" — the bulk undo for
    *  per-card backs. */
   resetCardBacks: () => Promise<void>;
@@ -900,6 +905,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
                 back_image_id: backMode === "image" ? backImageId : null,
                 back_hash: hash,
                 back_card: null,
+                back_art: null,
               }
             : c,
         ),
@@ -969,7 +975,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setCards((prev) =>
         prev.map((c) =>
           c.id === cardId
-            ? { ...c, back_mode: "card" as const, back_image_id: null, back_hash: null, back_card: backCard }
+            ? {
+                ...c,
+                back_mode: "card" as const,
+                back_image_id: null,
+                back_hash: null,
+                back_card: backCard,
+                // A new Back Card prints its own face until given art.
+                back_art: null,
+              }
             : c,
         ),
       );
@@ -991,6 +1005,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           back_image_id: null,
           back_hash: null,
           back_card: null,
+          back_art: null,
         })),
       );
     },
@@ -1423,6 +1438,52 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     },
     setCardFaceArt: async (cardId, face, totalFaces, image) => {
       await setCardFaceArtMutation.mutateAsync({ cardId, face, totalFaces, image });
+    },
+    setCardBackArt: async (cardId, image) => {
+      await projectApi.setCardBackArt(cardId, image.id);
+      setCards((prev) =>
+        prev.map((c) =>
+          c.id === cardId
+            ? {
+                ...c,
+                back_art: {
+                  face: 0,
+                  total_faces: 1,
+                  custom_image_id: image.id,
+                  custom_hash: image.content_hash,
+                  label: image.label,
+                  mpc_drive_id: image.mpc?.drive_id ?? null,
+                  mpc_source: image.mpc?.source ?? null,
+                },
+              }
+            : c,
+        ),
+      );
+    },
+    setCardBackArtPending: async (cardId, art) => {
+      await projectApi.setCardBackArtPending(cardId, {
+        driveId: art.drive_id,
+        mpcSource: art.source_name,
+        mpcName: art.name,
+      });
+      setCards((prev) =>
+        prev.map((c) =>
+          c.id === cardId
+            ? {
+                ...c,
+                back_art: {
+                  face: 0,
+                  total_faces: 1,
+                  custom_image_id: null,
+                  custom_hash: null,
+                  label: art.name,
+                  mpc_drive_id: art.drive_id,
+                  mpc_source: art.source_name,
+                },
+              }
+            : c,
+        ),
+      );
     },
     setCardFaceArtPending: async (cardId, face, totalFaces, art) => {
       await projectApi.setCardFaceArtPending(cardId, face, totalFaces, {

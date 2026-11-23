@@ -107,6 +107,14 @@ class BackCardIn(BaseModel):
     scryfall_id: str
     source_face: int = Field(default=0, ge=0, le=1)
     name: str = ""
+    # The Back Card's art, when it is not its own Scryfall face: a Custom
+    # Image (MPC Fill art, or an upload). The Back Card keeps its name.
+    custom_hash: str | None = None
+    # MPC Fill art chosen for it but not downloaded yet (custom_hash is
+    # None). The Reverse then prints nothing and is reported missing,
+    # rather than its Scryfall art, and Generate/Download leave its
+    # Scryfall image alone. Same rule as FaceOverrideIn.
+    art_pending: bool = False
 
 
 class DeckEntryIn(BaseModel):

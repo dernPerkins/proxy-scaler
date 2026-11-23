@@ -32,7 +32,7 @@ export function toastUpscaleNotes(notes: string[]): void {
 
 export function useDeckImageActions() {
   const queryClient = useQueryClient();
-  const { projectTag, settings, setCardFaceArt } = useProject();
+  const { projectTag, settings, setCardFaceArt, setCardBackArt } = useProject();
   const serverVersion = useServerVersion();
 
   // How custom and MPC art comes out when an upscale button asks for it
@@ -69,8 +69,16 @@ export function useDeckImageActions() {
       list && !list.some((i) => i.id === image.id) ? [...list, image] : list,
     );
   };
+  // The same for a Back Card's art.
+  const setPickedBackArt = async (cardId: number, image: CustomImage) => {
+    await setCardBackArt(cardId, image);
+    queryClient.setQueryData<CustomImage[]>(["custom-images"], (list) =>
+      list && !list.some((i) => i.id === image.id) ? [...list, image] : list,
+    );
+  };
   const pendingArtOpts = {
     setFaceArt: setPickedFaceArt,
+    setBackArt: setPickedBackArt,
     projectTag,
     serverVersion,
     refreshStatus,
@@ -172,5 +180,5 @@ export function useDeckImageActions() {
     },
   });
 
-  return { download, upscale, customResult, mpcImageIds, pendingArtOpts, setPickedFaceArt, withPendingArtFetched };
+  return { download, upscale, customResult, mpcImageIds, pendingArtOpts, setPickedFaceArt, setPickedBackArt, withPendingArtFetched };
 }
